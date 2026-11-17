@@ -36,11 +36,17 @@ fn grid() -> ComponentPath {
     ComponentPath(GRID_CONTRIBUTOR.to_string())
 }
 
-/// The data file the California Housing start writes, as a path.
+/// The data file the California Housing start writes, as a path, under a config
+/// directory named after this target: `CARGO_TARGET_TMPDIR` is one folder for
+/// every test target in the crate, and two targets in processes running at once
+/// must not write or remove each other's start files. `region_gate.rs` says
+/// which two did.
 fn housing_file() -> std::path::PathBuf {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("grid_filter_selection")
+            .join("config"),
     );
     let data = starts::find(starts::CALIFORNIA_HOUSING)
         .and_then(|start| start.data.as_ref())
@@ -320,7 +326,9 @@ fn counted(doc: &mut brightfield_shell::app::ChartDoc, mark: usize) -> f64 {
 fn a_typed_grid_filter_narrows_the_penguins_panel_and_keeps_its_ghosts_whole() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("grid_filter_selection")
+            .join("config"),
     );
     let csv = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

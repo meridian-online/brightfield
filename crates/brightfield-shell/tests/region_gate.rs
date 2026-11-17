@@ -726,6 +726,13 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
 /// start that opens a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`.
 ///
+/// "This target's" because the folder is named after it: `CARGO_TARGET_TMPDIR`
+/// is one folder for every test target in the crate, and `cargo xtask ci` runs
+/// its two test groups at once. Under one shared `config`, `remote_start`'s
+/// `taking_the_housing_card_with_nothing_on_disk_records_the_statlib_archive`,
+/// which removes the California Housing file to find nothing on disk, could
+/// remove it while `region_gate`, in the other group, was opening it.
+///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`, which
 /// gives each test a directory of its own in turn. Two tests here share this
 /// fixed path, through [`every_window_this_build_can_open`], and both write
@@ -737,6 +744,8 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("region_gate")
+            .join("config"),
     );
 }

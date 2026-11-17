@@ -28,6 +28,9 @@
 //! change to what the generator writes reddens one named test and not all of
 //! them.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use std::path::PathBuf;
 
 use brightfield_engine::{ColumnProfile, ProfileOutcome};
@@ -1080,7 +1083,7 @@ fn baseline(name: &str, mode: Mode, open: Option<(ShelfChannel, &'static str)>) 
             );
         });
     harness.run();
-    harness.snapshot_options(name, &options());
+    harness.snapshot_options(name, &gpu_jitter::options(options(), 0));
 }
 
 #[test]
@@ -1462,7 +1465,7 @@ fn marked_baseline(name: &str, mode: Mode) {
             );
         });
     harness.run();
-    harness.snapshot_options(name, &options());
+    harness.snapshot_options(name, &gpu_jitter::options(options(), 0));
 }
 
 #[test]

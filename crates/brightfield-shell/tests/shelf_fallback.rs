@@ -16,6 +16,9 @@
 //! +1.95.0 test -p brightfield-shell --test shelf_fallback`, and read what
 //! moved before committing it.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_render::channel::Channel;
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::{self, Mode};
@@ -1235,7 +1238,7 @@ fn baseline_of(name: &str, mode: Mode, mut list: ColumnList) {
             list.show_card(ui.ctx(), cell, mode);
         });
     harness.run();
-    harness.snapshot_options(name, &SnapshotOptions::default());
+    harness.snapshot_options(name, &gpu_jitter::options(SnapshotOptions::default(), 0));
 }
 
 #[test]

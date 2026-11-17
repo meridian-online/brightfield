@@ -6,9 +6,11 @@
 //!   would run and CI would not;
 //! * a workflow invoking a step the command does not carry, which CI would
 //!   fail on with an unknown step;
-//! * a workflow that a pull request triggers calling a gate script or cargo
-//!   directly rather than through the command, which CI would run and a local
-//!   run would not. The one call that is not a gate is named in
+//! * a workflow that a pull request or a push to `main` triggers calling a
+//!   gate script or cargo directly rather than through the command, which CI
+//!   would run and a local run would not. A push to `main` counts because the
+//!   hosted `test` and `lint` runs there are the backstop for the local gate,
+//!   which runs the command on each pull request. The one call that is not a gate is named in
 //!   `DIRECT_CALLS_ALLOWED`, and the workflows that stay outside the command
 //!   are named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
 //!
@@ -26,7 +28,7 @@ pub struct Workflow {
     pub text: String,
 }
 
-/// The direct calls a pull-request workflow may make, by file name and the text
+/// The direct calls a checked workflow may make, by file name and the text
 /// the call contains, with the reason each is not a gate the command must run.
 pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
     "test.yml",
@@ -34,8 +36,8 @@ pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
     "it fetches the pinned DuckDB CLI the test steps hand to arc, and checks nothing in the tree; locally the test steps say where to put it",
 )];
 
-/// Workflows a pull request can trigger that call scripts directly and stay
-/// outside the command, by file name, with the reason.
+/// Workflows a pull request or a push to `main` can trigger that call scripts
+/// directly and stay outside the command, by file name, with the reason.
 pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[
     (
         "brew-install-branch.yml",
@@ -195,6 +197,103 @@ pub fn runs_on_pull_request(text: &str) -> bool {
     false
 }
 
+/// True when a push to `main` triggers the workflow, or may: `on:` names
+/// `push` inline, or its `push:` block lists `main` or a glob under
+/// `branches:`, ignores branches without naming `main`, or filters by neither
+/// branch nor tag. A form it cannot read counts as a push to `main`, so a
+/// workflow it misreads is checked rather than skipped.
+pub fn runs_on_push_to_main(text: &str) -> bool {
+    let mut in_on = false;
+    let mut trigger_indent = None;
+    let mut in_push = false;
+    let mut push: Option<Vec<String>> = None;
+    for raw in text.lines() {
+        if raw.trim_start().starts_with('#') || raw.trim().is_empty() {
+            continue;
+        }
+        let line = raw.split(" #").next().unwrap_or(raw);
+        if indent(line) == 0 {
+            if in_on {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("on:") {
+                if rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|word| word == "push")
+                {
+                    return true;
+                }
+                in_on = true;
+            }
+            continue;
+        }
+        if !in_on {
+            continue;
+        }
+        if indent(line) == *trigger_indent.get_or_insert(indent(line)) {
+            in_push = false;
+            if let Some(rest) = line.trim().strip_prefix("push:") {
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    in_push = true;
+                    push = Some(Vec::new());
+                } else {
+                    // An inline mapping or a null: read it as one line of the
+                    // block, so only a tag-only filter is left out.
+                    return !rest.contains("tags") || rest.contains("branches");
+                }
+            }
+        } else if in_push {
+            if let Some(body) = push.as_mut() {
+                body.push(line.trim().to_owned());
+            }
+        }
+    }
+    let Some(body) = push else {
+        return false;
+    };
+    let matches_main = |item: &str| {
+        item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '*')
+            .any(|word| word == "main" || word.contains('*'))
+    };
+    let names_main = |item: &str| {
+        item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+            .any(|word| word == "main")
+    };
+    let mut filtered = false;
+    // Which branch list the `- item` lines belong to, if any.
+    let mut list: Option<bool> = None;
+    let mut ignore_names_main = false;
+    let mut has_ignore = false;
+    for line in &body {
+        if let Some(rest) = line.strip_prefix("branches-ignore:") {
+            filtered = true;
+            has_ignore = true;
+            list = Some(false);
+            ignore_names_main |= names_main(rest);
+        } else if let Some(rest) = line.strip_prefix("branches:") {
+            filtered = true;
+            list = Some(true);
+            if matches_main(rest) {
+                return true;
+            }
+        } else if let Some(item) = line.strip_prefix('-') {
+            match list {
+                Some(true) if matches_main(item) => return true,
+                Some(false) => ignore_names_main |= names_main(item),
+                _ => {}
+            }
+        } else {
+            list = None;
+            filtered |= line.starts_with("tags");
+        }
+    }
+    if has_ignore {
+        return !ignore_names_main;
+    }
+    !filtered
+}
+
 /// A call in `line` to a gate script or to cargo other than `cargo xtask`.
 pub fn direct_gate_call(line: &str) -> Option<String> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
@@ -220,7 +319,9 @@ pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
         let outside = WORKFLOWS_OUTSIDE_THE_COMMAND
             .iter()
             .any(|(name, _)| *name == file);
-        let checked = runs_on_pull_request(&workflow.text) && !outside;
+        let checked = (runs_on_pull_request(&workflow.text)
+            || runs_on_push_to_main(&workflow.text))
+            && !outside;
         for (line_no, line) in run_lines(&workflow.text) {
             for name in invoked_steps(&line) {
                 if !steps.contains(&name.as_str()) {
@@ -240,7 +341,7 @@ pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
                     .any(|(name, needle, _)| *name == file && call.contains(needle));
                 if !allowed {
                     problems.push(format!(
-                        "{}:{line_no} runs `{call}` directly in a workflow a pull request triggers; call the command's step instead (`cargo xtask ci --step <name>`), so the check runs what a local run runs",
+                        "{}:{line_no} runs `{call}` directly in a workflow a pull request or a push to `main` triggers; call the command's step instead (`cargo xtask ci --step <name>`), so the check runs what a local run runs",
                         workflow.path
                     ));
                 }
@@ -305,6 +406,62 @@ mod tests {
         assert!(!runs_on_pull_request(
             "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    if: github.event_name == 'pull_request'\n"
         ));
+    }
+
+    #[test]
+    fn the_trigger_reader_sees_a_push_to_main_and_not_a_tag_or_another_branch() {
+        assert!(runs_on_push_to_main(PR));
+        assert!(runs_on_push_to_main("on: [push, pull_request]\njobs:\n"));
+        assert!(runs_on_push_to_main(
+            "on:\n  workflow_dispatch:\n  push:\n  schedule:\n    - cron: '17 3 * * *'\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches:\n      - main\n  workflow_dispatch:\njobs:\n"
+        ));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    steps:\n      - run: git push main\n"
+        ));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push:\n    branches: [release]\njobs:\n"
+        ));
+        assert!(!runs_on_push_to_main(
+            "on:\n  schedule:\n    - cron: '37 6 * * *'\n  workflow_dispatch:\njobs:\n"
+        ));
+        assert!(!runs_on_push_to_main("on:\n  pull_request:\njobs:\n"));
+    }
+
+    #[test]
+    fn the_push_reader_counts_a_form_it_cannot_rule_out_as_main() {
+        assert!(runs_on_push_to_main(
+            "on:\n  push:  # every branch\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push: {branches: [main]}\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main("on:\n  push: ~\njobs:\n"));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push: {tags: ['v*']}\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches: ['**']\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches:\n      - 'release/*'\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches-ignore: [release]\njobs:\n"
+        ));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push:\n    branches-ignore:\n      - main\njobs:\n"
+        ));
+    }
+
+    #[test]
+    fn a_direct_gate_call_in_a_workflow_only_main_triggers_is_reported() {
+        let main_only = "on:\n  push:\n    branches: [main]\n  schedule:\n    - cron: '17 3 * * *'\n  workflow_dispatch:\n\njobs:\n  a:\n    steps:\n      - run: cargo xtask ci --step one\n      - run: cargo test --workspace\n";
+        let problems = coverage(&["one"], &[workflow("test.yml", main_only)]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("cargo test --workspace"));
     }
 
     #[test]
@@ -387,6 +544,36 @@ mod tests {
             &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"),
         );
         assert_eq!(coverage(&["one"], &[elsewhere]).len(), 1);
+    }
+
+    /// The backstop leaves each workflow's aggregate job out of its reading,
+    /// by name; the job must still be there, under that name, and run
+    /// whatever its needs did.
+    #[test]
+    fn the_aggregate_jobs_the_backstop_leaves_out_are_still_in_their_workflows() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for (file, job) in crate::gate::AGGREGATE_JOBS {
+            let text = fs::read_to_string(root.join(".github/workflows").join(file))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines
+                .iter()
+                .position(|line| *line == format!("  {job}:"))
+                .unwrap_or_else(|| panic!("{file} has no job keyed `{job}`"));
+            let body: Vec<&str> = lines[start + 1..]
+                .iter()
+                .take_while(|line| line.is_empty() || line.starts_with("   "))
+                .copied()
+                .collect();
+            assert!(
+                body.contains(&format!("    name: {job}").as_str()),
+                "{file}'s `{job}` job is not named `{job}`"
+            );
+            assert!(
+                body.contains(&"    if: ${{ always() }}"),
+                "{file}'s `{job}` job does not run with `if: ${{{{ always() }}}}`"
+            );
+        }
     }
 
     /// The repository's own workflow files against the command's own steps.

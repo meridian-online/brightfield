@@ -21,6 +21,9 @@
 //! If a GPU-less runner is ever added, mark these `#[ignore]` and opt in
 //! explicitly on the runners that can render, so a skip reads as a skip.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_shell::design::{self, Mode};
 use egui_kittest::{Harness, SnapshotOptions};
 
@@ -74,10 +77,19 @@ fn chrome_sheet(ui: &mut egui::Ui, mode: Mode, demo: &mut f32, checked: &mut boo
 /// with zero differing pixels on the reference machine, so the slack bought
 /// nothing here and is gone.
 ///
-/// If a future machine genuinely jitters, override per test and say in the
-/// comment which jitter, and where you saw it.
+/// If the hosted runner jitters here, pass its measured count through
+/// `gpu_jitter::options`, which allows it on that runner's adapter alone, and
+/// say in the comment which jitter, and which run measured it.
 fn options() -> SnapshotOptions {
     SnapshotOptions::default()
+}
+
+/// Names the GPU this run renders on, so a run's log says which machine's
+/// pixel budget in `support/gpu_jitter.rs` applied: asking for the adapter's
+/// name writes it to stderr, past the test harness's capture.
+#[test]
+fn the_adapter_is_named_in_the_log() {
+    gpu_jitter::adapter_name();
 }
 
 #[test]
@@ -90,7 +102,7 @@ fn chrome_light_snapshot() {
         .wgpu()
         .build_ui(move |ui| chrome_sheet(ui, Mode::Light, &mut demo, &mut checked));
     harness.run();
-    harness.snapshot_options("chrome_light", &options());
+    harness.snapshot_options("chrome_light", &gpu_jitter::options(options(), 0));
 }
 
 #[test]
@@ -103,5 +115,5 @@ fn chrome_dark_snapshot() {
         .wgpu()
         .build_ui(move |ui| chrome_sheet(ui, Mode::Dark, &mut demo, &mut checked));
     harness.run();
-    harness.snapshot_options("chrome_dark", &options());
+    harness.snapshot_options("chrome_dark", &gpu_jitter::options(options(), 0));
 }

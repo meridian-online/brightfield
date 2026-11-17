@@ -22,6 +22,9 @@ use brightfield_shell::protocol::SpineMarker;
 use brightfield_shell::starts;
 use brightfield_shell::window::{Boot, MeridianApp};
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 /// The window's size: the accepted frame's.
 const WINDOW: (f32, f32) = (1440.0, 900.0);
 
@@ -150,8 +153,10 @@ fn capture(mode: Mode, name: &str, keep: bool) -> (image::RgbaImage, Seen) {
 
 /// The statement form, guarded before its snapshot: under
 /// `UPDATE_SNAPSHOTS=1` a snapshot writes whatever it is handed, so a guard
-/// behind it would author a golden of the wrong window.
-fn palette_surface(mode: Mode, name: &str) {
+/// behind it would author a golden of the wrong window. `hosted_pixels` is
+/// the failed-pixel count a hosted run measured for this surface, allowed on
+/// the hosted runner alone (see `support/gpu_jitter.rs`).
+fn palette_surface(mode: Mode, name: &str, hosted_pixels: usize) {
     let (image, seen) = capture(mode, name, false);
     assert_eq!(
         seen.statement.as_deref(),
@@ -164,7 +169,8 @@ fn palette_surface(mode: Mode, name: &str) {
         !card.intersects(grid),
         "{name}: the card {card:?} stands over the grid {grid:?}"
     );
-    egui_kittest::image_snapshot(&image, name);
+    let options = gpu_jitter::options(egui_kittest::SnapshotOptions::default(), hosted_pixels);
+    egui_kittest::image_snapshot_options(&image, name, &options);
 }
 
 /// The kept statement, guarded before its snapshot as [`palette_surface`] is.
@@ -180,12 +186,14 @@ fn spine_surface(mode: Mode, name: &str) {
 
 #[test]
 fn typed_sql_palette_light_surface() {
-    palette_surface(Mode::Light, "typed_sql_palette_light");
+    palette_surface(Mode::Light, "typed_sql_palette_light", 0);
 }
 
 #[test]
 fn typed_sql_palette_dark_surface() {
-    palette_surface(Mode::Dark, "typed_sql_palette_dark");
+    // The hosted macOS runner's paravirtual GPU rounds 2 pixels of this
+    // surface differently from the reference Mac (hosted run 43995385670).
+    palette_surface(Mode::Dark, "typed_sql_palette_dark", 2);
 }
 
 #[test]

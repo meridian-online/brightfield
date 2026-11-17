@@ -13,6 +13,9 @@
 //! `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
 //! editor_snapshot`.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::editor::{code_surface, Access};
 use egui_kittest::{Harness, SnapshotOptions};
@@ -61,26 +64,26 @@ fn options() -> SnapshotOptions {
 fn editor_light_snapshot() {
     let mut harness = harness(Access::Editable, Mode::Light);
     harness.run();
-    harness.snapshot_options("editor_light", &options());
+    harness.snapshot_options("editor_light", &gpu_jitter::options(options(), 0));
 }
 
 #[test]
 fn editor_dark_snapshot() {
     let mut harness = harness(Access::Editable, Mode::Dark);
     harness.run();
-    harness.snapshot_options("editor_dark", &options());
+    harness.snapshot_options("editor_dark", &gpu_jitter::options(options(), 0));
 }
 
 #[test]
 fn editor_readonly_light_snapshot() {
     let mut harness = harness(Access::ReadOnly, Mode::Light);
     harness.run();
-    harness.snapshot_options("editor_readonly_light", &options());
+    harness.snapshot_options("editor_readonly_light", &gpu_jitter::options(options(), 0));
 }
 
 #[test]
 fn editor_readonly_dark_snapshot() {
     let mut harness = harness(Access::ReadOnly, Mode::Dark);
     harness.run();
-    harness.snapshot_options("editor_readonly_dark", &options());
+    harness.snapshot_options("editor_readonly_dark", &gpu_jitter::options(options(), 0));
 }

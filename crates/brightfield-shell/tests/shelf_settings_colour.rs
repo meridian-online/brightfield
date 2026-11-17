@@ -20,6 +20,9 @@
 //!   `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
 //!   shelf_settings_colour`, and read what moved before committing it.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_engine::{ColumnMoments, Distribution};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet, SequentialScheme};
@@ -1175,7 +1178,7 @@ fn baseline_of(mut list: ColumnList, name: &str, mode: Mode) {
             );
         });
     harness.run();
-    harness.snapshot_options(name, &options());
+    harness.snapshot_options(name, &gpu_jitter::options(options(), 0));
 }
 
 /// The scheme row with the cursor on it: the ramp of blues before the name, and

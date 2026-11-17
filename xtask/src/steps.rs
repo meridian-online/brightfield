@@ -20,13 +20,16 @@ use crate::{shard, workflows};
 pub struct Ctx {
     pub root: PathBuf,
     pub cargo: OsString,
+    /// When set, the test runs of the step this context is handed to write
+    /// their output to this file instead of the terminal.
+    pub log: Option<PathBuf>,
 }
 
 impl Ctx {
     /// A command run from the repository root. The variables cargo sets for
     /// the package it runs (this one) are removed, so a script or a nested
     /// cargo sees the environment CI's step would have given it.
-    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+    pub(crate) fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
         command.current_dir(&self.root);
         for (key, _) in std::env::vars_os() {
@@ -87,7 +90,7 @@ impl Ctx {
     }
 
     /// A scratch directory under `target/`, for files a step writes.
-    fn scratch(&self) -> Result<PathBuf, String> {
+    pub fn scratch(&self) -> Result<PathBuf, String> {
         let dir = std::env::var_os("RUNNER_TEMP")
             .map(PathBuf::from)
             .unwrap_or_else(|| self.root.join("target/xtask"));
@@ -308,7 +311,7 @@ pub static STEPS: &[Step] = &[
     Step {
         name: "warm-cache",
         runs: "cargo test --locked --workspace --no-run; the sibling-manifest and conformance builds",
-        only_in_ci: Some("a local run's test steps build what they run"),
+        only_in_ci: None,
         run: warm_cache,
     },
     Step {
@@ -354,9 +357,11 @@ pub static STEPS: &[Step] = &[
 /// Three builds, because the two steps after the suite each resolve their
 /// own feature set: `-p brightfield-protocol --test sibling_manifests` and
 /// `--bin conformance` both select a narrower graph than `--workspace`, and
-/// cargo builds `libduckdb-sys` again for each graph that differs.
+/// cargo builds `libduckdb-sys` again for each graph that differs. A full
+/// local run uses it too, as the row that builds every test binary before the
+/// two test steps start together.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
-    ctx.run_cargo(&["test", "--locked", "--workspace", "--no-run"])?;
+    build_tests(ctx)?;
     ctx.run_cargo(&[
         "test",
         "--locked",
@@ -367,6 +372,12 @@ fn warm_cache(ctx: &Ctx) -> Result<(), String> {
         "--no-run",
     ])?;
     ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])
+}
+
+/// Compile every test target in the workspace without running any, so the
+/// test steps that follow find their binaries built.
+pub fn build_tests(ctx: &Ctx) -> Result<(), String> {
+    ctx.run_cargo(&["test", "--locked", "--workspace", "--no-run"])
 }
 
 fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
@@ -453,15 +464,22 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
     shard::select(&serial, &seconds, &targets, shard.as_ref())
 }
 
+/// Where the DuckDB CLI is: `set`, ARC_DUCKDB_BIN's value, read against
+/// `root` when relative, or `target/duckdb-cli/duckdb` under `root` when it is
+/// unset or empty. Always absolute when `root` is.
+pub(crate) fn engine_path(root: &Path, set: Option<OsString>) -> PathBuf {
+    match set {
+        Some(path) if !path.is_empty() => root.join(path),
+        _ => root.join("target/duckdb-cli/duckdb"),
+    }
+}
+
 /// The pinned DuckDB CLI the run tests hand to arc: ARC_DUCKDB_BIN when it is
 /// set, `target/duckdb-cli/duckdb` when it is not, and either way accepted by
 /// `scripts/fetch-duckdb-cli.sh --check` before a test runs.
-fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
+pub(crate) fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
     let host = host_triple()?;
-    let engine = match std::env::var_os("ARC_DUCKDB_BIN") {
-        Some(path) if !path.is_empty() => PathBuf::from(path),
-        _ => ctx.root.join("target/duckdb-cli/duckdb"),
-    };
+    let engine = engine_path(&ctx.root, std::env::var_os("ARC_DUCKDB_BIN"));
     let dir = engine.parent().unwrap_or(Path::new("."));
     let accepted = engine.file_name().is_some_and(|name| name == "duckdb")
         && ctx
@@ -483,7 +501,7 @@ fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
     }
 }
 
-fn host_triple() -> Result<String, String> {
+pub(crate) fn host_triple() -> Result<String, String> {
     let output = Command::new("rustc")
         .arg("-vV")
         .output()
@@ -503,7 +521,41 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     }
     let mut command = ctx.cargo(&all);
     command.env("ARC_DUCKDB_BIN", engine);
-    run(command, &format!("cargo {}", all.join(" ")))
+    let shown = format!("cargo {}", all.join(" "));
+    if let Some(path) = &ctx.log {
+        let open = || {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| format!("cannot open {}: {e}", path.display()))
+        };
+        command.stdout(open()?).stderr(open()?);
+    }
+    run(command, &shown)
+}
+
+/// What to show of a test log after a failure: from the last detailed
+/// `failures:` block onward, or the last 60 lines when the log has none.
+/// libtest prints that block, with a `---- <test> stdout ----` section per
+/// failed test, and then a second `failures:` block that lists only names; the
+/// detailed one is the block whose first non-blank line is such a header.
+pub fn failure_excerpt(log: &str) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let blocks: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].trim() == "failures:")
+        .collect();
+    let detailed = blocks.iter().rev().copied().find(|&at| {
+        lines[at + 1..]
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .is_some_and(|line| line.starts_with("----") && line.ends_with("stdout ----"))
+    });
+    let from = detailed
+        .or(blocks.last().copied())
+        .unwrap_or_else(|| lines.len().saturating_sub(60));
+    lines[from..].join("\n")
 }
 
 fn test_one_thread(ctx: &Ctx) -> Result<(), String> {
@@ -526,6 +578,10 @@ fn test_one_thread(ctx: &Ctx) -> Result<(), String> {
 }
 
 fn test_default(ctx: &Ctx) -> Result<(), String> {
+    if let Some(path) = &ctx.log {
+        // Start the log afresh; each cargo run below appends to it.
+        File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    }
     let Some(part) = selection(ctx)?.default else {
         println!("this shard runs the one-thread group; test-default has nothing to run on it");
         return Ok(());
@@ -553,7 +609,7 @@ fn test_default(ctx: &Ctx) -> Result<(), String> {
 /// The sibling open-analytics checkout: OPEN_ANALYTICS_DIR when set, else the
 /// checkout beside this one, or beside the main checkout when this is a
 /// worktree.
-fn open_analytics(ctx: &Ctx) -> Result<PathBuf, String> {
+pub(crate) fn open_analytics(ctx: &Ctx) -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPEN_ANALYTICS_DIR").filter(|d| !d.is_empty()) {
         let dir = PathBuf::from(dir);
         return if dir.is_dir() {
@@ -694,10 +750,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warm_cache_is_ci_only_and_runs_before_the_suite() {
+    fn a_relative_duckdb_path_is_read_from_the_checkout_root() {
+        let root = Path::new("/checkout");
+        assert_eq!(
+            engine_path(root, Some("target/duckdb-cli/duckdb".into())),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, Some("/opt/duckdb/duckdb".into())),
+            PathBuf::from("/opt/duckdb/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, Some("".into())),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, None),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+    }
+
+    #[test]
+    fn warm_cache_runs_locally_before_the_suite() {
         let at = |name: &str| STEPS.iter().position(|s| s.name == name).expect(name);
-        assert!(STEPS[at("warm-cache")].only_in_ci.is_some());
+        assert!(STEPS[at("warm-cache")].only_in_ci.is_none());
         assert!(at("warm-cache") < at("test-one-thread"));
+    }
+
+    #[test]
+    fn the_failures_section_is_taken_from_the_log() {
+        let with = "running 2 tests\ntest a ... ok\ntest b ... FAILED\n\nfailures:\n\n---- b stdout ----\nthread 'b' panicked at src/lib.rs:3:5:\nassertion failed: the panic message\n\n\nfailures:\n    b\n\ntest result: FAILED. 1 passed; 1 failed\n";
+        let excerpt = failure_excerpt(with);
+        assert!(excerpt.starts_with("failures:\n\n---- b stdout ----"));
+        assert!(excerpt.contains("assertion failed: the panic message"));
+        assert!(excerpt.ends_with("test result: FAILED. 1 passed; 1 failed"));
+        let without: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+        let tail = failure_excerpt(&without);
+        assert_eq!(tail.lines().count(), 60);
+        assert!(tail.starts_with("line 41\n") && tail.ends_with("line 100"));
     }
 
     #[test]

@@ -1,27 +1,31 @@
 name: test
 
+# Each merge to `main`, nightly, and on demand: not on pull requests. A pull
+# request's gate is `cargo xtask gate <pr>` on the reference Mac, which runs the
+# same steps and posts the `local-gate` status a merge waits on. This run is
+# the backstop for what only GitHub's runner sees, and the gate reads its
+# latest result on `main` before each pull request it checks.
 on:
   push:
     branches: [main]
-  pull_request:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
-# A push to a PR branch supersedes the run already in flight for that ref.
-# Worth having here specifically: every run is a cold-ish `macos-15` build of a
-# large graph (wgpu/vello/egui/duckdb) behind a long `timeout-minutes` ceiling,
-# so stacked pushes otherwise burn expensive minutes on results nobody will read.
-#
-# A push to `main` supersedes nothing. A merge used to cancel the `main` run
-# still in flight for the merge before it, which ended that run with no verdict
-# on a commit that had already landed. The group is per commit on `main` for
-# the same reason: one group shared by every `main` run lets a third merge
-# replace a second run still queued behind the first, which is also a run with
-# no verdict.
+# No run cancels another. A merge used to cancel the `main` run still in
+# flight for the merge before it, which ended that run with no verdict on a
+# commit that had already landed. The group is per commit for the same reason:
+# one group shared by every `main` run lets a third merge replace a second run
+# still queued behind the first, which is also a run with no verdict. The
+# event is in the group too, so a nightly or dispatched run of a commit never
+# shares a queue with its push run: GitHub cancels a pending run when a third
+# arrives in its group, whatever `cancel-in-progress` says.
 concurrency:
-  group: test-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: test-${{ github.sha }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 jobs:
   # THE CACHE, WARMED ONCE PER LOCKFILE, AHEAD OF THE SHARDS. rust-cache keys
@@ -155,10 +159,13 @@ jobs:
     # module comment in crates/brightfield-shell/tests/snapshot.rs for why, and
     # for the `#[ignore]` + explicit-opt-in shape if a GPU-less runner is added.
     #
-    # If the pixel tier reddens on the hosted runner's paravirtualised GPU,
-    # read the uploaded diff artifact and fix the baseline (regenerate from the
-    # failing run's .new.png artifact) or add a documented per-OS threshold in
-    # kittest.toml — do NOT blanket-loosen the floor to make it green.
+    # Baselines are drawn on the reference Mac, never from this runner's
+    # output. Its paravirtualised GPU rounds a few pixels of some baselines
+    # differently, and each test carries the count a hosted run measured for
+    # it (crates/brightfield-shell/tests/support/gpu_jitter.rs), applied on
+    # this runner's adapter alone. A failure here is either a real change or
+    # jitter grown past what was measured: read the uploaded diff artifact to
+    # tell which. Do NOT blanket-loosen kittest.toml's floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
     # The shards start once `warm-cache` has saved this lockfile's cache, so
@@ -263,9 +270,9 @@ jobs:
       # repo needs no extra credential), and `persist-credentials: false`
       # because nothing here pushes.
       #
-      # A red step below means either this PR moved the pin backwards or the
-      # sibling repo moved ahead of it. Both are worth a person's attention and
-      # both are fixed the same way — README §"The arcform dependency".
+      # A red step below means either a merged change moved the pin backwards
+      # or the sibling repo moved ahead of it. Both are worth a person's
+      # attention and both are fixed the same way — README §"The arcform dependency".
       - name: check out the sibling data repo's Protocols
         uses: actions/checkout@v4
         with:
@@ -444,8 +451,9 @@ jobs:
       # Second group, the targets that open none and need one thread anyway:
       # serial-targets: region_gate
       # `region_gate` came here because of the shard split: two of its tests
-      # write the California Housing start's data file into one shared
-      # `target/tmp/config/datasets`, and the staging file that write renames
+      # write the California Housing start's data file into one folder (then
+      # `target/tmp/config/datasets`, now `target/tmp/region_gate/config`, a
+      # folder no other target uses), and the staging file that write renames
       # from was named by process id alone, so two at once shared it and the
       # second rename found no file (run 37898248271, shard default-1).
       # `starts::write_fetched` (crates/brightfield-shell/src/starts.rs) now
@@ -733,9 +741,10 @@ jobs:
 
   # The read jail scripts/verify-airgapped.sh runs the type-source leg under,
   # proved to refuse a read outside its grant. The release runs that leg; this
-  # runs the jail's own cases on every pull request, with no artefact, so a
+  # runs the jail's own cases on every merge to `main`, with no artefact, so a
   # profile that stopped refusing reads would be caught here rather than read
-  # as a clean release. macOS because the jail is sandbox-exec.
+  # as a clean release. The local gate runs the same step on each pull
+  # request. macOS because the jail is sandbox-exec.
   airgap-jail:
     name: The air-gap read jail refuses reads outside its grant
     runs-on: macos-15

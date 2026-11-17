@@ -524,7 +524,7 @@ fn methodology() -> Vec<String> {
              Frame suites are measured against DRAWN row-level primitives, not against table rows: a \
              scenario's row-per-mark marks each contribute one primitive per materialised row, an \
              aggregating mark contributes none. \
-             THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine \
+             THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on an Apple M1 Pro (Metal) \
              through the production render path, {MEASURED_INKED_MAX} dots is the largest count that \
              inked a frame and {MEASURED_BLANK_MIN} the smallest that came back with every pixel \
              rgba(0,0,0,0). It is vello's FIXED 2^21-element seg_counts buffer and NOT a device limit \

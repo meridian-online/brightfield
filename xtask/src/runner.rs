@@ -72,6 +72,83 @@ where
     rows
 }
 
+/// Run one step through `run` and time it. A panic in the step is a failure
+/// of that step, whichever thread it ran on.
+fn timed<F>(step: &Step, run: &F) -> Outcome
+where
+    F: Fn(&Step) -> Result<(), String>,
+{
+    let started = Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(step)))
+        .unwrap_or_else(|_| Err("the step panicked".to_owned()));
+    match result {
+        Ok(()) => Outcome::Passed(started.elapsed()),
+        Err(reason) => Outcome::Failed(started.elapsed(), reason),
+    }
+}
+
+/// Run `steps` as `run_in_order` does, except that the two steps named in
+/// `pair` start together when the run reaches the first of them and both run
+/// to completion. If either fails, the run stops after the pair: every step
+/// after it is skipped, and the other of the pair is not cut short. Rows stay
+/// in table order. When either name is absent from `steps`, or either step
+/// is CI-only, there is no pair and the rows are `run_in_order`'s, as
+/// `without_the_pair_named_the_run_is_run_in_order` checks.
+pub fn run_with_pair<F>(steps: &[Step], pair: (&str, &str), run: F) -> Vec<Row>
+where
+    F: Fn(&Step) -> Result<(), String> + Sync,
+{
+    let at = |name: &str| steps.iter().position(|step| step.name == name);
+    let paired = match (at(pair.0), at(pair.1)) {
+        (Some(a), Some(b))
+            if a != b && steps[a].only_in_ci.is_none() && steps[b].only_in_ci.is_none() =>
+        {
+            Some((a.min(b), a.max(b)))
+        }
+        _ => None,
+    };
+    let Some((first, second)) = paired else {
+        return run_in_order(steps, |step| run(step));
+    };
+
+    let mut rows = Vec::with_capacity(steps.len());
+    let mut failed = false;
+    // The later step's outcome, held until the table reaches its row.
+    let mut held: Option<Outcome> = None;
+    for (index, step) in steps.iter().enumerate() {
+        let outcome = if let Some(outcome) = held.take_if(|_| index == second) {
+            outcome
+        } else if failed {
+            Outcome::Skipped
+        } else if let Some(why) = step.only_in_ci {
+            Outcome::OnlyInCi(why)
+        } else if index == first {
+            let (now, later) = std::thread::scope(|scope| {
+                let other = scope.spawn(|| timed(&steps[second], &run));
+                let now = timed(step, &run);
+                let later = other.join().unwrap_or_else(|_| {
+                    Outcome::Failed(Duration::ZERO, "the step panicked".to_owned())
+                });
+                (now, later)
+            });
+            failed = [&now, &later]
+                .iter()
+                .any(|outcome| matches!(outcome, Outcome::Failed(..)));
+            held = Some(later);
+            now
+        } else {
+            let outcome = timed(step, &run);
+            failed = matches!(outcome, Outcome::Failed(..));
+            outcome
+        };
+        rows.push(Row {
+            name: step.name,
+            outcome,
+        });
+    }
+    rows
+}
+
 /// Run one step, as `--step <name>` does. Unlike a full run, a step that runs
 /// only in CI runs here too, since a workflow is what names a step.
 pub fn run_named<F>(step: &Step, run: F) -> Row
@@ -156,6 +233,38 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
         }
     }
     out
+}
+
+/// The summary as JSON, for `ci --summary-json`: each row in order with its
+/// outcome (`passed`, `failed`, `skipped` or `ci-only`), what the step runs,
+/// its seconds when it ran, and the reason when it failed or is CI's alone,
+/// as `the_summary_json_names_every_step_and_its_outcome` checks.
+pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
+    let listed: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".into(), row.name.into());
+            let (outcome, took, reason) = match &row.outcome {
+                Outcome::Passed(took) => ("passed", Some(*took), None),
+                Outcome::Failed(took, reason) => ("failed", Some(*took), Some(reason.as_str())),
+                Outcome::Skipped => ("skipped", None, None),
+                Outcome::OnlyInCi(why) => ("ci-only", None, Some(*why)),
+            };
+            entry.insert("outcome".into(), outcome.into());
+            if let Some(step) = steps.iter().find(|step| step.name == row.name) {
+                entry.insert("runs".into(), step.runs.into());
+            }
+            if let Some(took) = took {
+                entry.insert("seconds".into(), took.as_secs_f64().into());
+            }
+            if let Some(reason) = reason {
+                entry.insert("reason".into(), reason.into());
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    serde_json::json!({ "steps": listed }).to_string()
 }
 
 /// A wall time as a person reads it: `0.4s`, `12.3s`, `4m 05s`, `1h 02m`.
@@ -306,9 +415,153 @@ mod tests {
     }
 
     #[test]
+    fn the_summary_json_names_every_step_and_its_outcome() {
+        let steps = [
+            Step {
+                runs: "the a check",
+                ..step("a")
+            },
+            step("b"),
+            ci_only("c"),
+            step("d"),
+        ];
+        let rows = vec![
+            Row {
+                name: "a",
+                outcome: Outcome::Passed(Duration::from_millis(1500)),
+            },
+            Row {
+                name: "b",
+                outcome: Outcome::Failed(Duration::from_secs(2), "b broke".to_owned()),
+            },
+            Row {
+                name: "c",
+                outcome: Outcome::OnlyInCi("it reads the event"),
+            },
+            Row {
+                name: "d",
+                outcome: Outcome::Skipped,
+            },
+        ];
+        let doc: serde_json::Value = serde_json::from_str(&summary_json(&rows, &steps)).unwrap();
+        let listed: Vec<(&str, &str)> = doc["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["name"].as_str().unwrap(), s["outcome"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("a", "passed"),
+                ("b", "failed"),
+                ("c", "ci-only"),
+                ("d", "skipped")
+            ]
+        );
+        assert_eq!(doc["steps"][0]["runs"], "the a check");
+        assert_eq!(doc["steps"][0]["seconds"], 1.5);
+        assert_eq!(doc["steps"][1]["reason"], "b broke");
+        assert_eq!(doc["steps"][2]["reason"], "it reads the event");
+    }
+
+    #[test]
     fn wall_times_read_in_seconds_minutes_and_hours() {
         assert_eq!(wall(Duration::from_millis(400)), "0.4s");
         assert_eq!(wall(Duration::from_secs(245)), "4m 05s");
         assert_eq!(wall(Duration::from_secs(3720)), "1h 02m");
+    }
+
+    #[test]
+    fn a_pair_starts_together_and_both_finish_when_one_fails() {
+        let steps = [step("a"), step("b"), step("c"), step("d")];
+        let started = std::sync::Mutex::new(Vec::new());
+        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+            started.lock().unwrap().push(s.name);
+            if s.name == "b" {
+                Err("b broke".to_owned())
+            } else {
+                Ok(())
+            }
+        });
+        let mut started = started.into_inner().unwrap();
+        started.sort_unstable();
+        assert_eq!(started, ["a", "b", "c"], "d must not start");
+        let names: Vec<_> = rows.iter().map(|r| r.name).collect();
+        assert_eq!(names, ["a", "b", "c", "d"]);
+        assert!(matches!(rows[0].outcome, Outcome::Passed(_)));
+        assert!(matches!(&rows[1].outcome, Outcome::Failed(_, r) if r == "b broke"));
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+        assert_eq!(rows[3].outcome, Outcome::Skipped);
+        assert!(!passed(&rows));
+    }
+
+    #[test]
+    fn a_panic_in_the_first_of_the_pair_is_a_failed_row_and_the_second_still_finishes() {
+        let steps = [step("a"), step("b"), step("c"), step("d")];
+        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+            if s.name == "b" {
+                panic!("b blew up");
+            }
+            Ok(())
+        });
+        assert!(matches!(rows[0].outcome, Outcome::Passed(_)));
+        assert!(matches!(rows[1].outcome, Outcome::Failed(..)), "{rows:?}");
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+        assert_eq!(rows[3].outcome, Outcome::Skipped);
+    }
+
+    #[test]
+    fn a_pair_runs_concurrently() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let steps = [step("a"), step("b"), step("c")];
+        let arrived = AtomicUsize::new(0);
+        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+            if s.name == "a" {
+                return Ok(());
+            }
+            // Each step waits for the other to arrive; run one after the
+            // other, the first would wait out the deadline and fail.
+            arrived.fetch_add(1, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while arrived.load(Ordering::SeqCst) < 2 {
+                if Instant::now() > deadline {
+                    return Err(format!("{} ran alone", s.name));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(())
+        });
+        assert!(passed(&rows), "{rows:?}");
+        assert!(matches!(rows[1].outcome, Outcome::Passed(_)));
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn without_the_pair_named_the_run_is_run_in_order() {
+        let steps = [step("a"), ci_only("b"), step("c"), step("d")];
+        let behave = |s: &Step| {
+            if s.name == "c" {
+                Err("c broke".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        let ordered = run_in_order(&steps, behave);
+        let paired = run_with_pair(&steps, ("x", "y"), behave);
+        let shape = |rows: &[Row]| -> Vec<String> {
+            rows.iter()
+                .map(|r| match &r.outcome {
+                    Outcome::Passed(_) => format!("{} ok", r.name),
+                    Outcome::Failed(_, why) => format!("{} failed {why}", r.name),
+                    Outcome::Skipped => format!("{} skipped", r.name),
+                    Outcome::OnlyInCi(why) => format!("{} ci only {why}", r.name),
+                })
+                .collect()
+        };
+        assert_eq!(shape(&paired), shape(&ordered));
+        // A CI-only member of the pair leaves no pair either.
+        let ci_member = run_with_pair(&steps, ("b", "c"), behave);
+        assert_eq!(shape(&ci_member), shape(&ordered));
     }
 }

@@ -20,6 +20,9 @@
 //!   `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
 //!   shelf_settings_typed`, and read what moved before committing it.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_render::axis::compute_ticks;
 use brightfield_render::channel::Channel;
 use brightfield_render::text::LABEL_SIZE;
@@ -916,7 +919,7 @@ fn baseline_of(name: &str, mode: Mode, mut list: ColumnList) {
             );
         });
     harness.run();
-    harness.snapshot_options(name, &SnapshotOptions::default());
+    harness.snapshot_options(name, &gpu_jitter::options(SnapshotOptions::default(), 0));
 }
 
 /// The title row with its field open on the derived title, selected: the sunken
