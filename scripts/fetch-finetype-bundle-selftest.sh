@@ -79,6 +79,7 @@ out="$TMP/out"
 EXT_ASSET="finetype-${TAG}-${TARGET}.duckdb_extension"
 CATALOGUE_ASSET="taxonomy-schemas.json"
 METADATA_ASSET="finetype-model.json"
+CLI_ASSET="finetype-${TAG}-${TARGET}.tar.gz"
 
 digest_of() {
 	if command -v shasum >/dev/null 2>&1; then
@@ -86,6 +87,19 @@ digest_of() {
 	else
 		sha256sum "$1" | awk '{print $1}'
 	fi
+}
+
+# The command-line archive, holding one `finetype` that answers --version with
+# VERSION_LINE, and its sidecar. Extra entries are named after the line.
+cli_archive() { # cli_archive VERSION_LINE [EXTRA_ENTRY...]
+	local stage="$TMP/cli-stage"
+	rm -rf "$stage" && mkdir -p "$stage"
+	printf '#!/bin/sh\necho "%s"\n' "$1" >"$stage/finetype"
+	chmod 755 "$stage/finetype"
+	shift
+	for extra in "$@"; do printf 'extra\n' >"$stage/$extra"; done
+	(cd "$stage" && COPYFILE_DISABLE=1 tar -czf "$RELEASE_DIR/$CLI_ASSET" finetype "$@")
+	sidecar "$CLI_ASSET"
 }
 
 sidecar() { printf '%s  %s\n' "$(digest_of "$RELEASE_DIR/$1")" "$1" >"$RELEASE_DIR/$1.sha256"; }
@@ -146,6 +160,7 @@ make_fixture() {
 	sidecar "$EXT_ASSET"
 	sidecar "$CATALOGUE_ASSET"
 	sidecar "$METADATA_ASSET"
+	cli_archive "finetype ${TAG#v}"
 
 	printf '{"value_embed_model": "%s", "n_classes": 1}\n' "$EMBED" >"$FILES_DIR/config.json"
 	printf '["identity.person.email"]\n' >"$FILES_DIR/label_map.json"
@@ -218,9 +233,13 @@ for probe in "$BRIGHTFIELD_FINETYPE_ASSET_BASE/$EXT_ASSET" \
 	}
 done
 
+# The bundle by default; the command-line cases set FETCH_MODE=(--cli) and a
+# file DEST. The guarded expansion is for bash 3.2, which calls an empty array
+# unbound under `set -u`.
+FETCH_MODE=()
 run_fetch() {
 	rm -rf "$DEST"
-	"$FETCH" "$TARGET" "$DEST" >"$out" 2>&1
+	"$FETCH" ${FETCH_MODE[@]+"${FETCH_MODE[@]}"} "$TARGET" "$DEST" >"$out" 2>&1
 }
 
 expect_pass() {
@@ -458,6 +477,56 @@ elif [[ -e "$DEST" ]]; then
 else
 	echo "  ok   a failed fetch clears a stale bundle rather than leaving it to be staged"
 fi
+
+echo "== the command line, for the Store build's helper"
+FETCH_MODE=(--cli)
+BUNDLE_DEST="$DEST"
+DEST="$TMP/Helpers/finetype"
+
+make_fixture
+expect_pass "the release's archive gives one runnable finetype"
+if [[ -x "$DEST" ]] && [[ "$("$DEST" --version)" = "finetype ${TAG#v}" ]]; then
+	echo "  ok   the staged helper is executable and answers with the pinned version"
+else
+	echo "  FAIL the staged helper at ${DEST} is not the fixture binary"
+	failures=$((failures + 1))
+fi
+
+make_fixture
+corrupt "$RELEASE_DIR/$CLI_ASSET"
+expect_fail "a substituted command-line archive" "does not match its published checksum"
+
+make_fixture
+rm "$RELEASE_DIR/$CLI_ASSET.sha256"
+expect_fail "no checksum beside the archive" "published no checksum beside it"
+
+make_fixture
+rm "$RELEASE_DIR/$CLI_ASSET" "$RELEASE_DIR/$CLI_ASSET.sha256"
+expect_fail "no command line for this target" "could not fetch"
+
+make_fixture
+cli_archive "finetype ${TAG#v}" README.md
+expect_fail "an archive holding more than the binary" "holds more than the finetype binary"
+
+# Signed with a correct sidecar, so only the version read can see it.
+make_fixture
+cli_archive "finetype 9.9.9"
+expect_fail "a binary from another release" "reports '9.9.9'"
+
+make_fixture
+mkdir -p "$(dirname "$DEST")" && printf 'stale\n' >"$DEST"
+rm "$RELEASE_DIR/$CLI_ASSET"
+if "$FETCH" --cli "$TARGET" "$DEST" >"$out" 2>&1; then
+	echo "  FAIL a failed fetch over a stale helper reported success"
+	failures=$((failures + 1))
+elif [[ -e "$DEST" ]]; then
+	echo "  FAIL a failed fetch left the stale helper where packaging would stage it"
+	failures=$((failures + 1))
+else
+	echo "  ok   a failed fetch clears a stale helper rather than leaving it to be staged"
+fi
+DEST="$BUNDLE_DEST"
+FETCH_MODE=()
 
 echo
 if [[ "$failures" -ne 0 ]]; then
