@@ -4718,6 +4718,9 @@ impl MeridianApp {
             .iter()
             .map(crate::refusal::Refusal::folder)
             .filter(|f| !self.refusal_asked.contains(f))
+            // A folder a grant already covers was refused for another reason (its permissions),
+            // which granting it again cannot lift.
+            .filter(|f| !crate::grants::store().needs(std::slice::from_ref(f)).is_empty())
             .fold(Vec::new(), |mut all, f| {
                 if !all.contains(&f) {
                     all.push(f);
