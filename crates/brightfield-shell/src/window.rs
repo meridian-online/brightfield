@@ -4687,9 +4687,9 @@ impl MeridianApp {
 
     /// **Raise the refused-access banner over the open Protocol's refused model reads**, or take
     /// it down when there are none. Called beside [`Self::say_folder_refused`], so it follows the
-    /// document swaps that one does. In the managed edition each refused folder is also asked for once,
-    /// after the frame, and the Protocol opened again when it is granted; a launch's restore only
-    /// reports. In the full edition the banner names System Settings, since a grant there is not
+    /// document swaps that one does. In the managed edition each refused folder is also asked for
+    /// once, after the frame, and the Protocol opened again when it is granted; a launch's restore,
+    /// and a window holding unsaved work, report it in the banner instead. In the full edition the banner names System Settings, since a grant there is not
     /// Brightfield's to make.
     fn say_refused(&mut self) {
         let was = std::mem::replace(&mut self.refused, self.protocol.doc.model.refusals());
@@ -4698,8 +4698,7 @@ impl MeridianApp {
             eprintln!("refused access: {}", refusal.path.display());
         }
         self.raise_refused();
-        let asks = !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths);
-        if !asks || self.grant_report_only || self.grant_ask.is_some() {
+        if crate::edition::current().allows(crate::edition::Capability::UngrantedPaths) {
             return;
         }
         let folders: Vec<PathBuf> = self
@@ -4724,6 +4723,13 @@ impl MeridianApp {
             return;
         }
         self.refusal_asked.extend(folders.iter().cloned());
+        // An ask is raised as the Protocol is opened or run, or not at all: granting it opens the
+        // Protocol again, so an ask held over to a later lay-out (a typed statement, a Save)
+        // would replace work the analyst has not saved. A suppressed ask is still counted as
+        // asked, and the banner goes on naming the folder.
+        if self.grant_report_only || self.grant_ask.is_some() || self.has_unsaved_work() {
+            return;
+        }
         self.grant_ask = Some(GrantAsk {
             folders,
             why: crate::refusal::why_refused,
