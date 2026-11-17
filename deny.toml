@@ -109,6 +109,25 @@ ignore = [
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
   "RUSTSEC-2026-0429",
+  # zip 6.0.0 — three more advisories, each in a part of the crate this graph
+  # does not build or call. Fixed in zip 9, which nothing here can take yet, for
+  # the reason above.
+  #
+  # RUSTSEC-2026-0545: AES-encrypted entries returned without checking their
+  # authentication code. Only with the `aes-crypto` feature, which no crate here
+  # enables: Brightfield and arcform both ask for zip with default features off
+  # and `deflate-flate2` alone.
+  "RUSTSEC-2026-0545",
+  # RUSTSEC-2026-0547: the Shrink, Reduce and Implode decoders reserve an
+  # entry's declared size before decoding. Only with the `legacy-zip` feature,
+  # which nothing here enables, for the same reason.
+  "RUSTSEC-2026-0547",
+  # RUSTSEC-2026-0548: `ZipStreamReader` extracts entries under their local
+  # header names, which can differ from the central directory's. Every reader
+  # here (Brightfield's protocol_archive, open_queue and housing, and arc's
+  # archive_extract operator) opens a `ZipArchive`, which lists and opens entries
+  # by their central-directory names; none uses `ZipStreamReader`.
+  "RUSTSEC-2026-0548",
   # The two below arrive with dovetail, through finetype-core, which dovetail uses to
   # type columns. Both are unmaintained-crate NOTICES, not vulnerabilities, and neither has a
   # safe upgrade. Drop each when finetype-core moves off the crate.
@@ -129,4 +148,17 @@ ignore = [
   # called. Fixed in thrift 0.23; drop this when dovetail moves to a parquet
   # that takes it.
   "RUSTSEC-2026-0435",
+  # chrono 0.4.44, chrono-tz 0.10.4 and humantime 2.4.0 — unmaintained-crate
+  # NOTICES, not vulnerabilities, published together when chrono's maintainers
+  # stopped; the humantime advisory says it wraps chrono, though the humantime
+  # in Cargo.lock depends on nothing, so here it is chrono's notice only. No safe upgrade
+  # exists for any of them. This workspace uses chrono directly (brightfield-
+  # protocol, brightfield-shell and brightfield-bench), arrow and duckdb-rs reach
+  # chrono and chrono-tz through arrow-array, and humantime arrives with
+  # arcform. Moving to jiff or time touches every date this tree reads or
+  # writes, and arrow's and arcform's as well, so it is its own change. Drop
+  # these when the graph moves off them.
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0555",
+  "RUSTSEC-2026-0542",
 ]
