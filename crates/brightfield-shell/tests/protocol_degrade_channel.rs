@@ -261,10 +261,12 @@ fn shot(dir: &Path, name: &str) -> (Option<i32>, String, PathBuf) {
     )
 }
 
-/// AC4, shipped tier. The measurement that refuted round one, run again: three
-/// fixtures through the real binary. Each still writes its PNG and still exits
-/// 0 — the degrade must not become a hard failure — and the stderr of the three
-/// is now three different things, with the class in it.
+/// The shipped tier. The measurement that refuted round one, run again: three
+/// fixtures through the real binary. Each still writes its PNG; the complete
+/// and the absent one exit 0, since the degrade must not become a hard
+/// failure, and the refused one exits 3, since that render is the Protocol
+/// drawn without what the reader may not read. The stderr of the three is
+/// three different things, with the class in it.
 ///
 /// This test is the one that reddens if the caller is dropped. The pure tier
 /// above passes on a `degrade_report` nothing calls.
@@ -320,8 +322,9 @@ fn the_shipped_binary_reports_the_degrade_and_still_writes_the_png() {
     let (refused_code, refused_err, refused_png) = shot(&refused_dir, "refused");
     assert_eq!(
         refused_code,
-        Some(0),
-        "a refused model is still a render: {refused_err}"
+        Some(3),
+        "a refused model is still a render, and exits 3 so a check reading only the exit \
+         status cannot pass it: {refused_err}"
     );
     assert!(
         fs::metadata(&refused_png).is_ok_and(|m| m.len() > 0),

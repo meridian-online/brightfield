@@ -89,13 +89,18 @@
 //! underlying message with no class tag; `examples/protocol/degrade.yaml` is
 //! one, and its line opens `degraded step transform: SQL parse error`.
 //!
-//! **The exit code stays 0 and the PNG is still written.** On this binary a
-//! non-zero exit means *no image was produced* — `report` below implements it,
-//! mapping `Ok` to success and `Err` to 1. Spending it on a
-//! degraded-but-drawn render would tell a caller its capture failed when a file
-//! exists on disk, and would contradict the degrade's own design — draw what
-//! you can. The stderr line is the channel; a caller that wants to fail on a
-//! partial render matches it.
+//! **The PNG is still written, and the exit code says whether a read was
+//! refused.** Exit 1 means *no image was produced* — `report` below maps `Err`
+//! to it. A model that is absent, or a statement that did not parse, still
+//! exits 0: the degrade is the design, draw what you can, and the stderr line
+//! is the channel for it. A model the system *refused* exits 3
+//! ([`brightfield_shell::refusal::EXIT_REFUSED`]), after the PNG is written and
+//! with one `refused access:` line per path, because that render is the
+//! Protocol drawn without its models while looking finished, and a check that
+//! reads the exit code must not pass it. The refusal is the reader's to
+//! fix, not the Protocol's author's, which is why it is spent on the exit
+//! (`the_headless_path_exits_3_on_a_refused_model` and
+//! `an_absent_model_still_exits_0` in `tests/refused_access.rs`).
 //!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
@@ -216,9 +221,18 @@ fn main() -> ExitCode {
             .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
         return report(result, &args.out);
     }
+    // Whatever the canvas holds: a Protocol drawn as an agent's panels still read its models,
+    // and the window says so.
+    let refusals = boot.protocol.refusals();
     let result = capture_png(boot, args.mode, args.scale, &args.out, script)
         .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
-    report(result, &args.out)
+    let wrote = result.is_ok();
+    let code = report(result, &args.out);
+    if !wrote || refusals.is_empty() {
+        return code;
+    }
+    // The window the capture drew printed one `refused access:` line per path as it opened.
+    ExitCode::from(brightfield_shell::refusal::EXIT_REFUSED)
 }
 
 /// Apply `crop` to the file just written at `out` if one was asked for,
