@@ -2778,7 +2778,14 @@ const RESTRICTED_BANNER: &str = "restricted-protocol";
 /// The headline of the band over a restricted Protocol's canvas.
 pub const RESTRICTED_TITLE: &str = "This Protocol is restricted";
 
-/// A Protocol the window holds restricted: nothing in it runs until it is trusted.
+/// The headline of the banner that says a step this edition cannot run was not run, or was added.
+pub const BEYOND_EDITION_TITLE: &str = "This edition can't run this Protocol";
+
+/// The banner that says a step just added is one this edition cannot run.
+const BEYOND_EDITION_BANNER: &str = "beyond-edition";
+
+/// A Protocol the window holds restricted: nothing in it runs until it is trusted, or, when it has
+/// a step this edition cannot run, in this edition at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restricted {
     /// The Protocol folder.
@@ -2786,17 +2793,34 @@ pub struct Restricted {
     /// Where it came from, as the band names it: the host of the link it was downloaded by, the
     /// archive it was unpacked from, or the folder it sits in.
     pub origin: String,
+    /// The first step this edition cannot run, when there is one. Trust does not lift that
+    /// restriction, so the band offers none and sends the analyst to the full edition instead.
+    pub beyond: Option<crate::beyond_edition::BeyondEdition>,
 }
 
 impl Restricted {
     /// What the band says under its headline.
     #[must_use]
     pub fn said(&self) -> String {
-        format!(
-            "It came from {}. Its steps do not run, nothing it fetches is fetched, and its charts \
-             are pictures of the results it came with, until you trust it.",
-            self.origin
-        )
+        match &self.beyond {
+            Some(beyond) => format!(
+                "{} Its steps do not run in this edition, and its charts are pictures of the \
+                 results it came with. The full edition runs it.",
+                crate::beyond_edition::sentence(beyond)
+            ),
+            None => format!(
+                "It came from {}. Its steps do not run, nothing it fetches is fetched, and its \
+                 charts are pictures of the results it came with, until you trust it.",
+                self.origin
+            ),
+        }
+    }
+
+    /// Whether the band offers Trust: not when the Protocol is held for a step this edition cannot
+    /// run, which trust would not let run.
+    #[must_use]
+    pub fn offers_trust(&self) -> bool {
+        self.beyond.is_none()
     }
 
     /// The folders above the Protocol the band offers to trust with everything beneath them,
@@ -15113,6 +15137,26 @@ impl MeridianApp {
                         &step.name,
                     )?;
                     self.charts.doc.mark_typed_recorded(&name);
+                    // A step this edition cannot run is recorded as typed, and said so as it is
+                    // added: the Protocol keeps it, and runs it in the full edition.
+                    if let Some(beyond) = crate::beyond_edition::statement(
+                        &step.name,
+                        &step.statement,
+                        crate::edition::current(),
+                    ) {
+                        self.notifications.raise(
+                            Notification::new(
+                                NotificationId::new(BEYOND_EDITION_BANNER),
+                                Severity::Warning,
+                                BEYOND_EDITION_TITLE,
+                            )
+                            .body(format!(
+                                "{} The step is kept, and the full edition runs it: {}",
+                                crate::beyond_edition::sentence(&beyond),
+                                crate::edition::full_edition_url()
+                            )),
+                        );
+                    }
                     recorded.push(name);
                 }
                 // Applied to `arcform.yaml` as it stands at this Save, which an agent may have
@@ -15854,6 +15898,29 @@ impl MeridianApp {
         if self.refuse_if_the_folder_is_gone(ctx) {
             return false;
         }
+        // A Protocol with a step this edition cannot run runs nothing in it, trusted or not: one
+        // held restricted for it, and one a Save just gave such a step.
+        let beyond = self
+            .held_protocol_dir()
+            .and_then(|dir| crate::beyond_edition::of_folder(&dir, crate::edition::current()));
+        if let Some(beyond) = beyond {
+            let body = format!(
+                "{} The full edition runs it: {}",
+                crate::beyond_edition::sentence(&beyond),
+                crate::edition::full_edition_url()
+            );
+            eprintln!("could not run the Protocol: {body}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Warning,
+                    BEYOND_EDITION_TITLE,
+                )
+                .body(body),
+            );
+            ctx.request_repaint();
+            return false;
+        }
         // A Protocol whose trust was taken away while it was open runs nothing either, though a
         // draft kept it on the canvas rather than opening it again restricted.
         if let Some(dir) = self.held_untrusted() {
@@ -16272,7 +16339,15 @@ impl MeridianApp {
     /// its folder, with DuckDB confined to them ([`crate::protocol_panels::load_shipped`]); one
     /// with no panels shows its spine on the canvas. A band over the canvas names where it came
     /// from and offers Trust.
-    fn open_restricted(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+    ///
+    /// `beyond` is the first step this edition cannot run, as the caller found it, which holds it
+    /// restricted for the edition rather than for its trust.
+    fn open_restricted(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        beyond: Option<crate::beyond_edition::BeyondEdition>,
+    ) {
         // Spelled as it was given, made absolute, as the other routes hold a Protocol's folder.
         let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
         let spec = dir
@@ -16330,6 +16405,7 @@ impl MeridianApp {
         self.restricted = Some(Restricted {
             dir: dir.clone(),
             origin,
+            beyond: beyond.clone(),
         });
         // Remembered as any Protocol opened from disk is, so Recents and the next launch reopen
         // it, restricted again until it is trusted.
@@ -16345,13 +16421,18 @@ impl MeridianApp {
             self.grid_spot,
             now_secs(),
         );
-        self.toasts.push(Toast::new(
-            Severity::Info,
+        let opened = if beyond.is_some() {
+            format!(
+                "Opened {}, restricted: this edition can't run it",
+                display_name(&dir)
+            )
+        } else {
             format!(
                 "Opened {}, restricted until you trust it",
                 display_name(&dir)
-            ),
-        ));
+            )
+        };
+        self.toasts.push(Toast::new(Severity::Info, opened));
         self.retitle(ctx);
         ctx.request_repaint();
     }
@@ -16464,7 +16545,7 @@ impl MeridianApp {
     /// `keep_editing_after_untrusting_refuses_a_run`); this is the one that says so in a banner.
     fn held_untrusted(&self) -> Option<PathBuf> {
         self.held_protocol_dir()
-            .filter(|dir| crate::trust::refuses_run(dir))
+            .filter(|dir| crate::trust::revoked_and_untrusted(dir))
     }
 
     /// The Protocol the window holds restricted, while one is open.
@@ -16482,6 +16563,23 @@ impl MeridianApp {
         let Some(restricted) = self.restricted.clone() else {
             return false;
         };
+        // Trust would not let a step this edition cannot run run, so it is not recorded for one.
+        if let Some(beyond) = &restricted.beyond {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Warning,
+                    BEYOND_EDITION_TITLE,
+                )
+                .body(format!(
+                    "{} Trusting it does not change that. The full edition runs it: {}",
+                    crate::beyond_edition::sentence(beyond),
+                    crate::edition::full_edition_url()
+                )),
+            );
+            ctx.request_repaint();
+            return false;
+        }
         let store = crate::trust::Store::current();
         let recorded = match &scope {
             TrustScope::Protocol => store.trust(&restricted.dir),
@@ -16532,8 +16630,11 @@ impl MeridianApp {
         // (`an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays_restricted`).
         if let crate::open_queue::Route::Existing(dir) = crate::open_queue::route(named) {
             let store = crate::trust::Store::current();
-            if !store.is_trusted(&dir) {
-                self.open_restricted(ctx, &dir);
+            // A Protocol with a step this edition cannot run opens restricted however it is
+            // trusted, since trust does not let that step run.
+            let beyond = crate::beyond_edition::of_folder(&dir, crate::edition::current());
+            if beyond.is_some() || !store.is_trusted(&dir) {
+                self.open_restricted(ctx, &dir, beyond);
                 return;
             }
             if let Err(e) = store.follow(&dir) {
@@ -20214,6 +20315,10 @@ fn restricted_band_ui(
                     egui::RichText::new(restricted.said())
                         .color(chrome::colour(sem.text.secondary)),
                 );
+                if !restricted.offers_trust() {
+                    ui.hyperlink_to("Get the full edition", crate::edition::full_edition_url());
+                    return;
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .button("Trust this Protocol")

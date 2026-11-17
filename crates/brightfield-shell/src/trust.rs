@@ -76,11 +76,21 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// [`refuses_run`] keeps it from running.
 static REVOKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// Whether a run of the Protocol in `dir` is refused: this process stopped trusting it and the
-/// store does not trust it again. A Protocol never revoked here is not refused, so one opened from
-/// the command line, which runs with no record, still runs.
+/// Whether a run of the Protocol in `dir` is refused: it has a step this edition cannot run
+/// ([`crate::beyond_edition`]), which no trust lifts, or this process stopped trusting it and the
+/// store does not trust it again. A Protocol never revoked here is not refused for its trust, so
+/// one opened from the command line, which runs with no record, still runs.
 #[must_use]
 pub fn refuses_run(dir: &Path) -> bool {
+    crate::beyond_edition::of_folder(dir, crate::edition::current()).is_some()
+        || revoked_and_untrusted(dir)
+}
+
+/// Whether this process stopped trusting the Protocol in `dir` and the store does not trust it
+/// again: the half of [`refuses_run`] that trust answers, which the window names apart from a step
+/// beyond the edition.
+#[must_use]
+pub fn revoked_and_untrusted(dir: &Path) -> bool {
     let path = Place::of(dir).path;
     REVOKED
         .lock()

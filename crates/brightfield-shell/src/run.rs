@@ -452,14 +452,28 @@ impl Run {
         let (tx, outcome) = mpsc::channel();
         // A Protocol the analyst stopped trusting while it was open runs nothing, whichever part
         // of the window asks: the run ends at once, unrun, saying why.
-        if crate::trust::refuses_run(dir) {
+        // So does one with a step this edition cannot run, whatever its trust.
+        // The same refusal as [`crate::trust::refuses_run`], with the manifest read once for both
+        // the refusal and the words that give its reason.
+        let beyond = crate::beyond_edition::of_folder(dir, crate::edition::current());
+        let refused = match &beyond {
+            Some(beyond) => Some(format!(
+                "{} was not run. {} The full edition runs it: {}",
+                dir.display(),
+                crate::beyond_edition::sentence(beyond),
+                crate::edition::full_edition_url()
+            )),
+            None if crate::trust::revoked_and_untrusted(dir) => Some(format!(
+                "{} is not trusted, so it was not run; trust it from the band over its canvas \
+                 once it is opened again",
+                dir.display()
+            )),
+            None => None,
+        };
+        if let Some(log) = refused {
             tx.send(Finished {
                 record: None,
-                log: format!(
-                    "{} is not trusted, so it was not run; trust it from the band over its \
-                     canvas once it is opened again",
-                    dir.display()
-                ),
+                log,
                 succeeded: false,
             })
             .ok();
