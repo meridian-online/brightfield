@@ -6018,10 +6018,17 @@ impl MeridianApp {
         self
     }
 
-    /// Whether this window has someone to answer a panel: a test's stand-in for it, or a person,
-    /// where dialogs are allowed.
+    /// Whether this window has someone to answer the panel the Protocols folder would be asked
+    /// for with: a person, where dialogs are allowed, or a test's stand-in for that panel. A
+    /// folder chosen before but out of reach is asked for with the grant panel, and a first
+    /// launch's with the panel that proposes a name.
     fn can_ask_protocols_folder(&self) -> bool {
-        self.protocols_asker.is_some() || self.grant_asker.is_some() || self.dialogs_allowed
+        let stand_in = if crate::protocols_dir::out_of_reach().is_some() {
+            self.grant_asker.is_some()
+        } else {
+            self.protocols_asker.is_some()
+        };
+        stand_in || self.dialogs_allowed
     }
 
     /// **Take the Protocols-folder ask this frame left**: raise the panel (or its stand-in) on

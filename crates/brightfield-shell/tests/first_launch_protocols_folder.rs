@@ -308,6 +308,23 @@ fn a_chosen_folder_out_of_reach_is_asked_for_again_not_replaced() {
 }
 
 #[test]
+fn a_window_with_only_a_grant_stand_in_asks_nothing_at_first_launch() {
+    let _first = first_launch();
+    let ctx = egui::Context::default();
+    let mut app = MeridianApp::headless(Boot::empty(), Mode::Light)
+        .asking_grants_with(Box::new(|_: &Path, _: &str| None));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    app.ask_new_protocol();
+    frame(&mut app, &ctx);
+    assert!(
+        !raised(&app, NO_PROTOCOLS_FOLDER_BANNER),
+        "nothing was asked, so nothing was cancelled"
+    );
+}
+
+#[test]
 fn a_containers_home_is_the_home_it_sits_in() {
     assert_eq!(
         protocols_dir::home_outside_container(Path::new(
