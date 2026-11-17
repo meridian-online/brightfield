@@ -351,6 +351,18 @@ impl Grants {
         self.lock().holds.keys().cloned().collect()
     }
 
+    /// Whether a grant whose access is started covers `path` now. Unlike [`Self::covering`] it
+    /// does not try again a grant that did not open, so it is cheap enough to ask on each frame:
+    /// a drive that is not plugged in is not resolved again here.
+    #[must_use]
+    pub fn covers_now(&self, path: &Path) -> bool {
+        let path = canonical(path);
+        self.lock()
+            .entries
+            .iter()
+            .any(|e| e.open && path.starts_with(&e.path))
+    }
+
     /// The granted folders access is started on now, in the order they were granted; a grant on
     /// a file alone is not listed.
     #[must_use]

@@ -6044,6 +6044,13 @@ impl MeridianApp {
             self.ask_protocols_folder_again(ctx, &dir, then);
             return;
         }
+        // The folder may have come within reach since the ask was queued, a drive plugged back in.
+        if crate::protocols_dir::granted_root().is_some() {
+            if then == ProtocolsFolderThen::NewProtocol {
+                self.ask_new_protocol();
+            }
+            return;
+        }
         let on = crate::protocols_dir::documents();
         let proposed = crate::protocols_dir::PROPOSED_NAME;
         let named = match self.protocols_asker.as_mut() {

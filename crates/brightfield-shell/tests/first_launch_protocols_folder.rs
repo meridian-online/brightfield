@@ -26,15 +26,16 @@ fn managed() -> bool {
     edition::current() == Edition::Managed
 }
 
-/// This file's scratch folder, with the config folder and arc's folders in it, so the process's
-/// grant store and Preferences are written here and nothing under the home directory. The
+/// This file's scratch folder, with the config folder, arc's folders and a home folder in it, so
+/// the process's grant store and Preferences are written here and nothing under the real home
+/// directory is read or written. The
 /// Protocols folder variable is cleared, since it would decide the folder and nothing would ask.
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-first-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db", "chosen"] {
+        for sub in ["config", "history", "db", "chosen", "home"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
         let root = std::fs::canonicalize(&root).expect("the scratch folder resolves");
@@ -44,6 +45,8 @@ fn scratch() -> &'static Path {
             root.join("config"),
         );
         std::env::remove_var(protocols_dir::PROTOCOLS_DIR_VAR);
+        // The default Protocols folder and Documents are under a home of this file's.
+        std::env::set_var("HOME", root.join("home"));
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));
         root
@@ -311,8 +314,14 @@ fn a_chosen_folder_out_of_reach_is_asked_for_again_not_replaced() {
 fn a_window_with_only_a_grant_stand_in_asks_nothing_at_first_launch() {
     let _first = first_launch();
     let ctx = egui::Context::default();
-    let mut app = MeridianApp::headless(Boot::empty(), Mode::Light)
-        .asking_grants_with(Box::new(|_: &Path, _: &str| None));
+    let called: Arc<Mutex<usize>> = Arc::default();
+    let count = called.clone();
+    let mut app = MeridianApp::headless(Boot::empty(), Mode::Light).asking_grants_with(Box::new(
+        move |_: &Path, _: &str| {
+            *count.lock().expect("the count") += 1;
+            None
+        },
+    ));
     for _ in 0..3 {
         frame(&mut app, &ctx);
     }
@@ -321,6 +330,11 @@ fn a_window_with_only_a_grant_stand_in_asks_nothing_at_first_launch() {
     assert!(
         !raised(&app, NO_PROTOCOLS_FOLDER_BANNER),
         "nothing was asked, so nothing was cancelled"
+    );
+    assert_eq!(
+        *called.lock().expect("the count"),
+        0,
+        "the grant panel was asked"
     );
 }
 

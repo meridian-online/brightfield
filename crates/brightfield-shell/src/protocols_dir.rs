@@ -182,7 +182,9 @@ pub fn granted_root() -> Option<PathBuf> {
     if edition::current().allows(Capability::UngrantedPaths) {
         return Some(chosen.unwrap_or_else(default_root));
     }
-    chosen.filter(|dir| crate::grants::store().covering(dir).is_some())
+    // Asked on each frame the door draws, so a grant that did not open is not tried again here;
+    // [`out_of_reach`] tries it, when the folder is asked for.
+    chosen.filter(|dir| crate::grants::store().covers_now(dir))
 }
 
 /// The Protocols folder Preferences holds, whether or not this edition may reach it now: `None`
@@ -302,7 +304,10 @@ pub fn set_root(dir: &Path) -> Result<(), String> {
 /// then left as it is.
 pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
     let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let old = root();
+    // The folder Protocols are kept in now: in the managed edition, the one chosen before even
+    // when it is out of reach, and none before one is chosen, rather than the default it never
+    // used.
+    let old = granted_root().or_else(chosen);
     let refused = || {
         format!(
             "Brightfield cannot use {} as the Protocols folder. Allow it under System Settings → \
@@ -319,7 +324,7 @@ pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
     };
     std::fs::create_dir_all(&dir).map_err(|e| check(&e))?;
     let canonical = dir.canonicalize().map_err(|e| check(&e))?;
-    if let Ok(was) = old.canonicalize() {
+    if let Some((old, Ok(was))) = old.as_ref().map(|o| (o, o.canonicalize())) {
         if was != canonical {
             if canonical.starts_with(&was) {
                 return Err(format!(
