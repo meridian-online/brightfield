@@ -42,6 +42,13 @@ pub fn main(out_dir: &str) {
         env::set_var("DUCKDB_LIB_DIR", &lib_dir);
         env::set_var("DUCKDB_INCLUDE_DIR", &include_dir);
         env::remove_var("DUCKDB_STATIC");
+        // build_linked asks pkg-config for `duckdb` first, and pkg-config
+        // searches its default directories too, so a DuckDB some package
+        // manager installed would win over the managed one. PKG_CONFIG_LIBDIR
+        // replaces those defaults with the managed output, which has no
+        // duckdb.pc, so the probe fails and the crate links the managed
+        // library by its directory.
+        env::set_var("PKG_CONFIG_LIBDIR", lib_dir.join("pkgconfig"));
     }
     crate::build_linked::main(out_dir);
     // A crate that depends on this one directly reads this as DEP_DUCKDB_LIB_DIR,
