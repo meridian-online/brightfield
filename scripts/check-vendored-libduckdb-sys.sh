@@ -8,9 +8,13 @@
 # vendored nothing in Cargo checks its bytes. This does: it downloads the
 # published crate, checks the archive against the sha256 crates.io's index
 # records for it (the checksum Cargo.lock carried before the crate was
-# vendored), unpacks it, and compares every file. The files Brightfield changed
-# or added are listed below and in vendor/libduckdb-sys/BRIGHTFIELD.md; any
-# other difference fails, and so does a listed file that is no longer there.
+# vendored), unpacks it, applies Brightfield's change
+# (vendor/libduckdb-sys/BRIGHTFIELD.patch) to the files it changes, and compares
+# every file byte for byte. The files Brightfield added are listed below; any
+# other difference fails, including an edit to a changed file that the patch
+# does not record, and so does a listed file that is no longer there. A
+# deliberate change to build.rs or Cargo.toml moves the patch with it, so the
+# change is always a diff a reviewer reads.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -19,10 +23,10 @@ VENDORED="${HERE}/../vendor/libduckdb-sys"
 VERSION="1.20000.0"
 CRATE_SHA256="ac1dcdcfde48e11bbd46112ed3b0423acd8c644413b3891e7be8104edce7fdda"
 URL="https://static.crates.io/crates/libduckdb-sys/libduckdb-sys-${VERSION}.crate"
-# Changed: build.rs, Cargo.toml. Added: managed_linked.rs, BRIGHTFIELD.md.
-# Left out: .cargo-ok, Cargo's unpack marker.
+# Changed, by BRIGHTFIELD.patch: build.rs, Cargo.toml. Added: managed_linked.rs,
+# BRIGHTFIELD.md and the patch itself. Left out: .cargo-ok, Cargo's unpack marker.
 CHANGED="build.rs Cargo.toml"
-ADDED="managed_linked.rs BRIGHTFIELD.md"
+ADDED="managed_linked.rs BRIGHTFIELD.md BRIGHTFIELD.patch"
 LEFT_OUT=".cargo-ok"
 
 fail() { echo "check-vendored-libduckdb-sys: $*" >&2; exit 1; }
@@ -37,6 +41,11 @@ got=$(shasum -a 256 "${SCRATCH}/crate.tar.gz" | awk '{print $1}')
 [ "$got" = "$CRATE_SHA256" ] || fail "${URL} has sha256 ${got}, not the published ${CRATE_SHA256}"
 tar -xzf "${SCRATCH}/crate.tar.gz" -C "$SCRATCH"
 PUBLISHED="${SCRATCH}/libduckdb-sys-${VERSION}"
+(cd "$PUBLISHED" && patch -s -p0 --no-backup-if-mismatch < "${VENDORED}/BRIGHTFIELD.patch") \
+  || fail "BRIGHTFIELD.patch does not apply to the published crate"
+patched=$(grep -E '^\+\+\+ ' "${VENDORED}/BRIGHTFIELD.patch" | awk '{print $2}' | sort | tr '\n' ' ')
+[ "$patched" = "$(printf '%s\n' $CHANGED | sort | tr '\n' ' ')" ] \
+  || fail "BRIGHTFIELD.patch changes '${patched}', not the files listed as changed: ${CHANGED}"
 
 listed() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 
@@ -49,13 +58,12 @@ while IFS= read -r -d '' file; do
   if [ ! -f "${VENDORED}/${rel}" ]; then
     echo "missing from the vendored crate: ${rel}" >&2
     problems=$((problems + 1))
-  elif listed "$rel" "$CHANGED"; then
-    if cmp -s "$file" "${VENDORED}/${rel}"; then
-      echo "listed as changed but identical to the published file: ${rel}" >&2
-      problems=$((problems + 1))
-    fi
   elif ! cmp -s "$file" "${VENDORED}/${rel}"; then
-    echo "differs from the published crate: ${rel}" >&2
+    if listed "$rel" "$CHANGED"; then
+      echo "differs from the published file with BRIGHTFIELD.patch applied: ${rel}" >&2
+    else
+      echo "differs from the published crate: ${rel}" >&2
+    fi
     problems=$((problems + 1))
   fi
 done < <(find "$PUBLISHED" -type f -print0)
@@ -73,4 +81,4 @@ for rel in $ADDED; do
 done
 
 [ "$problems" -eq 0 ] || fail "${problems} difference(s) from crates.io's libduckdb-sys ${VERSION} beyond Brightfield's change"
-echo "vendor/libduckdb-sys is crates.io's libduckdb-sys ${VERSION} (sha256 ${CRATE_SHA256}) with Brightfield's change to ${CHANGED} and ${ADDED} added"
+echo "vendor/libduckdb-sys is crates.io's libduckdb-sys ${VERSION} (sha256 ${CRATE_SHA256}) with BRIGHTFIELD.patch applied to ${CHANGED}, and ${ADDED} added"

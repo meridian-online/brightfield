@@ -1090,9 +1090,12 @@ WORKTREE = Source(ROOT)
 
 
 # Third-party source kept as its authors published it. Its comments are theirs,
-# and scripts/check-vendored-libduckdb-sys.sh holds every file of it to the
-# published bytes, so this gate does not read them; the files Brightfield wrote
-# there are read as any other.
+# so this gate does not read them. scripts/check-vendored-libduckdb-sys.sh holds
+# every file of it to the published bytes, the two files Brightfield changes
+# included: those must equal the published file with
+# vendor/libduckdb-sys/BRIGHTFIELD.patch applied, so Brightfield's lines in them
+# are read in that patch. The one file Brightfield wrote there is read as any
+# other.
 THIRD_PARTY_PREFIXES = ("vendor/libduckdb-sys/",)
 BRIGHTFIELD_WRITTEN_THIRD_PARTY = {"vendor/libduckdb-sys/managed_linked.rs"}
 

@@ -16,9 +16,10 @@
 #      starts Brightfield from an app bundle's layout and checks it loads the
 #      library in Contents/Frameworks and no other DuckDB.
 #
-# vcpkg's binary cache and the build's output are cached under a key made of
-# the files that decide what is built, so a rerun on the same pins skips the
-# C libraries.
+# vcpkg's binary cache, about 100 MB, is cached under a key made of the files
+# that decide what is built, so a rerun on the same pins restores the C
+# libraries instead of compiling them. DuckDB itself and the extensions are
+# compiled again on each run; their build tree is several gigabytes.
 
 name: managed-duckdb
 
@@ -36,6 +37,12 @@ on:
       - crates/brightfield-shell/build.rs
       - crates/brightfield-shell/tests/managed_duckdb_link.rs
       - Cargo.lock
+      # The feature wiring: the workspace's patch of libduckdb-sys, the
+      # managed-edition feature lists, and what the two steps run.
+      - Cargo.toml
+      - crates/brightfield-engine/Cargo.toml
+      - crates/brightfield-shell/Cargo.toml
+      - xtask/src/steps.rs
       - .github/workflows/managed-duckdb.yml
   workflow_dispatch:
 
@@ -60,9 +67,7 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/vcpkg/archives
-            target/duckdb-managed
+          path: ~/.cache/vcpkg/archives
           key: duckdb-managed-${{ hashFiles('scripts/build-duckdb.sh', 'scripts/duckdb-managed/**', 'packaging/finetype-pin.env') }}
 
       - name: build the managed edition's DuckDB and check it
