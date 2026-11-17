@@ -265,5 +265,38 @@ fn a_run_refused_a_path_raises_the_banner_saying_the_run_could_not_finish() {
         body.contains("/refused/owid.csv") && body.contains("the run could not finish"),
         "{body}"
     );
+
+    // The next run no longer meets the refusal: the banner comes down.
+    let plain = tmp.join("plain-runner.sh");
+    fs::write(
+        &plain,
+        "#!/bin/sh\necho 'Binder Error: no such column' >&2\nexit 1\n",
+    )
+    .expect("write the second runner");
+    fs::set_permissions(&plain, fs::Permissions::from_mode(0o755)).expect("chmod the runner");
+    let mut app = app.running_with(Some(Runner::at(&plain)));
+    frame(&mut app);
+    assert!(app.run_protocol(&ctx), "the second run started");
+    let landed = |app: &MeridianApp| {
+        app.notifications().iter().any(|n| {
+            n.body
+                .as_deref()
+                .is_some_and(|b| b.contains("no such column"))
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !landed(&app) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second run never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        frame(&mut app);
+    }
+    assert!(app.refused().is_empty(), "{:?}", app.refused());
+    assert!(
+        app.notifications().iter().all(|n| n.title != REFUSED_TITLE),
+        "the refused-access banner came down"
+    );
     let _ = fs::remove_dir_all(&tmp);
 }
