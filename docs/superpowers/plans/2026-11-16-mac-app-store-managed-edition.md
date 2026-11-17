@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Build slots: the signed download's sessions build first. Start no cargo build while three Brightfield sessions are building. Task 1 runs when a slot frees; Tasks 2 onwards wait for the signed download to ship.
+- Build slots: the signed download's sessions build first. Start no cargo build while three Brightfield sessions are building. Task 1 runs when a slot frees. Task 2 starts now: Hugh ruled on 2026-11-17 that it need not wait for the signed download, which waits on Apple's review of the developer enrolment rather than on code, and no Brightfield session was building; if the signing certificate arrives during it, the signing work takes the next free slot. Tasks 3 onwards wait for the signed download to ship.
 - Task 1's findings revise the spec before Task 2 starts. Where a finding contradicts a task below, the revised spec wins, and the task is edited before it is built.
 - One code base: every managed-edition difference is a question asked of `Edition` (Task 2). No `#[cfg]` on edition outside `edition.rs`.
 - The full edition's behaviour does not change, except the refused-access banner and the headless exit (Task 6), which apply to both editions.
@@ -54,6 +54,7 @@ Done: `scripts/sandbox-measure.sh`, `scripts/sandbox-measure/` and `docs/app-san
   - `pub enum Capability { CommandSteps, OutsidePrograms, ExtensionInstall, LauncherCommand, UngrantedPaths }`.
   - `impl Edition { pub fn allows(self, c: Capability) -> bool }`.
   - `pub fn full_edition_url() -> &'static str`, returning `https://meridian.online/brightfield`.
+- The editions' names are working names, chosen elsewhere. Every name an analyst may read is defined in `edition.rs` (`Edition::name`), so a rename touches that file alone; the variant identifiers are internal.
 
 - [ ] **Step 1:** Write the failing test `full_allows_everything_managed_allows_nothing_on_the_list`. It asserts `Edition::Full.allows(c)` for every `Capability`, and `!Edition::Managed.allows(c)` for every `Capability`.
 - [ ] **Step 2:** Write the failing test `current_is_full_without_the_feature`, which asserts `edition::current() == Edition::Full` in a default build.
