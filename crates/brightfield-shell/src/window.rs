@@ -2021,9 +2021,11 @@ impl Boot {
             // that is missing from a picture somebody is looking at, and this
             // reports a render that looks finished and is not.
             //
-            // The PNG is still written and the exit code is still 0. The
-            // degrade is deliberate (draw what you can); what was missing was
-            // any way to know it happened.
+            // The PNG is still written. The degrade is deliberate (draw what
+            // you can); what was missing was any way to know it happened. A
+            // refused model read also makes `brightfield-shot` exit 3, which
+            // it decides from `ProtocolInputs::refusals` once it has written
+            // the PNG.
             for line in inputs.degrade_report() {
                 eprintln!("{spec}: {line}");
             }
@@ -2531,6 +2533,12 @@ pub enum Leaving {
     /// replaces the chart, the grid view and the statements the window holds.
     Reload,
 }
+
+/// The banner saying the system refused a read or a write, naming the paths
+/// ([`MeridianApp::say_refused`]).
+pub const REFUSED_BANNER: &str = "refused-access";
+/// That banner's title.
+pub const REFUSED_TITLE: &str = "Brightfield was refused access";
 
 /// The banner saying an open waits on a folder the analyst has not granted.
 pub const NEEDS_GRANT_BANNER: &str = "needs-grant";
@@ -3698,6 +3706,13 @@ pub struct MeridianApp {
     /// than asked for again, and one found only now, such as a source folder read once the
     /// Protocol's folder was granted, is asked for.
     grant_round: Option<Vec<PathBuf>>,
+    /// The paths the system refused this window: the open Protocol's unreadable models, and what
+    /// its last run's log said was refused. While any stands, the refused-access banner names
+    /// them and the Protocol's run state is not shown as fresh.
+    refused: Vec<crate::refusal::Refusal>,
+    /// The folders a refusal has already asked for, so a document swap does not ask again for a
+    /// folder the analyst cancelled.
+    refusal_asked: Vec<PathBuf>,
     /// Where the Location field's Choose… button was drawn on the last frame.
     choose_rect: Option<egui::Rect>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
@@ -4220,6 +4235,8 @@ impl MeridianApp {
             grant_asker: None,
             grant_report_only: false,
             grant_round: None,
+            refused: Vec::new(),
+            refusal_asked: Vec::new(),
             choose_rect: None,
             location_pick_requested: false,
             dialogs_allowed: false,
@@ -4310,6 +4327,7 @@ impl MeridianApp {
         // runs on a later document swap.
         app.apply_rail_defaults();
         app.say_folder_refused();
+        app.say_refused();
         // The restored spot is put through the move rather than left as the
         // field the struct literal wrote: the rail defaults above close the
         // ledger for a one-step Protocol, and a grid whose spot is the ledger
@@ -4639,6 +4657,7 @@ impl MeridianApp {
         // step to summarise.
         self.apply_rail_defaults();
         self.say_folder_refused();
+        self.say_refused();
     }
 
     /// Raise the banner saying why the steps the folder's manifest holds after
@@ -4664,6 +4683,78 @@ impl MeridianApp {
                 self.notifications.dismiss(banner);
             }
         }
+    }
+
+    /// **Raise the refused-access banner over the open Protocol's refused model reads**, or take
+    /// it down when there are none. Called wherever [`Self::say_folder_refused`] is, so it follows
+    /// every document swap. In the managed edition each refused folder is also asked for once,
+    /// after the frame, and the Protocol opened again when it is granted; a launch's restore only
+    /// reports. In the full edition the banner names System Settings, since a grant there is not
+    /// Brightfield's to make.
+    fn say_refused(&mut self) {
+        self.refused = self.protocol.doc.model.refusals();
+        self.raise_refused();
+        let asks = !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths);
+        if !asks || self.grant_report_only || self.grant_ask.is_some() {
+            return;
+        }
+        let folders: Vec<PathBuf> = self
+            .refused
+            .iter()
+            .map(crate::refusal::Refusal::folder)
+            .filter(|f| !self.refusal_asked.contains(f))
+            .fold(Vec::new(), |mut all, f| {
+                if !all.contains(&f) {
+                    all.push(f);
+                }
+                all
+            });
+        let Some(manifest) = self
+            .refused
+            .first()
+            .and_then(|r| crate::refusal::manifest_above(&r.path))
+        else {
+            return;
+        };
+        if folders.is_empty() {
+            return;
+        }
+        self.refusal_asked.extend(folders.iter().cloned());
+        self.grant_ask = Some(GrantAsk {
+            folders,
+            why: crate::refusal::why_refused,
+            then: GrantThen::Protocol(manifest.to_string_lossy().into_owned()),
+        });
+    }
+
+    /// The refused-access banner over [`Self::refused`], or none when it is empty.
+    fn raise_refused(&mut self) {
+        let banner = NotificationId::new(REFUSED_BANNER);
+        let Some(first) = self.refused.first() else {
+            self.notifications.dismiss(banner);
+            return;
+        };
+        let named: Vec<String> = self
+            .refused
+            .iter()
+            .map(|r| r.path.display().to_string())
+            .collect();
+        for path in &named {
+            eprintln!("refused access: {path}");
+        }
+        self.notifications.raise(
+            Notification::new(banner, Severity::Error, REFUSED_TITLE).body(format!(
+                "The system refused {}, so the Protocol is drawn without it. {}",
+                named.join(" and "),
+                first.remedy()
+            )),
+        );
+    }
+
+    /// The paths the system refused this window, as the refused-access banner names them.
+    #[must_use]
+    pub fn refused(&self) -> &[crate::refusal::Refusal] {
+        &self.refused
     }
 
     /// The pane the window's chrome is reading from, if any.
@@ -9969,6 +10060,7 @@ impl MeridianApp {
                     self.apply_rail_defaults();
                 }
                 self.say_folder_refused();
+                self.say_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -11638,8 +11730,21 @@ impl MeridianApp {
     /// engine as it composes and no run contract is written, so there is no
     /// run to report, and reporting one would be the shell computing what the
     /// engine is the thing that computes.
+    ///
+    /// While a refusal stands it is never [`RunState::Fresh`]: the Protocol is drawn without what
+    /// was refused, so it is not shown as complete, and a record that says fresh is shown as
+    /// [`RunState::Failed`] until the refusal is lifted.
     fn recorded_run_state(&self) -> RunState {
-        self.protocol.doc.model.recorded_run_state()
+        match self.protocol.doc.model.recorded_run_state() {
+            RunState::Fresh if !self.refused.is_empty() => RunState::Failed,
+            state => state,
+        }
+    }
+
+    /// The run state this window shows for its Protocol: [`Self::recorded_run_state`].
+    #[must_use]
+    pub fn shown_run_state(&self) -> RunState {
+        self.recorded_run_state()
     }
 
     /// Open the shipped starting point `id` into the document it fills.
@@ -15208,6 +15313,7 @@ impl MeridianApp {
                 }
                 self.apply_rail_defaults();
                 self.say_folder_refused();
+                self.say_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -16002,6 +16108,7 @@ impl MeridianApp {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
                 self.say_folder_refused();
+                self.say_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -16033,6 +16140,17 @@ impl MeridianApp {
                 severity,
                 format!("Ran {protocol} \u{b7} {word}"),
             ));
+        }
+        if !finished.succeeded {
+            if let Some(path) = crate::refusal::refusal_in_engine_text(&finished.log) {
+                if self.refused.iter().all(|r| r.path != path) {
+                    self.refused.push(crate::refusal::Refusal {
+                        path,
+                        during: crate::refusal::RefusedDuring::Run,
+                    });
+                }
+                self.raise_refused();
+            }
         }
         self.protocol.doc.model.set_run_log(finished.log);
         ctx.request_repaint();
