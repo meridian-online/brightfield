@@ -121,8 +121,8 @@ fn today() -> String {
     }
 }
 
-/// The `nightly-gate` and `nightly-network` statuses a run's summary gives:
-/// the gate passes when every step but `NETWORK_STEP` passed, as
+/// The `nightly-gate` and `nightly-network` statuses a run's summary gives.
+/// A failed `NETWORK_STEP` fails only its own status, as
 /// `network_failures_post_their_own_status_and_leave_the_gate_green` checks,
 /// and a run without a readable summary is a gate failure. The network status is
 /// `None` when the summary shows `NETWORK_STEP` neither passing nor failing,
