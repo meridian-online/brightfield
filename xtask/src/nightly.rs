@@ -85,8 +85,8 @@ impl NightStage {
 }
 
 /// How long to wait for the gate lock when the local time is `now_local`
-/// (hour, minute): until 05:30, nothing from then until noon, and from noon
-/// until the next day's 05:30.
+/// (hour, minute): until 05:30, no wait from then until noon, and from noon
+/// until the next day's 05:30, as `the_wait_ends_at_half_past_five` checks.
 pub fn deadline_after(now_local: (u32, u32)) -> Duration {
     let (hour, minute) = now_local;
     let now = (hour * 60 + minute).min(24 * 60 - 1);
@@ -122,8 +122,9 @@ fn today() -> String {
 }
 
 /// The `nightly-gate` and `nightly-network` statuses a run's summary gives:
-/// the gate passes when every step but `NETWORK_STEP` passed, and a run
-/// without a readable summary is a gate failure. The network status is
+/// the gate passes when every step but `NETWORK_STEP` passed, as
+/// `network_failures_post_their_own_status_and_leave_the_gate_green` checks,
+/// and a run without a readable summary is a gate failure. The network status is
 /// `None` when the summary shows `NETWORK_STEP` neither passing nor failing,
 /// as `a_run_without_a_summary_is_a_failure` checks for a run with no summary.
 pub fn statuses_of(summary: Option<&Verdict>, took: Duration) -> (Status, Option<Status>) {
