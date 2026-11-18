@@ -22,7 +22,9 @@
 //! `open-analytics` checkout and the pinned DuckDB CLI.
 
 mod duckdb_stamp;
+mod flags;
 mod gate;
+mod nightly_status;
 mod runner;
 mod shard;
 mod steps;

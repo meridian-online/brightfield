@@ -546,36 +546,6 @@ mod tests {
         assert_eq!(coverage(&["one"], &[elsewhere]).len(), 1);
     }
 
-    /// The backstop leaves each workflow's aggregate job out of its reading,
-    /// by name; the job must still be there, under that name, and run
-    /// whatever its needs did.
-    #[test]
-    fn the_aggregate_jobs_the_backstop_leaves_out_are_still_in_their_workflows() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        for (file, job) in crate::gate::AGGREGATE_JOBS {
-            let text = fs::read_to_string(root.join(".github/workflows").join(file))
-                .unwrap_or_else(|e| panic!("{file}: {e}"));
-            let lines: Vec<&str> = text.lines().collect();
-            let start = lines
-                .iter()
-                .position(|line| *line == format!("  {job}:"))
-                .unwrap_or_else(|| panic!("{file} has no job keyed `{job}`"));
-            let body: Vec<&str> = lines[start + 1..]
-                .iter()
-                .take_while(|line| line.is_empty() || line.starts_with("   "))
-                .copied()
-                .collect();
-            assert!(
-                body.contains(&format!("    name: {job}").as_str()),
-                "{file}'s `{job}` job is not named `{job}`"
-            );
-            assert!(
-                body.contains(&"    if: ${{ always() }}"),
-                "{file}'s `{job}` job does not run with `if: ${{{{ always() }}}}`"
-            );
-        }
-    }
-
     /// The repository's own workflow files against the command's own steps.
     /// The `workflow-coverage` step runs the same check; this keeps it red in
     /// the suite as well, beside the code it reads.

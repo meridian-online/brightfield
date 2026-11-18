@@ -3,10 +3,11 @@
 //! isolated environment, and posts the verdict as the `local-gate` commit
 //! status on the pull request's head.
 //!
-//! The order of a run: take the gate lock; read main's backstop workflows and
-//! keep the `main-red` issue in step with them; refuse a fork's head; fetch,
-//! make the worktree and merge main into it; post `pending`; run the tree's
-//! gate with its output teed to a log; post `success` or `failure`; clean up.
+//! The order of a run: take the gate lock; read main's newest nightly verdict
+//! and keep the `main-red` and `nightly-missing` issues in step with it;
+//! refuse a fork's head; fetch, make the worktree and merge main into it; post
+//! `pending`; run the tree's gate with its output teed to a log; post
+//! `success` or `failure`; clean up.
 //! Every failure after the head is known is posted as a `failure` status, and
 //! a run that leaves no summary is a failure, never a pass.
 
@@ -15,35 +16,26 @@ use std::fs::{self, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::flags::{self, MAIN_RED, NIGHTLY_MISSING};
+use crate::nightly_status::{self, is_missing, read_newest_verdict, Seen, VerdictState};
 use crate::runner::wall;
 use crate::steps::{self, Ctx};
 
 /// The repository whose pull requests the gate runs, and whose branches only.
-const REPO: &str = "meridian-online/brightfield";
+pub(crate) const REPO: &str = "meridian-online/brightfield";
 /// The commit status context the gate posts.
 const CONTEXT: &str = "local-gate";
-/// The workflows that still run on main, whose latest runs say whether main
-/// is red.
-const BACKSTOPS: [&str; 2] = ["test.yml", "lint.yml"];
-/// The label of the one open issue that says main is red.
-const RED_LABEL: &str = "main-red";
-const RED_BODY: &str = "`cargo xtask gate` reads main's backstop before each pull request's gate: the latest completed `test.yml` and `lint.yml` runs on main. One of them failed, so main is red. Each red run is commented here once, and the gate closes this issue when both workflows are green on one commit. A red main does not stop a pull request's gate, since the fix goes forward.";
+/// The commit status context the nightly gate posts on main, whose newest
+/// verdict says whether main is red.
+const NIGHTLY_CONTEXT: &str = "nightly-gate";
 
 fn say(message: &str) {
     eprintln!("cargo xtask gate: {message}");
 }
-
-/// Each backstop workflow's aggregate job, by workflow file and job name: a
-/// job that only reports whether the others passed, and that fails when one
-/// was cancelled. The backstop reads the jobs under it, so a cancelled run is
-/// not taken for a red one.
-/// `the_aggregate_jobs_the_backstop_leaves_out_are_still_in_their_workflows`
-/// holds each name to its workflow.
-pub const AGGREGATE_JOBS: &[(&str, &str)] = &[("test.yml", "test")];
 
 /// Where a gate stopped before its steps gave a verdict.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,7 +171,7 @@ pub fn run(pr: u64) -> ExitCode {
         }
         Err(Stop::Fail(failure)) => return post_failure(gh, &head, &failure),
     };
-    if let Err(e) = post_status(gh, &head, posted.state, &posted.text) {
+    if let Err(e) = nightly_status::post_status(gh, &head, CONTEXT, posted.state, &posted.text) {
         say(&e);
         return ExitCode::FAILURE;
     }
@@ -200,7 +192,7 @@ pub fn run(pr: u64) -> ExitCode {
 fn post_failure(gh: &OsStr, head: &str, failure: &Failure) -> ExitCode {
     say(&failure.detail);
     let text = failure.stage.phrase();
-    match post_status(gh, head, "failure", text) {
+    match nightly_status::post_status(gh, head, CONTEXT, "failure", text) {
         Ok(()) => {
             let sha7: String = head.chars().take(7).collect();
             println!("local-gate failure on {sha7}: {text}");
@@ -451,9 +443,10 @@ fn gate_head(pr: u64, paths: &Paths, head: &str, scratch: &Scratch) -> Result<Po
     }
 
     let main7: String = main_sha.chars().take(7).collect();
-    post_status(
+    nightly_status::post_status(
         OsStr::new("gh"),
         head,
+        CONTEXT,
         "pending",
         &format!("running on main {main7}"),
     )
@@ -649,49 +642,14 @@ fn engine_for_tree(
     }
 }
 
-/// Post the `local-gate` status on `sha` with `gh`, which runs with this
-/// process's own HOME and so its own credentials. A post happens under the
-/// gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls
-/// (`a_status_post_that_hangs_is_stopped_and_is_an_error`).
-pub fn post_status(gh: &OsStr, sha: &str, state: &str, text: &str) -> Result<(), String> {
-    post_status_within(gh, sha, state, text, CALL_TIMEOUT)
-}
-
-fn post_status_within(
-    gh: &OsStr,
-    sha: &str,
-    state: &str,
-    text: &str,
-    timeout: Duration,
-) -> Result<(), String> {
-    let endpoint = format!("repos/{REPO}/statuses/{sha}");
-    let state = format!("state={state}");
-    let context = format!("context={CONTEXT}");
-    let description = format!("description={text}");
-    let args = [
-        "api",
-        "--silent",
-        &endpoint,
-        "-f",
-        &state,
-        "-f",
-        &context,
-        "-f",
-        &description,
-    ];
-    output_within(gh, &args, timeout)
-        .map(|_| ())
-        .map_err(|e| format!("the verdict was not posted: {e}"))
-}
-
 /// How long a `gh`, `kata` or `git` call may take before the gate gives up on
 /// it. The backstop's calls and the status posts run under the gate lock, so a
 /// hung one must not hold the lock for good.
-const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Run a program and return what it printed; a non-zero exit is the error,
 /// with what it said, and so is a call that outlasts `CALL_TIMEOUT`.
-fn output_of(program: impl AsRef<OsStr>, args: &[&str]) -> Result<String, String> {
+pub(crate) fn output_of(program: impl AsRef<OsStr>, args: &[&str]) -> Result<String, String> {
     output_within(program, args, CALL_TIMEOUT)
 }
 
@@ -708,7 +666,7 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
 
 /// `output_of` with the timeout given: a call still running after `timeout`
 /// is killed, and the error names it.
-fn output_within(
+pub(crate) fn output_within(
     program: impl AsRef<OsStr>,
     args: &[&str],
     timeout: Duration,
@@ -754,241 +712,69 @@ fn output_within(
     }
 }
 
-/// Read main's backstop and keep the `main-red` issue in step with it. Nothing
-/// here stops the gate: a red main does not block a pull request, and a
-/// failed read or issue call is printed and passed over.
+/// Read main's newest nightly verdict and keep the `main-red` and
+/// `nightly-missing` issues in step with it. Nothing here stops the gate: a red
+/// or missing nightly does not block a pull request, since the fix goes
+/// forward, and a failed read or issue call is printed and passed over.
 fn check_backstop() {
-    let mut read = Vec::new();
-    let mut unread = false;
-    for workflow in BACKSTOPS {
-        match read_one_backstop(workflow) {
-            Ok(backstop) => read.push(backstop),
-            Err(e) => {
-                say(&format!("main's backstop: {e}"));
-                unread = true;
-            }
-        }
-    }
-    // A workflow that could not be read leaves main short of green.
-    match (combine(&read), unread) {
-        (MainState::Red(reds), _) => {
-            say("main is red; the gate carries on, since the fix goes forward");
-            note_red(&reds);
-        }
-        (MainState::Green { sha }, false) => note_green(&sha),
-        _ => say("main's backstop is unsettled; the main-red issue is left as it is"),
-    }
-}
-
-fn read_one_backstop(workflow: &str) -> Result<Backstop, String> {
-    let runs = output_of(
-        "gh",
-        &[
-            "run",
-            "list",
-            "--repo",
-            REPO,
-            "--branch",
-            "main",
-            "--workflow",
-            workflow,
-            "--status",
-            "completed",
-            "--limit",
-            "1",
-            "--json",
-            "databaseId,conclusion,headSha,url",
-        ],
-    )?;
-    let id = serde_json::from_str::<Value>(&runs)
-        .ok()
-        .and_then(|v| v.pointer("/0/databaseId").and_then(Value::as_u64))
-        .ok_or_else(|| format!("{workflow}: no completed run on main"))?;
-    let jobs = output_of(
-        "gh",
-        &[
-            "run",
-            "view",
-            &id.to_string(),
-            "--repo",
-            REPO,
-            "--json",
-            "jobs",
-        ],
-    )?;
-    read_backstop(workflow, &runs, &jobs)
-}
-
-/// Run kata in brightfield's project.
-fn kata(args: &[&str]) -> Result<String, String> {
-    kata_with(OsStr::new("kata"), args)
-}
-
-/// [`kata`] through `program`, so a test can stand a shim in for it.
-fn kata_with(program: &OsStr, args: &[&str]) -> Result<String, String> {
-    let mut all = args.to_vec();
-    all.extend(["--project", "brightfield"]);
-    output_of(program, &all)
-}
-
-/// Run kata for its effect, printing a failure and carrying on.
-fn kata_or_say(args: &[&str]) {
-    if let Err(e) = kata(args) {
-        say(&format!(
-            "the issue tracker call failed, and the gate carries on: {e}"
-        ));
-    }
-}
-
-/// The short id of the open `main-red` issue, if there is one.
-fn open_red_issue() -> Result<Option<String>, String> {
-    open_red_issue_with(OsStr::new("kata"))
-}
-
-fn open_red_issue_with(program: &OsStr) -> Result<Option<String>, String> {
-    let json = kata_with(program, &["list", "--label", RED_LABEL, "--json"])?;
-    let doc: Value =
-        serde_json::from_str(&json).map_err(|e| format!("`kata list` is not JSON: {e}"))?;
-    Ok(doc
-        .pointer("/issues/0/short_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned))
-}
-
-fn note_red(reds: &[Backstop]) {
-    let issue = match open_red_issue() {
-        Ok(Some(issue)) => issue,
-        Ok(None) => {
-            // `--force-new` past a closed look-alike is safe because this runs under the gate lock, after finding no open one.
-            let created = kata(&[
-                "create",
-                "main is red",
-                "--body",
-                RED_BODY,
-                "--label",
-                RED_LABEL,
-                "--force-new",
-                "--agent",
-            ])
-            .and_then(|_| open_red_issue())
-            .and_then(|issue| {
-                issue.ok_or_else(|| "`kata create` left no open main-red issue".to_owned())
-            });
-            match created {
-                Ok(issue) => {
-                    kata_or_say(&[
-                        "meta",
-                        "set",
-                        &issue,
-                        "work.attention",
-                        "needs-human",
-                        "--agent",
-                    ]);
-                    kata_or_say(&[
-                        "meta",
-                        "set",
-                        &issue,
-                        "work.attention_msg",
-                        "main is red: a backstop workflow failed",
-                        "--agent",
-                    ]);
-                    issue
-                }
-                Err(e) => {
-                    say(&format!(
-                        "the issue tracker call failed, and the gate carries on: {e}"
-                    ));
-                    return;
-                }
-            }
-        }
+    let query = format!("query={}", nightly_status::query(NIGHTLY_CONTEXT));
+    let seen = output_of("gh", &["api", "graphql", "-f", &query])
+        .and_then(|json| read_newest_verdict(&json, NIGHTLY_CONTEXT));
+    let seen = match seen {
+        Ok(seen) => seen,
         Err(e) => {
-            say(&format!(
-                "the issue tracker call failed, and the gate carries on: {e}"
-            ));
+            say(&format!("main's nightly verdict could not be read: {e}"));
             return;
         }
     };
-    let noted = match kata(&["show", &issue, "--json"]) {
-        Ok(json) => serde_json::from_str::<Value>(&json)
-            .ok()
-            .and_then(|doc| doc.get("comments").and_then(Value::as_array).cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|c| c.get("body").and_then(Value::as_str).map(str::to_owned))
-            .collect::<Vec<_>>(),
-        Err(e) => {
-            say(&format!(
-                "the issue tracker call failed, and the gate carries on: {e}"
-            ));
-            return;
-        }
-    };
-    for red in reds {
-        let Backstop::Red {
-            url, sha, workflow, ..
-        } = red
-        else {
-            continue;
-        };
-        if noted.iter().any(|body| body.contains(url.as_str())) {
-            continue;
-        }
+    if let Seen::Verdict {
+        sha,
+        state,
+        description,
+        ..
+    } = &seen
+    {
         let sha7: String = sha.chars().take(7).collect();
-        kata_or_say(&[
-            "comment",
-            &issue,
-            "--body",
-            &format!("{workflow} failed on main at {sha7}: {url}"),
-            "--agent",
-        ]);
-    }
-}
-
-fn note_green(sha: &str) {
-    note_green_with(OsStr::new("kata"), sha);
-}
-
-/// Close the open `main-red` issue with `sha`, the commit both workflows went
-/// green on, as its evidence: kata refuses a done close without evidence. The
-/// green note rides on the close as its `--comment`, which kata posts only once
-/// the close succeeds, so a refused close leaves no note to repeat on the next
-/// gate's run.
-fn note_green_with(program: &OsStr, sha: &str) {
-    let issue = match open_red_issue_with(program) {
-        Ok(Some(issue)) => issue,
-        Ok(None) => return,
-        Err(e) => {
-            say(&format!(
-                "the issue tracker call failed, and the gate carries on: {e}"
-            ));
-            return;
+        match state {
+            VerdictState::Failure => {
+                say("main is red; the gate carries on, since the fix goes forward");
+                flags::raise(
+                    &MAIN_RED,
+                    &format!("the nightly gate failed on main at {sha7}: {description}"),
+                );
+            }
+            VerdictState::Success => {
+                flags::clear(&MAIN_RED, sha, &format!("main is green at {sha7}"));
+            }
         }
-    };
-    let sha7: String = sha.chars().take(7).collect();
-    let message = format!(
-        "main's test and lint workflows are green again on one commit, {sha7}, as the gate read them"
-    );
-    let note = format!("main is green at {sha7}");
-    let closed = kata_with(
-        program,
-        &[
-            "close",
-            &issue,
-            "--done",
-            "--message",
-            &message,
-            "--commit",
-            sha,
-            "--comment",
-            &note,
-            "--agent",
-        ],
-    );
-    if let Err(e) = closed {
+    }
+    // A clock before 1970 reads as the epoch, which makes a verdict look
+    // recent rather than raising a flag on a broken clock.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if is_missing(&seen, now) {
+        let since = match &seen {
+            Seen::Verdict { at, .. } => at.get(..10).unwrap_or("ever"),
+            Seen::None => "ever",
+        };
         say(&format!(
-            "the issue tracker call failed, and the gate carries on: {e}"
+            "main's nightly has not given a verdict since {since}"
         ));
+        // The day it was read makes the comment new once a day, so a nightly
+        // that stays missing is noted each day rather than on every gate.
+        let today = match output_of("date", &["+%Y-%m-%d"]) {
+            Ok(day) => day.trim().to_owned(),
+            Err(e) => {
+                say(&format!("could not read today's date: {e}"));
+                "an unknown day".to_owned()
+            }
+        };
+        // The gate never clears this flag; only the nightly's own verdict does.
+        flags::raise(
+            &NIGHTLY_MISSING,
+            &format!("no nightly verdict on main since {since}, read {today}"),
+        );
     }
 }
 
@@ -1048,150 +834,6 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
             };
             format!("{head}{shown}{tail}")
         }
-    }
-}
-
-/// One backstop workflow's latest settled run on main.
-#[derive(Debug, PartialEq)]
-pub enum Backstop {
-    Green {
-        sha: String,
-    },
-    Red {
-        run_id: u64,
-        url: String,
-        sha: String,
-        workflow: String,
-    },
-    CancelledOnly {
-        run_id: u64,
-        url: String,
-    },
-}
-
-/// Read `gh run list --json databaseId,conclusion,headSha,url` (newest first)
-/// and `gh run view <id> --json jobs` for the newest run that has finished.
-/// A failed job makes it red; cancelled or timed-out jobs alone do not. The
-/// workflow's aggregate job, named in `AGGREGATE_JOBS`, is left out: it fails
-/// whenever a job under it was cancelled, so the jobs under it are what count.
-pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<Backstop, String> {
-    let runs: Value = serde_json::from_str(run_json)
-        .map_err(|e| format!("{workflow}: runs are not JSON: {e}"))?;
-    let run = runs
-        .as_array()
-        .and_then(|runs| {
-            runs.iter().find(|r| {
-                r.get("conclusion")
-                    .and_then(Value::as_str)
-                    .is_some_and(|c| !c.is_empty())
-            })
-        })
-        .ok_or_else(|| format!("{workflow}: no finished run"))?;
-    let run_id = run
-        .get("databaseId")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("{workflow}: run has no databaseId"))?;
-    let text = |key: &str| {
-        run.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
-    };
-    let (url, sha) = (text("url"), text("headSha"));
-
-    let view: Value = serde_json::from_str(jobs_json)
-        .map_err(|e| format!("{workflow}: jobs are not JSON: {e}"))?;
-    let jobs = view
-        .get("jobs")
-        .and_then(Value::as_array)
-        .filter(|jobs| !jobs.is_empty())
-        .ok_or_else(|| format!("{workflow}: run {run_id} has no jobs"))?;
-    let aggregate = AGGREGATE_JOBS
-        .iter()
-        .find(|(file, _)| *file == workflow)
-        .map(|(_, job)| *job);
-    let conclusions: Vec<&str> = jobs
-        .iter()
-        .filter(|j| aggregate.is_none() || j.get("name").and_then(Value::as_str) != aggregate)
-        .map(|j| {
-            j.get("conclusion")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        })
-        .collect();
-    if conclusions.is_empty() {
-        return Err(format!(
-            "{workflow}: run {run_id} has no jobs but its aggregate one"
-        ));
-    }
-    if conclusions.contains(&"failure") {
-        Ok(Backstop::Red {
-            run_id,
-            url,
-            sha,
-            workflow: workflow.to_owned(),
-        })
-    } else if conclusions
-        .iter()
-        .any(|c| matches!(*c, "cancelled" | "timed_out"))
-    {
-        Ok(Backstop::CancelledOnly { run_id, url })
-    } else if conclusions
-        .iter()
-        .all(|c| matches!(*c, "success" | "skipped"))
-    {
-        Ok(Backstop::Green { sha })
-    } else {
-        Err(format!(
-            "{workflow}: run {run_id} has jobs with unsettled conclusions"
-        ))
-    }
-}
-
-/// Main's state across every backstop workflow.
-#[derive(Debug, PartialEq)]
-pub enum MainState {
-    Red(Vec<Backstop>),
-    Green {
-        sha: String,
-    },
-    /// Neither red nor wholly green: say nothing on the issue.
-    Unsettled,
-}
-
-pub fn combine(each: &[Backstop]) -> MainState {
-    let red: Vec<Backstop> = each
-        .iter()
-        .filter_map(|b| match b {
-            Backstop::Red {
-                run_id,
-                url,
-                sha,
-                workflow,
-            } => Some(Backstop::Red {
-                run_id: *run_id,
-                url: url.clone(),
-                sha: sha.clone(),
-                workflow: workflow.clone(),
-            }),
-            _ => None,
-        })
-        .collect();
-    if !red.is_empty() {
-        return MainState::Red(red);
-    }
-    let mut shas = Vec::new();
-    for b in each {
-        match b {
-            Backstop::Green { sha } => shas.push(sha),
-            _ => return MainState::Unsettled,
-        }
-    }
-    match shas.split_first() {
-        Some((first, rest)) if rest.iter().all(|s| s == first) => MainState::Green {
-            sha: (*first).clone(),
-        },
-        _ => MainState::Unsettled,
     }
 }
 
@@ -1326,69 +968,6 @@ mod tests {
         assert!(text.contains('…'));
     }
 
-    fn red() -> Backstop {
-        Backstop::Red {
-            run_id: 1,
-            url: "u".into(),
-            sha: "a".into(),
-            workflow: "ci".into(),
-        }
-    }
-
-    #[test]
-    fn one_red_workflow_makes_main_red_whatever_the_other_says() {
-        let green = || Backstop::Green { sha: "b".into() };
-        assert!(matches!(combine(&[red(), green()]), MainState::Red(r) if r.len() == 1));
-        assert_eq!(
-            combine(&[green(), green()]),
-            MainState::Green { sha: "b".into() }
-        );
-        let cancelled = Backstop::CancelledOnly {
-            run_id: 2,
-            url: "u".into(),
-        };
-        assert_eq!(combine(&[green(), cancelled]), MainState::Unsettled);
-        assert_eq!(combine(&[]), MainState::Unsettled);
-    }
-
-    const RUNS: &str = r#"[{"databaseId":77,"conclusion":"failure","headSha":"abc123","url":"https://github.com/o/r/actions/runs/77"},{"databaseId":70,"conclusion":"success","headSha":"old","url":"x"}]"#;
-
-    fn jobs(conclusions: &[&str]) -> String {
-        let jobs: Vec<String> = conclusions
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!(r#"{{"name":"job{i}","conclusion":"{c}"}}"#))
-            .collect();
-        format!(r#"{{"jobs":[{}]}}"#, jobs.join(","))
-    }
-
-    #[test]
-    fn a_failed_job_is_red_and_a_cancelled_one_is_not() {
-        assert_eq!(
-            read_backstop("ci", RUNS, &jobs(&["success", "failure"])),
-            Ok(Backstop::Red {
-                run_id: 77,
-                url: "https://github.com/o/r/actions/runs/77".into(),
-                sha: "abc123".into(),
-                workflow: "ci".into()
-            })
-        );
-        assert_eq!(
-            read_backstop("ci", RUNS, &jobs(&["cancelled", "timed_out"])),
-            Ok(Backstop::CancelledOnly {
-                run_id: 77,
-                url: "https://github.com/o/r/actions/runs/77".into()
-            })
-        );
-        assert_eq!(
-            read_backstop("ci", RUNS, &jobs(&["success", "skipped"])),
-            Ok(Backstop::Green {
-                sha: "abc123".into()
-            })
-        );
-        assert!(read_backstop("ci", "[]", &jobs(&["success"])).is_err());
-    }
-
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gate-lock-{tag}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1507,23 +1086,6 @@ mod tests {
         assert_eq!(check_head_repository("meridian-online/brightfield"), Ok(()));
     }
 
-    #[test]
-    fn a_status_that_cannot_be_posted_is_an_error() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("post");
-        let gh = dir.join("gh");
-        fs::write(
-            &gh,
-            "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n",
-        )
-        .unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-        let error = post_status(gh.as_os_str(), "abc123", "success", "passed").unwrap_err();
-        assert!(error.contains("not posted"), "{error}");
-        assert!(error.contains("Bad credentials"), "{error}");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
     /// A stand-in for the tree's `fetch-duckdb-cli.sh` whose pin is `pin`:
     /// `--check` accepts a directory whose `duckdb` holds that text, and a
     /// fetch writes it, logging each fetch.
@@ -1583,100 +1145,6 @@ mod tests {
         // at the gate's directory, never at the filesystem root.
         assert_eq!(shared, gate_dir.components().count());
         assert_eq!(cwd.components().count() - shared, 4);
-    }
-
-    /// A kata that answers `list` with one open issue, logs every call, and
-    /// refuses a done close without evidence, as the real one does.
-    fn strict_kata(dir: &Path) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let kata = dir.join("kata");
-        let log = dir.join("calls");
-        fs::write(
-            &kata,
-            format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  list) echo '{{\"issues\":[{{\"short_id\":\"red1\"}}]}}' ;;\n  close) case \"$*\" in *--commit*) ;; *) echo 'evidence required for reason=done' >&2; exit 3 ;; esac ;;\nesac\n",
-                log.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&kata, fs::Permissions::from_mode(0o755)).unwrap();
-        kata
-    }
-
-    #[test]
-    fn a_green_main_closes_the_red_issue_with_its_commit_and_notes_it_once() {
-        let dir = scratch("green-close");
-        let kata = strict_kata(&dir);
-        note_green_with(kata.as_os_str(), "abc1234def");
-        let calls = fs::read_to_string(dir.join("calls")).unwrap();
-        let lines: Vec<&str> = calls.lines().collect();
-        assert_eq!(lines.len(), 2, "{calls}");
-        assert!(lines[0].starts_with("list "), "{calls}");
-        assert!(lines[1].starts_with("close red1 --done"), "{calls}");
-        assert!(lines[1].contains("--commit abc1234def"), "{calls}");
-        assert!(
-            lines[1].contains("--comment main is green at abc1234"),
-            "{calls}"
-        );
-        assert!(!calls.contains("\ncomment "), "{calls}");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_status_post_that_hangs_is_stopped_and_is_an_error() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("post-hang");
-        let gh = dir.join("gh");
-        fs::write(&gh, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = post_status_within(
-            gh.as_os_str(),
-            "abc123",
-            "success",
-            "passed",
-            Duration::from_millis(300),
-        )
-        .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(10), "{error}");
-        assert!(error.contains("not posted"), "{error}");
-        assert!(error.contains("timed out"), "{error}");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_cancelled_cache_job_under_a_red_aggregate_is_cancelled_only() {
-        // Shaped like main's run 43951187684: warm-cache cancelled, the shards
-        // skipped, and only the aggregate `test` job failed.
-        let runs = r#"[{"databaseId":43951187684,"conclusion":"failure","headSha":"09c2efb","url":"https://github.com/o/r/actions/runs/43951187684"}]"#;
-        let jobs = r#"{"jobs":[
-            {"name":"Packaging stages the type source and the DuckDB CLI into both artifacts","conclusion":"cancelled"},
-            {"name":"The packaged artifact carries a type source (disk image)","conclusion":"success"},
-            {"name":"warm the build cache","conclusion":"cancelled"},
-            {"name":"The air-gap read jail refuses reads outside its grant","conclusion":"success"},
-            {"name":"test","conclusion":"failure"},
-            {"name":"test shard ${{ matrix.name }}","conclusion":"skipped"}]}"#;
-        assert_eq!(
-            read_backstop("test.yml", runs, jobs),
-            Ok(Backstop::CancelledOnly {
-                run_id: 43951187684,
-                url: "https://github.com/o/r/actions/runs/43951187684".into()
-            })
-        );
-        // A failed leaf job is still red, aggregate or not.
-        let red_leaf = jobs.replace(
-            r#""warm the build cache","conclusion":"cancelled""#,
-            r#""warm the build cache","conclusion":"failure""#,
-        );
-        assert!(matches!(
-            read_backstop("test.yml", runs, &red_leaf),
-            Ok(Backstop::Red { .. })
-        ));
-        // In a workflow with no aggregate job, a job named `test` is a leaf.
-        assert!(matches!(
-            read_backstop("lint.yml", runs, jobs),
-            Ok(Backstop::Red { .. })
-        ));
     }
 
     #[test]
@@ -1787,16 +1255,6 @@ mod tests {
         assert_eq!(
             output_within("echo", &["hello"], Duration::from_secs(10)),
             Ok("hello\n".to_owned())
-        );
-    }
-
-    #[test]
-    fn green_on_different_shas_is_unsettled() {
-        let on = |sha: &str| Backstop::Green { sha: sha.into() };
-        assert_eq!(combine(&[on("a"), on("b")]), MainState::Unsettled);
-        assert_eq!(
-            combine(&[on("a"), on("a")]),
-            MainState::Green { sha: "a".into() }
         );
     }
 }
