@@ -287,7 +287,7 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
 
 /// Refuse a tree that is not the commit the nightly is to post on: `head` is
 /// the tree's `git rev-parse HEAD` and `changes` its `git status
-/// --porcelain`, so a status never names a commit whose code did not run, as
+/// --porcelain`. A status then names the commit whose code ran, as
 /// `a_tree_that_is_not_the_commit_is_refused` checks.
 pub fn check_tree(sha: &str, head: &str, changes: &str) -> Result<(), String> {
     let head = head.trim();
