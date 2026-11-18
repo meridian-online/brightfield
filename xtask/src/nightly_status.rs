@@ -165,9 +165,18 @@ fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// The pauses between tries of a status post: three tries in all. GitHub
+/// sometimes answers a post with an error and no body, which `gh` reports as
+/// `unexpected end of JSON input`; one such answer cost main a night's
+/// verdict while the post after it, a moment later, landed.
+const POST_PAUSES: [Duration; 2] = [Duration::from_secs(15), Duration::from_secs(60)];
+
 /// Post a commit status in `context` on `sha` with `gh`, which runs with this
-/// process's own HOME and so its own credentials. A post happens under the
-/// gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls
+/// process's own HOME and so its own credentials. A post that fails is tried
+/// again after each of `POST_PAUSES`, unless GitHub refused the request
+/// itself (`a_post_github_refused_is_not_tried_again`), since the same
+/// request would be refused again. A post happens under the gate lock, so
+/// each try is held to `CALL_TIMEOUT` like the gate's other calls
 /// (`a_status_post_that_hangs_is_stopped_and_is_an_error`).
 pub fn post_status(
     gh: &OsStr,
@@ -176,16 +185,26 @@ pub fn post_status(
     state: &str,
     text: &str,
 ) -> Result<(), String> {
-    post_status_within(gh, sha, context, state, text, CALL_TIMEOUT)
+    post_status_with(gh, sha, context, state, text, CALL_TIMEOUT, &POST_PAUSES)
 }
 
-fn post_status_within(
+/// Whether `gh` said GitHub refused the request as the client's fault: an
+/// HTTP 4xx other than 429, which asks the client to wait and try again.
+fn is_refusal(error: &str) -> bool {
+    error.match_indices("HTTP 4").any(|(at, _)| {
+        let code = error.get(at + 5..at + 8).unwrap_or("");
+        code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()) && code != "429"
+    })
+}
+
+fn post_status_with(
     gh: &OsStr,
     sha: &str,
     context: &str,
     state: &str,
     text: &str,
     timeout: Duration,
+    pauses: &[Duration],
 ) -> Result<(), String> {
     let endpoint = format!("repos/{REPO}/statuses/{sha}");
     let state = format!("state={state}");
@@ -202,16 +221,34 @@ fn post_status_within(
         "-f",
         &description,
     ];
-    output_within(gh, &args, timeout)
-        .map(|_| ())
-        .map_err(|e| format!("the verdict was not posted: {e}"))
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let error = match output_within(gh, &args, timeout) {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
+        if is_refusal(&error) {
+            return Err(format!("the verdict was not posted: {error}"));
+        }
+        let Some(pause) = pauses.get(tries - 1) else {
+            return Err(format!(
+                "the verdict was not posted after {tries} tries: {error}"
+            ));
+        };
+        eprintln!(
+            "the status post failed, trying again in {}s: {error}",
+            pause.as_secs()
+        );
+        std::thread::sleep(*pause);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::Instant;
 
     /// A GraphQL answer whose history holds one commit per entry, newest
@@ -383,6 +420,84 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A fake `gh` that counts its calls in the file it returns and fails the
+    /// first `fails` of them, saying `said` on stderr, then succeeds.
+    fn flaky_gh(dir: &Path, fails: u32, said: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let gh = dir.join("gh");
+        let calls = dir.join("calls");
+        fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\necho x >> '{calls}'\nn=$(wc -l < '{calls}')\n\
+                 if [ \"$n\" -le {fails} ]; then echo '{said}' >&2; exit 1; fi\n",
+                calls = calls.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        (gh, calls)
+    }
+
+    fn calls_made(calls: &Path) -> usize {
+        fs::read_to_string(calls).map_or(0, |text| text.lines().count())
+    }
+
+    const NO_PAUSE: [Duration; 2] = [Duration::ZERO, Duration::ZERO];
+
+    fn post_quickly(gh: &Path) -> Result<(), String> {
+        post_status_with(
+            gh.as_os_str(),
+            "abc123",
+            "nightly-gate",
+            "failure",
+            "x",
+            CALL_TIMEOUT,
+            &NO_PAUSE,
+        )
+    }
+
+    #[test]
+    fn a_post_github_answered_with_an_empty_error_is_tried_again() {
+        // What `gh` printed the night a `nightly-gate` verdict went unposted
+        // while the `nightly-network` post just after it landed.
+        let dir = scratch("retry");
+        let (gh, calls) = flaky_gh(&dir, 1, "unexpected end of JSON input");
+        post_quickly(&gh).unwrap();
+        assert_eq!(calls_made(&calls), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_post_that_keeps_failing_is_tried_three_times_and_is_an_error() {
+        let dir = scratch("retry-out");
+        let (gh, calls) = flaky_gh(&dir, 9, "HTTP 502: Bad Gateway");
+        let error = post_quickly(&gh).unwrap_err();
+        assert_eq!(calls_made(&calls), 3);
+        assert!(error.contains("not posted after 3 tries"), "{error}");
+        assert!(error.contains("Bad Gateway"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_post_github_refused_is_not_tried_again() {
+        let dir = scratch("retry-refused");
+        let (gh, calls) = flaky_gh(&dir, 9, "HTTP 422: Validation Failed");
+        let error = post_quickly(&gh).unwrap_err();
+        assert_eq!(calls_made(&calls), 1);
+        assert!(error.contains("Validation Failed"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_post_github_rate_limited_is_tried_again() {
+        let dir = scratch("retry-rate");
+        let (gh, calls) = flaky_gh(&dir, 2, "HTTP 429: Too Many Requests");
+        post_quickly(&gh).unwrap();
+        assert_eq!(calls_made(&calls), 3);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_status_post_that_hangs_is_stopped_and_is_an_error() {
         use std::os::unix::fs::PermissionsExt;
@@ -391,13 +506,14 @@ mod tests {
         fs::write(&gh, "#!/bin/sh\nexec sleep 30\n").unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
         let started = Instant::now();
-        let error = post_status_within(
+        let error = post_status_with(
             gh.as_os_str(),
             "abc123",
             "local-gate",
             "success",
             "passed",
             Duration::from_millis(300),
+            &NO_PAUSE,
         )
         .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(10), "{error}");
