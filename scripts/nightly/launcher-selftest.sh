@@ -127,6 +127,9 @@ run_installed() {
 # Another run's tree for the same commit, which this run must not touch.
 OTHER="$HOME/.cache/meridian/gate/trees/nightly-${MAIN_SHA:0:7}.other"
 mkdir -p "$OTHER" && echo keep > "$OTHER/file"
+# A tree a killed run left two days ago, which this run reclaims.
+OLD="$HOME/.cache/meridian/gate/trees/nightly-0000000.old"
+mkdir -p "$OLD" && touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$OLD"
 : > "$STUB_LOG"
 run_installed env; status=$?
 if [ "$status" -eq 0 ]; then pass "exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
@@ -142,6 +145,8 @@ if grep -qF "$MARKER $TREE/scripts/nightly/run.sh" "$MARKER_FILE" 2>/dev/null; t
 else fail "no marker from the worktree's run.sh: $(cat "$MARKER_FILE" 2>/dev/null)"; fi
 if [ ! -e "$TREE" ] && ! git -C "$CLONE" worktree list | grep -qF "$TREE"; then pass "the worktree is gone afterwards"
 else fail "the worktree is still there"; fi
+if [ ! -e "$OLD" ]; then pass "a tree two days old was reclaimed"
+else fail "the old tree is still there"; fi
 if [ -f "$OTHER/file" ]; then pass "another run's tree for the same commit survived"
 else fail "a pre-existing tree was removed"; fi
 if cmp -s "$INSTALLED" "$ORIGIN/scripts/nightly/run.sh"; then pass "the installed copy now matches the fetched ref's"

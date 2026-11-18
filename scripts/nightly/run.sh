@@ -63,9 +63,8 @@ sha=$(git -C "$repo" rev-parse --verify "FETCH_HEAD^{commit}")
 # next night without anyone re-running install. Only the installed copy is
 # replaced, and only from main: a trial branch must not install its launcher
 # for the nights after it. `run-now` runs the checkout's file, which is left
-# alone. The temp
-# file sits beside the copy so mv is an atomic rename, and the running shell
-# keeps reading the old inode.
+# alone. The temp file sits beside the copy so mv is an atomic rename, and the
+# running shell keeps reading the old inode.
 installed_dir="$HOME/.cache/meridian/gate/nightly"
 self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 if [ "$ref" = "main" ] && [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)" ] \
@@ -89,6 +88,15 @@ fi
 # while it waits on the gate lock) delete the other's tree mid-build.
 trees="$HOME/.cache/meridian/gate/trees"
 mkdir -p "$trees"
+# A run killed by SIGKILL or a reboot never reaches its trap and leaves its
+# tree behind. A whole run, lock wait included, ends well inside a day, so a
+# nightly-* tree older than that belongs to no live run. Git is asked first so
+# its worktree record goes too; rm -rf only handles a path git does not know.
+# Nothing outside $trees, and nothing younger than a day, is touched.
+while IFS= read -r stale; do
+  git -C "$repo" worktree remove --force "$stale" >/dev/null 2>&1 || rm -rf "$stale"
+done < <(find "$trees" -mindepth 1 -maxdepth 1 -type d -name 'nightly-*' -mmin +1440)
+git -C "$repo" worktree prune >/dev/null 2>&1 || true
 tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
