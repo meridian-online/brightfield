@@ -60,7 +60,7 @@ if [ -n "$brew_bin" ]; then
   for dir in $PATH; do
     [ "$dir" = "$brew_bin" ] && continue
     case "$dir" in
-      /usr/bin | /bin | /usr/sbin | /sbin | /System/*)
+      /usr/local/bin | /usr/bin | /bin | /usr/sbin | /sbin | /System/*)
         if [ -z "$placed" ]; then
           rebuilt="${rebuilt:+$rebuilt:}$brew_bin"
           placed=1
