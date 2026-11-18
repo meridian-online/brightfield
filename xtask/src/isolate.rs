@@ -123,9 +123,9 @@ pub enum Unready {
 /// and rustup homes under `home`, the persistent target directory under
 /// `gate_dir`, the DuckDB CLI the tree pins, and none of the variables
 /// `removed_from_child` names. With `open_analytics`, the real
-/// `open-analytics` checkout found from `invoking` too, which only the
-/// nightly's report on it reads; without, the run gets no checkout, so a
-/// pull request's gate cannot come to depend on another repository's main.
+/// `open-analytics` checkout found from `invoking` too, for the nightly's
+/// report on it; without, the run gets no checkout, so a pull request's gate
+/// cannot come to depend on another repository's main.
 /// The caller adds the run's own arguments.
 pub fn isolated_ci(
     invoking: &Path,
