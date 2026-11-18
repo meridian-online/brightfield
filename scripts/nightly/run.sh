@@ -17,9 +17,23 @@
 # BRIGHTFIELD_NIGHTLY_REF names the ref to fetch (default `main`). Any other
 # ref runs as a trial (`--trial`), so a branch can be rehearsed without its
 # verdict being taken for main's.
+#
+# Once `cargo xtask nightly` starts, it reports its own stops. A main run that
+# stops before then (the fetch fails, the worktree cannot be made, the tree's
+# toolchain is not installed, xtask does not build) raises the same
+# `nightly-missing` Kata issue from here instead, so a launcher that fails
+# every night does not go unseen until a pull request's gate runs.
 set -euo pipefail
 
 die() { echo "nightly: $*" >&2; exit 2; }
+
+# Stage two names each step in the file BRIGHTFIELD_NIGHTLY_STAGE_FILE names,
+# when stage one set it, so stage one can tell whether xtask was reached.
+mark() {
+  if [ -n "${BRIGHTFIELD_NIGHTLY_STAGE_FILE:-}" ]; then
+    printf '%s\n' "$1" > "$BRIGHTFIELD_NIGHTLY_STAGE_FILE" || true
+  fi
+}
 
 in_tree() {
   local sha="" trial=""
@@ -37,11 +51,69 @@ in_tree() {
   tree="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   cd "$tree"
   local channel
+  mark "read the tree's toolchain"
   channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
   [ -n "$channel" ] || die "no channel in this tree's rust-toolchain.toml"
 
+  # Start the toolchain and build xtask first, so a missing toolchain or an
+  # xtask that does not compile is told apart from a stop xtask reports
+  # itself. The build is the one the `xtask` alias makes, so the run below
+  # reuses it.
+  mark "start cargo +${channel}"
+  cargo "+${channel}" --version >/dev/null
+  mark "build xtask with cargo +${channel}"
+  cargo "+${channel}" build --locked --quiet --package xtask
+  mark "xtask"
   # ${trial:+...} so no empty argument reaches xtask when this is main's run.
   cargo "+${channel}" xtask nightly --sha "$sha" ${trial:+"$trial"}
+}
+
+# Raise the `nightly-missing` issue for a main run that stopped at "$1"
+# before xtask started, the way xtask/src/flags.rs raises it: find the open
+# issue or open one, flag it for Hugh, and comment once per day. Every
+# tracker failure is printed and passed over.
+# shellcheck disable=SC2329 # invoked by on_exit, the EXIT trap below
+raise_missing() {
+  local why="$1" day key issue shown title body attention
+  # NIGHTLY_MISSING's title, body and attention line in xtask/src/flags.rs,
+  # one per line; launcher-selftest.sh checks flags.rs still spells each so.
+  { IFS= read -r title; IFS= read -r body; IFS= read -r attention; } <<'FLAG'
+main's nightly gate has not given a verdict
+The nightly gate posts a `success` or `failure` `nightly-gate` status on main each night. Main has gone more than 36 hours without one, or the nightly stopped before its steps, so main's state is unknown. The nightly may not be scheduled, the machine may have been off, or the run may have stopped early; its log says which. `cargo xtask gate` raises this issue but never closes it: only the nightly's next verdict does.
+main's nightly gate has not given a verdict
+FLAG
+  day=$(date +%Y%m%d)
+  key="the nightly launcher stopped on ${day}"
+  echo "nightly: ${key} before the gate started: ${why}; raising nightly-missing" >&2
+  say() { echo "nightly: the issue tracker call failed, and the launcher carries on: $*" >&2; }
+  kt() { kata "$@" --project brightfield; }
+  open_missing() {
+    kt list --label nightly-missing --json \
+      | python3 -c 'import json, sys; i = json.load(sys.stdin).get("issues") or []; print(i[0]["short_id"] if i else "")'
+  }
+  if ! issue=$(open_missing); then say "kata list"; return 0; fi
+  if [ -z "$issue" ]; then
+    # --force-new past a closed look-alike, as flags.rs does, after finding no
+    # open one.
+    if ! kt create "$title" --body "$body" --label nightly-missing --force-new --agent >/dev/null; then
+      say "kata create"; return 0
+    fi
+    if ! issue=$(open_missing) || [ -z "$issue" ]; then say "kata create left no open nightly-missing issue"; return 0; fi
+  fi
+  kt meta set "$issue" work.attention needs-human --agent >/dev/null || say "kata meta set work.attention"
+  kt meta set "$issue" work.attention_msg "$attention" --agent >/dev/null || say "kata meta set work.attention_msg"
+  if ! shown=$(kt show "$issue" --json); then say "kata show"; return 0; fi
+  if ! printf '%s' "$shown" | python3 -c '
+import json, sys
+key = sys.argv[1]
+try:
+    comments = json.load(sys.stdin).get("comments") or []
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if any(key in (c.get("body") or "") for c in comments) else 1)' "$key"; then
+    kt comment "$issue" --body "${key} before the gate started: ${why}" --agent >/dev/null || say "kata comment"
+  fi
+  return 0
 }
 
 if [ "${1:-}" = "--in-tree" ]; then
@@ -55,8 +127,36 @@ repo="${BRIGHTFIELD_NIGHTLY_REPO:-}"
 ref="${BRIGHTFIELD_NIGHTLY_REF:-main}"
 case "$ref" in -*) die "BRIGHTFIELD_NIGHTLY_REF must not start with '-': $ref" ;; esac
 
+# From here every exit goes through on_exit: it removes the tree this run
+# made, if any, and when a main run fails before xtask started, raises
+# nightly-missing naming the step it stopped at. A trial raises nothing.
+stage="fetch origin ${ref}"
+tree=""
+stage_file="$(mktemp "${TMPDIR:-/tmp}/brightfield-nightly-stage.XXXXXX")"
+export BRIGHTFIELD_NIGHTLY_STAGE_FILE="$stage_file"
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+cleanup() {
+  git -C "$repo" worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"
+  git -C "$repo" worktree prune >/dev/null 2>&1 || true
+}
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+on_exit() {
+  local status=$? reached
+  set +e
+  [ -z "$tree" ] || cleanup
+  reached=$(cat "$stage_file" 2>/dev/null)
+  rm -f "$stage_file"
+  if [ "$status" -ne 0 ] && [ "$ref" = "main" ] && [ "$reached" != "xtask" ]; then
+    raise_missing "${reached:-$stage}"
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+
 git -C "$repo" fetch --quiet origin "$ref"
+stage="resolve the fetched commit"
 sha=$(git -C "$repo" rev-parse --verify "FETCH_HEAD^{commit}")
+stage="replace the installed run.sh"
 
 # The installed copy follows main: if the fetched ref's run.sh differs, replace
 # this file with it before handing over, so a change to stage one reaches the
@@ -86,6 +186,7 @@ fi
 # Each run makes its own tree, and removes only the one it made. A fixed name
 # per commit would let a hand-started run overlapping the scheduled one (say,
 # while it waits on the gate lock) delete the other's tree mid-build.
+stage="make the tree"
 trees="$HOME/.cache/meridian/gate/trees"
 mkdir -p "$trees"
 # A run killed by SIGKILL or a reboot never reaches its trap and leaves its
@@ -99,15 +200,12 @@ while IFS= read -r stale; do
 done < <(find "$trees" -mindepth 1 -maxdepth 1 -type d -name 'nightly-*' -mmin +1440)
 git -C "$repo" worktree prune >/dev/null 2>&1 || true
 tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
-# shellcheck disable=SC2329 # invoked by the EXIT trap below
-cleanup() {
-  git -C "$repo" worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"
-  git -C "$repo" worktree prune >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
+stage="add the worktree"
 git -C "$repo" worktree add --quiet --detach "$tree" "$sha"
+stage="find the tree's run.sh"
 [ -f "$tree/scripts/nightly/run.sh" ] \
   || die "${ref} (${sha:0:7}) has no scripts/nightly/run.sh"
+stage="run the tree's run.sh"
 
 args=(--in-tree "$sha")
 [ "$ref" = "main" ] || args+=(--trial)

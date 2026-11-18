@@ -7,7 +7,9 @@
 #
 # cargo is a stub that records where it ran and with what, so this never builds
 # anything. launchctl is a stub that fails the test if it is ever called, since
-# BRIGHTFIELD_NIGHTLY_DRY_RUN=1 promises it is not.
+# BRIGHTFIELD_NIGHTLY_DRY_RUN=1 promises it is not. kata is a stub that logs
+# its arguments and keeps one issue's state in files, so a launcher failure's
+# report is checked without touching the real issue tracker.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -41,15 +43,39 @@ cat > "$STUBS/cargo" <<'STUB'
   echo "dirty=$(git status --porcelain | wc -l | tr -d ' ')"
   echo "args=$*"
 } >> "$STUB_LOG"
+# run.sh starts the toolchain and builds xtask before running it: those calls
+# succeed unless STUB_NO_TOOLCHAIN asks for a missing toolchain, and
+# STUB_EXIT is the exit code of the xtask run alone.
+case "${2:-}" in
+  --version) [ -z "${STUB_NO_TOOLCHAIN:-}" ] || { echo "error: toolchain '${1#+}' is not installed" >&2; exit 1; }; exit 0 ;;
+  build) exit 0 ;;
+esac
 exit "${STUB_EXIT:-0}"
+STUB
+cat > "$STUBS/kata" <<'STUB'
+#!/usr/bin/env bash
+echo "kata $*" >> "$KATA_LOG"
+case "$1" in
+  list) if [ -e "$KATA_STATE/created" ]; then echo '{"issues":[{"short_id":"bf-1"}]}'; else echo '{"issues":[]}'; fi ;;
+  create) touch "$KATA_STATE/created" ;;
+  show)
+    if [ -s "$KATA_STATE/comment" ]; then printf '{"comments":[{"body":"%s"}]}\n' "$(cat "$KATA_STATE/comment")"
+    else echo '{"comments":[]}'; fi ;;
+  comment) printf '%s' "$4" > "$KATA_STATE/comment" ;;
+esac
+exit 0
 STUB
 cat > "$STUBS/launchctl" <<'STUB'
 #!/usr/bin/env bash
 echo "launchctl $*" >> "$LAUNCHCTL_LOG"
 exit 0
 STUB
-chmod +x "$STUBS/cargo" "$STUBS/launchctl"
+chmod +x "$STUBS/cargo" "$STUBS/launchctl" "$STUBS/kata"
 export STUB_LOG="$TMP/stub.log" LAUNCHCTL_LOG="$TMP/launchctl.log"
+export KATA_LOG="$TMP/kata.log" KATA_STATE="$TMP/kata"
+mkdir -p "$KATA_STATE"
+# A fresh tracker with no issue and an empty log.
+reset_kata() { : > "$KATA_LOG"; rm -f "$KATA_STATE"/*; }
 export PATH="$STUBS:$PATH"
 
 AGENTS="$HOME/Library/LaunchAgents"
@@ -166,12 +192,15 @@ else fail "left beside it: $leftovers"; fi
 
 echo "== the worktree is removed, and the exit code passed on, when the build fails"
 : > "$STUB_LOG"
+reset_kata
 run_installed env STUB_EXIT=1; status=$?
 if [ "$status" -eq 1 ]; then pass "exited with the build's code, 1"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
 TREE=$(sed -n 's/^pwd=//p' "$STUB_LOG" | head -n 1)
 if grep -q '^args=' "$STUB_LOG"; then pass "the stub did run"; else fail "the stub never ran: $(cat "$TMP/run.out")"; fi
 if [ ! -e "$TREE" ] && ! git -C "$CLONE" worktree list | grep -qF "$TREE"; then pass "the worktree is gone afterwards"
 else fail "the worktree is still there after a failed build"; fi
+if [ ! -s "$KATA_LOG" ]; then pass "a stop after xtask started is left to xtask to report"
+else fail "the launcher called kata after xtask started: $(cat "$KATA_LOG")"; fi
 
 echo "== another ref is a trial run at that ref's sha"
 git -C "$ORIGIN" checkout -q -b trial-x
@@ -188,6 +217,57 @@ else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
 
 if [ "$(cksum < "$INSTALLED")" = "$BEFORE_TRIAL" ]; then pass "a trial run left the installed copy unchanged"
 else fail "a trial run replaced the installed copy"; fi
+
+echo "== a main run that stops before xtask starts raises nightly-missing"
+BROKEN="$TMP/broken"
+git init -q "$BROKEN" && git -C "$BROKEN" remote add origin "$TMP/nowhere"
+DAY=$(date +%Y%m%d)
+KEY="the nightly launcher stopped on $DAY before the gate started"
+reset_kata
+HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$BROKEN" bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -ne 0 ]; then pass "exited $status"; else fail "exited 0 though the fetch failed"; fi
+for want in "kata list --label nightly-missing --json --project brightfield" \
+  "kata create main's nightly gate has not given a verdict --body The nightly gate posts a" \
+  "--label nightly-missing --force-new --agent --project brightfield" \
+  "kata meta set bf-1 work.attention needs-human --agent --project brightfield" \
+  "kata meta set bf-1 work.attention_msg main's nightly gate has not given a verdict --agent --project brightfield" \
+  "kata comment bf-1 --body $KEY: fetch origin main --agent --project brightfield"; do
+  if grep -qF -- "$want" "$KATA_LOG"; then pass "kata saw: $want"
+  else fail "kata never saw '$want'; it saw: $(cat "$KATA_LOG")"; fi
+done
+: > "$KATA_LOG"
+HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$BROKEN" bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1
+if grep -qF "kata meta set bf-1 work.attention needs-human" "$KATA_LOG" \
+  && ! grep -qE '^kata (create|comment) ' "$KATA_LOG"; then
+  pass "a second stop the same day flags the open issue again, with no new issue or comment"
+else fail "the second stop's kata calls were: $(cat "$KATA_LOG")"; fi
+
+reset_kata
+HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$BROKEN" BRIGHTFIELD_NIGHTLY_REF=trial-x \
+  bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -ne 0 ] && [ ! -s "$KATA_LOG" ]; then pass "a trial whose fetch fails raises nothing"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
+
+reset_kata
+: > "$STUB_LOG"
+HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$CLONE" STUB_NO_TOOLCHAIN=1 \
+  bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: start cargo +9.9.9 --agent" "$KATA_LOG"; then
+  pass "a toolchain stage two cannot start is reported, naming it"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG"); run said: $(cat "$TMP/run.out")"; fi
+if ! grep -q 'xtask nightly' "$STUB_LOG"; then pass "xtask was never run"
+else fail "xtask ran without a toolchain: $(cat "$STUB_LOG")"; fi
+
+echo "== run.sh raises nightly-missing with the strings flags.rs uses"
+FLAG_LINES=$(sed -n "/<<'FLAG'\$/,/^FLAG\$/p" "$ROOT/scripts/nightly/run.sh" | sed '1d;$d')
+if [ "$(printf '%s\n' "$FLAG_LINES" | wc -l | tr -d ' ')" -eq 3 ]; then pass "run.sh carries a title, a body and an attention line"
+else fail "run.sh's FLAG block is not three lines: $FLAG_LINES"; fi
+while IFS= read -r line; do
+  if grep -qF -- "\"$line\"" "$ROOT/xtask/src/flags.rs"; then pass "flags.rs spells \"${line:0:40}...\" the same"
+  else fail "flags.rs has no string \"$line\"; keep run.sh's FLAG block in step with NIGHTLY_MISSING"; fi
+done <<< "$FLAG_LINES"
+if grep -qF 'label: "nightly-missing"' "$ROOT/xtask/src/flags.rs"; then pass "flags.rs labels the issue nightly-missing too"
+else fail "flags.rs no longer labels NIGHTLY_MISSING nightly-missing"; fi
 
 echo "== run.sh without a repository says so"
 out=$(env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" 2>&1); status=$?
