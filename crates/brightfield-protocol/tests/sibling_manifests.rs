@@ -1,5 +1,15 @@
-//! Does the pinned `arc` still understand the Protocols the pipeline actually
-//! ships?
+//! How far does the pinned `arc` lag the Protocols open-analytics publishes?
+//!
+//! **A report, not a gate.** open-analytics' Protocols may use operators newer
+//! than the arc this crate pins: the two repositories move at their own pace,
+//! and Brightfield's own Protocols (the gallery starts, the vendored
+//! `examples/protocol` copy and the committed fixtures) are what its gate
+//! tests. So the two tests that read open-analytics' main print what they find
+//! instead of failing on it: each Protocol the pinned arc refuses, with arc's
+//! diagnostic, and a line beginning `open-analytics: ` that says how many. The
+//! nightly runs them, posts that line as its `nightly-open-analytics` status,
+//! and keeps them out of the gate's verdict. A bump of the pin is then routine
+//! work, done when Brightfield needs what the newer arc has.
 //!
 //! **The failure this exists to catch.** `brightfield-protocol` consumes the
 //! arcform spec library by git **rev** (`Cargo.toml`, and README §"The arcform
@@ -16,12 +26,17 @@
 //! resolves to is this one. The sibling repo cannot see it.
 //!
 //! **How the manifests arrive.** `OPEN_ANALYTICS_DIR` names a checkout of the
-//! sibling data repo. `.github/workflows/test.yml` checks it out into
-//! `$RUNNER_TEMP` and sets the variable; locally, point it at the sibling
-//! clone. The two tests that read it are `#[ignore]`d for exactly the reason
+//! sibling data repo. The nightly passes its own worktree of open-analytics'
+//! main, `.github/workflows/open-analytics-report.yml` checks one out on
+//! GitHub's runner, and locally the variable points at the sibling clone. The
+//! two tests that read it are `#[ignore]`d for exactly the reason
 //! `brightfield-engine`'s bundle tests are: the input is not in this checkout,
 //! so a per-push suite that hard-required it would be red on any machine
 //! without it.
+//!
+//! **A report over nothing must not read as a clean one,** so the tests still
+//! fail, and the nightly's report says it could not run, when there is no
+//! checkout or too little of one.
 //!
 //! **`#[ignore]` is the hole this file is most careful about.** `cargo test --
 //! --ignored` with a filter matching nothing exits 0 having run nothing, and a
@@ -40,8 +55,9 @@
 //!    `CARGO_TARGET_TMPDIR` and assert each refusal fires. So the guard's own
 //!    self-test runs in the ordinary `cargo test --workspace` on every push,
 //!    with no sibling checkout needed.
-//! 3. The workflow parses libtest's executed count back out and holds it to a
-//!    floor, because a filter that matches nothing never reaches this file.
+//! 3. The `sibling-manifests` step of `cargo xtask ci` parses libtest's
+//!    executed count back out and holds it to a floor, because a filter that
+//!    matches nothing never reaches this file.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -169,15 +185,17 @@ fn rel(root: &Path, path: &Path) -> String {
 // The check.
 // ---------------------------------------------------------------------------
 
-/// Every Protocol the sibling data repo ships loads through the same gate
-/// `arc run` loads with — which is what the Protocol panel opens a file with.
+/// Which of open-analytics' Protocols the pinned arc refuses, through the same
+/// load `arc run` uses, which is what the Protocol panel opens a file with.
 ///
-/// A failure names the manifest and quotes arc's own diagnostic, so the CI log
-/// says the same thing the shell said to the person who found this by hand:
-/// `unknown operator 'text_embed' (not in the operator catalog)`.
+/// Each refusal is printed with arc's own diagnostic, so the report says what
+/// the shell would say to a person opening that Protocol, such as `unknown
+/// operator 'text_embed' (not in the operator catalog)`. A refusal is a
+/// finding, not a failure: the test fails only when the walk has nothing
+/// trustworthy to report on.
 #[test]
 #[ignore = "needs the sibling data repo checked out: set OPEN_ANALYTICS_DIR"]
-fn every_shipped_protocol_parses_against_the_pinned_arc() {
+fn reports_the_shipped_protocols_the_pinned_arc_refuses() {
     let root = sibling_root();
     let manifests = collect_manifests(&root).unwrap_or_else(|e| panic!("{e}"));
 
@@ -186,80 +204,73 @@ fn every_shipped_protocol_parses_against_the_pinned_arc() {
         let text =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         if let Err(e) = parse_manifest_str(&text) {
-            refused.push(format!("  {}: {e}", rel(&root, path)));
+            println!("refused by the pinned arc: {}: {e}", rel(&root, path));
+            refused.push(rel(&root, path));
         }
     }
 
-    assert!(
-        refused.is_empty(),
-        "{} of {} shipped Protocol(s) are refused by the pinned arc — the \
-         Protocol panel answers exactly this when someone opens one. Bump the \
-         pin (README §\"The arcform dependency\": the arc rev, the root \
-         [patch.crates-io] sqlparser rev, and Cargo.lock, in one commit).\n{}",
-        refused.len(),
-        manifests.len(),
-        refused.join("\n")
-    );
-
-    println!(
-        "{} shipped Protocol(s) parsed against the pinned arc (floor {TOTAL_FLOOR})",
-        manifests.len()
-    );
+    if refused.is_empty() {
+        println!(
+            "open-analytics: the pinned arc opens all {} Protocol(s)",
+            manifests.len()
+        );
+    } else {
+        println!(
+            "open-analytics: the pinned arc refuses {} of {} Protocol(s): {}",
+            refused.len(),
+            manifests.len(),
+            refused.join(", ")
+        );
+    }
 }
 
-/// A Protocol that parses is not yet one the canvas can draw. This is the
-/// floor under that difference: every shipped Protocol derives a graph with
-/// nodes in it and lineage between them.
+/// A Protocol that parses is not yet one the canvas can draw. This reports
+/// the Protocols that parse and still derive a graph with no nodes or no
+/// lineage between them.
 ///
-/// It is a floor, not a picture. What it catches is a manifest that loads and
-/// then draws an empty or edgeless canvas — the shape a new operator vocabulary
+/// It is a floor, not a picture. What it finds is a manifest that loads and
+/// then draws an empty or edgeless canvas, the shape a new operator vocabulary
 /// would produce if nothing in the derivation recognised any of its `with:`
-/// keys. It does NOT claim the drawing is right; see the PR that added this
-/// file for what the 23-step crosswalk actually draws for `uv` steps.
+/// keys. It does NOT claim the drawing is right.
 #[test]
 #[ignore = "needs the sibling data repo checked out: set OPEN_ANALYTICS_DIR"]
-fn every_shipped_protocol_derives_a_graph_with_lineage() {
+fn reports_the_shipped_protocols_that_draw_no_lineage() {
     let root = sibling_root();
     let manifests = collect_manifests(&root).unwrap_or_else(|e| panic!("{e}"));
 
     let mut thin = Vec::new();
-    let mut drawn = 0usize;
+    let mut parsed = 0usize;
     for path in &manifests {
         let text =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let Ok(manifest) = parse_manifest_str(&text) else {
-            continue; // the parse test above is where a refusal is reported
+            continue; // the test above reports a refusal
         };
+        parsed += 1;
         let dir = path.parent().expect("a manifest has a parent directory");
         let sources = load_model_sources(&manifest, dir);
         let graph = build_graph(&manifest, &sources);
         if graph.nodes.is_empty() || graph.edges.is_empty() {
-            thin.push(format!(
-                "  {}: {} step(s) -> {} node(s), {} edge(s)",
+            println!(
+                "draws no lineage: {}: {} step(s) -> {} node(s), {} edge(s)",
                 rel(&root, path),
                 manifest.steps.len(),
                 graph.nodes.len(),
                 graph.edges.len()
-            ));
-        } else {
-            drawn += 1;
+            );
+            thin.push(rel(&root, path));
         }
     }
 
-    assert!(
-        thin.is_empty(),
-        "{} shipped Protocol(s) parse but derive no drawable lineage — parsing \
-         is necessary and not sufficient:\n{}",
-        thin.len(),
-        thin.join("\n")
-    );
-    assert_eq!(
-        drawn,
-        manifests.len(),
-        "every walked Protocol must have been drawn"
-    );
-
-    println!("{drawn} shipped Protocol(s) derived a graph with lineage");
+    if thin.is_empty() {
+        println!("open-analytics: all {parsed} that parse draw lineage");
+    } else {
+        println!(
+            "open-analytics: {} of {parsed} that parse draw no lineage: {}",
+            thin.len(),
+            thin.join(", ")
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

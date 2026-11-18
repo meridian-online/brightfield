@@ -1,0 +1,72 @@
+# By hand only: `gh workflow run open-analytics-report.yml --ref <branch>`.
+# The Mac Studio's nightly (`cargo xtask nightly`) runs the same step,
+# `cargo xtask ci --step sibling-manifests`, on `main` each night and posts
+# its finding as the `nightly-open-analytics` status, so this hosted run is for
+# asking the question again on GitHub's runner, or of a branch.
+#
+# WHAT IT REPORTS. Which of the Protocols on open-analytics' main the arc this
+# repository pins refuses, each with arc's own diagnostic (`unknown operator
+# ...`), and which parse but draw no lineage. open-analytics' operators may run
+# ahead of the pin, so a refused Protocol is reported and the step still
+# passes. It fails only when it could not report: no checkout, a checkout under
+# the floors `crates/brightfield-protocol/tests/sibling_manifests.rs` holds it
+# to, or fewer of its tests run than it has, since a report over nothing would
+# read as a clean one.
+#
+# WHY IT IS NOT IN `test`. `test` runs the steps a pull request's gate runs,
+# and a check that compares this repository with another's main never decides
+# whether a change here merges. Brightfield's own Protocols, the gallery
+# starts, the vendored `examples/protocol` copy and the committed fixtures,
+# are what that gate tests.
+
+name: open-analytics-report
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: open-analytics-report
+  cancel-in-progress: false
+
+# Nothing here writes. The job checks out two repositories and runs tests.
+permissions:
+  contents: read
+
+jobs:
+  report:
+    # macos-15, the runner `test` uses, so the build matches the cache it
+    # populates.
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A git checkout of a first-party public repository, with the default
+      # token and `persist-credentials: false`, since nothing here pushes.
+      - name: check out open-analytics' Protocols
+        uses: actions/checkout@v4
+        with:
+          repository: meridian-online/open-analytics
+          path: .sibling/open-analytics
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `-- --ignored` is required: the two tests in that target are
+      # `#[ignore]`d because their input is not in this checkout. The step
+      # parses libtest's executed count back out and holds it to a floor of 2,
+      # since `cargo test -- --ignored` with a filter that matches nothing exits
+      # 0 having run nothing.
+      #
+      # `-p brightfield-protocol --test sibling_manifests` resolves a narrower
+      # graph than `--workspace` and compiles `libduckdb-sys` on its own.
+      - name: the open-analytics Protocols the pinned arc refuses
+        env:
+          OPEN_ANALYTICS_DIR: ${{ github.workspace }}/.sibling/open-analytics
+        run: cargo xtask ci --step sibling-manifests

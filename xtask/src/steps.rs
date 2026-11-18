@@ -355,7 +355,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "warm-cache",
-        runs: "cargo test --locked --workspace --no-run; the sibling-manifest and conformance builds",
+        runs: "cargo test --locked --workspace --no-run; the conformance and managed-edition builds",
         only_in_ci: None,
         only_at_night: None,
         run: warm_cache,
@@ -373,13 +373,6 @@ pub static STEPS: &[Step] = &[
         only_in_ci: None,
         only_at_night: None,
         run: test_default,
-    },
-    Step {
-        name: "sibling-manifests",
-        runs: "cargo test --locked -p brightfield-protocol --test sibling_manifests -- --ignored, at least 2 executed",
-        only_in_ci: None,
-        only_at_night: None,
-        run: sibling_manifests,
     },
     Step {
         name: "conformance",
@@ -415,6 +408,17 @@ pub static STEPS: &[Step] = &[
         only_in_ci: None,
         only_at_night: None,
         run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
+    },
+    Step {
+        name: "sibling-manifests",
+        runs: "cargo test --locked -p brightfield-protocol --test sibling_manifests -- --ignored, at least 2 executed: a report of the open-analytics Protocols the pinned arc refuses",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it reads open-analytics' main, whose Protocols may use operators newer than the \
+             arc this repo pins; the nightly runs it as a report on its own status, outside \
+             the gate's verdict, and --step runs it here",
+        ),
+        run: sibling_manifests,
     },
     Step {
         name: "nightly-network",
@@ -512,25 +516,16 @@ fn duckdb_managed(ctx: &Ctx) -> Result<(), String> {
 
 /// Compile what the test shards compile, so the job ahead of them can save
 /// it under the lockfile's cache key and each shard restores an exact match.
-/// Four builds, because the three steps after the suite each resolve their
-/// own feature set: `-p brightfield-protocol --test sibling_manifests`,
-/// `--bin conformance` and the managed edition's `-p brightfield-shell
-/// --features managed-edition` each select a different graph from
-/// `--workspace`, and cargo builds `libduckdb-sys` again for each graph that
-/// differs. A full
+/// Three builds, because the two steps after the suite each resolve their
+/// own feature set: `--bin conformance` and the managed edition's
+/// `-p brightfield-shell --features managed-edition` each select a different
+/// graph from `--workspace`, and cargo builds `libduckdb-sys` again for each
+/// graph that differs. The report on open-analytics builds its own at night.
+/// A full
 /// local run uses it too, as the row that builds every test binary before the
 /// two test steps start together.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
     build_tests(ctx)?;
-    ctx.run_cargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "brightfield-protocol",
-        "--test",
-        "sibling_manifests",
-        "--no-run",
-    ])?;
     ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])?;
     ctx.run_cargo(&[
         "test",
@@ -839,9 +834,59 @@ pub fn executed_count(log: &str) -> usize {
         .sum()
 }
 
+/// The commit a git checkout at `dir` has out, shortened, or `unknown`.
+fn short_head(ctx: &Ctx, dir: &Path) -> String {
+    ctx.command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .filter(|sha| !sha.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// The arcform revision `Cargo.lock` resolves `arc` to, shortened, read from
+/// the `#<sha>` its git source ends with.
+pub fn pinned_arc(lock: &str) -> Option<String> {
+    let mut in_arcform = false;
+    for line in lock.lines() {
+        if line == "[[package]]" {
+            in_arcform = false;
+        } else if line == "name = \"arcform\"" {
+            in_arcform = true;
+        } else if in_arcform {
+            if let Some(source) = line.strip_prefix("source = \"git+") {
+                let sha = source.trim_end_matches('"').rsplit('#').next()?;
+                return Some(sha.chars().take(7).collect());
+            }
+        }
+    }
+    None
+}
+
+/// What the report's tests found, from their output: the lines that begin
+/// `open-analytics: `, which each test prints once with its finding.
+fn findings(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|line| line.strip_prefix("open-analytics: "))
+        .map(str::trim)
+        .collect()
+}
+
+/// The report on open-analytics: which of the Protocols on its main the arc
+/// this repo pins refuses, and which parse but draw no lineage. A Protocol
+/// refused is reported, not failed, since open-analytics' operators may run
+/// ahead of the pin. The step fails only when it could not report: no
+/// checkout, a checkout under the floors the test holds it to, or fewer
+/// tests run than it has, since a report over nothing reads as full coverage.
 fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
     if !selection(ctx)?.protocols {
-        println!("the pin-staleness check runs on the last default-threads shard, not this one");
+        println!(
+            "the report on open-analytics runs on the last default-threads shard, not this one"
+        );
         return Ok(());
     }
     let dir = open_analytics(ctx)?;
@@ -887,23 +932,34 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
     );
     let mut failures = Vec::new();
     if !status.success() {
-        let message = format!("cargo test exited {status}: the failure above names the manifest and quotes arc's own diagnostic. Bump the pin: README section \"The arcform dependency\" (the arc rev and Cargo.lock, in one commit)");
-        report_error("the pinned arc cannot load a shipped Protocol", &message);
-        failures.push("the pinned arc cannot load a shipped Protocol".to_owned());
+        let message = format!("cargo test exited {status}: the panic above says why. A Protocol the pinned arc refuses does not fail this step, so the cause is the checkout (missing, or under its floors) or the test itself");
+        report_error("the report on open-analytics could not run", &message);
+        failures.push("the report on open-analytics could not run".to_owned());
     }
     if ran < floor {
-        let message = format!("expected at least {floor} ignored test(s) to execute in sibling_manifests, {ran} executed: the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing");
+        let message = format!("expected at least {floor} ignored test(s) to execute in sibling_manifests, {ran} executed: the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A report here would cover nothing");
         report_error("executed too few tests", &message);
         failures.push(format!(
             "{ran} of at least {floor} sibling-manifest tests executed"
         ));
     }
-    if failures.is_empty() {
-        println!("{ran} sibling-manifest test(s) executed and passed (floor {floor})");
-        Ok(())
-    } else {
-        Err(failures.join("; "))
+    if !failures.is_empty() {
+        return Err(failures.join("; "));
     }
+    let lock = fs::read_to_string(ctx.root.join("Cargo.lock"))
+        .map_err(|e| format!("cannot read Cargo.lock: {e}"))?;
+    let arc = pinned_arc(&lock).unwrap_or_else(|| "unknown".to_owned());
+    let found = findings(&text);
+    let found = if found.is_empty() {
+        "the tests printed no finding".to_owned()
+    } else {
+        found.join("; ")
+    };
+    println!(
+        "open-analytics report: arc {arc} against open-analytics {}: {found}",
+        short_head(ctx, &dir)
+    );
+    Ok(())
 }
 
 fn conformance(ctx: &Ctx) -> Result<(), String> {
@@ -1053,6 +1109,7 @@ mod tests {
         assert_eq!(
             night,
             [
+                "sibling-manifests",
                 "nightly-network",
                 "duckdb-managed",
                 "managed-duckdb-test",
@@ -1102,5 +1159,31 @@ mod tests {
                    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
         assert_eq!(executed_count(log), 3);
         assert_eq!(executed_count("test result: ok. 0 passed; 0 failed;\n"), 0);
+    }
+
+    #[test]
+    fn the_pinned_arc_is_read_from_the_lockfile_and_this_one_has_it() {
+        let lock = "[[package]]\nname = \"arc-other\"\nsource = \"git+https://x?rev=aaa#1111111111\"\n\n\
+                    [[package]]\nname = \"arcform\"\nversion = \"0.2.0\"\n\
+                    source = \"git+https://github.com/meridian-online/arcform?rev=f5f3f07#f5f3f071bd10c04a\"\n";
+        assert_eq!(pinned_arc(lock).as_deref(), Some("f5f3f07"));
+        assert_eq!(pinned_arc("[[package]]\nname = \"arcform\"\n"), None);
+        let ours = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock"))
+            .unwrap();
+        assert!(pinned_arc(&ours).is_some_and(|sha| sha.len() == 7));
+    }
+
+    #[test]
+    fn the_findings_are_the_lines_the_tests_mark() {
+        let log = "test a ... ok\nopen-analytics: the pinned arc refuses 1 of 25 Protocols\n\
+                   a line naming open-analytics: in passing\n\
+                   open-analytics: all 24 that parse draw lineage\n";
+        assert_eq!(
+            findings(log),
+            [
+                "the pinned arc refuses 1 of 25 Protocols",
+                "all 24 that parse draw lineage"
+            ]
+        );
     }
 }

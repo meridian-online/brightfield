@@ -121,15 +121,19 @@ pub enum Unready {
 /// The tree's `cargo xtask ci`, unstarted, under the gate's isolated
 /// environment: a fresh HOME and TMPDIR under `scratch_dir`, the real cargo
 /// and rustup homes under `home`, the persistent target directory under
-/// `gate_dir`, the DuckDB CLI the tree pins, the real `open-analytics`
-/// checkout found from `invoking`, and none of the variables
-/// `removed_from_child` names. The caller adds the run's own arguments.
+/// `gate_dir`, the DuckDB CLI the tree pins, and none of the variables
+/// `removed_from_child` names. With `open_analytics`, the real
+/// `open-analytics` checkout found from `invoking` too, which only the
+/// nightly's report on it reads; without, the run gets no checkout, so a
+/// pull request's gate cannot come to depend on another repository's main.
+/// The caller adds the run's own arguments.
 pub fn isolated_ci(
     invoking: &Path,
     tree: &Path,
     home: &Path,
     gate_dir: &Path,
     scratch_dir: &Path,
+    open_analytics: bool,
 ) -> Result<Command, Unready> {
     let (child_home, child_tmp) = (scratch_dir.join("home"), scratch_dir.join("tmp"));
     for dir in [&child_home, &child_tmp] {
@@ -150,11 +154,16 @@ pub fn isolated_ci(
         &gate_dir.join("duckdb-cli"),
     )
     .map_err(Unready::DuckDb)?;
-    let open_analytics = steps::open_analytics(&invoking)
-        .and_then(|dir| {
-            fs::canonicalize(&dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))
-        })
-        .map_err(Unready::OpenAnalytics)?;
+    let open_analytics = if open_analytics {
+        let dir = steps::open_analytics(&invoking)
+            .and_then(|dir| {
+                fs::canonicalize(&dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))
+            })
+            .map_err(Unready::OpenAnalytics)?;
+        Some(dir)
+    } else {
+        None
+    };
     let real = |var: &str, under_home: &str| {
         std::env::var_os(var)
             .filter(|v| !v.is_empty())
@@ -174,8 +183,11 @@ pub fn isolated_ci(
         .env("CARGO_HOME", real("CARGO_HOME", ".cargo"))
         .env("RUSTUP_HOME", real("RUSTUP_HOME", ".rustup"))
         .env("CARGO_TARGET_DIR", gate_dir.join("target"))
-        .env("ARC_DUCKDB_BIN", &engine)
-        .env("OPEN_ANALYTICS_DIR", &open_analytics);
+        .env("ARC_DUCKDB_BIN", &engine);
+    match &open_analytics {
+        Some(dir) => command.env("OPEN_ANALYTICS_DIR", dir),
+        None => command.env_remove("OPEN_ANALYTICS_DIR"),
+    };
     for (key, _) in std::env::vars_os() {
         if removed_from_child(&key.to_string_lossy()) {
             command.env_remove(&key);

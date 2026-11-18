@@ -43,10 +43,9 @@ jobs:
   # exact key, and every shard after it restores a full match and compiles
   # only the workspace's own crates, which no cache keeps.
   #
-  # It also builds the three narrower graphs the last default shard compiles
-  # after the suite (see `cargo xtask ci --list`: the sibling-manifest test,
-  # the conformance binary and the managed edition's tests each resolve their
-  # own `libduckdb-sys`). Before
+  # It also builds the two narrower graphs the last default shard compiles
+  # after the suite (see `cargo xtask ci --list`: the conformance binary and
+  # the managed edition's tests each resolve their own `libduckdb-sys`). Before
   # this job the shards all saved to one key and the first to finish won, so
   # those builds were usually missing from the cache and that shard compiled
   # them on warm runs as well.
@@ -54,7 +53,7 @@ jobs:
   # `prefix-key: v1-rust` on every cache step in this file, where the action's
   # default is `v0-rust`, so that no cache a shard saved is ever found here:
   # with one, the lookup below would hit and this job would never build the
-  # three narrower graphs into it. Each cache this workflow restores is one this
+  # two narrower graphs into it. Each cache this workflow restores is one this
   # job saved.
   #
   # A cancelled or failed run of this job saves nothing (the action saves only
@@ -255,30 +254,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The sibling data repo, for the ONE test target that reads it:
-      # `crates/brightfield-protocol/tests/sibling_manifests.rs`, which loads
-      # every `arcform.yaml` the pipeline ships through the `arc` rev this
-      # workspace pins. That pin drifted three weeks behind the operator
-      # catalog once already, and the only signal was a person opening a
-      # Protocol in the shell and being told `unknown operator 'text_embed'`.
-      #
-      # This is a git checkout of a first-party PUBLIC repo, not a data fetch —
-      # so it does not make this workflow network-dependent in the sense
-      # `nightly-network.yml` argues against. It reads the same host the run is
-      # already cloning itself from, with the default `GITHUB_TOKEN` (a public
-      # repo needs no extra credential), and `persist-credentials: false`
-      # because nothing here pushes.
-      #
-      # A red step below means either a merged change moved the pin backwards
-      # or the sibling repo moved ahead of it. Both are worth a person's
-      # attention and both are fixed the same way — README §"The arcform dependency".
-      - name: check out the sibling data repo's Protocols
-        uses: actions/checkout@v4
-        with:
-          repository: meridian-online/open-analytics
-          path: .sibling/open-analytics
-          persist-credentials: false
-
       # An exact toolchain PIN — not an MSRV check. Cargo.toml's
       # `rust-version = "1.95"` is a *floor* (the oldest toolchain allowed to
       # compile the workspace); this line instead nails CI to the one patch
@@ -314,10 +289,10 @@ jobs:
           prefix-key: v1-rust
 
       # Frees disk on the macOS runner before ANY of this job's cargo builds,
-      # not just the pin-staleness step below. It moved here, ahead of the
-      # workspace suite, after a cold run of a lockfile-change PR was proven
-      # green on the sibling-manifest step (see the comment on that step)
-      # only for `cargo test --workspace` itself to go on and fail on a LATER
+      # not just the narrower builds after the suite. It moved here, ahead of
+      # the workspace suite, after a cold run of a lockfile-change PR was
+      # proven green on the sibling-manifest step this job used to run, only
+      # for `cargo test --workspace` itself to go on and fail on a LATER
       # cold run — `ld: write() failed, errno=28` (ENOSPC) linking a
       # `brightfield-shell` test binary — because that run's own log showed
       # only a couple of gigabytes free right after the workspace suite
@@ -326,7 +301,7 @@ jobs:
       # before the FIRST step that can fill the disk, not just before the
       # one this card was filed over. None of what it removes is needed to
       # build or test this workspace: no iOS/watchOS/tvOS or Android target
-      # is ever built here, and the pin-staleness step's own error text names
+      # is ever built here, and the sibling-manifest step's error text named
       # the one Xcode (`Xcode_16.4.app`) this job actually invokes
       # `ar`/`ranlib` from, so every other pre-installed Xcode version is
       # dead weight on this runner. Each `rm -rf` is allowed to fail on its
@@ -427,9 +402,9 @@ jobs:
       # shard. Cargo cannot select one crate's library without `--exclude` or
       # `-p`, and each of those rebuilt dependencies the workspace build
       # already holds (measured 2026-10-07: `--exclude brightfield-shell --lib`
-      # rebuilt 23 units, `-p brightfield-model --lib` 81). That rebuild is the
-      # one the pin-staleness step's comment below describes, and this runner
-      # has no disk to spare for a second copy.
+      # rebuilt 23 units, `-p brightfield-model --lib` 81): a narrower
+      # selection resolves its own graph and compiles `libduckdb-sys` again,
+      # and this runner has no disk to spare for a second copy.
       #
       # First group, the targets that open a device:
       # serial-targets: automatic_sample axis_vocabulary_rows_past banded_bar_ink
@@ -569,73 +544,14 @@ jobs:
       - name: cargo test, this shard's other targets on cargo's default threads
         run: cargo xtask ci --step test-default
 
-      # THE PIN-STALENESS CHECK AND THE CONFORMANCE SCOREBOARD run after the
-      # suite on the last of the default-threads shards, `default-6` today, and
-      # on no other: the command picks that shard from its place in the matrix,
-      # so adding or removing a shard moves them to the new last one and
-      # neither is ever left without a shard. On the other shards each step
-      # says it does not run there and passes.
-      #
-      # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
-      # same reason the conformance scoreboard below is one: the number that
-      # matters — how many shipped Protocols the pinned `arc` could load — is
-      # unreadable buried in the workspace suite's log.
-      #
-      # `-- --ignored` is required: the two tests in that target are
-      # `#[ignore]`d because their input is not in this checkout, so the
-      # workspace suite above compiled them and ran neither.
-      #
-      # THIS STEP COMPILES `libduckdb-sys` A SECOND TIME, into the same
-      # `target/`, no matter how its cargo invocation is shaped. Measured
-      # directly: `-p brightfield-protocol --test sibling_manifests` (the
-      # form below), `--workspace --test sibling_manifests`, and
-      # `-p brightfield-protocol --test sibling_manifests --features
-      # duckdb/parquet` (explicitly matching the feature union the step above
-      # activates: `brightfield-protocol` alone requests `duckdb`'s `bundled`
-      # feature, three other workspace members request `bundled` + `parquet`)
-      # all three recompiled `libduckdb-sys`, `arrow` and `duckdb` rather than
-      # reusing the step above's build. A `--test <NAME>` filter narrows
-      # Cargo to the unit graph that one target actually needs, regardless of
-      # `-p` versus `--workspace` or an explicit `--features`, so this step's
-      # build is a genuinely different, separately-fingerprinted compile from
-      # the workspace suite's, every time. `warm-cache` builds it ahead of the
-      # shards so it is in the cache this shard restores. Before that job, a
-      # cache-key miss (any `Cargo.lock` change) made the runner rebuild both
-      # from nothing here, and the workspace suite above already leaves the
-      # runner within a few gigabytes of its ceiling — so this step's
-      # rebuild, on its own only a few gigabytes, is what exhausted it with
-      # `ranlib: can't write to output file (No space left on device)`. The
-      # same can still happen when the cache is lost. Rather than chase Cargo's
-      # resolver further, the runner's disk is reclaimed near the top of
-      # this job, before the workspace suite runs — see "reclaim disk before
-      # this job's cargo builds" above — of what neither that build, this
-      # one, nor this workspace's tests need. It reclaims ahead of the
-      # workspace suite rather than only ahead of this step because the
-      # workspace suite itself can fill the disk first on a cold run; a step
-      # that frees disk for later steps has to run before the first step
-      # that can exhaust it.
-      #
-      # THE GUARD, and it is the point of this step's shape. `cargo test --
-      # --ignored` with a filter that matches NOTHING exits 0 and prints
-      # "0 passed", so a green step here would otherwise prove nothing at all.
-      # libtest's executed count is parsed back out of the summary and held to
-      # a floor of 2 — the two `#[ignore]`d tests in `sibling_manifests.rs`. It
-      # is a floor, not an equality, so a third one added there does not redden
-      # this at review time; what it catches is a covered test renamed, deleted
-      # or filtered away to nothing.
-      #
-      # The count of MANIFESTS is guarded one level down, inside the test:
-      # `collect_manifests` refuses an absent root, a missing subtree, and a
-      # subtree under its own floor, and its refusals are themselves exercised
-      # by the non-ignored `floor_*` tests that the workspace suite above runs.
-      # Two floors at two altitudes, because either one alone reads as coverage
-      # it does not have.
-      #
-      # `--locked` for the same reason the suite above uses it.
-      - name: shipped Protocols load through the pinned arc
-        env:
-          OPEN_ANALYTICS_DIR: ${{ github.workspace }}/.sibling/open-analytics
-        run: cargo xtask ci --step sibling-manifests
+      # THE CONFORMANCE SCOREBOARD runs after the suite on the last of the
+      # default-threads shards, `default-6` today, and on no other: the command
+      # picks that shard from its place in the matrix, so adding or removing a
+      # shard moves it to the new last one and it is never left without a
+      # shard. On the other shards the step says it does not run there and
+      # passes. The report on open-analytics, which used to run here too, is in
+      # `open-analytics-report.yml` and the nightly: a check against another
+      # repository's main does not decide whether a change here merges.
 
       # The portability contract's scoreboard, as its own step with its own
       # pass/fail. Separate from the suite on purpose: the number that matters
