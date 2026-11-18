@@ -129,10 +129,19 @@ OTHER="$HOME/.cache/meridian/gate/trees/nightly-${MAIN_SHA:0:7}.other"
 mkdir -p "$OTHER" && echo keep > "$OTHER/file"
 # A tree a killed run left two days ago, which this run reclaims.
 OLD="$HOME/.cache/meridian/gate/trees/nightly-0000000.old"
+# A second one that cannot be deleted: a file in a directory without write
+# permission. The run must warn and carry on. Skipped as root, which ignores it.
+STUCK="$HOME/.cache/meridian/gate/trees/nightly-0000000.stuck"
+mkdir -p "$STUCK" && echo x > "$STUCK/f" && chmod 555 "$STUCK"
+touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$STUCK"
 mkdir -p "$OLD" && touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$OLD"
 : > "$STUB_LOG"
 run_installed env; status=$?
 if [ "$status" -eq 0 ]; then pass "exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
+if [ "$(id -u)" -eq 0 ]; then echo "   skipped: root can remove a tree with no write permission"
+elif [ -d "$STUCK" ] && grep -qF "could not remove stale tree $STUCK" "$TMP/run.out"; then pass "a stale tree that cannot be removed was warned about, and the run went on"
+else fail "no warning for the undeletable tree: $(cat "$TMP/run.out")"; fi
+chmod 755 "$STUCK" 2>/dev/null; rm -rf "$STUCK"
 TREES="$HOME/.cache/meridian/gate/trees"
 TREE=$(sed -n 's/^pwd=//p' "$STUB_LOG" | head -n 1)
 if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "cargo saw +<tree's channel> xtask nightly --sha <origin's main>, no --trial"

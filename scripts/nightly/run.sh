@@ -94,7 +94,8 @@ mkdir -p "$trees"
 # its worktree record goes too; rm -rf only handles a path git does not know.
 # Nothing outside $trees, and nothing younger than a day, is touched.
 while IFS= read -r stale; do
-  git -C "$repo" worktree remove --force "$stale" >/dev/null 2>&1 || rm -rf "$stale"
+  git -C "$repo" worktree remove --force "$stale" >/dev/null 2>&1 || rm -rf "$stale" \
+    || echo "nightly: could not remove stale tree $stale" >&2
 done < <(find "$trees" -mindepth 1 -maxdepth 1 -type d -name 'nightly-*' -mmin +1440)
 git -C "$repo" worktree prune >/dev/null 2>&1 || true
 tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
