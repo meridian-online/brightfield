@@ -35,11 +35,19 @@
 set -euo pipefail
 
 # rustup's proxies come first on PATH, in both stages and in everything they
-# start. A launchd job runs `bash -lc`, whose login profile puts Homebrew's
-# directory ahead of the plist's PATH, and Homebrew's own cargo is not a
-# rustup proxy: it rejects `cargo +<channel>` and would ignore the tree's
-# rust-toolchain.toml.
+# start, and Homebrew's directory second. A launchd job runs `bash -lc`, whose
+# login profile rebuilds PATH with macOS's path_helper: the system directories
+# go first and the plist's entries after them. That finds Apple's python3, too
+# old for the release-readback checks, and can put Homebrew's cargo ahead of
+# rustup's; Homebrew's cargo is not a rustup proxy, so it rejects
+# `cargo +<channel>` and would ignore the tree's rust-toolchain.toml.
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+for brew_bin in /opt/homebrew/bin /usr/local/bin; do
+  if [ -d "$brew_bin" ]; then
+    export PATH="$brew_bin:$PATH"
+    break
+  fi
+done
 export PATH="$cargo_bin:$PATH"
 
 die() { echo "nightly: $*" >&2; exit 2; }

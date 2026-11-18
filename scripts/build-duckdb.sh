@@ -211,10 +211,13 @@ say "building FineType ${FINETYPE_TAG} as a static library"
 # toolchain FineType's own rust-toolchain.toml pins, the one FineType is tested
 # on: run from `cargo xtask`, this script inherits rustup's RUSTUP_TOOLCHAIN for
 # Brightfield's toolchain, which would take precedence over FineType's file, so
-# it and the variables that name a cargo or rustc are cleared here.
+# it and the variables that name a cargo or rustc are cleared here. The gate
+# also sets CARGO_TARGET_DIR to its shared target directory, which would put
+# the archive somewhere other than FineType's own target/, where it is read
+# below, so that is cleared as well.
 (
   cd "$FINETYPE_SRC"
-  env -u RUSTUP_TOOLCHAIN -u CARGO -u RUSTC -u RUSTDOC -u RUSTC_WRAPPER \
+  env -u RUSTUP_TOOLCHAIN -u CARGO -u RUSTC -u RUSTDOC -u RUSTC_WRAPPER -u CARGO_TARGET_DIR \
     MACOSX_DEPLOYMENT_TARGET=11.0 cargo rustc -p finetype_duckdb --release --locked \
     -j "$JOBS" --crate-type staticlib >&2
 )
