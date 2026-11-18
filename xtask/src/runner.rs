@@ -90,8 +90,9 @@ pub struct Row {
 
 /// Run `steps` in order through `run`. Unless `mode.keep_going`, the run stops
 /// at the first failure: a step after it is recorded as skipped and `run` is
-/// not called for it. With `keep_going`, a step is skipped only when `NEEDS`
-/// names a step that failed or was skipped.
+/// not called for it. With `keep_going`, a step is skipped when `NEEDS` names a
+/// step that failed or was skipped, as
+/// `keep_going_skips_only_what_needs_the_failed_step` checks.
 pub fn run_in_order<F>(steps: &[Step], mode: RunMode, mut run: F) -> Vec<Row>
 where
     F: FnMut(&Step) -> Result<(), String>,
