@@ -3,11 +3,20 @@
 #
 # Stage one is what launchd runs: a copy of this file that scripts/nightly/
 # install.sh put under ~/.cache/meridian/gate/nightly/. It fetches a ref from
-# `origin` of the repository BRIGHTFIELD_NIGHTLY_REPO names, adds a detached
-# worktree at it, and runs that worktree's own copy of this file with
-# `--in-tree <sha>`. The repository is only an object store: its branch and
-# working files are never read, so every line of code the nightly runs is the
-# fetched ref's.
+# `origin` of the nightly's own clone of Brightfield, adds a detached worktree
+# at it, and runs that worktree's own copy of this file with `--in-tree <sha>`.
+# The clone is only an object store: its branch and working files are never
+# read, so every line of code the nightly runs is the fetched ref's.
+#
+# The clones live on the internal disk, under ~/.cache/meridian/gate/nightly/,
+# because a launchd job cannot read an external volume without a disk-access
+# grant. Stage one makes them when they are missing and fetches them
+# otherwise: brightfield/ and open-analytics/. Both are only object stores:
+# each run adds its own detached worktree of open-analytics' fetched main and
+# names it to stage two in OPEN_ANALYTICS_DIR. BRIGHTFIELD_NIGHTLY_REPO
+# names another Brightfield repository in place of the clone, and
+# BRIGHTFIELD_NIGHTLY_REMOTE and BRIGHTFIELD_NIGHTLY_OA_REMOTE name other
+# remotes to clone from, which is how the self-test avoids the network.
 #
 # Stage two (`--in-tree`) runs inside that worktree and builds nothing itself
 # beyond calling `cargo xtask nightly --sha <sha>` with the toolchain the tree
@@ -19,11 +28,52 @@
 # verdict being taken for main's.
 #
 # Once `cargo xtask nightly` starts, it reports its own stops. A main run that
-# stops before then (the fetch fails, the worktree cannot be made, the tree's
+# stops before then (a clone or fetch fails, the worktree cannot be made, the tree's
 # toolchain is not installed, xtask does not build) raises the same
 # `nightly-missing` Kata issue from here instead, so a launcher that fails
 # every night does not go unseen until a pull request's gate runs.
 set -euo pipefail
+
+# rustup's proxies come first on PATH, in both stages and in everything they
+# start, and Homebrew's directory goes ahead of the system ones. A launchd job
+# runs `bash -lc`, whose login profile rebuilds PATH with macOS's path_helper:
+# the system directories go first and the plist's entries after them. That
+# finds Apple's python3, too old for the release-readback checks, and can put
+# Homebrew's cargo ahead of rustup's; Homebrew's cargo is not a rustup proxy,
+# so it rejects `cargo +<channel>` and would ignore the tree's
+# rust-toolchain.toml. Homebrew's directory moves to just before the first
+# system directory rather than to the front, so anything a caller put ahead of
+# the system directories stays ahead of Homebrew's.
+cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+brew_bin=""
+for dir in /opt/homebrew/bin /usr/local/bin; do
+  if [ -d "$dir" ]; then
+    brew_bin="$dir"
+    break
+  fi
+done
+if [ -n "$brew_bin" ]; then
+  rebuilt=""
+  placed=""
+  old_ifs="$IFS"
+  IFS=:
+  for dir in $PATH; do
+    [ "$dir" = "$brew_bin" ] && continue
+    case "$dir" in
+      /usr/local/bin | /usr/bin | /bin | /usr/sbin | /sbin | /System/*)
+        if [ -z "$placed" ]; then
+          rebuilt="${rebuilt:+$rebuilt:}$brew_bin"
+          placed=1
+        fi
+        ;;
+    esac
+    rebuilt="${rebuilt:+$rebuilt:}$dir"
+  done
+  IFS="$old_ifs"
+  [ -n "$placed" ] || rebuilt="${rebuilt:+$rebuilt:}$brew_bin"
+  export PATH="$rebuilt"
+fi
+export PATH="$cargo_bin:$PATH"
 
 die() { echo "nightly: $*" >&2; exit 2; }
 
@@ -122,17 +172,20 @@ if [ "${1:-}" = "--in-tree" ]; then
 fi
 [ "$#" -eq 0 ] || die "unknown argument: $1 (usage: run.sh [--in-tree <sha> [--trial]])"
 
-repo="${BRIGHTFIELD_NIGHTLY_REPO:-}"
-[ -n "$repo" ] || die "BRIGHTFIELD_NIGHTLY_REPO is not set; it names the checkout whose origin is fetched"
+installed_dir="$HOME/.cache/meridian/gate/nightly"
+repo="${BRIGHTFIELD_NIGHTLY_REPO:-$installed_dir/brightfield}"
+oa_dir="$installed_dir/open-analytics"
 ref="${BRIGHTFIELD_NIGHTLY_REF:-main}"
 case "$ref" in -*) die "BRIGHTFIELD_NIGHTLY_REF must not start with '-': $ref" ;; esac
 
 # From here every exit goes through on_exit: it removes the tree this run
 # made, if any, and when a main run fails before xtask started, raises
 # nightly-missing naming the step it stopped at. A trial raises nothing.
-stage="fetch origin ${ref}"
+stage="fetch brightfield origin ${ref}"
 tree=""
 private_ref=""
+oa_tree=""
+oa_private_ref=""
 stage_file="$(mktemp "${TMPDIR:-/tmp}/brightfield-nightly-stage.XXXXXX")"
 export BRIGHTFIELD_NIGHTLY_STAGE_FILE="$stage_file"
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
@@ -145,6 +198,11 @@ on_exit() {
   local status=$? reached
   set +e
   [ -z "$tree" ] || cleanup
+  if [ -n "$oa_tree" ]; then
+    git -C "$oa_dir" worktree remove --force "$oa_tree" >/dev/null 2>&1 || rm -rf "$oa_tree"
+    git -C "$oa_dir" worktree prune >/dev/null 2>&1
+  fi
+  [ -z "$oa_private_ref" ] || git -C "$oa_dir" update-ref -d "$oa_private_ref" >/dev/null 2>&1
   [ -z "${private_ref:-}" ] || git -C "$repo" update-ref -d "$private_ref" >/dev/null 2>&1
   reached=$(cat "$stage_file" 2>/dev/null)
   rm -f "$stage_file"
@@ -155,12 +213,43 @@ on_exit() {
 }
 trap on_exit EXIT
 
+stage="find rustup's cargo"
+[ -x "$cargo_bin/rustup" ] || die "rustup is not in $cargo_bin, so cargo +<channel> cannot work"
+stage="fetch brightfield origin ${ref}"
+
 # FETCH_HEAD is one file per checkout, so an overlapping run (a trial started
 # by hand during the scheduled one) could overwrite it between the fetch and
 # the read. Fetch into a ref only this run knows, read the commit from it, and
 # delete it on exit. The self-update below reads the commit this resolves.
+#
+# A clone that does not exist yet is made first, and only the default one is:
+# a repository BRIGHTFIELD_NIGHTLY_REPO names is the caller's to have made.
+# Brightfield's is made without a working tree, since only its objects are read.
+if [ -z "${BRIGHTFIELD_NIGHTLY_REPO:-}" ] && [ ! -d "$repo/.git" ]; then
+  stage="clone brightfield"
+  mkdir -p "$installed_dir"
+  git clone --quiet --no-checkout "${BRIGHTFIELD_NIGHTLY_REMOTE:-https://github.com/meridian-online/brightfield.git}" "$repo"
+  stage="fetch brightfield origin ${ref}"
+fi
 private_ref="refs/nightly/${ref}.$$"
 git -C "$repo" fetch --quiet origin "+refs/heads/${ref}:${private_ref}"
+
+# open-analytics is an object store too, and its fetch ref is run-private for
+# the same reason as Brightfield's. Each run checks out its own worktree of it
+# below, since a shared working tree would be rewritten under an overlapping
+# run's gate. The nightly tests open-analytics' main.
+if [ ! -d "$oa_dir/.git" ]; then
+  stage="clone open-analytics"
+  mkdir -p "$installed_dir"
+  git clone --quiet --no-checkout "${BRIGHTFIELD_NIGHTLY_OA_REMOTE:-https://github.com/meridian-online/open-analytics.git}" "$oa_dir"
+  stage="fetch open-analytics origin main"
+fi
+stage="fetch open-analytics origin main"
+oa_private_ref="refs/nightly/main.$$"
+git -C "$oa_dir" fetch --quiet origin "+refs/heads/main:${oa_private_ref}"
+stage="resolve open-analytics' fetched commit"
+oa_sha=$(git -C "$oa_dir" rev-parse --verify "${oa_private_ref}^{commit}")
+
 stage="resolve the fetched commit"
 sha=$(git -C "$repo" rev-parse --verify "${private_ref}^{commit}")
 stage="replace the installed run.sh"
@@ -172,7 +261,6 @@ stage="replace the installed run.sh"
 # for the nights after it. `run-now` runs the checkout's file, which is left
 # alone. The temp file sits beside the copy so mv is an atomic rename, and the
 # running shell keeps reading the old inode.
-installed_dir="$HOME/.cache/meridian/gate/nightly"
 self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 if [ "$ref" = "main" ] && [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)" ] \
   && [ "$(basename "${BASH_SOURCE[0]}")" = "run.sh" ]; then
@@ -206,9 +294,14 @@ while IFS= read -r stale; do
     || echo "nightly: could not remove stale tree $stale" >&2
 done < <(find "$trees" -mindepth 1 -maxdepth 1 -type d -name 'nightly-*' -mmin +1440)
 git -C "$repo" worktree prune >/dev/null 2>&1 || true
+git -C "$oa_dir" worktree prune >/dev/null 2>&1 || true
 tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
 stage="add the worktree"
 git -C "$repo" worktree add --quiet --detach "$tree" "$sha"
+stage="add the open-analytics worktree"
+oa_tree="$(mktemp -d "$trees/nightly-oa-${oa_sha:0:7}.XXXXXX")"
+git -C "$oa_dir" worktree add --quiet --detach "$oa_tree" "$oa_sha"
+export OPEN_ANALYTICS_DIR="$oa_tree"
 stage="find the tree's run.sh"
 [ -f "$tree/scripts/nightly/run.sh" ] \
   || die "${ref} (${sha:0:7}) has no scripts/nightly/run.sh"
