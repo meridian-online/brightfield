@@ -49,6 +49,13 @@ pub const NIGHTLY_NETWORK: Flag = Flag {
     attention: "main's nightly network tests failed",
 };
 
+/// The key a `MAIN_RED` raise for the commit `sha7` dedups on. The nightly
+/// and the pull-request gate both raise with it, so a red commit gains one
+/// comment whichever of them sees it first.
+pub fn main_red_key(sha7: &str) -> String {
+    format!("nightly gate failed on main at {sha7}")
+}
+
 fn say(message: &str) {
     eprintln!("cargo xtask: the issue tracker call failed, and the run carries on: {message}");
 }
@@ -73,8 +80,8 @@ fn open_issue(program: &OsStr, label: &str) -> Result<Option<String>, String> {
 }
 
 /// Raise `flag` with the real `kata`.
-pub fn raise(flag: &Flag, comment: &str) {
-    raise_with(OsStr::new("kata"), flag, comment);
+pub fn raise(flag: &Flag, key: &str, comment: &str) {
+    raise_with(OsStr::new("kata"), flag, key, comment);
 }
 
 /// Clear `flag` with the real `kata`.
@@ -83,16 +90,24 @@ pub fn clear(flag: &Flag, sha: &str, note: &str) {
 }
 
 /// Find the open issue labelled `flag.label`, or open one, flag it for Hugh,
-/// and add `comment` unless a comment on it already holds that text. A caller
-/// that raises the same flag on every run passes a comment naming what it saw
-/// (a commit, a day), so the issue gains one comment per new sighting.
-pub fn raise_with(kata: &OsStr, flag: &Flag, comment: &str) {
-    if let Err(e) = try_raise(kata, flag, comment) {
+/// and add `comment` unless a comment on it already holds `key`. The key names
+/// the sighting (a commit, a day) and the comment its details, which can change
+/// from run to run (a wall time, a log path), so a sighting is commented once
+/// however its details vary, as `the_same_key_with_new_details_comments_once`
+/// checks. A comment that does not hold its key is posted after it, so the
+/// next raise finds it.
+pub fn raise_with(kata: &OsStr, flag: &Flag, key: &str, comment: &str) {
+    let comment = if comment.contains(key) {
+        comment.to_owned()
+    } else {
+        format!("{key}: {comment}")
+    };
+    if let Err(e) = try_raise(kata, flag, key, &comment) {
         say(&e);
     }
 }
 
-fn try_raise(kata: &OsStr, flag: &Flag, comment: &str) -> Result<(), String> {
+fn try_raise(kata: &OsStr, flag: &Flag, key: &str, comment: &str) -> Result<(), String> {
     let issue = match open_issue(kata, flag.label)? {
         Some(issue) => issue,
         None => {
@@ -132,7 +147,7 @@ fn try_raise(kata: &OsStr, flag: &Flag, comment: &str) -> Result<(), String> {
         .unwrap_or_default()
         .iter()
         .filter_map(|c| c.get("body").and_then(Value::as_str))
-        .any(|body| body.contains(comment));
+        .any(|body| body.contains(key));
     if !noted {
         kata_with(kata, &["comment", &issue, "--body", comment, "--agent"])?;
     }
@@ -231,7 +246,7 @@ esac
         let dir = scratch("raise");
         let kata = shim(&dir, false);
         let comment = "the nightly gate failed on main at abc1234: failed at clippy";
-        raise_with(kata.as_os_str(), &MAIN_RED, comment);
+        raise_with(kata.as_os_str(), &MAIN_RED, "abc1234", comment);
         let first = calls(&dir);
         let creates: Vec<_> = first.iter().filter(|c| c.starts_with("create ")).collect();
         assert_eq!(creates.len(), 1, "{first:?}");
@@ -253,7 +268,7 @@ esac
 
         // The shim now lists the issue and its comment: a second raise with
         // the same comment opens nothing and adds no comment.
-        raise_with(kata.as_os_str(), &MAIN_RED, comment);
+        raise_with(kata.as_os_str(), &MAIN_RED, "abc1234", comment);
         let second = &calls(&dir)[first.len()..];
         assert!(
             !second.iter().any(|c| c.starts_with("create ")),
@@ -262,6 +277,60 @@ esac
         assert!(
             !second.iter().any(|c| c.starts_with("comment ")),
             "{second:?}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_same_key_with_new_details_comments_once() {
+        let dir = scratch("key");
+        let kata = shim(&dir, false);
+        let key = "nightly gate failed on main at abc1234";
+        raise_with(
+            kata.as_os_str(),
+            &MAIN_RED,
+            key,
+            "the nightly gate failed on main at abc1234: failed at clippy after 3 steps, 1m 00s; log a.log",
+        );
+        raise_with(
+            kata.as_os_str(),
+            &MAIN_RED,
+            key,
+            "the nightly gate failed on main at abc1234: failed at clippy after 3 steps, 2m 10s; log b.log",
+        );
+        let lines = calls(&dir);
+        let comments: Vec<_> = lines.iter().filter(|c| c.starts_with("comment ")).collect();
+        assert_eq!(comments.len(), 1, "{lines:?}");
+
+        // A new commit is a new sighting.
+        raise_with(
+            kata.as_os_str(),
+            &MAIN_RED,
+            "nightly gate failed on main at def5678",
+            "the nightly gate failed on main at def5678: failed at doc",
+        );
+        let lines = calls(&dir);
+        let comments: Vec<_> = lines.iter().filter(|c| c.starts_with("comment ")).collect();
+        assert_eq!(comments.len(), 2, "{lines:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_comment_without_its_key_is_posted_after_it() {
+        let dir = scratch("prefix");
+        let kata = shim(&dir, false);
+        raise_with(
+            kata.as_os_str(),
+            &NIGHTLY_MISSING,
+            "stopped on 20261118",
+            "lock held",
+        );
+        let lines = calls(&dir);
+        assert!(
+            lines
+                .iter()
+                .any(|c| c.starts_with("comment ") && c.contains("stopped on 20261118: lock held")),
+            "{lines:?}"
         );
         fs::remove_dir_all(&dir).unwrap();
     }

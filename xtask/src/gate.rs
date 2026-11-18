@@ -526,6 +526,7 @@ fn check_backstop() {
                 say("main is red; the gate carries on, since the fix goes forward");
                 flags::raise(
                     &MAIN_RED,
+                    &flags::main_red_key(&sha7),
                     &format!("the nightly gate failed on main at {sha7}: {description}"),
                 );
             }
@@ -557,10 +558,8 @@ fn check_backstop() {
             }
         };
         // The gate never clears this flag; only the nightly's own verdict does.
-        flags::raise(
-            &NIGHTLY_MISSING,
-            &format!("no nightly verdict on main since {since}, read {today}"),
-        );
+        let key = format!("no nightly verdict on main since {since}, read {today}");
+        flags::raise(&NIGHTLY_MISSING, &key, &key);
     }
 }
 

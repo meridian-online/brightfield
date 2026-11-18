@@ -178,9 +178,15 @@ pub fn statuses_of(summary: Option<&Verdict>, took: Duration) -> (Status, Option
 /// and clears no flag, since its commit is not main's.
 pub fn run(sha: &str, trial: bool) -> ExitCode {
     let kata = OsStr::new("kata");
+    let root = crate::repo_root();
+    // A tree that is not the commit gives no verdict on it: refused before
+    // anything is posted or flagged.
+    if let Err(e) = tree_is(&root, sha) {
+        say(&e);
+        return ExitCode::FAILURE;
+    }
     let day = today();
     let stopped = |stage: NightStage, detail: &str| stop(kata, trial, &day, stage, detail);
-    let root = crate::repo_root();
     let Some(home) = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
@@ -271,11 +277,40 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         OsStr::new("gh"),
         kata,
         sha,
+        &day,
         trial,
         &gate,
         network.as_ref(),
         &log,
     )
+}
+
+/// Refuse a tree that is not the commit the nightly is to post on: `head` is
+/// the tree's `git rev-parse HEAD` and `changes` its `git status
+/// --porcelain`, so a status never names a commit whose code did not run, as
+/// `a_tree_that_is_not_the_commit_is_refused` checks.
+pub fn check_tree(sha: &str, head: &str, changes: &str) -> Result<(), String> {
+    let head = head.trim();
+    if !head.eq_ignore_ascii_case(sha) {
+        return Err(format!(
+            "the tree's head is {head}, not {sha}: run the nightly from a tree at the commit it posts on"
+        ));
+    }
+    if !changes.trim().is_empty() {
+        return Err(format!(
+            "the tree at {sha} has uncommitted changes, so its run would not be that commit's:\n{}",
+            changes.trim_end()
+        ));
+    }
+    Ok(())
+}
+
+/// Read the tree at `root` and refuse it unless it is `sha`, unchanged.
+fn tree_is(root: &Path, sha: &str) -> Result<(), String> {
+    let root = root.display().to_string();
+    let head = output_of("git", &["-C", &root, "rev-parse", "HEAD"])?;
+    let changes = output_of("git", &["-C", &root, "status", "--porcelain"])?;
+    check_tree(sha, &head, &changes)
 }
 
 /// Say why the nightly stopped before its steps, and raise `nightly-missing`
@@ -286,79 +321,85 @@ fn stop(kata: &OsStr, trial: bool, day: &str, stage: NightStage, detail: &str) -
     let phrase = stage.phrase();
     println!("the nightly stopped before its steps: {phrase}");
     if !trial {
-        flags::raise_with(
-            kata,
-            &NIGHTLY_MISSING,
-            &format!("the nightly stopped on {day}: {phrase}"),
-        );
+        let key = format!("the nightly stopped on {day}");
+        flags::raise_with(kata, &NIGHTLY_MISSING, &key, &format!("{key}: {phrase}"));
     }
     ExitCode::FAILURE
 }
 
 /// Post the run's statuses on `sha` and, unless this is a trial, keep the
-/// flags in step with them. Exits 0 only on two successes.
+/// flags in step with the statuses that were posted. A flag follows only a
+/// posted status, so it never says what no reader of the commit can see; a
+/// `nightly-gate` that could not be posted raises `nightly-missing` instead,
+/// as `a_verdict_that_could_not_be_posted_moves_no_flag_but_missing` checks.
+/// Exits 0 only on two successes, both posted.
+#[allow(clippy::too_many_arguments)]
 fn report(
     gh: &OsStr,
     kata: &OsStr,
     sha: &str,
+    day: &str,
     trial: bool,
     gate: &Status,
     network: Option<&Status>,
     log: &Path,
 ) -> ExitCode {
     let sha7: String = sha.chars().take(7).collect();
-    let mut posted = true;
-    for (context, (state, text)) in [(GATE_CONTEXT, Some(gate)), (NETWORK_CONTEXT, network)]
-        .into_iter()
-        .filter_map(|(context, status)| status.map(|status| (context, status)))
-    {
-        match nightly_status::post_status(gh, sha, context, state, text) {
-            Ok(()) => println!("{context} {state} on {sha7}: {text}"),
-            Err(e) => {
-                say(&e);
-                posted = false;
-            }
+    let post = |context: &str, (state, text): &Status| match nightly_status::post_status(
+        gh, sha, context, state, text,
+    ) {
+        Ok(()) => {
+            println!("{context} {state} on {sha7}: {text}");
+            true
         }
-    }
+        Err(e) => {
+            say(&e);
+            false
+        }
+    };
+    let gate_posted = post(GATE_CONTEXT, gate);
+    let network_posted = network.map(|status| post(NETWORK_CONTEXT, status));
     println!("the full log is {}", log.display());
     if !trial {
         let log = log.display();
-        match gate.0 {
-            "success" => {
-                flags::clear_with(kata, &MAIN_RED, sha, &format!("main is green at {sha7}"))
+        if gate_posted {
+            if gate.0 == "success" {
+                flags::clear_with(kata, &MAIN_RED, sha, &format!("main is green at {sha7}"));
+            } else {
+                let key = flags::main_red_key(&sha7);
+                flags::raise_with(
+                    kata,
+                    &MAIN_RED,
+                    &key,
+                    &format!("the {key}: {}; log {log}", gate.1),
+                );
             }
-            _ => flags::raise_with(
+            flags::clear_with(
                 kata,
-                &MAIN_RED,
-                &format!(
-                    "the nightly gate failed on main at {sha7}: {}; log {log}",
-                    gate.1
-                ),
-            ),
+                &NIGHTLY_MISSING,
+                sha,
+                &format!("the nightly gave a verdict on main at {sha7}"),
+            );
+        } else {
+            let key = format!("the nightly could not post its verdict on main at {sha7} on {day}");
+            flags::raise_with(kata, &NIGHTLY_MISSING, &key, &format!("{key}; log {log}"));
         }
-        match network.map(|(state, _)| *state) {
-            Some("success") => flags::clear_with(
+        match (network, network_posted) {
+            (Some(("success", _)), Some(true)) => flags::clear_with(
                 kata,
                 &NIGHTLY_NETWORK,
                 sha,
                 &format!("the network tests passed on main at {sha7}"),
             ),
-            Some(_) => flags::raise_with(
-                kata,
-                &NIGHTLY_NETWORK,
-                &format!("the network tests failed on main at {sha7}; log {log}"),
-            ),
-            None => {}
+            (Some(_), Some(true)) => {
+                let key = format!("the network tests failed on main at {sha7}");
+                flags::raise_with(kata, &NIGHTLY_NETWORK, &key, &format!("{key}; log {log}"));
+            }
+            _ => {}
         }
-        flags::clear_with(
-            kata,
-            &NIGHTLY_MISSING,
-            sha,
-            &format!("the nightly gave a verdict on main at {sha7}"),
-        );
     }
     let green = gate.0 == "success" && network.is_some_and(|(state, _)| *state == "success");
-    if posted && green {
+    if gate_posted && network_posted == Some(true) && green {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -408,6 +449,14 @@ mod tests {
         assert_eq!(deadline_after((2, 30)), Duration::from_secs(3 * 60 * 60));
         assert_eq!(deadline_after((5, 0)), Duration::from_secs(30 * 60));
         assert_eq!(deadline_after((6, 0)), Duration::ZERO);
+        assert_eq!(
+            deadline_after((13, 0)),
+            Duration::from_secs((16 * 60 + 30) * 60)
+        );
+        assert_eq!(
+            deadline_after((23, 59)),
+            Duration::from_secs((5 * 60 + 31) * 60)
+        );
     }
 
     #[test]
@@ -476,6 +525,7 @@ mod tests {
             gh.as_os_str(),
             kata.as_os_str(),
             "0123456789abcdef0123456789abcdef01234567",
+            "20261118",
             true,
             &gate,
             Some(&network),
@@ -500,6 +550,7 @@ mod tests {
             gh.as_os_str(),
             kata.as_os_str(),
             "0123456789abcdef0123456789abcdef01234567",
+            "20261118",
             false,
             &gate,
             Some(&network),
@@ -518,6 +569,44 @@ mod tests {
             );
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_verdict_that_could_not_be_posted_moves_no_flag_but_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("unposted");
+        let kata = shim(&dir, "kata");
+        let gh = dir.join("gh");
+        fs::write(&gh, "#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let code = report(
+            gh.as_os_str(),
+            kata.as_os_str(),
+            "0123456789abcdef0123456789abcdef01234567",
+            "20261118",
+            false,
+            &("success", "passed 30 steps in 50m 00s".to_owned()),
+            Some(&("failure", "the network tests failed".to_owned())),
+            Path::new("nightly.log"),
+        );
+        assert_eq!(code, ExitCode::FAILURE);
+        let asked = calls(&dir, "kata");
+        assert!(asked.contains("--label nightly-missing"), "{asked}");
+        assert!(!asked.contains("--label main-red"), "{asked}");
+        assert!(!asked.contains("--label nightly-network"), "{asked}");
+        assert!(!asked.lines().any(|c| c.starts_with("close ")), "{asked}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tree_that_is_not_the_commit_is_refused() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(check_tree(sha, &format!("{sha}\n"), ""), Ok(()));
+        let other = "fedcba9876543210fedcba9876543210fedcba98";
+        assert!(check_tree(sha, other, "").unwrap_err().contains(other));
+        let dirty = check_tree(sha, sha, " M xtask/src/main.rs\n").unwrap_err();
+        assert!(dirty.contains("uncommitted"), "{dirty}");
+        assert!(check_tree(sha, sha, "?? new.rs\n").is_err());
     }
 
     #[test]
