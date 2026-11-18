@@ -101,8 +101,6 @@ struct Posted {
     text: String,
     /// test-default's own log, kept beside the gate's, when the run left one.
     kept: Option<PathBuf>,
-    /// A line for each by-hand macOS check the pull request's changes call for.
-    hints: Vec<String>,
 }
 
 /// Run the gate on pull request `pr` and post its verdict.
@@ -184,9 +182,6 @@ pub fn run(pr: u64) -> ExitCode {
     println!("the full log is {}", log.display());
     if let Some(kept) = &posted.kept {
         println!("test-default's own log is {}", kept.display());
-    }
-    for hint in &posted.hints {
-        println!("{hint}");
     }
     if posted.state == "success" {
         ExitCode::SUCCESS
@@ -310,17 +305,19 @@ fn gate_head(
     git_in_root(&["worktree", "add", "--quiet", "--detach", &tree_text, head])
         .map_err(fail(Stage::Worktree))?;
     merge_with_main(tree, "origin/main").map_err(fail(Stage::Merge))?;
-    let hints = changed_files(tree)
-        .map(|changed| {
+    // Printed now, before the run, so a run that stops short of a verdict
+    // still names the by-hand checks its changes call for.
+    match changed_files(tree) {
+        Ok(changed) => {
             let changed: Vec<&str> = changed.iter().map(String::as_str).collect();
-            packaging_hints(&changed, branch)
-        })
-        .unwrap_or_else(|e| {
-            say(&format!(
-                "could not read the files the pull request changes, so no packaging check is named: {e}"
-            ));
-            Vec::new()
-        });
+            for hint in packaging_hints(&changed, branch) {
+                println!("{hint}");
+            }
+        }
+        Err(e) => say(&format!(
+            "could not read the files the pull request changes, so no packaging check is named: {e}"
+        )),
+    }
 
     let summary = scratch.dir.join("summary.json");
     let mut command =
@@ -358,7 +355,6 @@ fn gate_head(
             "the gate panicked while its run was under way",
         )))
     })
-    .map(|posted| Posted { hints, ..posted })
 }
 
 /// The files the merged tree at `tree` changes from main, read as
@@ -432,7 +428,6 @@ fn run_and_read(
         state,
         text: description(&verdict, took, main_sha),
         kept,
-        hints: Vec::new(),
     })
 }
 

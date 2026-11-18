@@ -157,12 +157,15 @@ fn unquote(word: &str) -> String {
 /// The triggers under the workflow's `on:` that start it without a person,
 /// that is, the ones other than `workflow_dispatch` and `workflow_call`, in the
 /// order written (held by
-/// `the_trigger_reader_names_each_automatic_trigger_and_reads_a_tag_push`). A `push` whose filter names tags and no branches is reported as
-/// `push(tags-only)`, since only a tag push starts it. A form the reader cannot
-/// rule out as a branch push, such as `push: ~`, is a plain `push`, so a
-/// workflow it misreads is checked rather than passed over.
+/// `the_trigger_reader_names_each_automatic_trigger_and_reads_a_tag_push`).
+/// A `push` whose filter has a `tags:` key and neither a `branches:` nor a
+/// `branches-ignore:` key is reported as `push(tags-only)`, since only a tag
+/// push starts it. A form the reader cannot rule out as a branch push, such as
+/// `push: ~` or `tags-ignore:` alone, is a plain `push`, so a workflow it
+/// misreads is checked rather than passed over.
 pub fn automatic_triggers(text: &str) -> Vec<String> {
-    let mut found: Vec<(String, Vec<String>)> = Vec::new();
+    // Each trigger's name, and its body's lines with their indentation.
+    let mut found: Vec<(String, Vec<(usize, String)>)> = Vec::new();
     let mut in_on = false;
     let mut trigger_indent = None;
     for raw in text.lines() {
@@ -197,29 +200,70 @@ pub fn automatic_triggers(text: &str) -> Vec<String> {
             let item = line.trim();
             let (name, rest) = item.split_once(':').unwrap_or((item, ""));
             let rest = rest.trim();
-            // An inline value is read as one line of the trigger's block.
+            // An inline value is kept as the body's one line, at no indent.
             let body = if rest.is_empty() {
                 Vec::new()
             } else {
-                vec![rest.to_owned()]
+                vec![(0, rest.to_owned())]
             };
             found.push((name.trim().to_owned(), body));
         } else if let Some((_, body)) = found.last_mut() {
-            body.push(line.trim().to_owned());
+            body.push((indent(line), line.trim().to_owned()));
         }
     }
     found
         .into_iter()
         .filter(|(name, _)| name != "workflow_dispatch" && name != "workflow_call")
         .map(|(name, body)| {
-            let tags = body.iter().any(|line| line.contains("tags"));
-            let branches = body.iter().any(|line| line.contains("branches"));
-            if name == "push" && tags && !branches {
+            let keys = filter_keys(&body);
+            let has = |key: &str| keys.iter().any(|k| k == key);
+            if name == "push" && has("tags") && !has("branches") && !has("branches-ignore") {
                 "push(tags-only)".to_owned()
             } else {
                 name
             }
         })
+        .collect()
+}
+
+/// The keys of a trigger's filter: the keys at the body's outermost
+/// indentation, or, for an inline `{key: value, ...}` mapping, its top-level
+/// keys. A list item or a value is never read as a key.
+fn filter_keys(body: &[(usize, String)]) -> Vec<String> {
+    if let [(0, inline)] = body {
+        let Some(inner) = inline.strip_prefix('{').and_then(|i| i.strip_suffix('}')) else {
+            return Vec::new();
+        };
+        // Split at the commas outside any bracket, so a list value's items are
+        // not read as entries.
+        let mut entries = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0;
+        for (at, c) in inner.char_indices() {
+            match c {
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    entries.push(&inner[start..at]);
+                    start = at + 1;
+                }
+                _ => {}
+            }
+        }
+        entries.push(&inner[start..]);
+        return entries
+            .iter()
+            .filter_map(|entry| entry.split_once(':'))
+            .map(|(key, _)| key.trim().to_owned())
+            .collect();
+    }
+    let Some(outer) = body.iter().map(|(at, _)| *at).min() else {
+        return Vec::new();
+    };
+    body.iter()
+        .filter(|(at, line)| *at == outer && !line.starts_with('-'))
+        .filter_map(|(_, line)| line.split_once(':'))
+        .map(|(key, _)| key.trim().to_owned())
         .collect()
 }
 
@@ -428,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn a_direct_gate_call_in_a_workflow_only_main_triggers_is_reported() {
+    fn a_direct_gate_call_in_a_workflow_a_push_starts_is_reported() {
         let main_only = "on:\n  push:\n    branches: [main]\n  schedule:\n    - cron: '17 3 * * *'\n  workflow_dispatch:\n\njobs:\n  a:\n    steps:\n      - run: cargo xtask ci --step one\n      - run: cargo test --workspace\n";
         let problems = coverage(&["one"], &[workflow("test.yml", main_only)]);
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -593,6 +637,28 @@ mod tests {
         );
         assert_eq!(automatic_triggers("on:\n  push: ~\njobs:\n"), ["push"]);
         assert_eq!(
+            automatic_triggers("on:\n  push:\n    tags-ignore: ['v*']\njobs:\n"),
+            ["push"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push: {tags-ignore: ['v*']}\njobs:\n"),
+            ["push"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push:\n    paths:\n      - 'crates/x/src/tags.rs'\njobs:\n"),
+            ["push"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push:\n    paths: ['docs/tags/**']\njobs:\n"),
+            ["push"]
+        );
+        assert_eq!(
+            automatic_triggers(
+                "on:\n  push:\n    tags:\n      - 'v*'\n    paths: ['src/branches.rs']\njobs:\n"
+            ),
+            ["push(tags-only)"]
+        );
+        assert_eq!(
             automatic_triggers(
                 "on:\n  workflow_call:\n    inputs:\n      push:\n        type: string\njobs:\n"
             ),
@@ -633,8 +699,8 @@ mod tests {
         );
     }
 
-    /// Goal 1, read from the real files: nothing a push, a pull request or a
-    /// schedule starts runs on a hosted Mac.
+    /// Read from the real files: nothing a push, a pull request or a schedule
+    /// starts runs on a hosted Mac.
     #[test]
     fn the_repository_s_workflows_start_no_macos_job_automatically() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
