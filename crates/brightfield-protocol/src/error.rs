@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::contract::SUPPORTED_CONTRACT_FAMILY;
+use crate::contract::SUPPORTED_CONTRACT_FAMILIES;
 
 /// Failure modes when loading a [`ContractView`](crate::contract_graph::ContractView)
 /// from a contract file.
@@ -22,7 +22,7 @@ pub enum Error {
     },
     /// The bytes were not a structurally valid Protocol+Run contract.
     Parse(serde_json::Error),
-    /// The `contract_version` is outside the `b4/` family this reader targets.
+    /// The `contract_version` is outside the families this reader targets.
     UnsupportedVersion {
         /// The version found in the document.
         found: String,
@@ -36,7 +36,7 @@ impl fmt::Display for Error {
             Error::Parse(e) => write!(f, "failed to parse Protocol+Run contract: {e}"),
             Error::UnsupportedVersion { found } => write!(
                 f,
-                "unsupported contract_version {found:?}; this reader targets the {SUPPORTED_CONTRACT_FAMILY:?} family"
+                "unsupported contract_version {found:?}; this reader targets the {SUPPORTED_CONTRACT_FAMILIES:?} families"
             ),
         }
     }

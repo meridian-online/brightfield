@@ -209,6 +209,22 @@ fn a_finetype_operator_given_its_own_extension_file_is_beyond_it() {
     );
 }
 
+/// arc's general Splink step starts `uv`, as `splink_resolve` does, so the managed edition names
+/// `uv` rather than the operator.
+#[test]
+fn a_splink_step_is_beyond_it_naming_uv() {
+    let manifest = "name: scoring\nengine: duckdb\nsteps:\n  - name: score_pairs\n    op: splink@1\n    with:\n      inputs:\n        - role: a\n          path: build/a.parquet\n        - role: b\n          path: build/b.parquet\n      model: models/model.json\n      out: build/scored.parquet\n";
+    let dir = protocol("splink_step", manifest, &[("models/model.json", "{}")]);
+    assert_eq!(
+        found(&dir, Edition::Managed),
+        Some(BeyondEdition {
+            step: "score_pairs".into(),
+            reason: Reason::OutsideProgram("uv".into()),
+        })
+    );
+    assert_eq!(found(&dir, Edition::Full), None);
+}
+
 /// The table of operators names only operators arc's pinned catalog has, so a renamed one fails
 /// here rather than being taken for a program nobody looked at.
 #[test]

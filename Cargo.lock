@@ -237,7 +237,7 @@ dependencies = [
 [[package]]
 name = "arcform"
 version = "0.2.0"
-source = "git+https://github.com/meridian-online/arcform?rev=40473103aba2c901d49e6fe175abe4bc99ddacbf#40473103aba2c901d49e6fe175abe4bc99ddacbf"
+source = "git+https://github.com/meridian-online/arcform?rev=f5f3f071bd10c04a20aafb4619f637c61127760a#f5f3f071bd10c04a20aafb4619f637c61127760a"
 dependencies = [
  "arcform-sqlparser",
  "clap",
@@ -266,7 +266,7 @@ dependencies = [
 [[package]]
 name = "arcform-sqlparser"
 version = "0.55.0"
-source = "git+https://github.com/meridian-online/arcform?rev=40473103aba2c901d49e6fe175abe4bc99ddacbf#40473103aba2c901d49e6fe175abe4bc99ddacbf"
+source = "git+https://github.com/meridian-online/arcform?rev=f5f3f071bd10c04a20aafb4619f637c61127760a#f5f3f071bd10c04a20aafb4619f637c61127760a"
 dependencies = [
  "log",
  "recursive",

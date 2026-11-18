@@ -82,6 +82,7 @@ pub const OPERATORS: &[(&str, Option<&str>)] = &[
     ("datapackage_describe", Some(FINETYPE)),
     ("finetype_validate", Some(FINETYPE)),
     ("splink_resolve", Some("uv")),
+    ("splink", Some("uv")),
     ("gleif_ra_fetch", Some("uv")),
     ("umap_project", Some("uv")),
     ("text_embed", Some("uv")),

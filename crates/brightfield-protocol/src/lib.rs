@@ -60,7 +60,7 @@ pub use chart_history::{
 pub use chart_text::{write_chart_edit, ChartTextRefusal};
 pub use collapse::collapse_families;
 pub use contract::{
-    parse_contract, Contract, SkipReason, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION,
+    parse_contract, Contract, SkipReason, SUPPORTED_CONTRACT_FAMILIES, SUPPORTED_CONTRACT_VERSION,
 };
 pub use contract_graph::{
     apply_stream, build_contract_view, downstream_steps, AssetMeta, ContractView, RunView,
@@ -88,7 +88,7 @@ pub use stream::{fold_stream, StreamReader, StreamState};
 /// # Errors
 /// - [`Error::Parse`] if the bytes are not a structurally valid contract.
 /// - [`Error::UnsupportedVersion`] if `contract_version` is outside the
-///   [`SUPPORTED_CONTRACT_FAMILY`].
+///   [`SUPPORTED_CONTRACT_FAMILIES`].
 pub fn view_from_contract_bytes(bytes: &[u8]) -> Result<ContractView, Error> {
     let contract = parse_contract(bytes)?;
     if !contract.is_supported_version() {
