@@ -41,6 +41,9 @@ mkdir -p "$STUBS"
 # run.sh puts it first on PATH. $STUBS/cargo stands in for Homebrew's, which is
 # no rustup proxy and fails on `+<channel>`; a launcher that ran it would fail
 # every case below.
+# CARGO_HOME is set when cargo runs this script, and would point run.sh at the
+# real rustup, so it names the temporary one.
+export CARGO_HOME="$HOME/.cargo"
 RUSTUP_BIN="$HOME/.cargo/bin"
 mkdir -p "$RUSTUP_BIN"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$RUSTUP_BIN/rustup"
