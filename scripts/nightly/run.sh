@@ -132,6 +132,7 @@ case "$ref" in -*) die "BRIGHTFIELD_NIGHTLY_REF must not start with '-': $ref" ;
 # nightly-missing naming the step it stopped at. A trial raises nothing.
 stage="fetch origin ${ref}"
 tree=""
+private_ref=""
 stage_file="$(mktemp "${TMPDIR:-/tmp}/brightfield-nightly-stage.XXXXXX")"
 export BRIGHTFIELD_NIGHTLY_STAGE_FILE="$stage_file"
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
@@ -144,6 +145,7 @@ on_exit() {
   local status=$? reached
   set +e
   [ -z "$tree" ] || cleanup
+  [ -z "${private_ref:-}" ] || git -C "$repo" update-ref -d "$private_ref" >/dev/null 2>&1
   reached=$(cat "$stage_file" 2>/dev/null)
   rm -f "$stage_file"
   if [ "$status" -ne 0 ] && [ "$ref" = "main" ] && [ "$reached" != "xtask" ]; then
@@ -153,9 +155,14 @@ on_exit() {
 }
 trap on_exit EXIT
 
-git -C "$repo" fetch --quiet origin "$ref"
+# FETCH_HEAD is one file per checkout, so an overlapping run (a trial started
+# by hand during the scheduled one) could overwrite it between the fetch and
+# the read. Fetch into a ref only this run knows, read the commit from it, and
+# delete it on exit. The self-update below reads the commit this resolves.
+private_ref="refs/nightly/${ref}.$$"
+git -C "$repo" fetch --quiet origin "+refs/heads/${ref}:${private_ref}"
 stage="resolve the fetched commit"
-sha=$(git -C "$repo" rev-parse --verify "FETCH_HEAD^{commit}")
+sha=$(git -C "$repo" rev-parse --verify "${private_ref}^{commit}")
 stage="replace the installed run.sh"
 
 # The installed copy follows main: if the fetched ref's run.sh differs, replace
