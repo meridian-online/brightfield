@@ -24,6 +24,8 @@
 mod duckdb_stamp;
 mod flags;
 mod gate;
+mod isolate;
+mod nightly;
 mod nightly_status;
 mod runner;
 mod shard;
@@ -45,7 +47,10 @@ usage:
                                  run every step, carrying on past a failure, including the nightly-only steps
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs
-  cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
+  cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status
+  cargo xtask nightly --sha <sha> [--trial]
+                                 run the full gate with the nightly-only steps on this tree, whose head is the 40-character <sha>,
+                                 and post the nightly-gate and nightly-network statuses; --trial raises and clears no Kata flag";
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq)]
@@ -59,6 +64,16 @@ enum Invocation {
     One(String),
     List,
     Gate(u64),
+    /// The nightly gate on `sha`, this tree's head; a `trial` touches no flag.
+    Nightly {
+        sha: String,
+        trial: bool,
+    },
+}
+
+/// True for a full commit SHA: 40 hexadecimal digits.
+fn is_full_sha(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn parse(args: &[String]) -> Result<Invocation, String> {
@@ -90,6 +105,14 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             .parse()
             .map(Invocation::Gate)
             .map_err(|_| USAGE.to_owned()),
+        ["nightly", "--sha", sha] if is_full_sha(sha) => Ok(Invocation::Nightly {
+            sha: (*sha).to_owned(),
+            trial: false,
+        }),
+        ["nightly", "--sha", sha, "--trial"] if is_full_sha(sha) => Ok(Invocation::Nightly {
+            sha: (*sha).to_owned(),
+            trial: true,
+        }),
         _ => Err(USAGE.to_owned()),
     }
 }
@@ -110,6 +133,7 @@ fn main() -> ExitCode {
     };
     match invocation {
         Invocation::Gate(pr) => gate::run(pr),
+        Invocation::Nightly { sha, trial } => nightly::run(&sha, trial),
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
             for step in STEPS {
@@ -275,6 +299,28 @@ mod tests {
                 nightly: true
             })
         );
+    }
+
+    #[test]
+    fn the_command_line_reads_a_nightly_run() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            parse(&words(&format!("nightly --sha {sha}"))),
+            Ok(Invocation::Nightly {
+                sha: sha.to_owned(),
+                trial: false
+            })
+        );
+        assert_eq!(
+            parse(&words(&format!("nightly --sha {sha} --trial"))),
+            Ok(Invocation::Nightly {
+                sha: sha.to_owned(),
+                trial: true
+            })
+        );
+        assert!(parse(&words("nightly --sha 0123456")).is_err());
+        assert!(parse(&words(&format!("nightly --sha {}x", &sha[..39]))).is_err());
+        assert!(parse(&words("nightly")).is_err());
     }
 
     #[test]

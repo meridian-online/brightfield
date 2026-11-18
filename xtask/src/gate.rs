@@ -12,18 +12,18 @@
 //! a run that leaves no summary is a failure, never a pass.
 
 use std::ffi::OsStr;
-use std::fs::{self, TryLockError};
-use std::io::{Read, Write};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use crate::flags::{self, MAIN_RED, NIGHTLY_MISSING};
+use crate::isolate::{isolated_ci, run_teed, tree_beside_target, Lock, Scratch, Unready};
 use crate::nightly_status::{self, is_missing, read_newest_verdict, Seen, VerdictState};
 use crate::runner::wall;
-use crate::steps::{self, Ctx};
 
 /// The repository whose pull requests the gate runs, and whose branches only.
 pub(crate) const REPO: &str = "meridian-online/brightfield";
@@ -145,10 +145,11 @@ pub fn run(pr: u64) -> ExitCode {
     let log = logs.join(format!("pr-{pr}-{sha7}.log"));
     let kept = logs.join(format!("pr-{pr}-{sha7}.test-default.log"));
     let run = format!("brightfield-gate-{pr}-{}", std::process::id());
+    let tree = tree_beside_target(&gate_dir, &run);
     let scratch = Scratch {
         root: root.clone(),
         dir: std::env::temp_dir().join(&run),
-        tree: tree_beside_target(&gate_dir, &run),
+        tree: Some(tree.clone()),
     };
     let verdict = gate_head(
         pr,
@@ -161,6 +162,7 @@ pub fn run(pr: u64) -> ExitCode {
         },
         &head,
         &scratch,
+        &tree,
     );
     drop(scratch);
     let posted = match verdict {
@@ -250,53 +252,6 @@ pub fn check_head_repository(name_with_owner: &str) -> Result<(), String> {
     }
 }
 
-/// The run's temporary directory and worktree, removed when dropped.
-struct Scratch {
-    root: PathBuf,
-    /// The run's fresh HOME and TMPDIR, in the system's temporary directory.
-    dir: PathBuf,
-    /// The merged worktree, from [`tree_beside_target`].
-    tree: PathBuf,
-}
-
-impl Scratch {
-    fn tree(&self) -> PathBuf {
-        self.tree.clone()
-    }
-}
-
-/// Where a run's worktree goes: under the gate's directory, beside its
-/// persistent `target`, as a checkout's tree sits beside its own `target` in
-/// CI. A test that spells a scratch file relative to its working directory
-/// then climbs a few levels to the gate's directory, as it climbs two in CI,
-/// rather than to `/`; a climb to `/` reaches the same file from anywhere
-/// shallower, which `status_rail`'s relative-watch test refuses.
-fn tree_beside_target(gate_dir: &Path, run: &str) -> PathBuf {
-    gate_dir.join("trees").join(run)
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if self.tree().exists() {
-            let _ = Command::new("git")
-                .arg("-C")
-                .arg(&self.root)
-                .args(["worktree", "remove", "--force"])
-                .arg(self.tree())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        let _ = fs::remove_dir_all(&self.dir);
-        let _ = fs::remove_dir_all(&self.tree);
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(["worktree", "prune"])
-            .status();
-    }
-}
-
 /// The places a gate run reads and writes outside its scratch directory.
 struct Paths<'a> {
     /// The checkout the gate was started from.
@@ -311,56 +266,14 @@ struct Paths<'a> {
     kept: &'a Path,
 }
 
-/// True for a variable the gate's run must not inherit: one that points the
-/// run back into the real HOME, or picks the toolchain over the tree's own
-/// file, or changes what is built (build, per-target and profile settings, and
-/// the C and C++ compilers and flags the `cc` builds read, since a `CXXFLAGS`
-/// here would override the DuckDB version define in `.cargo/config.toml`), so
-/// the verdict is CI's. `CARGO_BUILD_JOBS` stays, since it caps the
-/// machine's build slots and changes no output, and `CARGO_TARGET_DIR` is the
-/// gate's own.
-fn removed_from_child(key: &str) -> bool {
-    matches!(
-        key,
-        "RUSTUP_TOOLCHAIN"
-            | "CARGO"
-            | "XDG_CONFIG_HOME"
-            | "XDG_CACHE_HOME"
-            | "XDG_DATA_HOME"
-            | "XDG_STATE_HOME"
-            | "RUNNER_TEMP"
-            | "RUSTFLAGS"
-            | "RUSTDOCFLAGS"
-            | "CARGO_ENCODED_RUSTFLAGS"
-            | "CARGO_ENCODED_RUSTDOCFLAGS"
-            | "RUSTC_WRAPPER"
-            | "RUSTC_WORKSPACE_WRAPPER"
-            | "MACOSX_DEPLOYMENT_TARGET"
-    ) || is_compiler_variable(key)
-        || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
-        || (key.starts_with("CARGO_TARGET_") && key != "CARGO_TARGET_DIR")
-        || key.starts_with("CARGO_PROFILE_")
-}
-
-/// The C and C++ compiler and flag variables the `cc` crate reads, in each
-/// form it reads them: plain, `HOST_` or `TARGET_` prefixed, and suffixed with
-/// a target triple (`CXXFLAGS_aarch64_apple_darwin`, `CC_aarch64-apple-darwin`).
-fn is_compiler_variable(key: &str) -> bool {
-    const BASES: [&str; 7] = [
-        "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "AR",
-    ];
-    let bare = key
-        .strip_prefix("HOST_")
-        .or_else(|| key.strip_prefix("TARGET_"))
-        .unwrap_or(key);
-    BASES.iter().any(|base| {
-        bare.strip_prefix(base)
-            .is_some_and(|rest| rest.is_empty() || (bare == key && rest.starts_with('_')))
-    })
-}
-
 /// Build the tree to test, run its gate, and say what to post.
-fn gate_head(pr: u64, paths: &Paths, head: &str, scratch: &Scratch) -> Result<Posted, Stop> {
+fn gate_head(
+    pr: u64,
+    paths: &Paths,
+    head: &str,
+    scratch: &Scratch,
+    tree: &Path,
+) -> Result<Posted, Stop> {
     let fail = |stage: Stage| move |e: String| Stop::Fail(Failure::new(stage, e));
     let root = paths.root;
     let git_in_root = |args: &[&str]| {
@@ -381,66 +294,21 @@ fn gate_head(pr: u64, paths: &Paths, head: &str, scratch: &Scratch) -> Result<Po
         .map(|sha| sha.trim().to_owned())
         .map_err(fail(Stage::Fetch))?;
 
-    let tree = scratch.tree();
-    let (child_home, child_tmp) = (scratch.dir.join("home"), scratch.dir.join("tmp"));
-    for dir in [&child_home, &child_tmp] {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))
-            .map_err(fail(Stage::Worktree))?;
-    }
     let tree_text = tree.display().to_string();
     git_in_root(&["worktree", "add", "--quiet", "--detach", &tree_text, head])
         .map_err(fail(Stage::Worktree))?;
-    merge_with_main(&tree, "origin/main").map_err(fail(Stage::Merge))?;
+    merge_with_main(tree, "origin/main").map_err(fail(Stage::Merge))?;
 
     let summary = scratch.dir.join("summary.json");
-    let invoking = Ctx {
-        root: root.to_path_buf(),
-        cargo: "cargo".into(),
-        log: None,
-    };
-    let host = steps::host_triple().map_err(fail(Stage::DuckDb))?;
-    let candidate = steps::engine_path(root, std::env::var_os("ARC_DUCKDB_BIN"));
-    let engine = engine_for_tree(
-        &tree.join("scripts/fetch-duckdb-cli.sh"),
-        &host,
-        &candidate,
-        &paths.gate_dir.join("duckdb-cli"),
-    )
-    .map_err(fail(Stage::DuckDb))?;
-    let open_analytics = steps::open_analytics(&invoking)
-        .and_then(|dir| {
-            fs::canonicalize(&dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))
-        })
-        .map_err(fail(Stage::OpenAnalytics))?;
-    let real = |var: &str, under_home: &str| {
-        std::env::var_os(var)
-            .filter(|v| !v.is_empty())
-            .map_or_else(|| paths.home.join(under_home), PathBuf::from)
-    };
-    let tree_ctx = Ctx {
-        root: tree.clone(),
-        cargo: "cargo".into(),
-        log: None,
-    };
-    let mut command = tree_ctx.command("cargo");
-    command
-        .arg("xtask")
-        .arg("ci")
-        .arg("--summary-json")
-        .arg(&summary)
-        .env("HOME", &child_home)
-        .env("TMPDIR", &child_tmp)
-        .env("CARGO_HOME", real("CARGO_HOME", ".cargo"))
-        .env("RUSTUP_HOME", real("RUSTUP_HOME", ".rustup"))
-        .env("CARGO_TARGET_DIR", paths.gate_dir.join("target"))
-        .env("ARC_DUCKDB_BIN", &engine)
-        .env("OPEN_ANALYTICS_DIR", &open_analytics);
-    for (key, _) in std::env::vars_os() {
-        if removed_from_child(&key.to_string_lossy()) {
-            command.env_remove(&key);
-        }
-    }
+    let mut command =
+        isolated_ci(root, tree, paths.home, paths.gate_dir, &scratch.dir).map_err(|unready| {
+            match unready {
+                Unready::Scratch(e) => fail(Stage::Worktree)(e),
+                Unready::DuckDb(e) => fail(Stage::DuckDb)(e),
+                Unready::OpenAnalytics(e) => fail(Stage::OpenAnalytics)(e),
+            }
+        })?;
+    command.arg("--summary-json").arg(&summary);
 
     let main7: String = main_sha.chars().take(7).collect();
     nightly_status::post_status(
@@ -557,88 +425,6 @@ pub fn merge_with_main(tree: &Path, main: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("merge main into the branch first".to_owned())
-    }
-}
-
-/// Run `command` with its output and errors copied to the terminal and to
-/// `log`, and return how it exited.
-fn run_teed(mut command: Command, log: &Path) -> Result<ExitStatus, String> {
-    let mut file =
-        fs::File::create(log).map_err(|e| format!("cannot create {}: {e}", log.display()))?;
-    let (mut reader, writer) = std::io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
-    let writer_copy = writer
-        .try_clone()
-        .map_err(|e| format!("cannot make a pipe: {e}"))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(writer_copy)
-        .stderr(writer);
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("could not start the tree's `cargo xtask ci`: {e}"))?;
-    // The command holds the pipe's write ends; drop it so the read ends.
-    drop(command);
-    let mut terminal = std::io::stderr();
-    let mut buffer = [0u8; 8192];
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => {
-                let _ = terminal.write_all(&buffer[..n]);
-                let _ = file.write_all(&buffer[..n]);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break,
-        }
-    }
-    child
-        .wait()
-        .map_err(|e| format!("lost the tree's `cargo xtask ci`: {e}"))
-}
-
-/// How long the tree's script may take to download the DuckDB CLI.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// The DuckDB CLI the merged tree pins, judged by the tree's own
-/// `fetch-duckdb-cli.sh`, since the tree's `cargo xtask ci` checks the engine
-/// it is handed with that script and a pull request may move the pin. The
-/// invoking checkout's engine (`candidate`) is used when the tree's script
-/// accepts it; then the gate's own copy in `cache`; otherwise the tree's
-/// script fetches its pinned release into `cache`, checking its hashes.
-fn engine_for_tree(
-    script: &Path,
-    host: &str,
-    candidate: &Path,
-    cache: &Path,
-) -> Result<PathBuf, String> {
-    let accepts = |dir: &Path| {
-        output_within(
-            script,
-            &["--check", host, &dir.to_string_lossy()],
-            CALL_TIMEOUT,
-        )
-        .is_ok()
-    };
-    if candidate.file_name().is_some_and(|name| name == "duckdb") {
-        if let Some(dir) = candidate.parent() {
-            if accepts(dir) {
-                return Ok(candidate.to_path_buf());
-            }
-        }
-    }
-    if accepts(cache) {
-        return Ok(cache.join("duckdb"));
-    }
-    fs::create_dir_all(cache).map_err(|e| format!("cannot create {}: {e}", cache.display()))?;
-    output_within(script, &[host, &cache.to_string_lossy()], FETCH_TIMEOUT)
-        .map_err(|e| format!("could not fetch the DuckDB CLI the branch pins: {e}"))?;
-    if accepts(cache) {
-        Ok(cache.join("duckdb"))
-    } else {
-        Err(format!(
-            "the DuckDB CLI fetched into {} is not the one the branch pins",
-            cache.display()
-        ))
     }
 }
 
@@ -781,11 +567,15 @@ fn check_backstop() {
 /// GitHub caps a commit status description at 140 characters.
 const DESCRIPTION_LIMIT: usize = 140;
 
-/// What a full `ci` run came to: steps passed, and the step that failed.
-#[derive(Debug, PartialEq)]
+/// What a full `ci` run came to: steps passed, the first step that failed,
+/// and, for the nightly, which carries on past a failure, every step that
+/// passed and every step that failed, in the order run.
+#[derive(Debug, Default, PartialEq)]
 pub struct Verdict {
     pub passed: usize,
     pub failed: Option<String>,
+    pub passed_all: Vec<String>,
+    pub failed_all: Vec<String>,
 }
 
 /// Read the summary file `ci --summary-json` writes:
@@ -796,24 +586,27 @@ pub fn read_summary(json: &str) -> Result<Verdict, String> {
         .get("steps")
         .and_then(Value::as_array)
         .ok_or("summary has no `steps` list")?;
-    let mut passed = 0;
-    let mut failed = None;
+    let mut passed_all = Vec::new();
+    let mut failed_all = Vec::new();
     for step in steps {
         let name = step.get("name").and_then(Value::as_str);
         let outcome = step.get("outcome").and_then(Value::as_str);
         match (name, outcome) {
-            (Some(_), Some("passed")) => passed += 1,
-            (Some(name), Some("failed")) => {
-                failed.get_or_insert_with(|| name.to_owned());
-            }
+            (Some(name), Some("passed")) => passed_all.push(name.to_owned()),
+            (Some(name), Some("failed")) => failed_all.push(name.to_owned()),
             (Some(_), Some("skipped" | "ci-only" | "nightly-only")) => {}
             _ => return Err(format!("summary has a step it cannot read: {step}")),
         }
     }
-    if passed == 0 && failed.is_none() {
+    if passed_all.is_empty() && failed_all.is_empty() {
         return Err("the gate's run recorded no step that passed or failed".to_owned());
     }
-    Ok(Verdict { passed, failed })
+    Ok(Verdict {
+        passed: passed_all.len(),
+        failed: failed_all.first().cloned(),
+        passed_all,
+        failed_all,
+    })
 }
 
 /// The commit status description, at most 140 characters.
@@ -837,62 +630,10 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
     }
 }
 
-/// Held while a gate builds: an OS advisory lock on `gate.lock` in a
-/// directory. The OS drops it when the holder exits, however it exits, so a
-/// crashed gate never blocks the next one.
-#[derive(Debug)]
-pub struct Lock {
-    _file: fs::File,
-}
-
-impl Lock {
-    /// Take the lock, polling every `poll` while another gate holds it and
-    /// saying once who does (the pid inside the file is information only).
-    pub fn acquire(dir: &Path, poll: Duration, say: impl Fn(&str)) -> Result<Lock, String> {
-        let path = dir.join("gate.lock");
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-        let mut said = false;
-        loop {
-            match file.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) => {
-                    if !said {
-                        said = true;
-                        let owner = fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|t| t.trim().parse::<u32>().ok());
-                        let who = owner.map_or_else(
-                            || "another gate".to_owned(),
-                            |p| format!("another gate (pid {p})"),
-                        );
-                        say(&format!("{who} holds the lock; waiting"));
-                    }
-                    std::thread::sleep(poll);
-                }
-                Err(TryLockError::Error(e)) => {
-                    return Err(format!("cannot lock {}: {e}", path.display()));
-                }
-            }
-        }
-        file.set_len(0)
-            .and_then(|()| file.write_all(std::process::id().to_string().as_bytes()))
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        Ok(Lock { _file: file })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     fn rows(pairs: &[(&str, &str)]) -> String {
         let steps: Vec<String> = pairs
@@ -914,7 +655,9 @@ mod tests {
             read_summary(&ok),
             Ok(Verdict {
                 passed: 3,
-                failed: None
+                failed: None,
+                passed_all: vec!["fmt".into(), "clippy".into(), "doc".into()],
+                failed_all: vec![],
             })
         );
         let bad = rows(&[
@@ -926,7 +669,9 @@ mod tests {
             read_summary(&bad),
             Ok(Verdict {
                 passed: 1,
-                failed: Some("test-default".into())
+                failed: Some("test-default".into()),
+                passed_all: vec!["fmt".into()],
+                failed_all: vec!["test-default".into()],
             })
         );
         assert!(read_summary("nope").is_err());
@@ -936,7 +681,7 @@ mod tests {
     fn a_passing_description_names_steps_time_and_main() {
         let v = Verdict {
             passed: 3,
-            failed: None,
+            ..Verdict::default()
         };
         assert_eq!(
             description(&v, Duration::from_secs(65), "09c2efb0123456"),
@@ -949,6 +694,7 @@ mod tests {
         let v = Verdict {
             passed: 31,
             failed: Some("test-default".into()),
+            ..Verdict::default()
         };
         let text = description(&v, Duration::from_secs(18 * 60 + 2), "09c2efb0");
         assert_eq!(
@@ -962,6 +708,7 @@ mod tests {
         let v = Verdict {
             passed: 1,
             failed: Some("x".repeat(200)),
+            ..Verdict::default()
         };
         let text = description(&v, Duration::from_secs(5), "09c2efb0");
         assert!(text.chars().count() <= 140, "{}", text.chars().count());
@@ -975,56 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn a_second_gate_waits_until_the_first_lock_is_dropped() {
-        let dir = scratch("wait");
-        let first = Lock::acquire(&dir, Duration::from_millis(50), |_| {}).unwrap();
-        let done = Arc::new(AtomicBool::new(false));
-        let said = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (flag, count, wdir) = (Arc::clone(&done), Arc::clone(&said), dir.clone());
-        let waiter = std::thread::spawn(move || {
-            let held = Lock::acquire(&wdir, Duration::from_millis(50), |m| {
-                assert!(m.contains("holds the lock"), "{m}");
-                count.fetch_add(1, Ordering::SeqCst);
-            });
-            flag.store(true, Ordering::SeqCst);
-            held
-        });
-        std::thread::sleep(Duration::from_secs(1));
-        assert!(
-            !done.load(Ordering::SeqCst),
-            "acquired while the first was held"
-        );
-        drop(first);
-        let second = waiter.join().unwrap().unwrap();
-        assert_eq!(said.load(Ordering::SeqCst), 1, "says who holds it once");
-        drop(second);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_lock_file_nobody_holds_is_acquired_whatever_it_says() {
-        for (tag, text) in [
-            ("garbage", "not a pid"),
-            ("empty", ""),
-            ("dead", "999999"),
-            ("zero", "0"),
-        ] {
-            let dir = scratch(tag);
-            fs::write(dir.join("gate.lock"), text).unwrap();
-            let held = Lock::acquire(&dir, Duration::from_millis(50), |_| {}).unwrap();
-            drop(held);
-            fs::remove_dir_all(&dir).unwrap();
-        }
-    }
-
-    #[test]
     fn a_summary_with_a_nightly_only_step_reads() {
         let json = rows(&[("fmt", "passed"), ("duckdb-managed", "nightly-only")]);
         assert_eq!(
             read_summary(&json),
             Ok(Verdict {
                 passed: 1,
-                failed: None
+                failed: None,
+                passed_all: vec!["fmt".into()],
+                failed_all: vec![],
             })
         );
     }
@@ -1086,67 +792,6 @@ mod tests {
         assert_eq!(check_head_repository("meridian-online/brightfield"), Ok(()));
     }
 
-    /// A stand-in for the tree's `fetch-duckdb-cli.sh` whose pin is `pin`:
-    /// `--check` accepts a directory whose `duckdb` holds that text, and a
-    /// fetch writes it, logging each fetch.
-    fn fetch_script(dir: &Path, pin: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let script = dir.join("fetch-duckdb-cli.sh");
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = --check ]; then [ \"$(cat \"$3/duckdb\" 2>/dev/null)\" = {pin} ]; exit $?; fi\necho fetched >> '{}'\nprintf {pin} > \"$2/duckdb\"\necho \"$2/duckdb\"\n",
-                dir.join("fetches").display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        script
-    }
-
-    #[test]
-    fn the_engine_is_judged_by_the_trees_pin_and_fetched_once_when_it_moves() {
-        let dir = scratch("engine");
-        let invoking = dir.join("invoking");
-        fs::create_dir_all(&invoking).unwrap();
-        fs::write(invoking.join("duckdb"), "v1").unwrap();
-        let cache = dir.join("cache");
-
-        // The branch keeps main's pin: the invoking checkout's engine serves.
-        let same = fetch_script(&dir, "v1");
-        let engine = engine_for_tree(&same, "host", &invoking.join("duckdb"), &cache).unwrap();
-        assert_eq!(engine, invoking.join("duckdb"));
-        assert!(!dir.join("fetches").exists());
-
-        // The branch moves the pin: the tree's script fetches into the cache,
-        // once, and a second gate on the same pin reuses that copy.
-        let moved = fetch_script(&dir, "v2");
-        for _ in 0..2 {
-            let engine = engine_for_tree(&moved, "host", &invoking.join("duckdb"), &cache).unwrap();
-            assert_eq!(engine, cache.join("duckdb"));
-        }
-        let fetches = fs::read_to_string(dir.join("fetches")).unwrap();
-        assert_eq!(fetches.lines().count(), 1, "{fetches}");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_tree_sits_beside_the_gate_target_so_relative_climbs_stay_short() {
-        let gate_dir = Path::new("/home/someone/.cache/meridian/gate");
-        let tree = tree_beside_target(gate_dir, "brightfield-gate-1-2");
-        let cwd = tree.join("crates/brightfield-shell");
-        let scratch = gate_dir.join("target/tmp/some-test");
-        let shared = cwd
-            .components()
-            .zip(scratch.components())
-            .take_while(|(a, b)| a == b)
-            .count();
-        // The climb from a test's working directory to its scratch file stops
-        // at the gate's directory, never at the filesystem root.
-        assert_eq!(shared, gate_dir.components().count());
-        assert_eq!(cwd.components().count() - shared, 4);
-    }
-
     #[test]
     fn a_failure_posts_a_fixed_phrase_and_no_local_path() {
         use std::os::unix::fs::PermissionsExt;
@@ -1197,49 +842,6 @@ mod tests {
         assert_eq!(merge_with_main(&dir, "origin/main"), Ok(()));
         assert!(dir.join("c.txt").exists(), "main's change is merged in");
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_child_loses_build_flags_and_keeps_the_job_cap() {
-        for key in [
-            "RUSTFLAGS",
-            "RUSTDOCFLAGS",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "RUSTC_WRAPPER",
-            "CARGO_BUILD_TARGET",
-            "CARGO_BUILD_RUSTFLAGS",
-            "RUSTUP_TOOLCHAIN",
-            "XDG_CONFIG_HOME",
-            "CXXFLAGS",
-            "CC",
-            "MACOSX_DEPLOYMENT_TARGET",
-            "HOST_CXXFLAGS",
-            "TARGET_CC",
-            "CXXFLAGS_aarch64_apple_darwin",
-            "CC_aarch64-apple-darwin",
-        ] {
-            assert!(removed_from_child(key), "{key} should not reach the run");
-        }
-        for key in [
-            "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
-            "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
-            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
-            "CARGO_PROFILE_DEV_OPT_LEVEL",
-            "CARGO_PROFILE_RELEASE_LTO",
-        ] {
-            assert!(removed_from_child(key), "{key} should not reach the run");
-        }
-        for key in [
-            "PATH",
-            "CARGO_BUILD_JOBS",
-            "RUST_TEST_THREADS",
-            "HOME",
-            "CARGO_TARGET_DIR",
-            "ARC_DUCKDB_BIN",
-            "CCACHE_DIR",
-        ] {
-            assert!(!removed_from_child(key), "{key} should reach the run");
-        }
     }
 
     #[test]

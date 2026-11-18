@@ -40,9 +40,8 @@ pub const NIGHTLY_MISSING: Flag = Flag {
 
 /// Main's nightly network tests failed. They read published data and remote
 /// hosts, so a failure is more often the world moving than a commit breaking
-/// something, and it does not make main red. Only the nightly gate raises
-/// and clears it, and no caller does yet outside the tests.
-#[cfg_attr(not(test), allow(dead_code))]
+/// something, and it does not make main red. The nightly gate raises and
+/// clears it; the pull-request gate does not read the network tests.
 pub const NIGHTLY_NETWORK: Flag = Flag {
     label: "nightly-network",
     title: "main's nightly network tests failed",
