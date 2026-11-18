@@ -369,7 +369,7 @@ else fail "an open-analytics tree is left"; fi
 if [ -f "$OTHER_OA/file" ]; then pass "another run's open-analytics tree survived"
 else fail "a pre-existing open-analytics tree was removed"; fi
 
-echo "== a clone that fails is reported, naming the repository"
+echo "== a Brightfield clone that fails is reported; an open-analytics one only costs the report"
 rm -rf "$NIGHTLY_DIR/brightfield"
 reset_kata
 BRIGHTFIELD_NIGHTLY_REMOTE="$TMP/nowhere" env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
@@ -377,9 +377,14 @@ if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: clone brightf
 else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
 rm -rf "$NIGHTLY_DIR/open-analytics"
 reset_kata
+: > "$STUB_LOG"
 BRIGHTFIELD_NIGHTLY_OA_REMOTE="$TMP/nowhere" env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
-if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: clone open-analytics --agent" "$KATA_LOG"; then pass "a failed open-analytics clone names it"
-else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
+if [ "$status" -eq 0 ] && ! grep -q "kata comment" "$KATA_LOG"; then pass "a failed open-analytics clone does not stop the run or raise nightly-missing"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG"); run said: $(cat "$TMP/run.out")"; fi
+if grep -qF "could not clone open-analytics" "$TMP/run.out"; then pass "the run says it could not clone open-analytics"
+else fail "run said: $(cat "$TMP/run.out")"; fi
+if grep -qxF "oa_dir=" "$STUB_LOG" && grep -q "^args=+9.9.9 xtask nightly --sha " "$STUB_LOG"; then pass "stage two ran xtask with no OPEN_ANALYTICS_DIR"
+else fail "stage two saw: $(cat "$STUB_LOG")"; fi
 
 echo "== uninstall removes what install wrote"
 BRIGHTFIELD_NIGHTLY_DRY_RUN=1 bash "$ROOT/scripts/nightly/install.sh" uninstall >"$TMP/uninstall.out" 2>&1; status=$?

@@ -45,7 +45,6 @@ pub enum Stage {
     Worktree,
     Merge,
     DuckDb,
-    OpenAnalytics,
     Start,
     NoSummary,
     ExitedNonZero,
@@ -62,7 +61,6 @@ impl Stage {
             Stage::Worktree => "could not make the worktree",
             Stage::Merge => "merge main into the branch first",
             Stage::DuckDb => "the pinned DuckDB CLI is missing",
-            Stage::OpenAnalytics => "the open-analytics checkout is missing",
             Stage::Start => "could not start the gate's run",
             Stage::NoSummary => "the gate's run left no summary",
             Stage::ExitedNonZero => "the gate's run failed though no step did",
@@ -320,12 +318,13 @@ fn gate_head(
     }
 
     let summary = scratch.dir.join("summary.json");
-    let mut command =
-        isolated_ci(root, tree, paths.home, paths.gate_dir, &scratch.dir).map_err(|unready| {
+    let mut command = isolated_ci(root, tree, paths.home, paths.gate_dir, &scratch.dir, false)
+        .map_err(|unready| {
             match unready {
                 Unready::Scratch(e) => fail(Stage::Worktree)(e),
                 Unready::DuckDb(e) => fail(Stage::DuckDb)(e),
-                Unready::OpenAnalytics(e) => fail(Stage::OpenAnalytics)(e),
+                // Not asked for, so not reached; mapped for completeness.
+                Unready::OpenAnalytics(e) => fail(Stage::Unexpected)(e),
             }
         })?;
     command.arg("--summary-json").arg(&summary);

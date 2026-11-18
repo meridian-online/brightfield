@@ -1,12 +1,13 @@
 //! The nightly gate: `cargo xtask nightly --sha <sha>` runs the tree's own
 //! `cargo xtask ci --nightly` on main's head, under the pull-request gate's
 //! lock and isolated environment, and posts its verdict on that commit as the
-//! `nightly-gate` and `nightly-network` commit statuses.
+//! `nightly-gate` and `nightly-network` commit statuses, and its report on
+//! open-analytics as the `nightly-open-analytics` status.
 //!
 //! The order of a run: wait for the gate lock until 05:30 local time; find the
-//! pinned DuckDB CLI and the open-analytics checkout; run the tree's
-//! `cargo xtask ci --nightly` with its output teed to a log; post both
-//! statuses; keep the `main-red`, `nightly-network` and `nightly-missing`
+//! pinned DuckDB CLI and the open-analytics checkout, going on without the
+//! checkout when it is missing; run the tree's `cargo xtask ci --nightly` with
+//! its output teed to a log; post the statuses; keep the `main-red`, `nightly-network` and `nightly-missing`
 //! issues in step. The run is started from the tree it gates, a worktree the
 //! launcher made at main's head, so it makes no worktree of its own.
 //!
@@ -37,6 +38,17 @@ const NETWORK_CONTEXT: &str = "nightly-network";
 /// The `cargo xtask ci` step whose verdict is posted as `NETWORK_CONTEXT`
 /// rather than as part of the gate's.
 const NETWORK_STEP: &str = "nightly-network";
+/// The commit status context for the report on open-analytics: whether the
+/// arc Brightfield pins opens the Protocols on open-analytics' main. Its
+/// operators may run ahead of the pin, so the report says how far and never
+/// fails the gate's verdict.
+const REPORT_CONTEXT: &str = "nightly-open-analytics";
+/// The `cargo xtask ci` step whose result is posted as `REPORT_CONTEXT` rather
+/// than as part of the gate's.
+const REPORT_STEP: &str = "sibling-manifests";
+/// The start of the line the report's step ends its output with, which says
+/// in a sentence what the report found.
+const REPORT_LINE: &str = "open-analytics report: ";
 /// The cargo job and test thread caps a Claude Code session runs with, which
 /// the nightly keeps to so it takes no more than one build slot.
 const CAP: &str = "6";
@@ -64,7 +76,6 @@ fn say(message: &str) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NightStage {
     Lock,
-    OpenAnalytics,
     DuckDb,
     Start,
     NoSummary,
@@ -77,7 +88,6 @@ impl NightStage {
     pub fn phrase(self) -> &'static str {
         match self {
             NightStage::Lock => "the gate lock was still held at 05:30",
-            NightStage::OpenAnalytics => "the open-analytics checkout is missing",
             NightStage::DuckDb => "the pinned DuckDB CLI is missing",
             NightStage::Start => "could not start the nightly's run",
             NightStage::NoSummary => "the nightly's run left no summary",
@@ -125,7 +135,9 @@ fn today() -> String {
 
 /// The `nightly-gate` and `nightly-network` statuses a run's summary gives.
 /// A failed `NETWORK_STEP` fails its own status and leaves the gate's, as
-/// `network_failures_post_their_own_status_and_leave_the_gate_green` checks,
+/// `network_failures_post_their_own_status_and_leave_the_gate_green` checks;
+/// `REPORT_STEP` is left out of the gate's in the same way, and
+/// [`report_status`] gives its status,
 /// and a run without a readable summary is a gate failure. The network status is
 /// `None` when the summary shows `NETWORK_STEP` neither passing nor failing,
 /// as `a_run_without_a_summary_is_a_failure` checks for a run with no summary.
@@ -137,7 +149,7 @@ pub fn statuses_of(summary: Option<&Verdict>, took: Duration) -> (Status, Option
     let failed: Vec<&String> = verdict
         .failed_all
         .iter()
-        .filter(|name| *name != NETWORK_STEP)
+        .filter(|name| *name != NETWORK_STEP && *name != REPORT_STEP)
         .collect();
     let gate = match failed.split_first() {
         None => (
@@ -173,6 +185,40 @@ pub fn statuses_of(summary: Option<&Verdict>, took: Duration) -> (Status, Option
         None
     };
     (gate, network)
+}
+
+/// The `nightly-open-analytics` status a run's summary and log give: the
+/// report's own sentence when its step passed, a failure when the step could
+/// not report, which is when it had no open-analytics Protocols to read, and
+/// `None` when the step neither passed nor failed. A Protocol the pinned arc
+/// refuses leaves the step passing, as
+/// `the_report_on_open_analytics_posts_on_its_own_status` checks.
+pub fn report_status(summary: Option<&Verdict>, log: &str) -> Option<Status> {
+    let verdict = summary?;
+    if verdict.failed_all.iter().any(|name| name == REPORT_STEP) {
+        return Some((
+            "failure",
+            "the report on open-analytics had no Protocols to read, or could not run; the nightly log says which"
+                .to_owned(),
+        ));
+    }
+    if !verdict.passed_all.iter().any(|name| name == REPORT_STEP) {
+        return None;
+    }
+    let found = log
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(REPORT_LINE))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("the report on open-analytics ran; the nightly log has it");
+    let text = if found.chars().count() > DESCRIPTION_LIMIT {
+        let cut: String = found.chars().take(DESCRIPTION_LIMIT - 1).collect();
+        format!("{cut}…")
+    } else {
+        found.to_owned()
+    };
+    Some(("success", text))
 }
 
 /// Run the nightly gate on `sha`, the head of the tree this command was built
@@ -229,11 +275,25 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         dir: std::env::temp_dir().join(format!("brightfield-nightly-{}", std::process::id())),
         tree: None,
     };
-    let mut command = match isolated_ci(&root, &root, &home, &gate_dir, &scratch.dir) {
+    // A missing open-analytics checkout costs only the report on it: the run
+    // goes ahead without one, and the report's step fails for want of it,
+    // which posts on the report's own status and leaves the gate's alone.
+    let isolated =
+        |open_analytics| isolated_ci(&root, &root, &home, &gate_dir, &scratch.dir, open_analytics);
+    let unready = |unready| match unready {
+        Unready::Scratch(e) | Unready::OpenAnalytics(e) => stopped(NightStage::Start, &e),
+        Unready::DuckDb(e) => stopped(NightStage::DuckDb, &e),
+    };
+    let mut command = match isolated(true) {
         Ok(command) => command,
-        Err(Unready::Scratch(e)) => return stopped(NightStage::Start, &e),
-        Err(Unready::DuckDb(e)) => return stopped(NightStage::DuckDb, &e),
-        Err(Unready::OpenAnalytics(e)) => return stopped(NightStage::OpenAnalytics, &e),
+        Err(Unready::OpenAnalytics(e)) => {
+            say(&format!("running without the open-analytics checkout: {e}"));
+            match isolated(false) {
+                Ok(command) => command,
+                Err(e) => return unready(e),
+            }
+        }
+        Err(e) => return unready(e),
     };
     let summary = scratch.dir.join("summary.json");
     command
@@ -271,6 +331,11 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
     };
     drop(scratch);
     let (mut gate, network) = statuses_of(verdict.as_ref(), took);
+    let report_text = fs::read_to_string(&log).unwrap_or_else(|e| {
+        say(&format!("cannot read {}: {e}", log.display()));
+        String::new()
+    });
+    let open_analytics = report_status(verdict.as_ref(), &report_text);
     if verdict.as_ref().is_some_and(|v| v.failed_all.is_empty()) && !status.success() {
         say(&format!(
             "the nightly's run exited with {status} though no step failed"
@@ -285,6 +350,7 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         trial,
         &gate,
         network.as_ref(),
+        open_analytics.as_ref(),
         &log,
     )
 }
@@ -343,7 +409,9 @@ fn stop(kata: &OsStr, trial: bool, day: &str, stage: NightStage, detail: &str) -
 /// posted status, so it never says what no reader of the commit can see; a
 /// `nightly-gate` that could not be posted raises `nightly-missing` instead,
 /// as `a_verdict_that_could_not_be_posted_moves_no_flag_but_missing` checks.
-/// Exits 0 only on two successes, both posted.
+/// The report on open-analytics is posted when the run gave one and moves no
+/// flag. Exits 0 only on the gate's and the network's successes, both posted,
+/// whatever the report says.
 #[allow(clippy::too_many_arguments)]
 fn report(
     gh: &OsStr,
@@ -353,6 +421,7 @@ fn report(
     trial: bool,
     gate: &Status,
     network: Option<&Status>,
+    open_analytics: Option<&Status>,
     log: &Path,
 ) -> ExitCode {
     let sha7: String = sha.chars().take(7).collect();
@@ -370,6 +439,9 @@ fn report(
     };
     let gate_posted = post(GATE_CONTEXT, gate);
     let network_posted = network.map(|status| post(NETWORK_CONTEXT, status));
+    if let Some(status) = open_analytics {
+        post(REPORT_CONTEXT, status);
+    }
     println!("the full log is {}", log.display());
     if !trial {
         let log = log.display();
@@ -502,6 +574,40 @@ mod tests {
         assert_eq!(network.map(|(state, _)| state), Some("success"));
     }
 
+    #[test]
+    fn the_report_on_open_analytics_posts_on_its_own_status() {
+        let line = "open-analytics report: the pinned arc f5f3f07 refuses 1 of 25 open-analytics Protocols at e111a9a";
+        let log = format!("earlier output\n{line}\nthe summary\n");
+        let passed = read_summary(&rows(&[
+            ("fmt", "passed"),
+            ("sibling-manifests", "passed"),
+            ("nightly-network", "passed"),
+        ]))
+        .unwrap();
+        let (gate, _) = statuses_of(Some(&passed), Duration::from_secs(60));
+        assert_eq!(gate.0, "success", "{gate:?}");
+        let report = report_status(Some(&passed), &log).unwrap();
+        assert_eq!(report.0, "success", "a lag is reported, not failed");
+        assert_eq!(report.1, line.strip_prefix(REPORT_LINE).unwrap());
+
+        // A report with no coverage fails its own status and still leaves
+        // the gate's verdict green.
+        let failed =
+            read_summary(&rows(&[("fmt", "passed"), ("sibling-manifests", "failed")])).unwrap();
+        let (gate, _) = statuses_of(Some(&failed), Duration::from_secs(60));
+        assert_eq!(gate.0, "success", "{gate:?}");
+        assert_eq!(report_status(Some(&failed), &log).unwrap().0, "failure");
+
+        // A run that did not reach the report posts none, and a long line is
+        // cut to GitHub's limit.
+        let without = read_summary(&rows(&[("fmt", "passed")])).unwrap();
+        assert_eq!(report_status(Some(&without), &log), None);
+        assert_eq!(report_status(None, &log), None);
+        let long = format!("{REPORT_LINE}{}", "x".repeat(300));
+        let cut = report_status(Some(&passed), &long).unwrap().1;
+        assert_eq!(cut.chars().count(), DESCRIPTION_LIMIT, "{cut}");
+    }
+
     /// A shim at `dir/name` that appends its arguments, one call per line,
     /// to `dir/name.calls`, and prints an empty issue list.
     fn shim(dir: &Path, name: &str) -> PathBuf {
@@ -540,12 +646,17 @@ mod tests {
             true,
             &gate,
             Some(&network),
+            Some(&("success", "the pinned arc refuses 1 of 25".to_owned())),
             Path::new("nightly.log"),
         );
         assert_eq!(code, ExitCode::FAILURE);
         let posted = calls(&dir, "gh");
         assert!(posted.contains("context=nightly-gate"), "{posted}");
         assert!(posted.contains("context=nightly-network"), "{posted}");
+        assert!(
+            posted.contains("context=nightly-open-analytics"),
+            "{posted}"
+        );
         assert!(!posted.contains("state=pending"), "{posted}");
         assert_eq!(calls(&dir, "kata"), "", "a trial touches no flag");
         fs::remove_dir_all(&dir).unwrap();
@@ -565,6 +676,7 @@ mod tests {
             false,
             &gate,
             Some(&network),
+            None,
             Path::new("nightly.log"),
         );
         assert_eq!(
@@ -600,6 +712,7 @@ mod tests {
             false,
             &("success", "passed 30 steps in 50m 00s".to_owned()),
             Some(&("failure", "the network tests failed".to_owned())),
+            None,
             Path::new("nightly.log"),
         );
         assert_eq!(code, ExitCode::FAILURE);

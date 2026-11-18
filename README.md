@@ -455,20 +455,10 @@ process. Treat every bump as potentially breaking and move deliberately.
 
 arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. While `.cargo/config.toml` defines `DUCKDB_VERSION` for the bundled build (libduckdb-sys 1.20000.0 otherwise names DuckDB 2.0.0 a development build), that value moves with them, and the entry goes once a libduckdb-sys release names its DuckDB correctly; `the_linked_duckdb_is_the_release_the_cli_is_pinned_to` fails while the two disagree. The packaging scripts read the CLI version from that pin, and `scripts/check-artifact-engine.sh` refuses a release whose pin and `libduckdb-sys` in `Cargo.lock` name different DuckDBs.
 
-**What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
-arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol
-in the shell and reading `unknown operator 'text_embed' (not in the operator catalog)`.
-`crates/brightfield-protocol/tests/sibling_manifests.rs` is the check that replaces that
-discovery: it walks every `arcform.yaml` the sibling data repo ships and loads each through
-the pinned `arc`, naming the manifest and quoting arc's own diagnostic when one is refused.
-Its two tests are `#[ignore]`d because their input is not in this checkout — `test.yml`
-checks the sibling repo out, sets `OPEN_ANALYTICS_DIR`, runs them with `--ignored`, and holds
-libtest's executed count to a floor so a filter matching nothing cannot pass for coverage.
-To run it locally against a sibling clone:
+**How far the pin lags open-analytics.** open-analytics' Protocols may use arc operators newer than this pin, and that is allowed: the two repositories move at their own pace, and the gate tests Brightfield's own Protocols (the gallery starts, the vendored `examples/protocol` copy and the committed fixtures). Bump the pin when Brightfield needs what the newer arc has. The pin once drifted three weeks behind arcform's operator catalog with no signal but somebody opening a published Protocol in the shell and reading `unknown operator 'text_embed' (not in the operator catalog)`, so the nightly reports the lag: `crates/brightfield-protocol/tests/sibling_manifests.rs` loads every `arcform.yaml` on open-analytics' `main` through the pinned `arc` and lists each one refused, with arc's own diagnostic, and the nightly posts the count as its `nightly-open-analytics` status without failing its verdict. Its two tests are `#[ignore]`d because their input is not in this checkout; the `sibling-manifests` step runs them with `--ignored` and holds libtest's executed count to a floor, so a filter matching nothing cannot pass for coverage. To run it against a sibling clone:
 
 ```
-OPEN_ANALYTICS_DIR=../open-analytics \
-  cargo test -p brightfield-protocol --test sibling_manifests -- --ignored --nocapture
+cargo xtask ci --step sibling-manifests
 ```
 
 Then run the whole suite: `crates/brightfield-protocol/tests/roundtrip.rs` is the canary for
