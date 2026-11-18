@@ -245,7 +245,10 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         .env(
             "BRIGHTFIELD_DUCKDB_MANAGED_DIR",
             gate_dir.join("duckdb-managed"),
-        );
+        )
+        // The parity check's two arc builds, one compiling DuckDB, kept
+        // between nights as the managed build is.
+        .env("BRIGHTFIELD_PARITY_DIR", gate_dir.join("duckdb-parity"));
     say(&format!(
         "running the nightly on {sha7}; the log is {}",
         log.display()

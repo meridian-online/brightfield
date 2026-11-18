@@ -101,7 +101,7 @@ A redrawn image counts as rounding when no pixel moves more than 16 of 255 in an
 The nightly-only steps, which `cargo xtask ci --list` marks and `--step <name>` runs by hand, and a pull-request gate does not run:
 
 - `nightly-network`: the network-gated `--ignored` tests and the real FineType bundle checks, in `scripts/nightly-network.sh`. `nightly-network.yml`, run by hand, calls the same script.
-- `duckdb-managed`, then `managed-duckdb-test`, then `duckdb-parity`, with `BRIGHTFIELD_DUCKDB_MANAGED_DIR` under `~/.cache/meridian/gate/duckdb-managed`. A cold DuckDB build takes 30 to 90 minutes, so the build is kept between nights and rebuilt only when the hash of its inputs changes, the files `managed-duckdb.yml` keys its cache on. `duckdb-parity` holds that build to DuckDB's release command line (`docs/managed-duckdb.md`, "What checks it").
+- `duckdb-managed`, then `managed-duckdb-test`, then `duckdb-parity`, with `BRIGHTFIELD_DUCKDB_MANAGED_DIR` under `~/.cache/meridian/gate/duckdb-managed`. A cold DuckDB build takes 30 to 90 minutes, so the build is kept between nights and rebuilt only when the hash of its inputs changes, the files `managed-duckdb.yml` keys its cache on. `duckdb-parity` holds that build to DuckDB's release command line (`docs/managed-duckdb.md`, "What checks it"), with `BRIGHTFIELD_PARITY_DIR` under `~/.cache/meridian/gate/duckdb-parity`, so its two builds of arc, one of them compiling DuckDB, are kept between nights too.
 
 ### Statuses and issues
 

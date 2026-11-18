@@ -21,8 +21,10 @@
 #
 # 1. Every Protocol Brightfield ships that can run offline, and the
 #    agent-written Protocols the test suite checks, run three times through
-#    `arc run`: twice with ARC_DUCKDB_BIN naming the release command line and
-#    once naming Meridian's. Each run starts from the same copy of the
+#    `arc run`: twice as Brightfield Studio runs it, on the release command
+#    line with an arc linked to DuckDB's release library, and once as the
+#    managed edition runs it, on Meridian's command line with an arc linked to
+#    Meridian's library. Each run starts from the same copy of the
 #    Protocol at the same path, with its own empty database and history, so
 #    the paths in what it prints and records are the same on every run. Each
 #    run is captured (see CAPTURE below), and the captures are compared: the
@@ -46,8 +48,10 @@
 #    line (the DuckDB lineage reader, the tokens its refusals read, the reader
 #    switch and the reader parity test), and its engine contract tests. arcform
 #    is cloned from cargo's own checkout of that revision, so no network is
-#    needed once cargo has fetched it, and built against Meridian's library.
-#    The same arc runs the Protocols in part 1, unless ARC_BIN names another.
+#    needed once cargo has fetched it. It is built twice, in two target
+#    directories: once against Meridian's library, for the managed side and
+#    for these tests, and once with arcform's bundled DuckDB, as Brightfield
+#    Studio builds it, for the release side.
 #
 # CAPTURE. For one run, a folder holding:
 #   exit         arc's exit status
@@ -68,22 +72,26 @@
 # both sides, so a difference is in what the engine under test wrote.
 #
 # Environment:
-#   BRIGHTFIELD_RELEASE_DUCKDB  the release command line (default
-#                               target/duckdb-cli/duckdb, which
-#                               scripts/fetch-duckdb-cli.sh writes)
+#   BRIGHTFIELD_RELEASE_DUCKDB  the release command line (default:
+#                               ARC_DUCKDB_BIN, which the nightly sets to the
+#                               pinned release, else target/duckdb-cli/duckdb,
+#                               which scripts/fetch-duckdb-cli.sh writes)
 #   BRIGHTFIELD_MANAGED_DUCKDB  Meridian's command line (default bin/duckdb in
 #                               the directory scripts/build-duckdb.sh
 #                               --print-dir names)
-#   ARC_BIN                     the arc to run the Protocols with (default: the
-#                               one built from the pinned arcform)
+#   ARC_BIN                     one arc to run both sides' Protocols with, for
+#                               a diagnosis (default: the two built from the
+#                               pinned arcform)
 #   BRIGHTFIELD_PARITY_DIR      where the copies, captures and the arcform
-#                               build go (default target/duckdb-parity); the
+#                               builds go (default target/duckdb-parity; the
+#                               nightly keeps it between nights); the
 #                               captures are kept there to be read after a
 #                               failure
 #
 # NEEDS: python3, git and cargo, and both command lines. A missing one stops
-# the check and says where it comes from. Most of the time is arc's build and
-# tests: about 20 to 30 minutes from cold, and the Protocol runs a minute.
+# the check and says where it comes from. Most of the time is arc's two builds,
+# the bundled one compiling DuckDB: 20 to 30 minutes from cold, and minutes
+# once they are built. The Protocol runs take about a minute.
 # Its regression test is scripts/check-duckdb-parity-selftest.sh.
 set -euo pipefail
 
@@ -209,7 +217,7 @@ RESTRICTED=(
   "examples/protocol/edgar_gleif|runs uv, which the managed edition can't run; crates/brightfield-shell/tests/beyond_edition.rs checks it opens restricted"
 )
 
-RELEASE="${BRIGHTFIELD_RELEASE_DUCKDB:-${ROOT}/target/duckdb-cli/duckdb}"
+RELEASE="${BRIGHTFIELD_RELEASE_DUCKDB:-${ARC_DUCKDB_BIN:-${ROOT}/target/duckdb-cli/duckdb}}"
 MANAGED_DIR=$("${HERE}/build-duckdb.sh" --print-dir)
 MANAGED="${BRIGHTFIELD_MANAGED_DUCKDB:-${MANAGED_DIR}/bin/duckdb}"
 PAR="${BRIGHTFIELD_PARITY_DIR:-${ROOT}/target/duckdb-parity}"
@@ -246,7 +254,6 @@ ARC_REV=$(awk '
 ' "${ROOT}/Cargo.lock")
 [ "${#ARC_REV}" -eq 40 ] || fail "cannot read the arcform revision Cargo.lock pins (read '${ARC_REV}')"
 ARC_SRC="${PAR}/arcform-${ARC_REV:0:12}"
-ARC_TARGET="${PAR}/arcform-target"
 TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "${ROOT}/rust-toolchain.toml")
 [ -n "$TOOLCHAIN" ] || fail "cannot read the toolchain rust-toolchain.toml pins"
 
@@ -272,27 +279,51 @@ print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["na
 
 # cargo in the arcform checkout, linked against Meridian's library rather than
 # building DuckDB from source, with the library found by an rpath at run time.
-arc_cargo() {
+arc_cargo_managed() {
   ( cd "$ARC_SRC" && env \
       RUSTUP_TOOLCHAIN="$TOOLCHAIN" \
-      CARGO_TARGET_DIR="$ARC_TARGET" \
+      CARGO_TARGET_DIR="${PAR}/arcform-target-managed" \
       DUCKDB_LIB_DIR="${MANAGED_DIR}/lib" \
       DUCKDB_INCLUDE_DIR="${MANAGED_DIR}/include" \
       RUSTFLAGS="-C link-arg=-Wl,-rpath,${MANAGED_DIR}/lib" \
       cargo "$@" )
 }
 
+# The release's DuckDB names itself as Brightfield Studio's does: the
+# DUCKDB_VERSION define .cargo/config.toml gives duckdb-rs's bundled build.
+STUDIO_CXXFLAGS=$(sed -n "s/^CXXFLAGS = '\(.*\)'\$/\1/p" "${ROOT}/.cargo/config.toml")
+[ -n "$STUDIO_CXXFLAGS" ] || fail "cannot read the CXXFLAGS .cargo/config.toml gives the bundled DuckDB"
+
+# cargo in the arcform checkout with its bundled DuckDB, which is DuckDB's
+# release source, compiled as Brightfield Studio compiles it.
+arc_cargo_release() {
+  ( cd "$ARC_SRC" && env -u DUCKDB_LIB_DIR -u DUCKDB_INCLUDE_DIR \
+      RUSTUP_TOOLCHAIN="$TOOLCHAIN" \
+      CARGO_TARGET_DIR="${PAR}/arcform-target-release" \
+      CXXFLAGS="$STUDIO_CXXFLAGS" \
+      cargo "$@" )
+}
+
+# absolute PATH: PATH made absolute, since each run starts in the Protocol's
+# folder.
+absolute() { echo "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"; }
+
 if [ -n "${ARC_BIN:-}" ]; then
-  ARC="$ARC_BIN"
+  [ -x "$ARC_BIN" ] || fail "no arc at ${ARC_BIN}"
+  ARC_RELEASE=$(absolute "$ARC_BIN") ARC_MANAGED=$(absolute "$ARC_BIN")
+  say "ARC_BIN is set: both sides run ${ARC_RELEASE}, so a difference in arc's own library goes unseen"
 else
   [ -f "${MANAGED_DIR}/lib/libduckdb.dylib" ] || fail "no managed DuckDB library in ${MANAGED_DIR}/lib: run cargo xtask ci --step duckdb-managed"
   arcform_source
-  say "building arc from arcform ${ARC_REV:0:12}"
-  arc_cargo build --locked --bin arc
-  ARC="${ARC_TARGET}/debug/arc"
+  say "building arc from arcform ${ARC_REV:0:12} against Meridian's library"
+  arc_cargo_managed build --locked --bin arc
+  ARC_MANAGED="${PAR}/arcform-target-managed/debug/arc"
+  if [ "$PROTOCOLS" -eq 1 ]; then
+    say "building arc from arcform ${ARC_REV:0:12} with DuckDB's release compiled in"
+    arc_cargo_release build --locked --bin arc --features bundled-duckdb
+    ARC_RELEASE="${PAR}/arcform-target-release/debug/arc"
+  fi
 fi
-[ -x "$ARC" ] || fail "no arc at ${ARC}"
-ARC=$(cd "$(dirname "$ARC")" && pwd -P)/$(basename "$ARC")
 
 # ---- the Protocols ---------------------------------------------------------
 
@@ -341,7 +372,7 @@ prepare() {
     [ -f "${copy}/${model}" ] || fail "${name}: no model ${model} for step ${step}"
     local i
     for (( i = at - 1; i >= 0; i-- )); do
-      ( cd "$copy" && "${arc_env[@]}" "$ARC" edit-protocol delete "steps[$i]" ) > /dev/null < /dev/null \
+      ( cd "$copy" && "${arc_env[@]}" "$ARC_RELEASE" edit-protocol delete "steps[$i]" ) > /dev/null < /dev/null \
         || fail "${name}: arc could not drop steps[$i]"
     done
     mkdir -p "${copy}/data"
@@ -349,7 +380,7 @@ prepare() {
     printf 'CREATE OR REPLACE TABLE "%s" AS\nSELECT * FROM read_parquet('"'"'data/%s'"'"')\n' \
       "$step" "$(basename "$file")" > "${copy}/${model}"
   fi
-  "${HERE}/drop-fetch-steps.sh" "$copy" env ARCFORM_DB_DIR="${into}/.db" ARCFORM_HISTORY_DIR="${into}/.history" "$ARC" > /dev/null \
+  "${HERE}/drop-fetch-steps.sh" "$copy" env ARCFORM_DB_DIR="${into}/.db" ARCFORM_HISTORY_DIR="${into}/.history" "$ARC_RELEASE" > /dev/null \
     || fail "${name}: its fetch steps cannot be dropped, so it cannot run offline"
   rm -rf "${into}/.db" "${into}/.history"
   echo "$copy"
@@ -401,10 +432,11 @@ dump_tables() {
     "SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = current_database() AND NOT internal ORDER BY ALL")
 }
 
-# run_and_capture COPY CLI CAPTURE: one `arc run` of a fresh copy of COPY on the
-# command line CLI, captured into CAPTURE. Every run uses the same paths.
+# run_and_capture COPY ARC CLI CAPTURE: one `arc run` of a fresh copy of COPY by
+# ARC on the command line CLI, captured into CAPTURE. Every run uses the same
+# paths.
 run_and_capture() {
-  local prepared="$1" cli="$2" capture="$3"
+  local prepared="$1" arc="$2" cli="$3" capture="$4"
   local work="${PAR}/run"
   local copy
   copy="${work}/$(basename "$prepared")"
@@ -413,12 +445,16 @@ run_and_capture() {
   cp -R "$prepared" "$copy"
   local status=0
   ( cd "$copy" && env ARCFORM_DB_DIR="${work}/db" ARCFORM_HISTORY_DIR="${work}/history" \
-      ARC_DUCKDB_BIN="$cli" "$ARC" run ) > "${capture}/stdout" 2> "${capture}/stderr.log" < /dev/null || status=$?
+      ARC_DUCKDB_BIN="$cli" "$arc" run ) > "${capture}/stdout" 2> "${capture}/stderr.log" < /dev/null || status=$?
   echo "$status" > "${capture}/exit"
   # stderr is kept to be read, under a name the comparison skips.
   mv "${capture}/stderr.log" "${capture}.stderr"
-  if [ -d "${copy}/build/.arcform/runs" ]; then
+  # A run that died before writing its record leaves none, and the capture
+  # says so; the comparison then names the records only one side has.
+  if compgen -G "${copy}/build/.arcform/runs/*.json" > /dev/null; then
     normalise "${copy}/build/.arcform/runs" "${capture}/records"
+  else
+    echo "no run record" > "${capture}/no-run-record"
   fi
   hash_files "$copy" > "${capture}/files"
   local dbs=()
@@ -451,11 +487,11 @@ if [ "$PROTOCOLS" -eq 1 ]; then
     IFS='|' read -r name dir fetched load <<< "$c"
     prepared=$(prepare "$name" "$dir" "$fetched" "$load")
     caps="${PAR}/captures/${name}"
-    run_and_capture "$prepared" "$RELEASE" "${caps}/release"
-    run_and_capture "$prepared" "$RELEASE" "${caps}/release-again"
-    run_and_capture "$prepared" "$MANAGED" "${caps}/managed"
+    run_and_capture "$prepared" "$ARC_RELEASE" "$RELEASE" "${caps}/release"
+    run_and_capture "$prepared" "$ARC_RELEASE" "$RELEASE" "${caps}/release-again"
+    run_and_capture "$prepared" "$ARC_MANAGED" "$MANAGED" "${caps}/managed"
     if [ "$(cat "${caps}/release/exit")" != 0 ]; then
-      echo "FAIL ${name}: arc run failed on the release command line (exit $(cat "${caps}/release/exit")); ${caps}/release.stderr says why"
+      echo "FAIL ${name}: arc run failed as Brightfield Studio runs it, on DuckDB's release (exit $(cat "${caps}/release/exit")); ${caps}/release.stderr says why"
       sed 's/^/    /' "${caps}/release.stderr" | tail -15
       failed=1
     elif ! compare "${caps}/release" "${caps}/release-again" > "${caps}/release-again.diff"; then
@@ -463,7 +499,7 @@ if [ "$PROTOCOLS" -eq 1 ]; then
       sed 's/^/  /' "${caps}/release-again.diff"
       failed=1
     elif ! compare "${caps}/release" "${caps}/managed" > "${caps}/managed.diff"; then
-      echo "FAIL ${name}: Meridian's build differs from the release command line"
+      echo "FAIL ${name}: on Meridian's build the run differs from the release's (exit $(cat "${caps}/managed/exit")); ${caps}/managed.stderr has what arc said"
       sed 's/^/  /' "${caps}/managed.diff"
       failed=1
     else
@@ -480,15 +516,16 @@ if [ "$ARC_TESTS" -eq 1 ]; then
   managed_bin_dir=$(dirname "$managed_real")
   arc_tests() {
     say "arc's tests: cargo test $*"
-    PATH="${managed_bin_dir}:${PATH}" ARC_DUCKDB_RECORD_BIN="$managed_real" arc_cargo test --locked "$@" \
-      || { echo "FAIL arc's tests on Meridian's command line: cargo test $*"; failed=1; }
+    PATH="${managed_bin_dir}:${PATH}" ARC_DUCKDB_BIN="$managed_real" ARC_DUCKDB_RECORD_BIN="$managed_real" \
+      arc_cargo_managed test --locked "$@" \
+      || { echo "FAIL arc's tests on Meridian's command line and library: cargo test $*"; failed=1; }
   }
   arc_tests --test engine_contract --test engine_change_notice
   arc_tests --lib duckdb_lineage -- --include-ignored
   arc_tests --lib -- --include-ignored duckdb_tokens engine::extension_tests
   arc_tests --test duckdb_reader_switch -- --include-ignored
   arc_tests --test reader_parity -- --include-ignored
-  [ "$failed" -eq 0 ] && echo "arc's engine and tokenizer tests pass on Meridian's command line"
+  [ "$failed" -eq 0 ] && echo "arc's engine and tokenizer tests pass on Meridian's command line and library"
 fi
 
 if [ "$failed" -ne 0 ]; then

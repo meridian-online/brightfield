@@ -113,6 +113,9 @@ M=$(mutate); sed '$ s/"success"}$/"failure"}/' "$M/records/1.jsonl" > "$TMP/e" &
 grep -q '"failure"' "$M/records/1.jsonl" || fail "the event-log mutation took effect"
 expect_differs "an event log's outcome differing fails" "$A" "$M" "records/"
 
+M=$(mutate); rm -rf "$M/records"; echo "no run record" > "$M/no-run-record"; echo 134 > "$M/exit"
+expect_differs "a run that died before writing its record fails" "$A" "$M" "no-run-record"
+
 echo "what the comparison refuses"
 mkdir -p "$TMP/empty1" "$TMP/empty2"
 if "$PARITY" --compare "$TMP/empty1" "$TMP/empty2" > "$TMP/out" 2>&1; then
