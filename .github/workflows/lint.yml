@@ -172,3 +172,9 @@ jobs:
       # nobody notices the day detection quietly stopped working.
       - name: comment citations — self-test
         run: cargo xtask ci --step comment-citations-selftest
+
+      # The nightly's launcher renders a LaunchAgent and hands a fetched ref to
+      # its own copy of itself. The self-test needs git and bash only, but it is
+      # named by a step of the gate, so a workflow has to run it by name.
+      - name: nightly launcher self-test
+        run: cargo xtask ci --step nightly-launcher-selftest

@@ -326,6 +326,13 @@ pub static STEPS: &[Step] = &[
         run: |c| c.python_script("scripts/check-comment-citations.py", &["--self-test"]),
     },
     Step {
+        name: "nightly-launcher-selftest",
+        runs: "./scripts/nightly/launcher-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/nightly/launcher-selftest.sh", &[]),
+    },
+    Step {
         name: "deny-licenses",
         runs: "cargo deny --all-features check licenses",
         only_in_ci: None,
