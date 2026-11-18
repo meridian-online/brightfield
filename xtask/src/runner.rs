@@ -284,16 +284,23 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
         .filter(|row| matches!(row.outcome, Outcome::Failed(..)))
         .map(|row| row.name)
         .collect();
-    if failures.len() > 1 {
-        // A run that kept going can fail several steps, so "before it" no
-        // longer says anything about the passes.
+    // A run that carried on past its first failure has steps that ran after
+    // it, so "passed before it" would misreport its passes; it gets the form
+    // that counts failures instead. A run that stopped keeps the other form.
+    let carried_on = failures.first().is_some_and(|first| {
+        rows.iter()
+            .skip_while(|row| row.name != *first)
+            .skip(1)
+            .any(|row| matches!(row.outcome, Outcome::Passed(_) | Outcome::Failed(..)))
+    });
+    if carried_on {
         let skipped = rows
             .iter()
             .filter(|row| row.outcome == Outcome::Skipped)
             .count();
         let _ = writeln!(
             out,
-            "{} steps failed ({}); {skipped} skipped, {ran} passed, {} in all",
+            "{} step(s) failed ({}); {skipped} skipped, {ran} passed, {} in all",
             failures.len(),
             failures.join(", "),
             wall(total)
@@ -797,5 +804,67 @@ mod tests {
         assert_eq!(doc["steps"][0]["outcome"], "nightly-only");
         assert_eq!(doc["steps"][0]["reason"], "it takes hours");
         assert!(summary(&rows, &steps).contains("a runs only in the nightly run: it takes hours"));
+    }
+
+    fn row(name: &'static str, outcome: Outcome) -> Row {
+        Row { name, outcome }
+    }
+
+    #[test]
+    fn a_keep_going_summary_with_one_failure_counts_failures_not_passes_before_it() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row("a", Outcome::Passed(Duration::from_secs(1))),
+            row(
+                "b",
+                Outcome::Failed(Duration::from_secs(1), "b broke".to_owned()),
+            ),
+            row("c", Outcome::Passed(Duration::from_secs(1))),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("1 step(s) failed (b); 0 skipped, 2 passed"),
+            "{text}"
+        );
+        assert!(!text.contains("passed before it"), "{text}");
+    }
+
+    #[test]
+    fn a_keep_going_summary_names_every_failure() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row(
+                "a",
+                Outcome::Failed(Duration::from_secs(1), "a broke".to_owned()),
+            ),
+            row("b", Outcome::Skipped),
+            row(
+                "c",
+                Outcome::Failed(Duration::from_secs(1), "c broke".to_owned()),
+            ),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("2 step(s) failed (a, c); 1 skipped, 0 passed"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_stopped_summary_with_one_failure_keeps_its_passed_before_it_line() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row("a", Outcome::Passed(Duration::from_secs(1))),
+            row(
+                "b",
+                Outcome::Failed(Duration::from_secs(1), "b broke".to_owned()),
+            ),
+            row("c", Outcome::Skipped),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("failed at b; 1 later step(s) skipped, 1 passed before it"),
+            "{text}"
+        );
     }
 }
