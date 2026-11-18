@@ -1539,11 +1539,14 @@ fn forget_after_loads(p: &OwnProtocol) -> Result<(), String> {
 /// The own-files Protocol folders in the Protocols folder and in the older
 /// `<datasets>/protocols/own/` (where earlier builds made them), the most recently changed model
 /// first.
+///
+/// The door lists them on each frame it draws, so the Protocols folder is read as
+/// [`protocols_dir::root_now`] answers it, without trying again a grant that did not open.
 #[must_use]
 pub fn listed() -> Vec<PathBuf> {
     let old = starts::datasets_dir().join("protocols").join(OWN_DIR);
     let mut entries: Vec<PathBuf> = Vec::new();
-    for parent in [protocols_dir::root(), old] {
+    for parent in [protocols_dir::root_now(), old] {
         if let Ok(read) = std::fs::read_dir(&parent) {
             entries.extend(read.flatten().map(|e| e.path()));
         }

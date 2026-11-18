@@ -156,19 +156,139 @@ pub fn setting_problem() -> Option<String> {
 
 /// Where new Protocols are made: `$BRIGHTFIELD_PROTOCOLS_DIR`, else the folder chosen in
 /// Preferences, else `~/Documents/Protocols`.
+///
+/// In the managed edition, prefer [`granted_root`], which answers `None` until the analyst has
+/// granted a folder; this answers the default then, which under App Sandbox is
+/// inside the app's container, so that a caller written for the full edition still has a folder.
 #[must_use]
 pub fn root() -> PathBuf {
+    granted_root().unwrap_or_else(default_root)
+}
+
+/// The Protocols folder new Protocols are made in, when this edition may use one.
+///
+/// `$BRIGHTFIELD_PROTOCOLS_DIR` wins in every edition. Otherwise the full edition always has one:
+/// the folder chosen in Preferences, else `~/Documents/Protocols`. The managed edition has one
+/// once the analyst has chosen it and the grant store covers it, which the first launch asks for
+/// ([`PROPOSED_NAME`]); until then it answers `None`, and New Protocol asks for the folder first
+/// (`cancelling_leaves_the_door_open_and_asks_again_on_new_protocol`).
+#[must_use]
+pub fn granted_root() -> Option<PathBuf> {
+    // A grant that did not open at launch, its drive since plugged back in, is tried again here.
+    granted_with(|dir| crate::grants::store().covering(dir).is_some())
+}
+
+/// [`root`] for a caller that asks on each frame it draws, such as the door's tree: it does not
+/// try again a grant that did not open, so a folder on a drive that is not plugged in is not
+/// resolved again as each frame is drawn. [`granted_root`], asked by whatever acts on the folder,
+/// tries it again.
+#[must_use]
+pub fn root_now() -> PathBuf {
+    granted_with(|dir| crate::grants::store().covers_now(dir)).unwrap_or_else(default_root)
+}
+
+/// [`granted_root`], with `covered` saying whether the grant store covers the chosen folder.
+fn granted_with(covered: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    use crate::edition::{self, Capability};
     if let Some(dir) = std::env::var_os(PROTOCOLS_DIR_VAR).filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir);
+        return Some(PathBuf::from(dir));
     }
-    if let Some(dir) = setting() {
-        return dir;
+    let chosen = setting();
+    if edition::current().allows(Capability::UngrantedPaths) {
+        return Some(chosen.unwrap_or_else(default_root));
     }
+    chosen.filter(|dir| covered(dir))
+}
+
+/// The Protocols folder Preferences holds, whether or not this edition may reach it now: `None`
+/// until one is chosen. `$BRIGHTFIELD_PROTOCOLS_DIR` is not consulted.
+#[must_use]
+pub fn chosen() -> Option<PathBuf> {
+    setting()
+}
+
+/// **The Protocols folder chosen before but out of reach now**, in the managed edition: one
+/// Preferences holds that the grant store does not cover this launch, because its drive is not
+/// plugged in or its grant no longer resolves. It is the analyst's folder, so it is asked for
+/// again as it is, not replaced by the first launch's proposal
+/// (`a_chosen_folder_out_of_reach_is_asked_for_again_not_replaced`). `None` in the full edition,
+/// while `$BRIGHTFIELD_PROTOCOLS_DIR` sets the folder, when the folder is reachable, and before
+/// one is chosen.
+#[must_use]
+pub fn out_of_reach() -> Option<PathBuf> {
+    if std::env::var_os(PROTOCOLS_DIR_VAR).is_some_and(|v| !v.is_empty())
+        || crate::edition::current().allows(crate::edition::Capability::UngrantedPaths)
+    {
+        return None;
+    }
+    setting().filter(|dir| crate::grants::store().covering(dir).is_none())
+}
+
+/// `~/Documents/Protocols`, the full edition's Protocols folder until another is chosen.
+fn default_root() -> PathBuf {
     // A launch from the Mac's desktop always has a home directory.
     std::env::home_dir()
         .unwrap_or_default()
         .join("Documents")
         .join("Protocols")
+}
+
+/// The name the first launch's panel proposes for the Protocols folder.
+pub const PROPOSED_NAME: &str = "Protocols";
+
+/// The folder the first launch's panel opens on: the analyst's own Documents folder.
+///
+/// Under App Sandbox the home directory the app is given is its container,
+/// `~/Library/Containers/<bundle id>/Data`, whose Documents folder is not the analyst's own, so the
+/// home directory the container sits in is used instead ([`home_outside_container`]).
+#[must_use]
+pub fn documents() -> PathBuf {
+    home_outside_container(&std::env::home_dir().unwrap_or_default()).join("Documents")
+}
+
+/// The home directory `home` is, or the one its App Sandbox container sits in when `home` is a
+/// container's `Data` folder (`<home>/Library/Containers/<bundle id>/Data`).
+#[must_use]
+pub fn home_outside_container(home: &Path) -> PathBuf {
+    let parts: Vec<_> = home.components().collect();
+    let n = parts.len();
+    let in_container = n >= 4
+        && parts[n - 1].as_os_str() == "Data"
+        && parts[n - 3].as_os_str() == "Containers"
+        && parts[n - 4].as_os_str() == "Library";
+    if in_container {
+        parts[..n - 4].iter().collect()
+    } else {
+        home.to_path_buf()
+    }
+}
+
+/// **Make `dir` the Protocols folder the first launch asked for**: make the folder if the panel
+/// named a new one, grant it, and keep it in Preferences ([`set_root_saying`]). The managed
+/// edition's [`granted_root`] answers it from then on, this launch and the next.
+///
+/// # Errors
+///
+/// A sentence saying why, as [`set_root_saying`] gives one, or the grant store's reason; the
+/// setting is then left as it was.
+pub fn adopt(dir: &Path) -> Result<Option<String>, String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "Brightfield cannot make {} as the Protocols folder: the system refused it.",
+                dir.display()
+            )
+        } else {
+            format!("{}: {e}", dir.display())
+        }
+    })?;
+    let use_grants = !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths);
+    if use_grants {
+        crate::grants::store()
+            .grant(dir)
+            .map_err(|e| format!("{} could not be granted: {e}", dir.display()))?;
+    }
+    set_root_saying(dir)
 }
 
 /// Make `dir` the Protocols folder in Preferences, after checking Brightfield may write in it:
@@ -197,7 +317,10 @@ pub fn set_root(dir: &Path) -> Result<(), String> {
 /// then left as it is.
 pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
     let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let old = root();
+    // The folder Protocols are kept in now: in the managed edition, the one chosen before even
+    // when it is out of reach, and none before one is chosen, rather than the default it never
+    // used.
+    let old = granted_root().or_else(chosen);
     let refused = || {
         format!(
             "Brightfield cannot use {} as the Protocols folder. Allow it under System Settings → \
@@ -214,7 +337,7 @@ pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
     };
     std::fs::create_dir_all(&dir).map_err(|e| check(&e))?;
     let canonical = dir.canonicalize().map_err(|e| check(&e))?;
-    if let Ok(was) = old.canonicalize() {
+    if let Some((old, Ok(was))) = old.as_ref().map(|o| (o, o.canonicalize())) {
         if was != canonical {
             if canonical.starts_with(&was) {
                 return Err(format!(
