@@ -154,9 +154,10 @@ fn unquote(word: &str) -> String {
     word.trim_matches(|c| c == '"' || c == '\'').to_owned()
 }
 
-/// The triggers under the workflow's `on:` that start it without a person:
-/// every one but `workflow_dispatch` and `workflow_call`, in the order
-/// written. A `push` whose filter names tags and no branches is reported as
+/// The triggers under the workflow's `on:` that start it without a person,
+/// that is, the ones other than `workflow_dispatch` and `workflow_call`, in the
+/// order written (held by
+/// `the_trigger_reader_names_each_automatic_trigger_and_reads_a_tag_push`). A `push` whose filter names tags and no branches is reported as
 /// `push(tags-only)`, since only a tag push starts it. A form the reader cannot
 /// rule out as a branch push, such as `push: ~`, is a plain `push`, so a
 /// workflow it misreads is checked rather than passed over.
