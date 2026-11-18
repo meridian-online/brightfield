@@ -37,7 +37,20 @@ export GIT_CONFIG_NOSYSTEM=1
 
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
+# The cargo that records is the one under the temporary rustup directory, where
+# run.sh puts it first on PATH. $STUBS/cargo stands in for Homebrew's, which is
+# no rustup proxy and fails on `+<channel>`; a launcher that ran it would fail
+# every case below.
+RUSTUP_BIN="$HOME/.cargo/bin"
+mkdir -p "$RUSTUP_BIN"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RUSTUP_BIN/rustup"
 cat > "$STUBS/cargo" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_CARGO_LOG"
+echo "error: no such command: \`$1\`" >&2
+exit 101
+STUB
+cat > "$RUSTUP_BIN/cargo" <<'STUB'
 #!/usr/bin/env bash
 {
   echo "pwd=$(pwd -P)"
@@ -74,7 +87,8 @@ cat > "$STUBS/launchctl" <<'STUB'
 echo "launchctl $*" >> "$LAUNCHCTL_LOG"
 exit 0
 STUB
-chmod +x "$STUBS/cargo" "$STUBS/launchctl" "$STUBS/kata"
+chmod +x "$STUBS/cargo" "$RUSTUP_BIN/cargo" "$RUSTUP_BIN/rustup" "$STUBS/launchctl" "$STUBS/kata"
+export FAKE_CARGO_LOG="$TMP/fake-cargo.log"
 export STUB_LOG="$TMP/stub.log" LAUNCHCTL_LOG="$TMP/launchctl.log"
 export KATA_LOG="$TMP/kata.log" KATA_STATE="$TMP/kata"
 mkdir -p "$KATA_STATE"
@@ -218,6 +232,21 @@ else fail "the worktree is still there after a failed build"; fi
 if [ ! -s "$KATA_LOG" ]; then pass "a stop after xtask started is left to xtask to report"
 else fail "the launcher called kata after xtask started: $(cat "$KATA_LOG")"; fi
 
+echo "== rustup's cargo is the one that runs, whatever is earlier on PATH"
+if [ ! -e "$FAKE_CARGO_LOG" ]; then pass "the non-rustup cargo ahead of it on PATH was never called"
+else fail "the non-rustup cargo ran: $(cat "$FAKE_CARGO_LOG")"; fi
+
+DAY=$(date +%Y%m%d)
+KEY="the nightly launcher stopped on $DAY before the gate started"
+echo "== a main run with no rustup raises nightly-missing"
+mv "$RUSTUP_BIN/rustup" "$RUSTUP_BIN/rustup.away"
+reset_kata
+HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$CLONE" bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1; status=$?
+mv "$RUSTUP_BIN/rustup.away" "$RUSTUP_BIN/rustup"
+if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: find rustup's cargo --agent" "$KATA_LOG"; then
+  pass "a missing rustup is reported, naming the stage"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
+
 echo "== another ref is a trial run at that ref's sha"
 git -C "$ORIGIN" checkout -q -b trial-x
 echo "third" > "$ORIGIN/note.txt"
@@ -237,8 +266,6 @@ else fail "a trial run replaced the installed copy"; fi
 echo "== a main run that stops before xtask starts raises nightly-missing"
 BROKEN="$TMP/broken"
 git init -q "$BROKEN" && git -C "$BROKEN" remote add origin "$TMP/nowhere"
-DAY=$(date +%Y%m%d)
-KEY="the nightly launcher stopped on $DAY before the gate started"
 reset_kata
 HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$BROKEN" bash "$ROOT/scripts/nightly/run.sh" >"$TMP/run.out" 2>&1; status=$?
 if [ "$status" -ne 0 ]; then pass "exited $status"; else fail "exited 0 though the fetch failed"; fi

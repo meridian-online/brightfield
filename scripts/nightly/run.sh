@@ -33,6 +33,14 @@
 # every night does not go unseen until a pull request's gate runs.
 set -euo pipefail
 
+# rustup's proxies come first on PATH, in both stages and in everything they
+# start. A launchd job runs `bash -lc`, whose login profile puts Homebrew's
+# directory ahead of the plist's PATH, and Homebrew's own cargo is not a
+# rustup proxy: it rejects `cargo +<channel>` and would ignore the tree's
+# rust-toolchain.toml.
+cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+export PATH="$cargo_bin:$PATH"
+
 die() { echo "nightly: $*" >&2; exit 2; }
 
 # Stage two names each step in the file BRIGHTFIELD_NIGHTLY_STAGE_FILE names,
@@ -163,6 +171,10 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
+
+stage="find rustup's cargo"
+[ -x "$cargo_bin/rustup" ] || die "rustup is not in $cargo_bin, so cargo +<channel> cannot work"
+stage="fetch brightfield origin ${ref}"
 
 # FETCH_HEAD is one file per checkout, so an overlapping run (a trial started
 # by hand during the scheduled one) could overwrite it between the fetch and
