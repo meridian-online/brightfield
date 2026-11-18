@@ -295,13 +295,19 @@ STUDIO_CXXFLAGS=$(sed -n "s/^CXXFLAGS = '\(.*\)'\$/\1/p" "${ROOT}/.cargo/config.
 [ -n "$STUDIO_CXXFLAGS" ] || fail "cannot read the CXXFLAGS .cargo/config.toml gives the bundled DuckDB"
 
 # cargo in the arcform checkout with its bundled DuckDB, which is DuckDB's
-# release source, compiled as Brightfield Studio compiles it.
+# release source, compiled as Brightfield Studio compiles it: with Studio's
+# DUCKDB_VERSION define, and without debug info, which this workspace's
+# Cargo.toml sets for libduckdb-sys so that DuckDB builds with NDEBUG and none
+# of its debug-only checks. arcform's bundled-duckdb feature also compiles in
+# json beside parquet, where Studio's DuckDB loads json from DuckDB's own set;
+# arc's library only reads a run's tables to measure them, which neither
+# changes.
 arc_cargo_release() {
   ( cd "$ARC_SRC" && env -u DUCKDB_LIB_DIR -u DUCKDB_INCLUDE_DIR \
       RUSTUP_TOOLCHAIN="$TOOLCHAIN" \
       CARGO_TARGET_DIR="${PAR}/arcform-target-release" \
       CXXFLAGS="$STUDIO_CXXFLAGS" \
-      cargo "$@" )
+      cargo --config 'profile.dev.package.libduckdb-sys.debug=false' "$@" )
 }
 
 # absolute PATH: PATH made absolute, since each run starts in the Protocol's
