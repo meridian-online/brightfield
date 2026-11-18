@@ -230,6 +230,14 @@ jobs:
       - name: fetch-step drop self-test
         run: cargo xtask ci --step drop-fetch-steps-selftest
 
+      # The comparison the managed edition's parity check rests on: two runs
+      # of a Protocol that differ by one byte in any output (a table, a run
+      # record, the exit status, what arc printed, a file the run left) fail
+      # it, and two that differ only in run ids and times pass. Run on
+      # captures made by hand, so it needs no DuckDB and no build.
+      - name: DuckDB parity comparison self-test
+        run: cargo xtask ci --step duckdb-parity-selftest
+
       # vendor/libduckdb-sys is crates.io's libduckdb-sys with one feature
       # added for the managed edition. Cargo.lock records no checksum for a
       # path dependency, so this compares it, file by file, with the published

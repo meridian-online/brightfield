@@ -1,6 +1,6 @@
 # Build the managed edition's DuckDB and check it, by hand only:
 # `gh workflow run managed-duckdb.yml --ref <branch>`. The Mac Studio's nightly
-# (`cargo xtask nightly`) runs the same two steps on `main` each night,
+# (`cargo xtask nightly`) runs the same three steps on `main` each night,
 # rebuilding the library only when the files that decide it change, so a broken
 # DuckDB build is found the night after its merge and fixed forward. This hosted
 # run is for checking a branch that changes the build before it merges.
@@ -9,7 +9,7 @@
 # seven extensions compiled in, which Brightfield links and DuckDB's own shell
 # loads. scripts/build-duckdb.sh builds it from source; a cold build is 30 to 90
 # minutes, most of it the C libraries spatial needs, so the local pull-request
-# gate lists these two steps without running them:
+# gate lists these three steps without running them:
 #
 #   1. duckdb-managed builds the library and the shell and runs
 #      scripts/build-duckdb-selftest.sh over them: the version arc reads, the
@@ -18,7 +18,11 @@
 #   2. managed-duckdb-test links the engine against that library and reads a
 #      workbook and a SQLite file in process with the network denied, then
 #      starts Brightfield from an app bundle's layout and checks it loads the
-#      library in Contents/Frameworks and no other DuckDB.
+#      library in Contents/Frameworks and no other DuckDB;
+#   3. duckdb-parity runs the shipped Protocols on DuckDB's release command
+#      line and on this build's, and requires their tables, run records, exit
+#      statuses and files to be the same, then runs arc's engine and tokenizer
+#      tests, from the arcform Cargo.lock pins, on this build's command line.
 #
 # vcpkg's binary cache, about 100 MB, is cached under a key made of the files
 # that decide what is built, so a rerun on the same pins restores the C
@@ -63,3 +67,9 @@ jobs:
 
       - name: the engine and the app link it, and nothing else of DuckDB
         run: cargo xtask ci --step managed-duckdb-test
+
+      - name: the release DuckDB command line, which the parity check compares with
+        run: scripts/fetch-duckdb-cli.sh aarch64-apple-darwin target/duckdb-cli
+
+      - name: Protocols run the same on this build as on DuckDB's release, and arc's engine tests pass on it
+        run: cargo xtask ci --step duckdb-parity

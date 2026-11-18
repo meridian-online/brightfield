@@ -701,10 +701,28 @@ pub const SIGNING_REHEARSAL_PATHS: &[&str] = &[
     ".github/workflows/signing-rehearsal.yml",
 ];
 
+/// The paths whose change `managed-duckdb.yml` checks: what decides the
+/// managed edition's DuckDB build, and the arcform and DuckDB pins its parity
+/// check holds that build to. Its build and parity check run only at night and
+/// by hand, so the gate names the workflow when a pull request touches one.
+pub const MANAGED_DUCKDB_PATHS: &[&str] = &[
+    "scripts/build-duckdb.sh",
+    "scripts/build-duckdb-selftest.sh",
+    "scripts/duckdb-managed/**",
+    "scripts/check-duckdb-parity.sh",
+    "scripts/check-duckdb-parity-selftest.sh",
+    "scripts/fetch-duckdb-cli.sh",
+    "packaging/finetype-pin.env",
+    "vendor/libduckdb-sys/**",
+    "Cargo.lock",
+    ".github/workflows/managed-duckdb.yml",
+];
+
 /// The by-hand macOS checks, by workflow file, with the paths each checks.
 const PACKAGING_CHECKS: &[(&str, &[&str])] = &[
     ("brew-install-branch.yml", BREW_INSTALL_BRANCH_PATHS),
     ("signing-rehearsal.yml", SIGNING_REHEARSAL_PATHS),
+    ("managed-duckdb.yml", MANAGED_DUCKDB_PATHS),
 ];
 
 /// True when `file` is `pattern`, or sits under the directory a pattern
@@ -1034,6 +1052,7 @@ mod tests {
         for pattern in BREW_INSTALL_BRANCH_PATHS
             .iter()
             .chain(SIGNING_REHEARSAL_PATHS)
+            .chain(MANAGED_DUCKDB_PATHS)
         {
             assert!(
                 tracked.iter().any(|file| path_matches(pattern, file)),
@@ -1056,6 +1075,23 @@ mod tests {
             ["this pull request touches scripts/release-signing.sh; run gh workflow run signing-rehearsal.yml --ref b for its macOS check"]
         );
         assert!(packaging_hints(&["crates/a/src/lib.rs"], "b").is_empty());
+    }
+
+    #[test]
+    fn a_change_to_the_arcform_pin_or_the_duckdb_build_names_the_managed_duckdb_workflow() {
+        assert_eq!(
+            packaging_hints(&["Cargo.lock"], "b"),
+            ["this pull request touches Cargo.lock; run gh workflow run managed-duckdb.yml --ref b for its macOS check"]
+        );
+        assert_eq!(
+            packaging_hints(&["scripts/duckdb-managed/extensions.cmake"], "b"),
+            ["this pull request touches scripts/duckdb-managed/extensions.cmake; run gh workflow run managed-duckdb.yml --ref b for its macOS check"]
+        );
+        let fetch = packaging_hints(&["scripts/fetch-duckdb-cli.sh"], "b");
+        assert!(
+            fetch.iter().any(|h| h.contains("managed-duckdb.yml")),
+            "{fetch:?}"
+        );
     }
 
     #[test]

@@ -1,6 +1,10 @@
 [workspace]
 members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "crates/brightfield-ossie", "xtask"]
 resolver = "2"
+# scripts/check-duckdb-parity.sh clones arcform here and runs cargo in it. arcform
+# is a single package, so cargo would otherwise take it for a member of this
+# workspace.
+exclude = ["target/duckdb-parity"]
 
 [workspace.package]
 edition = "2021"

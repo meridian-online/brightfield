@@ -277,6 +277,13 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/drop-fetch-steps-selftest.sh", &[]),
     },
     Step {
+        name: "duckdb-parity-selftest",
+        runs: "./scripts/check-duckdb-parity-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/check-duckdb-parity-selftest.sh", &[]),
+    },
+    Step {
         name: "airgap-jail-selftest",
         runs: "./scripts/airgap-jail-selftest.sh",
         only_in_ci: None,
@@ -459,6 +466,17 @@ pub static STEPS: &[Step] = &[
                 "managed_duckdb_link",
             ])
         },
+    },
+    Step {
+        name: "duckdb-parity",
+        runs: "./scripts/check-duckdb-parity.sh",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it runs the shipped Protocols on the library the duckdb-managed step builds and \
+             builds arc to run its engine tests there, 20 to 30 minutes; the nightly runs it \
+             after that step, and --step runs it here once the library is built",
+        ),
+        run: |c| c.script("scripts/check-duckdb-parity.sh", &[]),
     },
 ];
 
@@ -1034,9 +1052,14 @@ mod tests {
             .collect();
         assert_eq!(
             night,
-            ["nightly-network", "duckdb-managed", "managed-duckdb-test"]
+            [
+                "nightly-network",
+                "duckdb-managed",
+                "managed-duckdb-test",
+                "duckdb-parity"
+            ]
         );
-        assert!(STEPS[STEPS.len() - 3..]
+        assert!(STEPS[STEPS.len() - night.len()..]
             .iter()
             .all(|s| s.only_at_night.is_some()));
     }
