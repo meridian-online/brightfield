@@ -188,7 +188,7 @@ mod tests {
         dir
     }
 
-    /// A kata that logs every call to `calls`, lists an open issue `flag1`
+    /// A kata that logs its arguments to `calls` on each call, lists an open issue `flag1`
     /// once one has been created (or from the start, when `open`), shows the
     /// comments made on it so far, and refuses a done close without evidence,
     /// as the real one does.
