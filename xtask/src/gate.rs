@@ -1020,7 +1020,7 @@ pub fn read_summary(json: &str) -> Result<Verdict, String> {
             (Some(name), Some("failed")) => {
                 failed.get_or_insert_with(|| name.to_owned());
             }
-            (Some(_), Some("skipped" | "ci-only")) => {}
+            (Some(_), Some("skipped" | "ci-only" | "nightly-only")) => {}
             _ => return Err(format!("summary has a step it cannot read: {step}")),
         }
     }
@@ -1436,6 +1436,18 @@ mod tests {
             drop(held);
             fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    #[test]
+    fn a_summary_with_a_nightly_only_step_reads() {
+        let json = rows(&[("fmt", "passed"), ("duckdb-managed", "nightly-only")]);
+        assert_eq!(
+            read_summary(&json),
+            Ok(Verdict {
+                passed: 1,
+                failed: None
+            })
+        );
     }
 
     #[test]
