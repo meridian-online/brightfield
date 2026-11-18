@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::runner::Step;
-use crate::{shard, workflows};
+use crate::{duckdb_stamp, shard, workflows};
 
 /// What every step runs against: the repository root and the cargo that
 /// started this command.
@@ -382,26 +382,54 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-vendored-libduckdb-sys.sh", &[]),
     },
     Step {
+        name: "managed-edition",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
+        only_in_ci: None,
+        only_at_night: None,
+        run: managed_edition,
+    },
+    Step {
+        name: "artifact-type-source-selftest",
+        runs: "./scripts/check-artifact-type-source-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/check-artifact-type-source-selftest.sh", &[]),
+    },
+    Step {
+        name: "package-artifact-staging-selftest",
+        runs: "./scripts/package-artifact-staging-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
+    },
+    Step {
+        name: "nightly-network",
+        runs: "./scripts/nightly-network.sh",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it reads published data over the network, so a red says the data or the host \
+             moved as often as the commit did; the nightly runs it, and --step runs it here",
+        ),
+        run: |c| c.script("scripts/nightly-network.sh", &[]),
+    },
+    Step {
         name: "duckdb-managed",
         runs: "./scripts/build-duckdb.sh, then ./scripts/build-duckdb-selftest.sh",
-        only_in_ci: Some(
+        only_in_ci: None,
+        only_at_night: Some(
             "it builds DuckDB and seven extensions from source, 30 to 90 minutes cold; \
-             managed-duckdb.yml runs it when the build changes, and --step runs it here",
+             the nightly runs it, and --step runs it here",
         ),
-        only_at_night: None,
-        run: |c| {
-            c.script("scripts/build-duckdb.sh", &[])?;
-            c.script("scripts/build-duckdb-selftest.sh", &[])
-        },
+        run: duckdb_managed,
     },
     Step {
         name: "managed-duckdb-test",
         runs: "cargo test --locked --features managed-duckdb, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link",
-        only_in_ci: Some(
-            "it links the library the duckdb-managed step builds; managed-duckdb.yml runs it \
+        only_in_ci: None,
+        only_at_night: Some(
+            "it links the library the duckdb-managed step builds; the nightly runs it \
              after that step, and --step runs it here once the library is built",
         ),
-        only_at_night: None,
         run: |c| {
             c.run_cargo(&[
                 "test",
@@ -425,28 +453,37 @@ pub static STEPS: &[Step] = &[
             ])
         },
     },
-    Step {
-        name: "managed-edition",
-        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
-        only_in_ci: None,
-        only_at_night: None,
-        run: managed_edition,
-    },
-    Step {
-        name: "artifact-type-source-selftest",
-        runs: "./scripts/check-artifact-type-source-selftest.sh",
-        only_in_ci: None,
-        only_at_night: None,
-        run: |c| c.script("scripts/check-artifact-type-source-selftest.sh", &[]),
-    },
-    Step {
-        name: "package-artifact-staging-selftest",
-        runs: "./scripts/package-artifact-staging-selftest.sh",
-        only_in_ci: None,
-        only_at_night: None,
-        run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
-    },
 ];
+
+/// Where the managed DuckDB build is kept: `BRIGHTFIELD_DUCKDB_MANAGED_DIR`
+/// when set, which `scripts/build-duckdb.sh` reads too, else
+/// `target/duckdb-managed` under `root`.
+fn managed_duckdb_dir(root: &Path, var: Option<OsString>) -> PathBuf {
+    match var {
+        Some(dir) if !dir.is_empty() => root.join(dir),
+        _ => root.join("target/duckdb-managed"),
+    }
+}
+
+/// Build the managed edition's DuckDB unless the build on disk was made from
+/// the current inputs, then check it. The stamp is removed before a rebuild
+/// starts and written after it succeeds, so a build that stopped half way is
+/// rebuilt rather than trusted. The self-test runs either way.
+fn duckdb_managed(ctx: &Ctx) -> Result<(), String> {
+    let dir = managed_duckdb_dir(
+        &ctx.root,
+        std::env::var_os("BRIGHTFIELD_DUCKDB_MANAGED_DIR"),
+    );
+    let hash = duckdb_stamp::inputs_hash(&ctx.root)?;
+    if duckdb_stamp::build_is_current(&dir, &hash) {
+        println!("the managed DuckDB build matches its inputs; not rebuilding");
+    } else {
+        duckdb_stamp::forget_build(&dir)?;
+        ctx.script("scripts/build-duckdb.sh", &[])?;
+        duckdb_stamp::record_build(&dir, &hash)?;
+    }
+    ctx.script("scripts/build-duckdb-selftest.sh", &[])
+}
 
 /// Compile what the test shards compile, so the job ahead of them can save
 /// it under the lockfile's cache key and each shard restores an exact match.
@@ -966,6 +1003,35 @@ mod tests {
             engine_path(root, None),
             PathBuf::from("/checkout/target/duckdb-cli/duckdb")
         );
+    }
+
+    #[test]
+    fn the_managed_build_lives_where_the_script_puts_it() {
+        let root = Path::new("/checkout");
+        assert_eq!(
+            managed_duckdb_dir(root, None),
+            PathBuf::from("/checkout/target/duckdb-managed")
+        );
+        assert_eq!(
+            managed_duckdb_dir(root, Some("/cache/duckdb".into())),
+            PathBuf::from("/cache/duckdb")
+        );
+    }
+
+    #[test]
+    fn the_nightly_only_steps_come_last() {
+        let night: Vec<&str> = STEPS
+            .iter()
+            .filter(|s| s.only_at_night.is_some())
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            night,
+            ["nightly-network", "duckdb-managed", "managed-duckdb-test"]
+        );
+        assert!(STEPS[STEPS.len() - 3..]
+            .iter()
+            .all(|s| s.only_at_night.is_some()));
     }
 
     #[test]

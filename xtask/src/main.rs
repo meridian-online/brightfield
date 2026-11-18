@@ -21,6 +21,7 @@
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling
 //! `open-analytics` checkout and the pinned DuckDB CLI.
 
+mod duckdb_stamp;
 mod gate;
 mod runner;
 mod shard;
