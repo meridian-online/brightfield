@@ -9,7 +9,9 @@
 # anything. launchctl is a stub that fails the test if it is ever called, since
 # BRIGHTFIELD_NIGHTLY_DRY_RUN=1 promises it is not. kata is a stub that logs
 # its arguments and keeps one issue's state in files, so a launcher failure's
-# report is checked without touching the real issue tracker.
+# report is checked without touching the real issue tracker. Both remotes the
+# launcher clones from are temporary repositories, so nothing reaches the
+# network and the nightly's real clones are never read.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -42,6 +44,8 @@ cat > "$STUBS/cargo" <<'STUB'
   echo "head=$(git rev-parse HEAD)"
   echo "dirty=$(git status --porcelain | wc -l | tr -d ' ')"
   echo "args=$*"
+  echo "oa_dir=${OPEN_ANALYTICS_DIR:-}"
+  if [ -n "${OPEN_ANALYTICS_DIR:-}" ]; then echo "oa_head=$(git -C "$OPEN_ANALYTICS_DIR" rev-parse HEAD)"; fi
 } >> "$STUB_LOG"
 # run.sh starts the toolchain and builds xtask before running it: those calls
 # succeed unless STUB_NO_TOOLCHAIN asks for a missing toolchain, and
@@ -102,10 +106,16 @@ if grep -qF "$INSTALLED" "$PLIST" 2>/dev/null && ! grep -qF "$ROOT/scripts/night
   pass "ProgramArguments names the installed copy, not the checkout's run.sh"
 else fail "the plist does not name only $INSTALLED"; fi
 for want in online.meridian.brightfield-nightly "<integer>2</integer>" "<integer>30</integer>" \
-  CARGO_BUILD_JOBS RUST_TEST_THREADS BRIGHTFIELD_NIGHTLY_REPO "$ROOT" "$HOME/Library/Logs/brightfield-nightly"; do
+  CARGO_BUILD_JOBS RUST_TEST_THREADS "$HOME/Library/Logs/brightfield-nightly"; do
   if grep -qF -- "$want" "$PLIST" 2>/dev/null; then pass "the plist carries $want"
   else fail "the plist lacks $want"; fi
 done
+for unwanted in BRIGHTFIELD_NIGHTLY_REPO "$ROOT" "@REPO@"; do
+  if ! grep -qF -- "$unwanted" "$PLIST" 2>/dev/null; then pass "the plist does not name $unwanted"
+  else fail "the plist names $unwanted: $(grep -nF -- "$unwanted" "$PLIST")"; fi
+done
+if [ -d "$HOME/.cache/meridian/gate/nightly" ]; then pass "install made the nightly directory"
+else fail "install made no nightly directory"; fi
 if [ -x "$INSTALLED" ] && cmp -s "$INSTALLED" "$ROOT/scripts/nightly/run.sh"; then pass "the installed copy exists and matches the checkout's"
 else fail "no executable installed copy at $INSTALLED"; fi
 
@@ -128,6 +138,12 @@ else fail "exit ${status}, output: ${out}"; fi
 
 echo "== run.sh hands main's head to that head's own run.sh"
 ORIGIN="$TMP/origin"; CLONE="$TMP/clone"
+# open-analytics' remote, with a second commit made later to show a fetch.
+OA_ORIGIN="$TMP/oa-origin"
+git init -q -b main "$OA_ORIGIN"
+echo one > "$OA_ORIGIN/lib.txt"
+git -C "$OA_ORIGIN" add lib.txt && git -C "$OA_ORIGIN" commit -qm "oa first"
+export BRIGHTFIELD_NIGHTLY_OA_REMOTE="$OA_ORIGIN"
 git init -q -b main "$ORIGIN"
 mkdir -p "$ORIGIN/scripts/nightly"
 # A toolchain that is not this checkout's, so the stub's first argument proves
@@ -186,7 +202,7 @@ if [ -f "$OTHER/file" ]; then pass "another run's tree for the same commit survi
 else fail "a pre-existing tree was removed"; fi
 if cmp -s "$INSTALLED" "$ORIGIN/scripts/nightly/run.sh"; then pass "the installed copy now matches the fetched ref's"
 else fail "the installed copy still differs from the fetched ref's run.sh"; fi
-leftovers=$(find "$(dirname "$INSTALLED")" -type f ! -name run.sh)
+leftovers=$(find "$(dirname "$INSTALLED")" -maxdepth 1 -type f ! -name run.sh)
 if [ -z "$leftovers" ]; then pass "no temporary file is left beside the installed copy"
 else fail "left beside it: $leftovers"; fi
 
@@ -231,7 +247,7 @@ for want in "kata list --label nightly-missing --json --project brightfield" \
   "--label nightly-missing --force-new --agent --project brightfield" \
   "kata meta set bf-1 work.attention needs-human --agent --project brightfield" \
   "kata meta set bf-1 work.attention_msg main's nightly gate has not given a verdict --agent --project brightfield" \
-  "kata comment bf-1 --body $KEY: fetch origin main --agent --project brightfield"; do
+  "kata comment bf-1 --body $KEY: fetch brightfield origin main --agent --project brightfield"; do
   if grep -qF -- "$want" "$KATA_LOG"; then pass "kata saw: $want"
   else fail "kata never saw '$want'; it saw: $(cat "$KATA_LOG")"; fi
 done
@@ -269,10 +285,52 @@ done <<< "$FLAG_LINES"
 if grep -qF 'label: "nightly-missing"' "$ROOT/xtask/src/flags.rs"; then pass "flags.rs labels the issue nightly-missing too"
 else fail "flags.rs no longer labels NIGHTLY_MISSING nightly-missing"; fi
 
-echo "== run.sh without a repository says so"
-out=$(env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" 2>&1); status=$?
-if [ "$status" -ne 0 ] && [ "${out#*BRIGHTFIELD_NIGHTLY_REPO}" != "$out" ]; then pass "refused, naming BRIGHTFIELD_NIGHTLY_REPO"
-else fail "exit ${status}, output: ${out}"; fi
+echo "== the nightly's own clones are made on the first run and fetched on the second"
+NIGHTLY_DIR="$HOME/.cache/meridian/gate/nightly"
+rm -rf "$NIGHTLY_DIR/brightfield" "$NIGHTLY_DIR/open-analytics"
+OA_FIRST=$(git -C "$OA_ORIGIN" rev-parse main)
+export BRIGHTFIELD_NIGHTLY_REMOTE="$ORIGIN"
+git -C "$ORIGIN" checkout -q main
+MAIN_SHA=$(git -C "$ORIGIN" rev-parse main)
+: > "$STUB_LOG"
+env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -eq 0 ]; then pass "a run with no repository named exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
+if [ -d "$NIGHTLY_DIR/brightfield/.git" ] && [ -d "$NIGHTLY_DIR/open-analytics/.git" ]; then pass "both clones were made under the nightly directory"
+else fail "clones missing: $(ls "$NIGHTLY_DIR")"; fi
+if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "the default repository's main was run"
+else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
+if grep -qxF "oa_dir=$NIGHTLY_DIR/open-analytics" "$STUB_LOG" && grep -qxF "oa_head=$OA_FIRST" "$STUB_LOG"; then
+  pass "stage two saw OPEN_ANALYTICS_DIR at the internal clone, at origin/main"
+else fail "stage two's view of open-analytics: $(grep '^oa_' "$STUB_LOG")"; fi
+# Marks both clones, then moves each remote on and dirties open-analytics: a
+# re-clone would lose the marks, and a fetch must carry the new commits in.
+touch "$NIGHTLY_DIR/brightfield/.git/selftest-mark" "$NIGHTLY_DIR/open-analytics/.git/selftest-mark"
+echo two > "$OA_ORIGIN/lib.txt" && git -C "$OA_ORIGIN" commit -qam "oa second"
+OA_SECOND=$(git -C "$OA_ORIGIN" rev-parse main)
+echo "fourth" > "$ORIGIN/note.txt" && git -C "$ORIGIN" commit -qam "fourth"
+MAIN_SHA=$(git -C "$ORIGIN" rev-parse main)
+echo scribble > "$NIGHTLY_DIR/open-analytics/lib.txt"
+: > "$STUB_LOG"
+env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -eq 0 ]; then pass "the second run exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
+if [ -e "$NIGHTLY_DIR/brightfield/.git/selftest-mark" ] && [ -e "$NIGHTLY_DIR/open-analytics/.git/selftest-mark" ]; then pass "both clones were fetched, not made again"
+else fail "a clone was made again"; fi
+if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "the new commit on Brightfield's main was run"
+else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
+if grep -qxF "oa_head=$OA_SECOND" "$STUB_LOG"; then pass "open-analytics moved to its new origin/main, past a dirty tree"
+else fail "stage two's view of open-analytics: $(grep '^oa_' "$STUB_LOG")"; fi
+
+echo "== a clone that fails is reported, naming the repository"
+rm -rf "$NIGHTLY_DIR/brightfield"
+reset_kata
+BRIGHTFIELD_NIGHTLY_REMOTE="$TMP/nowhere" env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: clone brightfield --agent" "$KATA_LOG"; then pass "a failed Brightfield clone names it"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
+rm -rf "$NIGHTLY_DIR/open-analytics"
+reset_kata
+BRIGHTFIELD_NIGHTLY_OA_REMOTE="$TMP/nowhere" env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
+if [ "$status" -ne 0 ] && grep -qF "kata comment bf-1 --body $KEY: clone open-analytics --agent" "$KATA_LOG"; then pass "a failed open-analytics clone names it"
+else fail "exit $status; kata saw: $(cat "$KATA_LOG")"; fi
 
 echo "== uninstall removes what install wrote"
 BRIGHTFIELD_NIGHTLY_DRY_RUN=1 bash "$ROOT/scripts/nightly/install.sh" uninstall >"$TMP/uninstall.out" 2>&1; status=$?

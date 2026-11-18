@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Template for the nightly gate's LaunchAgent. scripts/nightly/install.sh fills
-  in @REPO@ (the checkout that serves as the object store) and @HOME@ at
-  install time, so the tracked file names no machine path.
+  in @HOME@ at install time, so the tracked file names no machine path. The
+  nightly finds its own clones under that home, so no checkout is named here.
 -->
 <plist version="1.0">
 <dict>
@@ -27,8 +27,6 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>BRIGHTFIELD_NIGHTLY_REPO</key>
-        <string>@REPO@</string>
         <key>CARGO_BUILD_JOBS</key>
         <string>6</string>
         <key>RUST_TEST_THREADS</key>

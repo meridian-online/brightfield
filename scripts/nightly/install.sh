@@ -3,11 +3,13 @@
 #
 # Usage:
 #   scripts/nightly/install.sh install
-#       Renders the plist template with this checkout's path and your home
-#       into ~/Library/LaunchAgents, copies run.sh to
+#       Renders the plist template with your home into
+#       ~/Library/LaunchAgents, copies run.sh to
 #       ~/.cache/meridian/gate/nightly/run.sh (the plist runs that copy, never
 #       the checkout's file, so the code that runs is the fetched ref's), makes
-#       the log directory and loads the agent. Idempotent: it reloads.
+#       the log directory and loads the agent. Idempotent: it reloads. The
+#       nightly's own clones of Brightfield and open-analytics, beside the
+#       copy, are made by the first run and need nothing from this checkout.
 #
 #   scripts/nightly/install.sh uninstall
 #       Unloads the agent and removes the plist and the installed copy. Logs
@@ -17,9 +19,10 @@
 #       Shows whether the plist is installed and loaded.
 #
 #   scripts/nightly/install.sh run-now
-#       Runs the nightly in the foreground, as launchd would, with this
-#       checkout as the repository. BRIGHTFIELD_NIGHTLY_REF picks the ref
-#       (default main; any other is a trial run).
+#       Runs the nightly in the foreground, as launchd would, against the
+#       nightly's own clones. BRIGHTFIELD_NIGHTLY_REF picks the ref (default
+#       main; any other is a trial run), and BRIGHTFIELD_NIGHTLY_REPO may
+#       name another Brightfield repository in place of the clone.
 #
 # BRIGHTFIELD_NIGHTLY_DRY_RUN=1 makes install and uninstall write and remove
 # files without ever calling launchctl, which is how the self-test runs them.
@@ -49,7 +52,7 @@ cmd_install() {
   chmod +x "$tmp"
   mv -f "$tmp" "$INSTALLED_DIR/run.sh"
 
-  sed -e "s|@REPO@|$(sed_escape "$REPO_ROOT")|g" -e "s|@HOME@|$(sed_escape "$HOME")|g" \
+  sed -e "s|@HOME@|$(sed_escape "$HOME")|g" \
     "$PLIST_SRC" > "$PLIST_DST.tmp"
   if command -v plutil >/dev/null 2>&1; then
     plutil -lint "$PLIST_DST.tmp" >/dev/null || { rm -f "$PLIST_DST.tmp"; echo "error: the rendered plist is invalid" >&2; exit 1; }
@@ -95,7 +98,7 @@ cmd_status() {
 cmd_run_now() {
   # Same caps the plist sets, since a shell started here may not have them.
   CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-6}" \
-    BRIGHTFIELD_NIGHTLY_REPO="$REPO_ROOT" "$REPO_ROOT/scripts/nightly/run.sh"
+    "$REPO_ROOT/scripts/nightly/run.sh"
 }
 
 case "${1:-}" in

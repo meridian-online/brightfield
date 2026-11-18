@@ -3,11 +3,19 @@
 #
 # Stage one is what launchd runs: a copy of this file that scripts/nightly/
 # install.sh put under ~/.cache/meridian/gate/nightly/. It fetches a ref from
-# `origin` of the repository BRIGHTFIELD_NIGHTLY_REPO names, adds a detached
-# worktree at it, and runs that worktree's own copy of this file with
-# `--in-tree <sha>`. The repository is only an object store: its branch and
-# working files are never read, so every line of code the nightly runs is the
-# fetched ref's.
+# `origin` of the nightly's own clone of Brightfield, adds a detached worktree
+# at it, and runs that worktree's own copy of this file with `--in-tree <sha>`.
+# The clone is only an object store: its branch and working files are never
+# read, so every line of code the nightly runs is the fetched ref's.
+#
+# The clones live on the internal disk, under ~/.cache/meridian/gate/nightly/,
+# because a launchd job cannot read an external volume without a disk-access
+# grant. Stage one makes them when they are missing and fetches them
+# otherwise: brightfield/, and open-analytics/, which it moves to origin/main
+# and names to stage two in OPEN_ANALYTICS_DIR. BRIGHTFIELD_NIGHTLY_REPO
+# names another Brightfield repository in place of the clone, and
+# BRIGHTFIELD_NIGHTLY_REMOTE and BRIGHTFIELD_NIGHTLY_OA_REMOTE name other
+# remotes to clone from, which is how the self-test avoids the network.
 #
 # Stage two (`--in-tree`) runs inside that worktree and builds nothing itself
 # beyond calling `cargo xtask nightly --sha <sha>` with the toolchain the tree
@@ -19,7 +27,7 @@
 # verdict being taken for main's.
 #
 # Once `cargo xtask nightly` starts, it reports its own stops. A main run that
-# stops before then (the fetch fails, the worktree cannot be made, the tree's
+# stops before then (a clone or fetch fails, the worktree cannot be made, the tree's
 # toolchain is not installed, xtask does not build) raises the same
 # `nightly-missing` Kata issue from here instead, so a launcher that fails
 # every night does not go unseen until a pull request's gate runs.
@@ -122,15 +130,16 @@ if [ "${1:-}" = "--in-tree" ]; then
 fi
 [ "$#" -eq 0 ] || die "unknown argument: $1 (usage: run.sh [--in-tree <sha> [--trial]])"
 
-repo="${BRIGHTFIELD_NIGHTLY_REPO:-}"
-[ -n "$repo" ] || die "BRIGHTFIELD_NIGHTLY_REPO is not set; it names the checkout whose origin is fetched"
+installed_dir="$HOME/.cache/meridian/gate/nightly"
+repo="${BRIGHTFIELD_NIGHTLY_REPO:-$installed_dir/brightfield}"
+oa_dir="$installed_dir/open-analytics"
 ref="${BRIGHTFIELD_NIGHTLY_REF:-main}"
 case "$ref" in -*) die "BRIGHTFIELD_NIGHTLY_REF must not start with '-': $ref" ;; esac
 
 # From here every exit goes through on_exit: it removes the tree this run
 # made, if any, and when a main run fails before xtask started, raises
 # nightly-missing naming the step it stopped at. A trial raises nothing.
-stage="fetch origin ${ref}"
+stage="fetch brightfield origin ${ref}"
 tree=""
 private_ref=""
 stage_file="$(mktemp "${TMPDIR:-/tmp}/brightfield-nightly-stage.XXXXXX")"
@@ -159,8 +168,32 @@ trap on_exit EXIT
 # by hand during the scheduled one) could overwrite it between the fetch and
 # the read. Fetch into a ref only this run knows, read the commit from it, and
 # delete it on exit. The self-update below reads the commit this resolves.
+#
+# A clone that does not exist yet is made first, and only the default one is:
+# a repository BRIGHTFIELD_NIGHTLY_REPO names is the caller's to have made.
+# Brightfield's is made without a working tree, since only its objects are read.
+if [ -z "${BRIGHTFIELD_NIGHTLY_REPO:-}" ] && [ ! -d "$repo/.git" ]; then
+  stage="clone brightfield"
+  mkdir -p "$installed_dir"
+  git clone --quiet --no-checkout "${BRIGHTFIELD_NIGHTLY_REMOTE:-https://github.com/meridian-online/brightfield.git}" "$repo"
+fi
 private_ref="refs/nightly/${ref}.$$"
 git -C "$repo" fetch --quiet origin "+refs/heads/${ref}:${private_ref}"
+
+# open-analytics is the nightly's alone, so its tree is moved to origin/main
+# by force: nothing in it is worth keeping, and a stale or dirty tree must not
+# stop the night. The nightly tests open-analytics' main.
+if [ ! -d "$oa_dir/.git" ]; then
+  stage="clone open-analytics"
+  mkdir -p "$installed_dir"
+  git clone --quiet "${BRIGHTFIELD_NIGHTLY_OA_REMOTE:-https://github.com/meridian-online/open-analytics.git}" "$oa_dir"
+fi
+stage="fetch open-analytics origin main"
+git -C "$oa_dir" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+stage="check out open-analytics origin/main"
+git -C "$oa_dir" checkout --quiet --detach --force origin/main
+export OPEN_ANALYTICS_DIR="$oa_dir"
+
 stage="resolve the fetched commit"
 sha=$(git -C "$repo" rev-parse --verify "${private_ref}^{commit}")
 stage="replace the installed run.sh"
@@ -172,7 +205,6 @@ stage="replace the installed run.sh"
 # for the nights after it. `run-now` runs the checkout's file, which is left
 # alone. The temp file sits beside the copy so mv is an atomic rename, and the
 # running shell keeps reading the old inode.
-installed_dir="$HOME/.cache/meridian/gate/nightly"
 self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 if [ "$ref" = "main" ] && [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)" ] \
   && [ "$(basename "${BASH_SOURCE[0]}")" = "run.sh" ]; then
