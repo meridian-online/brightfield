@@ -11,11 +11,13 @@
 //!
 //! The `workflow-coverage` step reads the workflow files and keeps the two
 //! lists one list: it is red for a step no workflow invokes, for a workflow
-//! invoking a step that does not exist, and for a workflow a pull request or
-//! a push to `main` triggers calling a gate around the command. A pull
-//! request's checks are `cargo xtask gate <pr>`, which runs this command on the
-//! reference Mac; hosted CI runs the same steps on `main`, nightly and on
-//! demand.
+//! invoking a step that does not exist, for a workflow that starts on its own,
+//! on anything but a tag push, calling a gate script or cargo around the
+//! command, and for a macOS job such a workflow runs. A pull request's checks
+//! are `cargo xtask gate <pr>`, which runs this command on the reference Mac.
+//! `main`'s backstop is `cargo xtask nightly`, which the reference Mac runs
+//! every night with the nightly-only steps; the hosted macOS workflows run
+//! only by hand or on a release tag.
 //!
 //! What a full run needs on the machine, each refused by name at its step when
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling

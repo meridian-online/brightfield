@@ -337,9 +337,16 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
 }
 
 /// The summary as JSON, for `ci --summary-json`: each row in order with its
-/// outcome (`passed`, `failed`, `skipped`, `ci-only` or `nightly-only`), what the step runs,
+/// outcome (`passed`, `failed`, `skipped` or `ci-only`), what the step runs,
 /// its seconds when it ran, and the reason when it failed or is CI's or the nightly's alone,
 /// as `the_summary_json_names_every_step_and_its_outcome` checks.
+///
+/// A step left out because only the nightly runs it is written as `skipped`
+/// with `"nightly_only":true`, not as an outcome of its own. A gate started
+/// from a checkout older than the nightly reads the merged tree's summary
+/// with a reader that knows only the four outcomes above and refuses any
+/// other, and it ignores a field it does not know, so this spelling keeps
+/// such a gate reading every pull request's run.
 pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
     let listed: Vec<serde_json::Value> = rows
         .iter()
@@ -351,9 +358,12 @@ pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
                 Outcome::Failed(took, reason) => ("failed", Some(*took), Some(reason.as_str())),
                 Outcome::Skipped => ("skipped", None, None),
                 Outcome::OnlyInCi(why) => ("ci-only", None, Some(*why)),
-                Outcome::OnlyAtNight(why) => ("nightly-only", None, Some(*why)),
+                Outcome::OnlyAtNight(why) => ("skipped", None, Some(*why)),
             };
             entry.insert("outcome".into(), outcome.into());
+            if matches!(row.outcome, Outcome::OnlyAtNight(_)) {
+                entry.insert("nightly_only".into(), true.into());
+            }
             if let Some(step) = steps.iter().find(|step| step.name == row.name) {
                 entry.insert("runs".into(), step.runs.into());
             }
@@ -820,7 +830,8 @@ mod tests {
             outcome: Outcome::OnlyAtNight("it takes hours"),
         }];
         let doc: serde_json::Value = serde_json::from_str(&summary_json(&rows, &steps)).unwrap();
-        assert_eq!(doc["steps"][0]["outcome"], "nightly-only");
+        assert_eq!(doc["steps"][0]["outcome"], "skipped");
+        assert_eq!(doc["steps"][0]["nightly_only"], true);
         assert_eq!(doc["steps"][0]["reason"], "it takes hours");
         assert!(summary(&rows, &steps).contains("a runs only in the nightly run: it takes hours"));
     }

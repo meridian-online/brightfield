@@ -630,6 +630,10 @@ pub fn read_summary(json: &str) -> Result<Verdict, String> {
         match (name, outcome) {
             (Some(name), Some("passed")) => passed_all.push(name.to_owned()),
             (Some(name), Some("failed")) => failed_all.push(name.to_owned()),
+            // The runner writes a step only the nightly runs as `skipped`
+            // with `"nightly_only":true`, which counts the same as any other
+            // skip; the literal `nightly-only` is the earlier spelling, still
+            // read so a summary written by that runner reads too.
             (Some(_), Some("skipped" | "ci-only" | "nightly-only")) => {}
             _ => return Err(format!("summary has a step it cannot read: {step}")),
         }
@@ -834,6 +838,66 @@ mod tests {
                 failed_all: vec![],
             })
         );
+    }
+
+    #[test]
+    fn a_summary_with_a_skipped_nightly_only_step_reads_as_before() {
+        let json = r#"{"steps":[{"name":"fmt","outcome":"passed"},{"name":"duckdb-managed","outcome":"skipped","nightly_only":true,"reason":"it takes hours"}]}"#;
+        let old = rows(&[("fmt", "passed"), ("duckdb-managed", "nightly-only")]);
+        assert_eq!(read_summary(json), read_summary(&old));
+        assert_eq!(read_summary(json).unwrap().passed_all, vec!["fmt"]);
+    }
+
+    /// The acceptance rule of the reader before the nightly existed, copied
+    /// here: a gate started from a checkout that old reads the merged tree's
+    /// summary with this rule.
+    fn reads_under_the_old_rule(json: &str) -> bool {
+        let doc: Value = serde_json::from_str(json).unwrap();
+        doc["steps"].as_array().unwrap().iter().all(|step| {
+            step.get("name").and_then(Value::as_str).is_some()
+                && matches!(
+                    step.get("outcome").and_then(Value::as_str),
+                    Some("passed" | "failed" | "skipped" | "ci-only")
+                )
+        })
+    }
+
+    #[test]
+    fn a_reader_from_before_the_nightly_accepts_the_summary_of_a_run_without_it() {
+        use crate::runner::{summary_json, Outcome, Row, Step};
+        fn ok(_: &crate::steps::Ctx) -> Result<(), String> {
+            Ok(())
+        }
+        let steps = [
+            Step {
+                name: "fmt",
+                runs: "",
+                only_in_ci: None,
+                only_at_night: None,
+                run: ok,
+            },
+            Step {
+                name: "duckdb-managed",
+                runs: "",
+                only_in_ci: None,
+                only_at_night: Some("it takes hours"),
+                run: ok,
+            },
+        ];
+        let ran = vec![
+            Row {
+                name: "fmt",
+                outcome: Outcome::Passed(Duration::from_secs(1)),
+            },
+            Row {
+                name: "duckdb-managed",
+                outcome: Outcome::OnlyAtNight("it takes hours"),
+            },
+        ];
+        let json = summary_json(&ran, &steps);
+        assert!(reads_under_the_old_rule(&json), "{json}");
+        let old_spelling = rows(&[("fmt", "passed"), ("duckdb-managed", "nightly-only")]);
+        assert!(!reads_under_the_old_rule(&old_spelling));
     }
 
     #[test]
