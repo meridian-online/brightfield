@@ -868,10 +868,20 @@ pub fn pinned_arc(lock: &str) -> Option<String> {
 }
 
 /// What the report's tests found, from their output: the lines that begin
-/// `open-analytics: `, which each test prints once with its finding.
+/// `open-analytics: `, which each test prints once with its finding. On one
+/// thread with `--nocapture`, libtest prints `test <name> ... ` before a test
+/// runs and no line break, so a test's first line follows that prefix; a
+/// marker is read there too, and nowhere else in a line.
 fn findings(log: &str) -> Vec<&str> {
+    const MARKER: &str = "open-analytics: ";
     log.lines()
-        .filter_map(|line| line.strip_prefix("open-analytics: "))
+        .filter_map(|line| {
+            let line = match line.strip_prefix("test ") {
+                Some(rest) => rest.split_once(" ... ").map_or(line, |(_, after)| after),
+                None => line,
+            };
+            line.strip_prefix(MARKER)
+        })
         .map(str::trim)
         .collect()
 }
@@ -949,7 +959,10 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
     let lock = fs::read_to_string(ctx.root.join("Cargo.lock"))
         .map_err(|e| format!("cannot read Cargo.lock: {e}"))?;
     let arc = pinned_arc(&lock).unwrap_or_else(|| "unknown".to_owned());
-    let found = findings(&text);
+    // What the pin refuses leads, since GitHub cuts a status at 140
+    // characters and the nightly posts this line as one.
+    let mut found = findings(&text);
+    found.sort_by_key(|finding| !finding.contains("pinned arc"));
     let found = if found.is_empty() {
         "the tests printed no finding".to_owned()
     } else {
@@ -1183,6 +1196,21 @@ mod tests {
             [
                 "the pinned arc refuses 1 of 25 Protocols",
                 "all 24 that parse draw lineage"
+            ]
+        );
+        // The shape a one-thread `--nocapture` run prints: each test's first
+        // line follows libtest's `test <name> ... ` on the same line.
+        let real = "test reports_the_shipped_protocols_that_draw_no_lineage ... open-analytics: all 38 that parse draw lineage\n\
+                    ok\n\
+                    test reports_the_shipped_protocols_the_pinned_arc_refuses ... refused by the pinned arc: datasets/x/arcform.yaml: unknown operator 'dlt'\n\
+                    open-analytics: the pinned arc refuses 1 of 39 Protocol(s): datasets/x/arcform.yaml\n\
+                    ok\n\
+                    test a_name ... a line naming open-analytics: in passing\n";
+        assert_eq!(
+            findings(real),
+            [
+                "all 38 that parse draw lineage",
+                "the pinned arc refuses 1 of 39 Protocol(s): datasets/x/arcform.yaml"
             ]
         );
     }
