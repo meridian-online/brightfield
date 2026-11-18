@@ -68,6 +68,7 @@ pub enum NightStage {
     DuckDb,
     Start,
     NoSummary,
+    Tree,
 }
 
 impl NightStage {
@@ -80,6 +81,7 @@ impl NightStage {
             NightStage::DuckDb => "the pinned DuckDB CLI is missing",
             NightStage::Start => "could not start the nightly's run",
             NightStage::NoSummary => "the nightly's run left no summary",
+            NightStage::Tree => "the nightly's tree did not match the commit it was asked to gate",
         }
     }
 }
@@ -179,14 +181,13 @@ pub fn statuses_of(summary: Option<&Verdict>, took: Duration) -> (Status, Option
 pub fn run(sha: &str, trial: bool) -> ExitCode {
     let kata = OsStr::new("kata");
     let root = crate::repo_root();
-    // A tree that is not the commit gives no verdict on it: refused before
-    // anything is posted or flagged.
-    if let Err(e) = tree_is(&root, sha) {
-        say(&e);
-        return ExitCode::FAILURE;
-    }
     let day = today();
     let stopped = |stage: NightStage, detail: &str| stop(kata, trial, &day, stage, detail);
+    // A tree that is not the commit gives no verdict on it: refused before
+    // anything is posted, as a stop before the steps.
+    if let Err(code) = read_tree(&root, sha, |e| stopped(NightStage::Tree, e)) {
+        return code;
+    }
     let Some(home) = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
@@ -305,12 +306,19 @@ pub fn check_tree(sha: &str, head: &str, changes: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the tree at `root` and refuse it unless it is `sha`, unchanged.
-fn tree_is(root: &Path, sha: &str) -> Result<(), String> {
+/// Read the tree at `root` and hand `refuse` the reason unless it is `sha`,
+/// unchanged.
+fn read_tree(
+    root: &Path,
+    sha: &str,
+    refuse: impl FnOnce(&str) -> ExitCode,
+) -> Result<(), ExitCode> {
     let root = root.display().to_string();
-    let head = output_of("git", &["-C", &root, "rev-parse", "HEAD"])?;
-    let changes = output_of("git", &["-C", &root, "status", "--porcelain"])?;
-    check_tree(sha, &head, &changes)
+    let checked = output_of("git", &["-C", &root, "rev-parse", "HEAD"]).and_then(|head| {
+        let changes = output_of("git", &["-C", &root, "status", "--porcelain"])?;
+        check_tree(sha, &head, &changes)
+    });
+    checked.map_err(|e| refuse(&e))
 }
 
 /// Say why the nightly stopped before its steps, and raise `nightly-missing`
@@ -607,6 +615,43 @@ mod tests {
         let dirty = check_tree(sha, sha, " M xtask/src/main.rs\n").unwrap_err();
         assert!(dirty.contains("uncommitted"), "{dirty}");
         assert!(check_tree(sha, sha, "?? new.rs\n").is_err());
+    }
+
+    #[test]
+    fn a_tree_that_is_not_the_commit_raises_the_missing_flag_unless_a_trial() {
+        let dir = scratch("tree-stop");
+        let kata = shim(&dir, "kata");
+        let tree = dir.join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=test", "-c", "user.email=test@localhost"])
+                .args([
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&tree)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "base"]);
+        let other = "fedcba9876543210fedcba9876543210fedcba98";
+        let refuse = |trial: bool| {
+            read_tree(&tree, other, |e| {
+                stop(kata.as_os_str(), trial, "20261118", NightStage::Tree, e)
+            })
+        };
+        assert_eq!(refuse(true), Err(ExitCode::FAILURE));
+        assert_eq!(calls(&dir, "kata"), "", "a trial touches no flag");
+        assert_eq!(refuse(false), Err(ExitCode::FAILURE));
+        let asked = calls(&dir, "kata");
+        assert!(asked.contains("--label nightly-missing"), "{asked}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
