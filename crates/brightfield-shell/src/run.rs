@@ -577,6 +577,41 @@ fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// **The folders a run of the Protocol in `dir` reads and writes**, each once: the Protocol folder,
+/// the folder of each source its record of sources names, and the Protocols folder, where arc's
+/// outputs for a Protocol made there go. Relative source paths are read against `dir`.
+#[must_use]
+pub fn folders_of(dir: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![dir.to_path_buf()];
+    for file in crate::own_files::source_files(dir).unwrap_or_default() {
+        let file = if file.is_absolute() {
+            file
+        } else {
+            dir.join(file)
+        };
+        if let Some(parent) = file.parent() {
+            folders.push(parent.to_path_buf());
+        }
+    }
+    folders.push(crate::protocols_dir::root());
+    let mut seen: Vec<PathBuf> = Vec::new();
+    folders.retain(|f| {
+        let new = !seen.contains(f);
+        seen.push(f.clone());
+        new
+    });
+    folders
+}
+
+/// **Keep access to the folders a child of the Protocol in `dir` uses started until the guard
+/// drops**: what a run, a call of `arc` and a join proposal take before they start their child. A
+/// sandboxed app's child reads and writes the folders the app holds grants on, as measured on
+/// macOS 27.2, so nothing is handed to it; the hold is what keeps the grant it reads through from
+/// ending while it reads.
+pub fn hold_for(dir: &Path) -> crate::grants::GrantHold<'static> {
+    crate::grants::store().hold(&folders_of(dir))
+}
+
 /// What one call of `arc` left: its two streams apart, and whether it exited 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArcOutput {
@@ -598,6 +633,7 @@ pub struct ArcOutput {
 /// says so.
 #[must_use]
 pub fn arc_with_args(runner: &Runner, dir: &Path, args: &[&str]) -> ArcOutput {
+    let _hold = hold_for(dir);
     match arc_command(runner.program(), dir, args).output() {
         Ok(output) => ArcOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -622,6 +658,7 @@ pub fn arc_with_args(runner: &Runner, dir: &Path, args: &[&str]) -> ArcOutput {
 /// record, and reading the newest one then would report the previous run's
 /// outcome as this one's.
 fn run_to_completion(program: &Path, dir: &Path) -> Finished {
+    let _hold = hold_for(dir);
     let before: BTreeSet<PathBuf> = record_paths_newest_first(dir).into_iter().collect();
     let output = arc_command(program, dir, &["run"]).output();
     let output = match output {

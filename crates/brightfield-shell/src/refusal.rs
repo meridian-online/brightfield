@@ -152,6 +152,20 @@ fn unreadable_path(detail: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
+/// **The refusal a run that ended in `finished` reports**: the path its child's text says the
+/// system refused, as a refusal during the run. `None` for a run that succeeded, and for one that
+/// failed for another reason.
+#[must_use]
+pub fn refusal_in_run(finished: &crate::run::Finished) -> Option<Refusal> {
+    if finished.succeeded {
+        return None;
+    }
+    refusal_in_engine_text(&finished.log).map(|path| Refusal {
+        path,
+        during: RefusedDuring::Run,
+    })
+}
+
 /// The words a refused read or write is reported with: the OS's for `EACCES` and `EPERM`, which
 /// DuckDB's and arc's errors carry through.
 const REFUSED_WORDS: [&str; 2] = ["Permission denied", "Operation not permitted"];
