@@ -247,6 +247,33 @@ fn live_stream_folds_onto_step_state_authoritative_json_wins() {
     assert_eq!(loaded.steps["load"].live_state.as_deref(), Some("success"));
 }
 
+/// **A `b5/1` record reads**: arc's run record moved to `b5/1` when it began recording checks and
+/// measures, and every field it added has a default, so the reader takes it as it takes `b4/1` and
+/// passes over the new sections. The record is the real sample with those sections added.
+#[test]
+fn a_b5_record_with_checks_and_measures_reads() {
+    let bytes = std::fs::read(fixture(CONTRACT)).expect("read fixture");
+    let mut record: serde_json::Value = serde_json::from_slice(&bytes).expect("the sample is JSON");
+    record["contract_version"] = "b5/1".into();
+    record["run"]["checks"] = serde_json::json!({ "passed": 1, "warned": 0, "failed": 0 });
+    let step = &mut record["steps"][0];
+    step["check"] = serde_json::json!({
+        "name": "no_dupes", "risk": "a key repeats", "severity": "error", "success": true,
+        "rows_returned": 0, "sample": [], "sample_columns": [],
+    });
+    step["measure"] = serde_json::json!({ "values": { "table:widgets.row_count": 3 } });
+    let b5 = serde_json::to_vec(&record).expect("it serialises");
+
+    let view = view_from_contract_bytes(&b5).expect("a b5/1 record reads");
+    let b4 = view_from_contract_bytes(&bytes).expect("the b4/1 sample reads");
+    assert_eq!(view.run.outcome, b4.run.outcome);
+    assert_eq!(
+        view.graph.nodes.keys().collect::<Vec<_>>(),
+        b4.graph.nodes.keys().collect::<Vec<_>>(),
+        "the same graph as the b4/1 record it extends"
+    );
+}
+
 #[test]
 fn unsupported_contract_version_is_rejected() {
     let json = r#"{"contract_version":"z9/0","run":{"run_id":"r","protocol":{"name":"p"},"outcome":"success"},"assets":[],"steps":[]}"#;

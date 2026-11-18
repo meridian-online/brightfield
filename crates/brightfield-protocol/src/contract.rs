@@ -1,5 +1,5 @@
 //! Deserialize model for the arcform Protocol+Run JSON contract
-//! (`contract_version` `"b4/1"`) — the stable, emitted shape brightfield
+//! (`contract_version` `"b5/1"`, and the `"b4/1"` it extends) — the stable, emitted shape brightfield
 //! consumes instead of re-parsing a manifest and its `models/*.sql`.
 //!
 //! `arc run` writes `build/.arcform/runs/<run_id>.json` (this document) plus a
@@ -24,16 +24,19 @@
 use serde::Deserialize;
 
 /// The `contract_version` this reader is written against. Treated as an opaque
-/// scheme tag; the loader accepts any version under the `b4/` family.
-pub const SUPPORTED_CONTRACT_VERSION: &str = "b4/1";
+/// scheme tag; the loader accepts any version under the families in
+/// [`SUPPORTED_CONTRACT_FAMILIES`].
+pub const SUPPORTED_CONTRACT_VERSION: &str = "b5/1";
 
-/// Accepted `contract_version` family prefix.
-pub const SUPPORTED_CONTRACT_FAMILY: &str = "b4/";
+/// Accepted `contract_version` family prefixes. `b5/` is `b4/` with the checks
+/// and measures arc records added, each with a default, so a `b4/` record still
+/// reads.
+pub const SUPPORTED_CONTRACT_FAMILIES: &[&str] = &["b4/", "b5/"];
 
 /// Top-level Protocol+Run contract document.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Contract {
-    /// Opaque scheme tag, e.g. `"b4/1"`.
+    /// Opaque scheme tag, e.g. `"b5/1"`.
     pub contract_version: String,
     /// Run-level metadata.
     pub run: Run,
@@ -46,10 +49,12 @@ pub struct Contract {
 }
 
 impl Contract {
-    /// `true` when `contract_version` is under the supported `b4/` family.
+    /// `true` when `contract_version` is under one of the supported families.
     #[must_use]
     pub fn is_supported_version(&self) -> bool {
-        self.contract_version.starts_with(SUPPORTED_CONTRACT_FAMILY)
+        SUPPORTED_CONTRACT_FAMILIES
+            .iter()
+            .any(|family| self.contract_version.starts_with(family))
     }
 
     /// Look up an asset by its flat contract id (`"table:widgets"`).
