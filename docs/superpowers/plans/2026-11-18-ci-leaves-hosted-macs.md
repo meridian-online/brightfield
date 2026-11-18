@@ -14,7 +14,7 @@
 
 - No new crate dependencies in `xtask` (it has `serde_json` only).
 - Nothing tracked names a machine path, a Kata ref or a private repo; the plist is rendered at install time.
-- Commit status contexts: `local-gate` (unchanged), `nightly-gate`, `nightly-network`. Descriptions at most 140 characters; a status that stopped before the steps uses a fixed phrase, never the underlying error.
+- Commit status contexts: `local-gate` (unchanged), `nightly-gate`, `nightly-network`. Descriptions at most 140 characters, with no machine paths. A run that stops before the steps posts no status; its fixed phrase, never the underlying error, goes into the `nightly-missing` comment.
 - Kata labels: `main-red` (unchanged), `nightly-missing`, `nightly-network`.
 - Schedule 02:30 local; lock wait ends 05:30 local; missing after 36 hours without a `success` or `failure`; GraphQL reads main's last 50 commits.
 - The nightly's environment: `CARGO_BUILD_JOBS=6`, `RUST_TEST_THREADS=6`, plus the gate's isolation.
