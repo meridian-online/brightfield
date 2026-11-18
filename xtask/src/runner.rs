@@ -54,10 +54,12 @@ pub struct RunMode {
 /// The steps that cannot run unless an earlier step passed, as
 /// (step, the step it needs). A run that keeps going skips a step whose entry
 /// names a step that failed or was skipped. The two test steps run on the
-/// target directory the warm-cache step fills.
+/// target directory the warm-cache step fills; the managed DuckDB link test
+/// links the library the duckdb-managed step builds.
 pub const NEEDS: &[(&str, &str)] = &[
     ("test-one-thread", "warm-cache"),
     ("test-default", "warm-cache"),
+    ("managed-duckdb-test", "duckdb-managed"),
 ];
 
 /// True when `step` needs a step that, in `rows` so far, failed or was skipped.
@@ -733,6 +735,23 @@ mod tests {
         assert_eq!(rows[1].outcome, Outcome::Skipped);
         assert_eq!(rows[2].outcome, Outcome::Skipped);
         assert!(matches!(rows[3].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn keep_going_skips_the_link_test_when_the_managed_build_failed() {
+        let steps = [
+            step("duckdb-managed"),
+            step("managed-duckdb-test"),
+            step("doc"),
+        ];
+        let mode = RunMode {
+            keep_going: true,
+            nightly: true,
+        };
+        let rows = run_in_order(&steps, mode, fails(&["duckdb-managed"]));
+        assert!(matches!(rows[0].outcome, Outcome::Failed(..)));
+        assert_eq!(rows[1].outcome, Outcome::Skipped);
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
     }
 
     #[test]

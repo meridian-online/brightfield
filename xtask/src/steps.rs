@@ -414,7 +414,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "duckdb-managed",
-        runs: "./scripts/build-duckdb.sh, then ./scripts/build-duckdb-selftest.sh",
+        runs: "./scripts/build-duckdb.sh unless its inputs are unchanged since the last build, then ./scripts/build-duckdb-selftest.sh",
         only_in_ci: None,
         only_at_night: Some(
             "it builds DuckDB and seven extensions from source, 30 to 90 minutes cold; \

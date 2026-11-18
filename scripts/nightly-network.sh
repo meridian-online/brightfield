@@ -154,23 +154,30 @@ echo "${total} network-gated test(s) executed and passed (floor ${expected_total
 bundle="${BRIGHTFIELD_FINETYPE_BUNDLE:-${tmp}/finetype-bundle}"
 target="${BRIGHTFIELD_BUNDLE_TARGET:-aarch64-apple-darwin}"
 
-if [ ! -d "$bundle" ]; then
-  ./scripts/fetch-finetype-bundle.sh "$target" "$bundle" || {
-    error "the FineType bundle did not fetch" "scripts/fetch-finetype-bundle.sh failed for ${target}"
-    exit 1
-  }
-fi
+pin_tag="$(./scripts/finetype-pin.sh --tag)"
+platform="$(./scripts/duckdb-platform.sh "$target")"
 
 # Read the bundle before trusting it, restored or freshly fetched alike. A
 # cache entry is not an attestation: it is whatever a previous run left. This
 # is the pre-flight scripts/package.sh runs over the bundle it stages, with the
 # pinned tag, so a bundle from a different release is refused by name rather
 # than by a puzzling assertion in a test.
-./scripts/check-bundled-extension.sh \
-  "$bundle" \
-  "$(./scripts/duckdb-platform.sh "$target")" \
-  "$(./scripts/finetype-pin.sh --tag)" || {
-  error "the bundle is not the pinned one" "scripts/check-bundled-extension.sh refused ${bundle}"
+bundle_is_pinned() {
+  ./scripts/check-bundled-extension.sh "$bundle" "$platform" "$pin_tag"
+}
+
+# Fetch when the bundle is absent, and once more when what is there is not the
+# pinned one, which is what a pin bump leaves behind in a kept directory.
+if [ ! -d "$bundle" ] || ! bundle_is_pinned >/dev/null 2>&1; then
+  rm -rf "$bundle"
+  ./scripts/fetch-finetype-bundle.sh "$target" "$bundle" || {
+    error "the FineType bundle did not fetch" "scripts/fetch-finetype-bundle.sh failed for ${target}"
+    exit 1
+  }
+fi
+
+bundle_is_pinned || {
+  error "the bundle is not the pinned one" "scripts/check-bundled-extension.sh refused ${bundle} after a fresh fetch"
   exit 1
 }
 
