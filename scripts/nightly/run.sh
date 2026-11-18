@@ -11,8 +11,9 @@
 # The clones live on the internal disk, under ~/.cache/meridian/gate/nightly/,
 # because a launchd job cannot read an external volume without a disk-access
 # grant. Stage one makes them when they are missing and fetches them
-# otherwise: brightfield/, and open-analytics/, which it moves to origin/main
-# and names to stage two in OPEN_ANALYTICS_DIR. BRIGHTFIELD_NIGHTLY_REPO
+# otherwise: brightfield/ and open-analytics/. Both are only object stores:
+# each run adds its own detached worktree of open-analytics' fetched main and
+# names it to stage two in OPEN_ANALYTICS_DIR. BRIGHTFIELD_NIGHTLY_REPO
 # names another Brightfield repository in place of the clone, and
 # BRIGHTFIELD_NIGHTLY_REMOTE and BRIGHTFIELD_NIGHTLY_OA_REMOTE name other
 # remotes to clone from, which is how the self-test avoids the network.
@@ -150,6 +151,8 @@ case "$ref" in -*) die "BRIGHTFIELD_NIGHTLY_REF must not start with '-': $ref" ;
 stage="fetch brightfield origin ${ref}"
 tree=""
 private_ref=""
+oa_tree=""
+oa_private_ref=""
 stage_file="$(mktemp "${TMPDIR:-/tmp}/brightfield-nightly-stage.XXXXXX")"
 export BRIGHTFIELD_NIGHTLY_STAGE_FILE="$stage_file"
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
@@ -162,6 +165,11 @@ on_exit() {
   local status=$? reached
   set +e
   [ -z "$tree" ] || cleanup
+  if [ -n "$oa_tree" ]; then
+    git -C "$oa_dir" worktree remove --force "$oa_tree" >/dev/null 2>&1 || rm -rf "$oa_tree"
+    git -C "$oa_dir" worktree prune >/dev/null 2>&1
+  fi
+  [ -z "$oa_private_ref" ] || git -C "$oa_dir" update-ref -d "$oa_private_ref" >/dev/null 2>&1
   [ -z "${private_ref:-}" ] || git -C "$repo" update-ref -d "$private_ref" >/dev/null 2>&1
   reached=$(cat "$stage_file" 2>/dev/null)
   rm -f "$stage_file"
@@ -188,23 +196,26 @@ if [ -z "${BRIGHTFIELD_NIGHTLY_REPO:-}" ] && [ ! -d "$repo/.git" ]; then
   stage="clone brightfield"
   mkdir -p "$installed_dir"
   git clone --quiet --no-checkout "${BRIGHTFIELD_NIGHTLY_REMOTE:-https://github.com/meridian-online/brightfield.git}" "$repo"
+  stage="fetch brightfield origin ${ref}"
 fi
 private_ref="refs/nightly/${ref}.$$"
 git -C "$repo" fetch --quiet origin "+refs/heads/${ref}:${private_ref}"
 
-# open-analytics is the nightly's alone, so its tree is moved to origin/main
-# by force: nothing in it is worth keeping, and a stale or dirty tree must not
-# stop the night. The nightly tests open-analytics' main.
+# open-analytics is an object store too, and its fetch ref is run-private for
+# the same reason as Brightfield's. Each run checks out its own worktree of it
+# below, since a shared working tree would be rewritten under an overlapping
+# run's gate. The nightly tests open-analytics' main.
 if [ ! -d "$oa_dir/.git" ]; then
   stage="clone open-analytics"
   mkdir -p "$installed_dir"
-  git clone --quiet "${BRIGHTFIELD_NIGHTLY_OA_REMOTE:-https://github.com/meridian-online/open-analytics.git}" "$oa_dir"
+  git clone --quiet --no-checkout "${BRIGHTFIELD_NIGHTLY_OA_REMOTE:-https://github.com/meridian-online/open-analytics.git}" "$oa_dir"
+  stage="fetch open-analytics origin main"
 fi
 stage="fetch open-analytics origin main"
-git -C "$oa_dir" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-stage="check out open-analytics origin/main"
-git -C "$oa_dir" checkout --quiet --detach --force origin/main
-export OPEN_ANALYTICS_DIR="$oa_dir"
+oa_private_ref="refs/nightly/main.$$"
+git -C "$oa_dir" fetch --quiet origin "+refs/heads/main:${oa_private_ref}"
+stage="resolve open-analytics' fetched commit"
+oa_sha=$(git -C "$oa_dir" rev-parse --verify "${oa_private_ref}^{commit}")
 
 stage="resolve the fetched commit"
 sha=$(git -C "$repo" rev-parse --verify "${private_ref}^{commit}")
@@ -250,9 +261,14 @@ while IFS= read -r stale; do
     || echo "nightly: could not remove stale tree $stale" >&2
 done < <(find "$trees" -mindepth 1 -maxdepth 1 -type d -name 'nightly-*' -mmin +1440)
 git -C "$repo" worktree prune >/dev/null 2>&1 || true
+git -C "$oa_dir" worktree prune >/dev/null 2>&1 || true
 tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
 stage="add the worktree"
 git -C "$repo" worktree add --quiet --detach "$tree" "$sha"
+stage="add the open-analytics worktree"
+oa_tree="$(mktemp -d "$trees/nightly-oa-${oa_sha:0:7}.XXXXXX")"
+git -C "$oa_dir" worktree add --quiet --detach "$oa_tree" "$oa_sha"
+export OPEN_ANALYTICS_DIR="$oa_tree"
 stage="find the tree's run.sh"
 [ -f "$tree/scripts/nightly/run.sh" ] \
   || die "${ref} (${sha:0:7}) has no scripts/nightly/run.sh"

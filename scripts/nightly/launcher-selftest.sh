@@ -61,7 +61,10 @@ cat > "$RUSTUP_BIN/cargo" <<'STUB'
   echo "dirty=$(git status --porcelain | wc -l | tr -d ' ')"
   echo "args=$*"
   echo "oa_dir=${OPEN_ANALYTICS_DIR:-}"
-  if [ -n "${OPEN_ANALYTICS_DIR:-}" ]; then echo "oa_head=$(git -C "$OPEN_ANALYTICS_DIR" rev-parse HEAD)"; fi
+  if [ -n "${OPEN_ANALYTICS_DIR:-}" ]; then
+    echo "oa_head=$(git -C "$OPEN_ANALYTICS_DIR" rev-parse HEAD)"
+    echo "oa_dirty=$(git -C "$OPEN_ANALYTICS_DIR" status --porcelain | wc -l | tr -d ' ')"
+  fi
 } >> "$STUB_LOG"
 # run.sh starts the toolchain and builds xtask before running it: those calls
 # succeed unless STUB_NO_TOOLCHAIN asks for a missing toolchain, and
@@ -329,9 +332,16 @@ if [ -d "$NIGHTLY_DIR/brightfield/.git" ] && [ -d "$NIGHTLY_DIR/open-analytics/.
 else fail "clones missing: $(ls "$NIGHTLY_DIR")"; fi
 if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "the default repository's main was run"
 else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
-if grep -qxF "oa_dir=$NIGHTLY_DIR/open-analytics" "$STUB_LOG" && grep -qxF "oa_head=$OA_FIRST" "$STUB_LOG"; then
-  pass "stage two saw OPEN_ANALYTICS_DIR at the internal clone, at origin/main"
+OA_TREE=$(sed -n 's/^oa_dir=//p' "$STUB_LOG" | head -n 1)
+case "$OA_TREE" in "$HOME/.cache/meridian/gate/trees/nightly-oa-${OA_FIRST:0:7}."*) oa_ok=1 ;; *) oa_ok=0 ;; esac
+if [ "$oa_ok" = 1 ] && grep -qxF "oa_head=$OA_FIRST" "$STUB_LOG" && grep -qxF "oa_dirty=0" "$STUB_LOG"; then
+  pass "stage two saw OPEN_ANALYTICS_DIR at its own clean worktree of open-analytics' main"
 else fail "stage two's view of open-analytics: $(grep '^oa_' "$STUB_LOG")"; fi
+if [ ! -e "$OA_TREE" ] && ! git -C "$NIGHTLY_DIR/open-analytics" worktree list | grep -qF "$OA_TREE"; then pass "the open-analytics worktree is gone afterwards"
+else fail "the open-analytics worktree is still there"; fi
+# Another run's open-analytics tree, which the runs below must not touch.
+OTHER_OA="$HOME/.cache/meridian/gate/trees/nightly-oa-${OA_FIRST:0:7}.other"
+mkdir -p "$OTHER_OA" && echo keep > "$OTHER_OA/file"
 # Marks both clones, then moves each remote on and dirties open-analytics: a
 # re-clone would lose the marks, and a fetch must carry the new commits in.
 touch "$NIGHTLY_DIR/brightfield/.git/selftest-mark" "$NIGHTLY_DIR/open-analytics/.git/selftest-mark"
@@ -339,7 +349,6 @@ echo two > "$OA_ORIGIN/lib.txt" && git -C "$OA_ORIGIN" commit -qam "oa second"
 OA_SECOND=$(git -C "$OA_ORIGIN" rev-parse main)
 echo "fourth" > "$ORIGIN/note.txt" && git -C "$ORIGIN" commit -qam "fourth"
 MAIN_SHA=$(git -C "$ORIGIN" rev-parse main)
-echo scribble > "$NIGHTLY_DIR/open-analytics/lib.txt"
 : > "$STUB_LOG"
 env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1; status=$?
 if [ "$status" -eq 0 ]; then pass "the second run exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
@@ -347,8 +356,18 @@ if [ -e "$NIGHTLY_DIR/brightfield/.git/selftest-mark" ] && [ -e "$NIGHTLY_DIR/op
 else fail "a clone was made again"; fi
 if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "the new commit on Brightfield's main was run"
 else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
-if grep -qxF "oa_head=$OA_SECOND" "$STUB_LOG"; then pass "open-analytics moved to its new origin/main, past a dirty tree"
+if grep -qxF "oa_head=$OA_SECOND" "$STUB_LOG"; then pass "open-analytics moved to its new main"
 else fail "stage two's view of open-analytics: $(grep '^oa_' "$STUB_LOG")"; fi
+OA_TREE2=$(sed -n 's/^oa_dir=//p' "$STUB_LOG" | head -n 1)
+: > "$STUB_LOG"
+env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" >"$TMP/run.out" 2>&1
+OA_TREE3=$(sed -n 's/^oa_dir=//p' "$STUB_LOG" | head -n 1)
+if [ -n "$OA_TREE2" ] && [ -n "$OA_TREE3" ] && [ "$OA_TREE2" != "$OA_TREE3" ]; then pass "two runs at the same commit had distinct open-analytics trees"
+else fail "the trees were '$OA_TREE2' and '$OA_TREE3'"; fi
+if [ ! -e "$OA_TREE2" ] && [ ! -e "$OA_TREE3" ]; then pass "both open-analytics trees were removed"
+else fail "an open-analytics tree is left"; fi
+if [ -f "$OTHER_OA/file" ]; then pass "another run's open-analytics tree survived"
+else fail "a pre-existing open-analytics tree was removed"; fi
 
 echo "== a clone that fails is reported, naming the repository"
 rm -rf "$NIGHTLY_DIR/brightfield"
