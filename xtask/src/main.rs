@@ -16,7 +16,7 @@
 //! command, and for a macOS job such a workflow runs. A pull request's checks
 //! are `cargo xtask gate <pr>`, which runs this command on the reference Mac.
 //! `main`'s backstop is `cargo xtask nightly`, which the reference Mac runs
-//! every night with the nightly-only steps; the hosted macOS workflows run
+//! at night with the nightly-only steps; the hosted macOS workflows run
 //! only by hand or on a release tag.
 //!
 //! What a full run needs on the machine, each refused by name at its step when
