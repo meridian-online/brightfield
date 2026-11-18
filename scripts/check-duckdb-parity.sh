@@ -159,8 +159,9 @@ compare() {
   local a="$1" b="$2"
   [ -d "$a" ] || fail "no capture at $a"
   [ -d "$b" ] || fail "no capture at $b"
+  a=$(cd "$a" && pwd) b=$(cd "$b" && pwd)
   local listed
-  listed=$( (cd "$a" && find . -type f; cd "$b" && find . -type f) | LC_ALL=C sort -u)
+  listed=$( { (cd "$a" && find . -type f); (cd "$b" && find . -type f); } | LC_ALL=C sort -u)
   [ -n "$listed" ] || fail "both captures are empty, so there is nothing to compare: $a and $b"
   local differs=0 rel
   while IFS= read -r rel; do

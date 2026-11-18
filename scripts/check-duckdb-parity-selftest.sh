@@ -116,6 +116,15 @@ expect_differs "an event log's outcome differing fails" "$A" "$M" "records/"
 M=$(mutate); rm -rf "$M/records"; echo "no run record" > "$M/no-run-record"; echo 134 > "$M/exit"
 expect_differs "a run that died before writing its record fails" "$A" "$M" "no-run-record"
 
+M=$(mutate); printf 'y\n' > "$M/tables/main.u.csv"
+if (cd "$TMP" && "$PARITY" --compare "$(basename "$A")" "$(basename "$M")") > "$TMP/out" 2>&1; then
+  fail "given relative paths, a file only the second capture holds fails (compared equal)"
+elif ! grep -qF "main.u.csv" "$TMP/out"; then
+  fail "given relative paths, a file only the second capture holds fails (main.u.csv not named)"
+else
+  ok "given relative paths, a file only the second capture holds fails"
+fi
+
 echo "what the comparison refuses"
 mkdir -p "$TMP/empty1" "$TMP/empty2"
 if "$PARITY" --compare "$TMP/empty1" "$TMP/empty2" > "$TMP/out" 2>&1; then
