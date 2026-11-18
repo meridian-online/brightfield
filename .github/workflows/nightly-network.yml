@@ -117,8 +117,9 @@ jobs:
       # scripts/nightly-network.sh, which `cargo xtask ci --step
       # nightly-network` runs. The script fetches the pinned FineType bundle
       # when it is absent; this cache, keyed on the pin file, keeps the fetch to
-      # once per bump rather than once per night. The path is read by the script
-      # from BRIGHTFIELD_FINETYPE_BUNDLE.
+      # once per bump rather than once per night, so a restored bundle is always
+      # the pinned one. The path is read by the script from
+      # BRIGHTFIELD_FINETYPE_BUNDLE, and a bundle named there is never deleted.
       - name: cache the pinned FineType bundle
         uses: actions/cache@v4
         with:

@@ -56,8 +56,10 @@
 #
 # Environment this reads:
 #   BRIGHTFIELD_FINETYPE_BUNDLE  where the pinned FineType bundle is, or is
-#                                fetched to when absent; default
-#                                ${TMPDIR}/finetype-bundle
+#                                fetched to when the directory is absent;
+#                                default ${TMPDIR}/finetype-bundle. Only that
+#                                default is deleted and refetched when it is
+#                                refused; a bundle named here never is.
 #   BRIGHTFIELD_BUNDLE_TARGET    the bundle's target triple; default
 #                                aarch64-apple-darwin
 set -u
@@ -151,7 +153,13 @@ echo "${total} network-gated test(s) executed and passed (floor ${expected_total
 # The fetch is two hosts that can be down while the commit is fine, so it
 # lives here with the other network-dependent checks.
 # ------------------------------------------------------------------
-bundle="${BRIGHTFIELD_FINETYPE_BUNDLE:-${tmp}/finetype-bundle}"
+# A bundle the caller named is theirs: a contributor may point the variable at
+# one they assembled, so it is never deleted. Only the script's own default
+# directory is disposable.
+default_bundle="${tmp}/finetype-bundle"
+bundle="${BRIGHTFIELD_FINETYPE_BUNDLE:-$default_bundle}"
+own_bundle=0
+[ "$bundle" = "$default_bundle" ] && own_bundle=1
 target="${BRIGHTFIELD_BUNDLE_TARGET:-aarch64-apple-darwin}"
 
 pin_tag="$(./scripts/finetype-pin.sh --tag)"
@@ -166,18 +174,28 @@ bundle_is_pinned() {
   ./scripts/check-bundled-extension.sh "$bundle" "$platform" "$pin_tag"
 }
 
-# Fetch when the bundle is absent, and once more when what is there is not the
-# pinned one, which is what a pin bump leaves behind in a kept directory.
-if [ ! -d "$bundle" ] || ! bundle_is_pinned >/dev/null 2>&1; then
-  rm -rf "$bundle"
+fetch_bundle() {
   ./scripts/fetch-finetype-bundle.sh "$target" "$bundle" || {
     error "the FineType bundle did not fetch" "scripts/fetch-finetype-bundle.sh failed for ${target}"
     exit 1
   }
+}
+
+if [ ! -d "$bundle" ]; then
+  fetch_bundle
+elif ! bundle_is_pinned >/dev/null 2>&1; then
+  if [ "$own_bundle" -eq 1 ]; then
+    # What a pin bump leaves behind in the default directory: fetch it again.
+    rm -rf "$bundle"
+    fetch_bundle
+  else
+    error "the bundle is not the pinned one" "BRIGHTFIELD_FINETYPE_BUNDLE=${bundle} is refused by check-bundled-extension; fix or unset it"
+    exit 1
+  fi
 fi
 
 bundle_is_pinned || {
-  error "the bundle is not the pinned one" "scripts/check-bundled-extension.sh refused ${bundle} after a fresh fetch"
+  error "the bundle is not the pinned one" "scripts/check-bundled-extension.sh refused ${bundle}"
   exit 1
 }
 
