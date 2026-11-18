@@ -588,7 +588,9 @@ mod tests {
         let dir = scratch("unposted");
         let kata = shim(&dir, "kata");
         let gh = dir.join("gh");
-        fs::write(&gh, "#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n").unwrap();
+        // A refusal, which the post does not try again, so the test does not
+        // sit through the pauses between tries.
+        fs::write(&gh, "#!/bin/sh\necho 'HTTP 403: Forbidden' >&2\nexit 1\n").unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
         let code = report(
             gh.as_os_str(),
