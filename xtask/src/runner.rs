@@ -1,7 +1,9 @@
 //! Running steps in order, and the summary a run ends with.
 //!
 //! The rule is the one a pull request's jobs follow inside each job: the first
-//! step that fails ends the run, and the steps after it do not start. The
+//! step that fails ends the run, and the steps after it do not start. A
+//! nightly run instead carries on past a failure, skipping only the steps that
+//! need what failed, so one red step does not hide the state of the rest. The
 //! summary names every step in the order the table lists them, with what
 //! happened to each, so a red run says which step failed and which never ran.
 
@@ -19,6 +21,9 @@ pub struct Step {
     /// Set when the step has no local form, with the reason. A full run lists
     /// such a step without running it; `--step <name>` runs it.
     pub only_in_ci: Option<&'static str>,
+    /// Set when the step is too slow or too heavy for a run on demand, with the
+    /// reason. Only a nightly run starts it; `--step <name>` runs it too.
+    pub only_at_night: Option<&'static str>,
     /// The step itself. `Err` carries the line the summary prints for it.
     pub run: fn(&Ctx) -> Result<(), String>,
 }
@@ -32,6 +37,50 @@ pub enum Outcome {
     Skipped,
     /// Not started, because it runs only in CI; carries the reason.
     OnlyInCi(&'static str),
+    /// Not started, because it runs only in a nightly run; carries the reason.
+    OnlyAtNight(&'static str),
+}
+
+/// How a full run treats a failure and the nightly-only steps. The two are
+/// separate fields so tests can exercise each alone; `ci --nightly` sets both.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RunMode {
+    /// Carry on past a failure instead of skipping every later step.
+    pub keep_going: bool,
+    /// Start the steps that run only at night.
+    pub nightly: bool,
+}
+
+/// The steps that cannot run unless an earlier step passed, as
+/// (step, the step it needs). A run that keeps going skips a step whose entry
+/// names a step that failed or was skipped. The two test steps run on the
+/// target directory the warm-cache step fills; the managed DuckDB link test
+/// links the library the duckdb-managed step builds.
+pub const NEEDS: &[(&str, &str)] = &[
+    ("test-one-thread", "warm-cache"),
+    ("test-default", "warm-cache"),
+    ("managed-duckdb-test", "duckdb-managed"),
+];
+
+/// True when `step` needs a step that, in `rows` so far, failed or was skipped.
+fn blocked(step: &Step, rows: &[Row]) -> bool {
+    NEEDS
+        .iter()
+        .filter(|(name, _)| *name == step.name)
+        .any(|(_, needed)| {
+            rows.iter().any(|row| {
+                row.name == *needed && matches!(row.outcome, Outcome::Failed(..) | Outcome::Skipped)
+            })
+        })
+}
+
+/// The outcome of a step that does not start in this run, if it is one.
+fn not_started(step: &Step, mode: RunMode) -> Option<Outcome> {
+    step.only_in_ci.map(Outcome::OnlyInCi).or_else(|| {
+        step.only_at_night
+            .filter(|_| !mode.nightly)
+            .map(Outcome::OnlyAtNight)
+    })
 }
 
 /// One line of the summary.
@@ -41,25 +90,28 @@ pub struct Row {
     pub outcome: Outcome,
 }
 
-/// Run `steps` in order through `run`, stopping at the first failure. A step
-/// after the failure is recorded as skipped and `run` is not called for it.
-pub fn run_in_order<F>(steps: &[Step], mut run: F) -> Vec<Row>
+/// Run `steps` in order through `run`. Unless `mode.keep_going`, the run stops
+/// at the first failure: a step after it is recorded as skipped and `run` is
+/// not called for it. With `keep_going`, a step is skipped when `NEEDS` names a
+/// step that failed or was skipped, as
+/// `keep_going_skips_only_what_needs_the_failed_step` checks.
+pub fn run_in_order<F>(steps: &[Step], mode: RunMode, mut run: F) -> Vec<Row>
 where
     F: FnMut(&Step) -> Result<(), String>,
 {
-    let mut rows = Vec::with_capacity(steps.len());
+    let mut rows: Vec<Row> = Vec::with_capacity(steps.len());
     let mut failed = false;
     for step in steps {
-        let outcome = if failed {
+        let outcome = if failed || blocked(step, &rows) {
             Outcome::Skipped
-        } else if let Some(why) = step.only_in_ci {
-            Outcome::OnlyInCi(why)
+        } else if let Some(outcome) = not_started(step, mode) {
+            outcome
         } else {
             let started = Instant::now();
             match run(step) {
                 Ok(()) => Outcome::Passed(started.elapsed()),
                 Err(reason) => {
-                    failed = true;
+                    failed = !mode.keep_going;
                     Outcome::Failed(started.elapsed(), reason)
                 }
             }
@@ -89,56 +141,66 @@ where
 
 /// Run `steps` as `run_in_order` does, except that the two steps named in
 /// `pair` start together when the run reaches the first of them and both run
-/// to completion. If either fails, the run stops after the pair: every step
-/// after it is skipped, and the other of the pair is not cut short. Rows stay
-/// in table order. When either name is absent from `steps`, or either step
-/// is CI-only, there is no pair and the rows are `run_in_order`'s, as
-/// `without_the_pair_named_the_run_is_run_in_order` checks.
-pub fn run_with_pair<F>(steps: &[Step], pair: (&str, &str), run: F) -> Vec<Row>
+/// to completion. If either fails, the run stops after the pair unless
+/// `mode.keep_going`: every step after it is skipped, and the other of the pair
+/// is not cut short. Rows stay in table order. When either name is absent from
+/// `steps`, or either step does not start in this run, there is no pair and the
+/// rows are `run_in_order`'s, as `without_the_pair_named_the_run_is_run_in_order`
+/// checks.
+pub fn run_with_pair<F>(steps: &[Step], pair: (&str, &str), mode: RunMode, run: F) -> Vec<Row>
 where
     F: Fn(&Step) -> Result<(), String> + Sync,
 {
     let at = |name: &str| steps.iter().position(|step| step.name == name);
     let paired = match (at(pair.0), at(pair.1)) {
         (Some(a), Some(b))
-            if a != b && steps[a].only_in_ci.is_none() && steps[b].only_in_ci.is_none() =>
+            if a != b
+                && not_started(&steps[a], mode).is_none()
+                && not_started(&steps[b], mode).is_none() =>
         {
             Some((a.min(b), a.max(b)))
         }
         _ => None,
     };
     let Some((first, second)) = paired else {
-        return run_in_order(steps, |step| run(step));
+        return run_in_order(steps, mode, |step| run(step));
     };
 
-    let mut rows = Vec::with_capacity(steps.len());
+    let mut rows: Vec<Row> = Vec::with_capacity(steps.len());
     let mut failed = false;
     // The later step's outcome, held until the table reaches its row.
     let mut held: Option<Outcome> = None;
     for (index, step) in steps.iter().enumerate() {
         let outcome = if let Some(outcome) = held.take_if(|_| index == second) {
             outcome
-        } else if failed {
+        } else if failed || blocked(step, &rows) {
             Outcome::Skipped
-        } else if let Some(why) = step.only_in_ci {
-            Outcome::OnlyInCi(why)
+        } else if let Some(outcome) = not_started(step, mode) {
+            outcome
         } else if index == first {
+            // The later step may be blocked where the first is not, so it is
+            // judged here, from the rows so far, before the two start.
+            let later_blocked = blocked(&steps[second], &rows);
             let (now, later) = std::thread::scope(|scope| {
-                let other = scope.spawn(|| timed(&steps[second], &run));
+                let other = (!later_blocked).then(|| scope.spawn(|| timed(&steps[second], &run)));
                 let now = timed(step, &run);
-                let later = other.join().unwrap_or_else(|_| {
-                    Outcome::Failed(Duration::ZERO, "the step panicked".to_owned())
-                });
+                let later = match other {
+                    Some(other) => other.join().unwrap_or_else(|_| {
+                        Outcome::Failed(Duration::ZERO, "the step panicked".to_owned())
+                    }),
+                    None => Outcome::Skipped,
+                };
                 (now, later)
             });
-            failed = [&now, &later]
-                .iter()
-                .any(|outcome| matches!(outcome, Outcome::Failed(..)));
+            failed = !mode.keep_going
+                && [&now, &later]
+                    .iter()
+                    .any(|outcome| matches!(outcome, Outcome::Failed(..)));
             held = Some(later);
             now
         } else {
             let outcome = timed(step, &run);
-            failed = matches!(outcome, Outcome::Failed(..));
+            failed = !mode.keep_going && matches!(outcome, Outcome::Failed(..));
             outcome
         };
         rows.push(Row {
@@ -195,6 +257,11 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
                 String::new(),
                 "  not run here; see below".to_owned(),
             ),
+            Outcome::OnlyAtNight(_) => (
+                "nightly",
+                String::new(),
+                "  not run here; see below".to_owned(),
+            ),
         };
         let line = format!("  {word:<8} {time:>8}  {:<width$}{note}", row.name);
         let _ = writeln!(out, "{}", line.trim_end());
@@ -204,10 +271,44 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
             let _ = writeln!(out, "{} runs only in CI: {why}", step.name);
         }
     }
+    // A nightly run starts these, so only a run that did not is told why.
+    for row in rows {
+        if let Outcome::OnlyAtNight(why) = row.outcome {
+            let _ = writeln!(out, "{} runs only in the nightly run: {why}", row.name);
+        }
+    }
     let ran = rows
         .iter()
         .filter(|row| matches!(row.outcome, Outcome::Passed(_)))
         .count();
+    let failures: Vec<&str> = rows
+        .iter()
+        .filter(|row| matches!(row.outcome, Outcome::Failed(..)))
+        .map(|row| row.name)
+        .collect();
+    // A run that carried on past its first failure has steps that ran after
+    // it, so "passed before it" would misreport its passes; it gets the form
+    // that counts failures instead. A run that stopped keeps the other form.
+    let carried_on = failures.first().is_some_and(|first| {
+        rows.iter()
+            .skip_while(|row| row.name != *first)
+            .skip(1)
+            .any(|row| matches!(row.outcome, Outcome::Passed(_) | Outcome::Failed(..)))
+    });
+    if carried_on {
+        let skipped = rows
+            .iter()
+            .filter(|row| row.outcome == Outcome::Skipped)
+            .count();
+        let _ = writeln!(
+            out,
+            "{} step(s) failed ({}); {skipped} skipped, {ran} passed, {} in all",
+            failures.len(),
+            failures.join(", "),
+            wall(total)
+        );
+        return out;
+    }
     match rows
         .iter()
         .position(|row| matches!(row.outcome, Outcome::Failed(..)))
@@ -237,8 +338,15 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
 
 /// The summary as JSON, for `ci --summary-json`: each row in order with its
 /// outcome (`passed`, `failed`, `skipped` or `ci-only`), what the step runs,
-/// its seconds when it ran, and the reason when it failed or is CI's alone,
+/// its seconds when it ran, and the reason when it failed or is CI's or the nightly's alone,
 /// as `the_summary_json_names_every_step_and_its_outcome` checks.
+///
+/// A step left out because only the nightly runs it is written as `skipped`
+/// with `"nightly_only":true`, not as an outcome of its own. A gate started
+/// from a checkout older than the nightly reads the merged tree's summary
+/// with a reader that knows only the four outcomes above and refuses any
+/// other, and it ignores a field it does not know, so this spelling keeps
+/// such a gate reading every pull request's run.
 pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
     let listed: Vec<serde_json::Value> = rows
         .iter()
@@ -250,8 +358,12 @@ pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
                 Outcome::Failed(took, reason) => ("failed", Some(*took), Some(reason.as_str())),
                 Outcome::Skipped => ("skipped", None, None),
                 Outcome::OnlyInCi(why) => ("ci-only", None, Some(*why)),
+                Outcome::OnlyAtNight(why) => ("skipped", None, Some(*why)),
             };
             entry.insert("outcome".into(), outcome.into());
+            if matches!(row.outcome, Outcome::OnlyAtNight(_)) {
+                entry.insert("nightly_only".into(), true.into());
+            }
             if let Some(step) = steps.iter().find(|step| step.name == row.name) {
                 entry.insert("runs".into(), step.runs.into());
             }
@@ -294,7 +406,30 @@ mod tests {
             name,
             runs: "",
             only_in_ci: None,
+            only_at_night: None,
             run: ok,
+        }
+    }
+
+    fn nightly_only(name: &'static str) -> Step {
+        Step {
+            only_at_night: Some("it takes hours"),
+            ..step(name)
+        }
+    }
+
+    const STOP: RunMode = RunMode {
+        keep_going: false,
+        nightly: false,
+    };
+
+    fn fails(names: &'static [&'static str]) -> impl Fn(&Step) -> Result<(), String> {
+        move |s| {
+            if names.contains(&s.name) {
+                Err(format!("{} broke", s.name))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -309,7 +444,7 @@ mod tests {
     fn a_failure_stops_the_run_and_every_later_step_is_skipped_unstarted() {
         let steps = [step("a"), step("b"), step("c"), ci_only("d"), step("e")];
         let mut started = Vec::new();
-        let rows = run_in_order(&steps, |s| {
+        let rows = run_in_order(&steps, STOP, |s| {
             started.push(s.name);
             if s.name == "b" {
                 Err("b broke".to_owned())
@@ -328,6 +463,7 @@ mod tests {
                 }
                 Outcome::Skipped => "skipped",
                 Outcome::OnlyInCi(_) => "ci only",
+                Outcome::OnlyAtNight(_) => "nightly",
             })
             .collect();
         assert_eq!(words, ["ok", "failed", "skipped", "skipped", "skipped"]);
@@ -338,7 +474,7 @@ mod tests {
     fn a_clean_run_starts_every_local_step_in_order_and_lists_the_ci_only_one() {
         let steps = [step("a"), ci_only("b"), step("c")];
         let mut started = Vec::new();
-        let rows = run_in_order(&steps, |s| {
+        let rows = run_in_order(&steps, STOP, |s| {
             started.push(s.name);
             Ok(())
         });
@@ -476,7 +612,7 @@ mod tests {
     fn a_pair_starts_together_and_both_finish_when_one_fails() {
         let steps = [step("a"), step("b"), step("c"), step("d")];
         let started = std::sync::Mutex::new(Vec::new());
-        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+        let rows = run_with_pair(&steps, ("b", "c"), STOP, |s| {
             started.lock().unwrap().push(s.name);
             if s.name == "b" {
                 Err("b broke".to_owned())
@@ -499,7 +635,7 @@ mod tests {
     #[test]
     fn a_panic_in_the_first_of_the_pair_is_a_failed_row_and_the_second_still_finishes() {
         let steps = [step("a"), step("b"), step("c"), step("d")];
-        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+        let rows = run_with_pair(&steps, ("b", "c"), STOP, |s| {
             if s.name == "b" {
                 panic!("b blew up");
             }
@@ -516,7 +652,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let steps = [step("a"), step("b"), step("c")];
         let arrived = AtomicUsize::new(0);
-        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+        let rows = run_with_pair(&steps, ("b", "c"), STOP, |s| {
             if s.name == "a" {
                 return Ok(());
             }
@@ -547,8 +683,8 @@ mod tests {
                 Ok(())
             }
         };
-        let ordered = run_in_order(&steps, behave);
-        let paired = run_with_pair(&steps, ("x", "y"), behave);
+        let ordered = run_in_order(&steps, STOP, behave);
+        let paired = run_with_pair(&steps, ("x", "y"), STOP, behave);
         let shape = |rows: &[Row]| -> Vec<String> {
             rows.iter()
                 .map(|r| match &r.outcome {
@@ -556,12 +692,209 @@ mod tests {
                     Outcome::Failed(_, why) => format!("{} failed {why}", r.name),
                     Outcome::Skipped => format!("{} skipped", r.name),
                     Outcome::OnlyInCi(why) => format!("{} ci only {why}", r.name),
+                    Outcome::OnlyAtNight(why) => format!("{} nightly {why}", r.name),
                 })
                 .collect()
         };
         assert_eq!(shape(&paired), shape(&ordered));
         // A CI-only member of the pair leaves no pair either.
-        let ci_member = run_with_pair(&steps, ("b", "c"), behave);
+        let ci_member = run_with_pair(&steps, ("b", "c"), STOP, behave);
         assert_eq!(shape(&ci_member), shape(&ordered));
+    }
+
+    #[test]
+    fn keep_going_runs_past_a_failure_and_records_every_outcome() {
+        let steps = [step("a"), step("b"), step("c")];
+        let mode = RunMode {
+            keep_going: true,
+            nightly: false,
+        };
+        let mut calls = 0;
+        let behave = fails(&["b"]);
+        let rows = run_in_order(&steps, mode, |s| {
+            calls += 1;
+            behave(s)
+        });
+        assert_eq!(calls, 3);
+        assert!(matches!(rows[0].outcome, Outcome::Passed(_)));
+        assert!(matches!(&rows[1].outcome, Outcome::Failed(_, r) if r == "b broke"));
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+        assert!(!passed(&rows));
+    }
+
+    #[test]
+    fn keep_going_skips_only_what_needs_the_failed_step() {
+        let steps = [
+            step("warm-cache"),
+            step("test-one-thread"),
+            step("test-default"),
+            step("doc"),
+        ];
+        let mode = RunMode {
+            keep_going: true,
+            nightly: false,
+        };
+        let mut started = Vec::new();
+        let behave = fails(&["warm-cache"]);
+        let rows = run_in_order(&steps, mode, |s| {
+            started.push(s.name);
+            behave(s)
+        });
+        assert_eq!(started, ["warm-cache", "doc"]);
+        assert!(matches!(rows[0].outcome, Outcome::Failed(..)));
+        assert_eq!(rows[1].outcome, Outcome::Skipped);
+        assert_eq!(rows[2].outcome, Outcome::Skipped);
+        assert!(matches!(rows[3].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn keep_going_skips_the_link_test_when_the_managed_build_failed() {
+        let steps = [
+            step("duckdb-managed"),
+            step("managed-duckdb-test"),
+            step("doc"),
+        ];
+        let mode = RunMode {
+            keep_going: true,
+            nightly: true,
+        };
+        let rows = run_in_order(&steps, mode, fails(&["duckdb-managed"]));
+        assert!(matches!(rows[0].outcome, Outcome::Failed(..)));
+        assert_eq!(rows[1].outcome, Outcome::Skipped);
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn keep_going_with_the_pair_skips_the_pair_when_its_cache_step_failed() {
+        let steps = [
+            step("warm-cache"),
+            step("test-one-thread"),
+            step("test-default"),
+            step("doc"),
+        ];
+        let mode = RunMode {
+            keep_going: true,
+            nightly: false,
+        };
+        let rows = run_with_pair(
+            &steps,
+            ("test-one-thread", "test-default"),
+            mode,
+            fails(&["warm-cache"]),
+        );
+        assert!(matches!(rows[0].outcome, Outcome::Failed(..)));
+        assert_eq!(rows[1].outcome, Outcome::Skipped);
+        assert_eq!(rows[2].outcome, Outcome::Skipped);
+        assert!(matches!(rows[3].outcome, Outcome::Passed(_)));
+        // A failure inside the pair does not stop the step after it either.
+        let rows = run_with_pair(
+            &steps,
+            ("test-one-thread", "test-default"),
+            mode,
+            fails(&["test-default"]),
+        );
+        assert!(matches!(rows[1].outcome, Outcome::Passed(_)));
+        assert!(matches!(rows[2].outcome, Outcome::Failed(..)));
+        assert!(matches!(rows[3].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn a_nightly_only_step_is_listed_not_run_outside_the_nightly() {
+        let steps = [step("a"), nightly_only("b")];
+        let mut started = Vec::new();
+        let rows = run_in_order(&steps, STOP, |s| {
+            started.push(s.name);
+            Ok(())
+        });
+        assert_eq!(started, ["a"]);
+        assert_eq!(rows[1].outcome, Outcome::OnlyAtNight("it takes hours"));
+        assert!(passed(&rows));
+        let night = RunMode {
+            keep_going: false,
+            nightly: true,
+        };
+        let mut started = Vec::new();
+        let rows = run_in_order(&steps, night, |s| {
+            started.push(s.name);
+            Ok(())
+        });
+        assert_eq!(started, ["a", "b"]);
+        assert!(matches!(rows[1].outcome, Outcome::Passed(_)));
+    }
+
+    #[test]
+    fn the_summary_json_names_a_nightly_only_step() {
+        let steps = [nightly_only("a")];
+        let rows = vec![Row {
+            name: "a",
+            outcome: Outcome::OnlyAtNight("it takes hours"),
+        }];
+        let doc: serde_json::Value = serde_json::from_str(&summary_json(&rows, &steps)).unwrap();
+        assert_eq!(doc["steps"][0]["outcome"], "skipped");
+        assert_eq!(doc["steps"][0]["nightly_only"], true);
+        assert_eq!(doc["steps"][0]["reason"], "it takes hours");
+        assert!(summary(&rows, &steps).contains("a runs only in the nightly run: it takes hours"));
+    }
+
+    fn row(name: &'static str, outcome: Outcome) -> Row {
+        Row { name, outcome }
+    }
+
+    #[test]
+    fn a_keep_going_summary_with_one_failure_counts_failures_not_passes_before_it() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row("a", Outcome::Passed(Duration::from_secs(1))),
+            row(
+                "b",
+                Outcome::Failed(Duration::from_secs(1), "b broke".to_owned()),
+            ),
+            row("c", Outcome::Passed(Duration::from_secs(1))),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("1 step(s) failed (b); 0 skipped, 2 passed"),
+            "{text}"
+        );
+        assert!(!text.contains("passed before it"), "{text}");
+    }
+
+    #[test]
+    fn a_keep_going_summary_names_every_failure() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row(
+                "a",
+                Outcome::Failed(Duration::from_secs(1), "a broke".to_owned()),
+            ),
+            row("b", Outcome::Skipped),
+            row(
+                "c",
+                Outcome::Failed(Duration::from_secs(1), "c broke".to_owned()),
+            ),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("2 step(s) failed (a, c); 1 skipped, 0 passed"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_stopped_summary_with_one_failure_keeps_its_passed_before_it_line() {
+        let steps = [step("a"), step("b"), step("c")];
+        let rows = vec![
+            row("a", Outcome::Passed(Duration::from_secs(1))),
+            row(
+                "b",
+                Outcome::Failed(Duration::from_secs(1), "b broke".to_owned()),
+            ),
+            row("c", Outcome::Skipped),
+        ];
+        let text = summary(&rows, &steps);
+        assert!(
+            text.contains("failed at b; 1 later step(s) skipped, 1 passed before it"),
+            "{text}"
+        );
     }
 }

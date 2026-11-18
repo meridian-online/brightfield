@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::runner::Step;
-use crate::{shard, workflows};
+use crate::{duckdb_stamp, shard, workflows};
 
 /// What every step runs against: the repository root and the cargo that
 /// started this command.
@@ -124,243 +124,317 @@ fn report_error(title: &str, message: &str) {
 pub static STEPS: &[Step] = &[
     Step {
         name: "workflow-coverage",
-        runs: "the command's own reading of .github/workflows: every step invoked, no unknown step, no gate called around it",
+        runs: "the command's own reading of .github/workflows: every step invoked, no unknown step, no gate called around it, no macOS job off a release tag",
         only_in_ci: None,
+        only_at_night: None,
         run: workflow_coverage,
     },
     Step {
         name: "borrowed-benchmarks-selftest",
         runs: "./scripts/check-borrowed-benchmarks-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-borrowed-benchmarks-selftest.sh", &[]),
     },
     Step {
         name: "borrowed-benchmarks",
         runs: "./scripts/check-borrowed-benchmarks.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-borrowed-benchmarks.sh", &[]),
     },
     Step {
         name: "scale-claims-selftest",
         runs: "./scripts/check-scale-claims.py --self-test",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-scale-claims.py", &["--self-test"]),
     },
     Step {
         name: "scale-claims",
         runs: "./scripts/check-scale-claims.py",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-scale-claims.py", &[]),
     },
     Step {
         name: "measured-figures-selftest",
         runs: "./scripts/check-measured-figures.py --self-test",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-measured-figures.py", &["--self-test"]),
     },
     Step {
         name: "measured-figures",
         runs: "./scripts/check-measured-figures.py",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-measured-figures.py", &[]),
     },
     Step {
         name: "package-version-guard-selftest",
         runs: "./scripts/package-version-guard-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/package-version-guard-selftest.sh", &[]),
     },
     Step {
         name: "bundled-extension-selftest",
         runs: "./scripts/check-bundled-extension-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-bundled-extension-selftest.sh", &[]),
     },
     Step {
         name: "finetype-pin-selftest",
         runs: "./scripts/check-finetype-pin-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-finetype-pin-selftest.sh", &[]),
     },
     Step {
         name: "finetype-pin",
         runs: "./scripts/check-finetype-pin.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-finetype-pin.sh", &[]),
     },
     Step {
         name: "release-readback-selftest",
         runs: "./scripts/check-release-readback.py --self-test",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-release-readback.py", &["--self-test"]),
     },
     Step {
         name: "release-readback",
         runs: "./scripts/check-release-readback.py",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-release-readback.py", &[]),
     },
     Step {
         name: "release-tag-selftest",
         runs: "./scripts/check-release-tag.py --self-test",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-release-tag.py", &["--self-test"]),
     },
     Step {
         name: "release-tag-wiring",
         runs: "./scripts/check-release-tag.py --wiring",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-release-tag.py", &["--wiring"]),
     },
     Step {
         name: "release-tag-rehearsal",
         runs: "./scripts/check-release-tag.py --release-rehearsal",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-release-tag.py", &["--release-rehearsal"]),
     },
     Step {
         name: "fetch-finetype-bundle-selftest",
         runs: "./scripts/fetch-finetype-bundle-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/fetch-finetype-bundle-selftest.sh", &[]),
     },
     Step {
         name: "package-finetype-selftest",
         runs: "./scripts/package-finetype-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/package-finetype-selftest.sh", &[]),
     },
     Step {
         name: "formula-layout-selftest",
         runs: "./scripts/check-formula-layout-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-formula-layout-selftest.sh", &[]),
     },
     Step {
         name: "formula-asset-selftest",
         runs: "./scripts/check-formula-asset-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-formula-asset-selftest.sh", &[]),
     },
     Step {
         name: "brew-install-selftest",
         runs: "./scripts/check-brew-install-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-brew-install-selftest.sh", &[]),
     },
     Step {
         name: "drop-fetch-steps-selftest",
         runs: "./scripts/drop-fetch-steps-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/drop-fetch-steps-selftest.sh", &[]),
     },
     Step {
         name: "airgap-jail-selftest",
         runs: "./scripts/airgap-jail-selftest.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/airgap-jail-selftest.sh", &[]),
     },
     Step {
         name: "fmt",
         runs: "cargo fmt --all --check",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.run_cargo(&["fmt", "--all", "--check"]),
     },
     Step {
         name: "clippy",
         runs: "cargo clippy --workspace --all-targets -- -D warnings",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.run_cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
     },
     Step {
         name: "check-release",
         runs: "cargo check --release --workspace",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.run_cargo(&["check", "--release", "--workspace"]),
     },
     Step {
         name: "doc",
         runs: "cargo doc --workspace --no-deps --document-private-items, under RUSTDOCFLAGS=-D warnings",
         only_in_ci: None,
+        only_at_night: None,
         run: doc,
     },
     Step {
         name: "comment-citations",
         runs: "./scripts/check-comment-citations.py, over the diff against origin/main",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-comment-citations.py", &[]),
     },
     Step {
         name: "comment-citations-selftest",
         runs: "./scripts/check-comment-citations.py --self-test",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.python_script("scripts/check-comment-citations.py", &["--self-test"]),
+    },
+    Step {
+        name: "nightly-launcher-selftest",
+        runs: "./scripts/nightly/launcher-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/nightly/launcher-selftest.sh", &[]),
     },
     Step {
         name: "deny-licenses",
         runs: "cargo deny --all-features check licenses",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| cargo_deny(c, "licenses"),
     },
     Step {
         name: "deny-advisories",
         runs: "cargo deny --all-features check advisories",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| cargo_deny(c, "advisories"),
     },
     Step {
         name: "warm-cache",
         runs: "cargo test --locked --workspace --no-run; the sibling-manifest and conformance builds",
         only_in_ci: None,
+        only_at_night: None,
         run: warm_cache,
     },
     Step {
         name: "test-one-thread",
         runs: "cargo test --locked --workspace over the one-thread group, -- --test-threads=1",
         only_in_ci: None,
+        only_at_night: None,
         run: test_one_thread,
     },
     Step {
         name: "test-default",
         runs: "cargo test --locked --workspace over every other target, then --doc",
         only_in_ci: None,
+        only_at_night: None,
         run: test_default,
     },
     Step {
         name: "sibling-manifests",
         runs: "cargo test --locked -p brightfield-protocol --test sibling_manifests -- --ignored, at least 2 executed",
         only_in_ci: None,
+        only_at_night: None,
         run: sibling_manifests,
     },
     Step {
         name: "conformance",
         runs: "cargo run --locked --bin conformance -- --layers 1,2,3,4 --corpus curated",
         only_in_ci: None,
+        only_at_night: None,
         run: conformance,
     },
     Step {
         name: "vendored-libduckdb-sys",
         runs: "./scripts/check-vendored-libduckdb-sys.sh",
         only_in_ci: None,
+        only_at_night: None,
         run: |c| c.script("scripts/check-vendored-libduckdb-sys.sh", &[]),
     },
     Step {
-        name: "duckdb-managed",
-        runs: "./scripts/build-duckdb.sh, then ./scripts/build-duckdb-selftest.sh",
-        only_in_ci: Some(
-            "it builds DuckDB and seven extensions from source, 30 to 90 minutes cold; \
-             managed-duckdb.yml runs it when the build changes, and --step runs it here",
+        name: "managed-edition",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
+        only_in_ci: None,
+        only_at_night: None,
+        run: managed_edition,
+    },
+    Step {
+        name: "artifact-type-source-selftest",
+        runs: "./scripts/check-artifact-type-source-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/check-artifact-type-source-selftest.sh", &[]),
+    },
+    Step {
+        name: "package-artifact-staging-selftest",
+        runs: "./scripts/package-artifact-staging-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
+    },
+    Step {
+        name: "nightly-network",
+        runs: "./scripts/nightly-network.sh",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it reads published data over the network, so a red says the data or the host \
+             moved as often as the commit did; the nightly runs it, and --step runs it here",
         ),
-        run: |c| {
-            c.script("scripts/build-duckdb.sh", &[])?;
-            c.script("scripts/build-duckdb-selftest.sh", &[])
-        },
+        run: |c| c.script("scripts/nightly-network.sh", &[]),
+    },
+    Step {
+        name: "duckdb-managed",
+        runs: "./scripts/build-duckdb.sh unless its inputs are unchanged since the last build, then ./scripts/build-duckdb-selftest.sh",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it builds DuckDB and seven extensions from source, 30 to 90 minutes cold; \
+             the nightly runs it, and --step runs it here",
+        ),
+        run: duckdb_managed,
     },
     Step {
         name: "managed-duckdb-test",
         runs: "cargo test --locked --features managed-duckdb, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link",
-        only_in_ci: Some(
-            "it links the library the duckdb-managed step builds; managed-duckdb.yml runs it \
+        only_in_ci: None,
+        only_at_night: Some(
+            "it links the library the duckdb-managed step builds; the nightly runs it \
              after that step, and --step runs it here once the library is built",
         ),
         run: |c| {
@@ -386,25 +460,37 @@ pub static STEPS: &[Step] = &[
             ])
         },
     },
-    Step {
-        name: "managed-edition",
-        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
-        only_in_ci: None,
-        run: managed_edition,
-    },
-    Step {
-        name: "artifact-type-source-selftest",
-        runs: "./scripts/check-artifact-type-source-selftest.sh",
-        only_in_ci: None,
-        run: |c| c.script("scripts/check-artifact-type-source-selftest.sh", &[]),
-    },
-    Step {
-        name: "package-artifact-staging-selftest",
-        runs: "./scripts/package-artifact-staging-selftest.sh",
-        only_in_ci: None,
-        run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
-    },
 ];
+
+/// Where the managed DuckDB build is kept: `BRIGHTFIELD_DUCKDB_MANAGED_DIR`
+/// when set, which `scripts/build-duckdb.sh` reads too, else
+/// `target/duckdb-managed` under `root`.
+fn managed_duckdb_dir(root: &Path, var: Option<OsString>) -> PathBuf {
+    match var {
+        Some(dir) if !dir.is_empty() => root.join(dir),
+        _ => root.join("target/duckdb-managed"),
+    }
+}
+
+/// Build the managed edition's DuckDB unless the build on disk was made from
+/// the current inputs, then check it. The stamp is removed before a rebuild
+/// starts and written after it succeeds, so a build that stopped half way is
+/// rebuilt rather than trusted. The self-test runs either way.
+fn duckdb_managed(ctx: &Ctx) -> Result<(), String> {
+    let dir = managed_duckdb_dir(
+        &ctx.root,
+        std::env::var_os("BRIGHTFIELD_DUCKDB_MANAGED_DIR"),
+    );
+    let hash = duckdb_stamp::inputs_hash(&ctx.root)?;
+    if duckdb_stamp::build_is_current(&dir, &hash) {
+        println!("the managed DuckDB build matches its inputs; not rebuilding");
+    } else {
+        duckdb_stamp::forget_build(&dir)?;
+        ctx.script("scripts/build-duckdb.sh", &[])?;
+        duckdb_stamp::record_build(&dir, &hash)?;
+    }
+    ctx.script("scripts/build-duckdb-selftest.sh", &[])
+}
 
 /// Compile what the test shards compile, so the job ahead of them can save
 /// it under the lockfile's cache key and each shard restores an exact match.
@@ -464,7 +550,7 @@ fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
     }
     if problems.is_empty() {
         println!(
-            "{} step(s), each invoked by a workflow; no workflow invokes an unknown step or calls a gate around the command",
+            "{} step(s), each invoked by a workflow; no workflow invokes an unknown step, calls a gate around the command, or starts a macOS job on its own off a release tag",
             names.len()
         );
         Ok(())
@@ -924,6 +1010,35 @@ mod tests {
             engine_path(root, None),
             PathBuf::from("/checkout/target/duckdb-cli/duckdb")
         );
+    }
+
+    #[test]
+    fn the_managed_build_lives_where_the_script_puts_it() {
+        let root = Path::new("/checkout");
+        assert_eq!(
+            managed_duckdb_dir(root, None),
+            PathBuf::from("/checkout/target/duckdb-managed")
+        );
+        assert_eq!(
+            managed_duckdb_dir(root, Some("/cache/duckdb".into())),
+            PathBuf::from("/cache/duckdb")
+        );
+    }
+
+    #[test]
+    fn the_nightly_only_steps_come_last() {
+        let night: Vec<&str> = STEPS
+            .iter()
+            .filter(|s| s.only_at_night.is_some())
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            night,
+            ["nightly-network", "duckdb-managed", "managed-duckdb-test"]
+        );
+        assert!(STEPS[STEPS.len() - 3..]
+            .iter()
+            .all(|s| s.only_at_night.is_some()));
     }
 
     #[test]

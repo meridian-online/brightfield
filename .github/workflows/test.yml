@@ -1,15 +1,13 @@
 name: test
 
-# Each merge to `main`, nightly, and on demand: not on pull requests. A pull
-# request's gate is `cargo xtask gate <pr>` on the reference Mac, which runs the
-# same steps and posts the `local-gate` status a merge waits on. This run is
-# the backstop for what only GitHub's runner sees, and the gate reads its
-# latest result on `main` before each pull request it checks.
+# By hand only: `gh workflow run test.yml --ref <branch>`. A pull request's gate
+# is `cargo xtask gate <pr>` on the reference Mac, which runs the same steps and
+# posts the `local-gate` status a merge waits on, and the Mac Studio's nightly
+# (`cargo xtask nightly`) runs every one of them on `main` each night and posts
+# the `nightly-gate` status the gate reads. This hosted run is for a question
+# only GitHub's runner can answer, such as whether a clean macOS image still
+# builds and passes.
 on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: '17 3 * * *'
   workflow_dispatch:
 
 env:
@@ -18,11 +16,11 @@ env:
 # No run cancels another. A merge used to cancel the `main` run still in
 # flight for the merge before it, which ended that run with no verdict on a
 # commit that had already landed. The group is per commit for the same reason:
-# one group shared by every `main` run lets a third merge replace a second run
-# still queued behind the first, which is also a run with no verdict. The
-# event is in the group too, so a nightly or dispatched run of a commit never
-# shares a queue with its push run: GitHub cancels a pending run when a third
-# arrives in its group, whatever `cancel-in-progress` says.
+# one group shared by every run lets a third run replace a second still queued
+# behind the first, which is also a run with no verdict, since GitHub cancels a
+# pending run when a third arrives in its group, whatever `cancel-in-progress`
+# says. The event in the group is left from when a push and a schedule also
+# started this workflow; with dispatch the only trigger, it changes nothing.
 concurrency:
   group: test-${{ github.sha }}-${{ github.event_name }}
   cancel-in-progress: false
@@ -371,9 +369,10 @@ jobs:
           df -h /
 
       # No `cargo fmt --check` / `cargo clippy -D warnings` step here, on
-      # purpose: both now exist, in `lint.yml`. They are a separate workflow so
-      # they report in minutes without queueing behind this suite, and so they
-      # still report when this suite is red or cancelled.
+      # purpose: they exist in `lint.yml` and `lint-macos.yml`. They are
+      # separate workflows so they report in minutes without queueing behind
+      # this suite, and so they still report when this suite is red or
+      # cancelled.
 
       # THE ENGINE THE RUN TESTS DRIVE. `arc run` executes a Protocol's SQL
       # steps by spawning a DuckDB executable, and this runner has no duckdb on
@@ -751,10 +750,10 @@ jobs:
 
   # The read jail scripts/verify-airgapped.sh runs the type-source leg under,
   # proved to refuse a read outside its grant. The release runs that leg; this
-  # runs the jail's own cases on every merge to `main`, with no artefact, so a
-  # profile that stopped refusing reads would be caught here rather than read
-  # as a clean release. The local gate runs the same step on each pull
-  # request. macOS because the jail is sandbox-exec.
+  # runs the jail's own cases with no artefact, so a profile that stopped
+  # refusing reads would be caught before it was read as a clean release. The
+  # local gate runs the same step on each pull request, and the nightly on
+  # `main`. macOS because the jail is sandbox-exec.
   airgap-jail:
     name: The air-gap read jail refuses reads outside its grant
     runs-on: macos-15

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the nightly gate's LaunchAgent. scripts/nightly/install.sh fills
+  in @REPO@ (the checkout that serves as the object store) and @HOME@ at
+  install time, so the tracked file names no machine path.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>online.meridian.brightfield-nightly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>'@HOME@/.cache/meridian/gate/nightly/run.sh'</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BRIGHTFIELD_NIGHTLY_REPO</key>
+        <string>@REPO@</string>
+        <key>CARGO_BUILD_JOBS</key>
+        <string>6</string>
+        <key>RUST_TEST_THREADS</key>
+        <string>6</string>
+        <key>PATH</key>
+        <string>@HOME@/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>@HOME@/Library/Logs/brightfield-nightly/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>@HOME@/Library/Logs/brightfield-nightly/stderr.log</string>
+</dict>
+</plist>

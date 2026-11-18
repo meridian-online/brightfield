@@ -1,155 +1,54 @@
 name: lint
 
-# Each merge to `main`, nightly, and on demand: not on pull requests. A pull
-# request's gate is `cargo xtask gate <pr>` on the reference Mac, which runs the
-# same steps and posts the `local-gate` status a merge waits on. This run is
-# the backstop for what only GitHub's runner sees, and the gate reads its
-# latest result on `main` before each pull request it checks.
+# The lint steps that need no Mac, on Linux: each pull request, each merge to
+# `main`, and on demand. A pull request's gate is `cargo xtask gate <pr>` on the
+# reference Mac, which runs every step and posts the `local-gate` status a merge
+# waits on; this run tells a pull request about a formatting slip or a comment
+# claim that does not resolve within a minute or two, before the gate does.
+#
+# `clippy`, `check-release` and `doc` build the workspace's dependency graph,
+# and standing the winit/wgpu window stack up on Linux needs the
+# system-dependency matrix (Vulkan, wayland/X11, xkbcommon, fontconfig) that
+# `test.yml` records as unvalidated in this repo, so they are not here. They
+# run in `lint-macos.yml`, by hand, and the Mac Studio's nightly
+# (`cargo xtask nightly`) runs them on `main` each night with every other step.
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: '17 3 * * *'
+  pull_request:
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 # A workflow of its own, alongside `public-hygiene` rather than a job inside
-# `test`:
-#
-# * `test` runs the whole suite behind a long ceiling, including the
-#   egui_kittest pixel tier. These three gates run no tests and render nothing,
-#   so a formatting slip, a lint regression or a dead doc link should report in
-#   minutes without waiting on it — and should still report when the suite is
-#   red.
-# * A lint regression should be reported on every commit that reaches `main`,
-#   and this workflow is cheap enough to run on each one.
-#
-# The tree was made clean under each gate before that gate landed: `cargo fmt
-# --all` over the workspace, then a warning-by-warning clippy triage in which
-# every lint is either fixed or carries an `#[allow]` with a written reason,
-# then a site-by-site rustdoc triage in which every finding is fixed and no
-# `#[allow]` was added at all. Each gate is green on arrival, not aspirational —
-# and each has been watched fail on a deliberately broken tree before landing.
+# `test`: these steps run no tests and render nothing, so they should report in
+# minutes without waiting on the suite, and should still report when the suite
+# is red.
 #
 # Each step below calls one step of `cargo xtask ci` by name, the command a
 # local run uses, so this job runs what that command runs and a step name the
 # command does not carry fails here with a line naming it.
 jobs:
-  fmt-clippy:
-    # macos-15, matching `test`, and NOT the ubuntu-latest that `public-hygiene`
-    # uses. Not a copy-paste: clippy has to build the dependency graph to lint
-    # it, and standing the winit/wgpu window stack up on Linux needs the
-    # system-dependency matrix (Vulkan, wayland/X11,
-    # xkbcommon, fontconfig) that `test.yml` records as unvalidated in this
-    # repo, so an ubuntu runner here would be a gate nobody had seen pass. The
-    # cheap-runner win is real but it belongs to whoever validates that matrix;
-    # until then this job is honest about needing the same host as `test`.
-    #
-    # It is still far cheaper than `test`: no test executes, nothing renders,
-    # and `cargo clippy` stops at check.
-    runs-on: macos-15
-    timeout-minutes: 30
+  fmt-citations:
+    # Linux, since nothing here builds the workspace: the command builds the
+    # `xtask` crate alone, `cargo fmt` reads source without compiling it, and
+    # the citation checker is a Python script over the diff.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
-      # The same exact pin as `test`, for the same reason: a red gate here has
-      # to be reproducible with the `cargo +1.95.0 ...` the local loop uses.
-      # Clippy's lint set moves between releases, so an unpinned toolchain would
-      # let a newer rustc turn this red on a commit that changed nothing.
+      # The same exact pin as `test` and `public-hygiene`, so a red run here is
+      # reproducible with the `cargo +1.95.0 ...` the local loop uses: rustfmt's
+      # output moves between releases.
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
-      # Shared with `test`'s cache. The git dependencies (the design-system
-      # and arcform pins) plus wgpu/vello dominate a cold run.
-      - uses: Swatinem/rust-cache@v2
-
-      # `fmt` first: it builds nothing, so a formatting slip reports before
-      # clippy has checked a single crate.
       - name: cargo fmt --all --check
         run: cargo xtask ci --step fmt
-
-      # `--all-targets` so tests, benches and examples are linted too. This is
-      # load-bearing: the deny-by-default lint that used to make clippy exit 101
-      # in this repo lived in a `brightfield-spec` test, and a lib-only run
-      # would never have seen it.
-      #
-      # NOT `--locked`, deliberately: `test` already fails on lockfile drift, so
-      # repeating it here would only report the same problem twice.
-      - name: cargo clippy --workspace --all-targets -D warnings
-        run: cargo xtask ci --step clippy
-
-      # The release profile, type-checked. Every other gate in this repo builds
-      # with `debug_assertions` on, so a reference to an item that only exists
-      # under it compiles here, passes CI, lands on `main`, and is discovered by
-      # whoever first runs `cargo build --release`.
-      #
-      # That is not hypothetical: `apply_theme_without_unaligned_marker` set
-      # `style.debug.show_unaligned`, and egui declares `Style::debug` under
-      # `#[cfg(debug_assertions)]` with a doc that says "Only available in debug
-      # builds". The release profile stopped compiling the day that landed and
-      # nothing said so, because `release.yml` is the only workflow that builds
-      # it and it runs on a version tag — so the next thing to notice would have
-      # been a release that could not be cut, or a person trying to run the
-      # application.
-      #
-      # `check` rather than `build`: the failure class is resolution and type
-      # checking, which `check` does in full, and codegen for wgpu and vello in
-      # release is minutes this gate does not need to spend. `--workspace` and
-      # not just the shell, because the hazard is a profile difference and any
-      # crate can carry one.
-      - name: cargo check --release (the profile the application ships as)
-        run: cargo xtask ci --step check-release
-
-      # rustdoc, for the one thing the four gates above cannot see: a doc link
-      # that names something which does not exist. `cargo doc` resolves every
-      # intra-doc link and warns on the ones it cannot; `-D warnings` in
-      # RUSTDOCFLAGS turns that into a failure.
-      #
-      # This is here because such a link did ship: a module doc named the
-      # renderer it delegates to by a name that file has never called, and that
-      # resolves to nothing from where it is written. fmt/clippy/test/deny/
-      # hygiene were all green on it, and only a human reviewer caught it. A
-      # dead link in a crate whose whole job is to be the shared vocabulary is
-      # worse than a dead link elsewhere — it is read by everyone building
-      # against the contract.
-      #
-      # `--no-deps` so a warning in a dependency's docs cannot redden this repo.
-      # The step sets `RUSTDOCFLAGS: -D warnings` itself, so a local run of it
-      # is held to the same flag.
-      #
-      # `--document-private-items` is not decoration, and it is the stricter of
-      # the two forms this could take. Measured on the tree this gate landed
-      # against, it is a strict SUPERSET of the plain public-only run:
-      #
-      # * everything the public run flags, it flags too — including
-      #   `private_intra_doc_links` (a public item linking a private one), which
-      #   still fires under the flag, only with a different note ("resolves only
-      #   because you passed --document-private-items, but will break without").
-      #   Passing the flag does not buy silence on that class.
-      # * and it additionally resolves the links written inside private items,
-      #   which the public run never looks at. Three of the dead links this
-      #   commit fixes lived exactly there — two on private fields of
-      #   `ProtocolNav`, one on a private method in `crossfilter`. The
-      #   public-only form would have shipped all three: measured on this tree,
-      #   private-items finds 43 sites and public-only 40, and the 40 are a
-      #   subset of the 43, not a different set.
-      #
-      # A doc comment on a private item is read by the next person to change
-      # that code, which is the reader this repo has most of. So the gate checks
-      # every doc comment in the workspace, not the subset that reaches docs.rs.
-      #
-      # The tree was made clean under BOTH forms before this landed, and no
-      # `#[allow(rustdoc::...)]` was added anywhere to get there: every one of
-      # the 43 findings was fixed at the source. Where a public doc pointed at
-      # a private helper, the link became plain code formatting naming it as
-      # private, rather than the helper being made public to satisfy a link —
-      # doc links do not get to widen an API.
-      - name: cargo doc (intra-doc links must resolve)
-        run: cargo xtask ci --step doc
 
       # `cargo doc` resolves what a comment writes AS a link. It says nothing
       # about the same claim written as prose — "`brightfield-sql`'s

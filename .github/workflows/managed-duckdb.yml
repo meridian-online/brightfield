@@ -1,11 +1,15 @@
-# Build the managed edition's DuckDB and check it, when the build changes.
+# Build the managed edition's DuckDB and check it, by hand only:
+# `gh workflow run managed-duckdb.yml --ref <branch>`. The Mac Studio's nightly
+# (`cargo xtask nightly`) runs the same two steps on `main` each night,
+# rebuilding the library only when the files that decide it change, so a broken
+# DuckDB build is found the night after its merge and fixed forward. This hosted
+# run is for checking a branch that changes the build before it merges.
 #
 # The Mac App Store edition runs on one DuckDB library, libduckdb.dylib, with
 # seven extensions compiled in, which Brightfield links and DuckDB's own shell
 # loads. scripts/build-duckdb.sh builds it from source; a cold build is 30 to 90
 # minutes, most of it the C libraries spatial needs, so the local pull-request
-# gate lists these two steps without running them, and this workflow runs them
-# on the pull requests that touch the build:
+# gate lists these two steps without running them:
 #
 #   1. duckdb-managed builds the library and the shell and runs
 #      scripts/build-duckdb-selftest.sh over them: the version arc reads, the
@@ -24,26 +28,6 @@
 name: managed-duckdb
 
 on:
-  pull_request:
-    paths:
-      - scripts/build-duckdb.sh
-      - scripts/build-duckdb-selftest.sh
-      - scripts/duckdb-managed/**
-      - scripts/finetype-pin.sh
-      - packaging/finetype-pin.env
-      - vendor/libduckdb-sys/**
-      - crates/brightfield-engine/build.rs
-      - crates/brightfield-engine/tests/managed_duckdb.rs
-      - crates/brightfield-shell/build.rs
-      - crates/brightfield-shell/tests/managed_duckdb_link.rs
-      - Cargo.lock
-      # The feature wiring: the workspace's patch of libduckdb-sys, the
-      # managed-duckdb feature lists, and what the two steps run.
-      - Cargo.toml
-      - crates/brightfield-engine/Cargo.toml
-      - crates/brightfield-shell/Cargo.toml
-      - xtask/src/steps.rs
-      - .github/workflows/managed-duckdb.yml
   workflow_dispatch:
 
 permissions:

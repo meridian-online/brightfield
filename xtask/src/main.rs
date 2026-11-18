@@ -11,17 +11,24 @@
 //!
 //! The `workflow-coverage` step reads the workflow files and keeps the two
 //! lists one list: it is red for a step no workflow invokes, for a workflow
-//! invoking a step that does not exist, and for a workflow a pull request or
-//! a push to `main` triggers calling a gate around the command. A pull
-//! request's checks are `cargo xtask gate <pr>`, which runs this command on the
-//! reference Mac; hosted CI runs the same steps on `main`, nightly and on
-//! demand.
+//! invoking a step that does not exist, for a workflow that starts on its own,
+//! on anything but a tag push, calling a gate script or cargo around the
+//! command, and for a macOS job such a workflow runs. A pull request's checks
+//! are `cargo xtask gate <pr>`, which runs this command on the reference Mac.
+//! `main`'s backstop is `cargo xtask nightly`, which the reference Mac runs
+//! at night with the nightly-only steps; the hosted macOS workflows run
+//! only by hand or on a release tag.
 //!
 //! What a full run needs on the machine, each refused by name at its step when
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling
 //! `open-analytics` checkout and the pinned DuckDB CLI.
 
+mod duckdb_stamp;
+mod flags;
 mod gate;
+mod isolate;
+mod nightly;
+mod nightly_status;
 mod runner;
 mod shard;
 mod steps;
@@ -30,7 +37,7 @@ mod workflows;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use runner::{run_with_pair, Outcome, Row};
+use runner::{run_with_pair, Outcome, Row, RunMode};
 use steps::{Ctx, STEPS};
 
 const USAGE: &str = "\
@@ -38,25 +45,59 @@ usage:
   cargo xtask ci                 run every step in order, the two test steps side by side, stopping at the first that fails
   cargo xtask ci --summary-json <path>
                                  the same, and write the summary to <path> as JSON once the run ends, whatever its verdict
+  cargo xtask ci --nightly [--summary-json <path>]
+                                 run every step, carrying on past a failure, including the nightly-only steps
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs
-  cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
+  cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status
+  cargo xtask nightly --sha <sha> [--trial]
+                                 run the full gate with the nightly-only steps on this tree, whose head is the 40-character <sha>,
+                                 and post the nightly-gate and nightly-network statuses; --trial raises and clears no Kata flag";
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq)]
 enum Invocation {
-    /// A full run, writing its summary as JSON to the path when one is given.
-    All(Option<PathBuf>),
+    /// A full run, writing its summary as JSON to the path when one is given;
+    /// `nightly` carries on past a failure and starts the nightly-only steps.
+    All {
+        summary: Option<PathBuf>,
+        nightly: bool,
+    },
     One(String),
     List,
     Gate(u64),
+    /// The nightly gate on `sha`, this tree's head; a `trial` touches no flag.
+    Nightly {
+        sha: String,
+        trial: bool,
+    },
+}
+
+/// True for a full commit SHA: 40 hexadecimal digits.
+fn is_full_sha(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn parse(args: &[String]) -> Result<Invocation, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
-        ["ci"] => Ok(Invocation::All(None)),
-        ["ci", "--summary-json", path] => Ok(Invocation::All(Some(PathBuf::from(path)))),
+        ["ci"] => Ok(Invocation::All {
+            summary: None,
+            nightly: false,
+        }),
+        ["ci", "--nightly"] => Ok(Invocation::All {
+            summary: None,
+            nightly: true,
+        }),
+        ["ci", "--summary-json", path] => Ok(Invocation::All {
+            summary: Some(PathBuf::from(path)),
+            nightly: false,
+        }),
+        ["ci", "--nightly", "--summary-json", path]
+        | ["ci", "--summary-json", path, "--nightly"] => Ok(Invocation::All {
+            summary: Some(PathBuf::from(path)),
+            nightly: true,
+        }),
         ["ci", "--list"] => Ok(Invocation::List),
         ["ci", "--step", name] => Ok(Invocation::One((*name).to_owned())),
         ["ci", single] if single.starts_with("--step=") => {
@@ -66,6 +107,14 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             .parse()
             .map(Invocation::Gate)
             .map_err(|_| USAGE.to_owned()),
+        ["nightly", "--sha", sha] if is_full_sha(sha) => Ok(Invocation::Nightly {
+            sha: (*sha).to_owned(),
+            trial: false,
+        }),
+        ["nightly", "--sha", sha, "--trial"] if is_full_sha(sha) => Ok(Invocation::Nightly {
+            sha: (*sha).to_owned(),
+            trial: true,
+        }),
         _ => Err(USAGE.to_owned()),
     }
 }
@@ -86,11 +135,14 @@ fn main() -> ExitCode {
     };
     match invocation {
         Invocation::Gate(pr) => gate::run(pr),
+        Invocation::Nightly { sha, trial } => nightly::run(&sha, trial),
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
             for step in STEPS {
                 let tag = if step.only_in_ci.is_some() {
                     "  (CI only)"
+                } else if step.only_at_night.is_some() {
+                    "  (nightly only)"
                 } else {
                     ""
                 };
@@ -117,7 +169,10 @@ fn main() -> ExitCode {
             let rows = vec![runner::run_named(step, |s| (s.run)(&ctx))];
             finish(&rows, &[])
         }
-        Invocation::All(summary_path) => {
+        Invocation::All {
+            summary: summary_path,
+            nightly,
+        } => {
             let total = STEPS.len();
             // The two test steps stream at once, so their failure output would
             // interleave; test-default's goes to a log, shown if it fails.
@@ -133,7 +188,13 @@ fn main() -> ExitCode {
                 cargo: ctx.cargo.clone(),
                 log: Some(log.clone()),
             };
-            let rows = run_with_pair(STEPS, ("test-one-thread", "test-default"), |step| {
+            // The nightly carries on past a failure so one red step does not
+            // hide the state of the rest, and starts the nightly-only steps.
+            let mode = RunMode {
+                keep_going: nightly,
+                nightly,
+            };
+            let rows = run_with_pair(STEPS, ("test-one-thread", "test-default"), mode, |step| {
                 let position = STEPS.iter().position(|s| s.name == step.name).unwrap_or(0) + 1;
                 if step.name == "test-default" {
                     eprintln!(
@@ -217,14 +278,62 @@ mod tests {
     fn the_command_line_reads_where_a_full_run_writes_its_summary() {
         assert_eq!(
             parse(&words("ci --summary-json out/summary.json")),
-            Ok(Invocation::All(Some(PathBuf::from("out/summary.json"))))
+            Ok(Invocation::All {
+                summary: Some(PathBuf::from("out/summary.json")),
+                nightly: false
+            })
         );
         assert!(parse(&words("ci --summary-json")).is_err());
     }
 
     #[test]
+    fn the_command_line_reads_a_nightly_full_run() {
+        let nightly = Ok(Invocation::All {
+            summary: Some(PathBuf::from("/x")),
+            nightly: true,
+        });
+        assert_eq!(parse(&words("ci --nightly --summary-json /x")), nightly);
+        assert_eq!(parse(&words("ci --summary-json /x --nightly")), nightly);
+        assert_eq!(
+            parse(&words("ci --nightly")),
+            Ok(Invocation::All {
+                summary: None,
+                nightly: true
+            })
+        );
+    }
+
+    #[test]
+    fn the_command_line_reads_a_nightly_run() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            parse(&words(&format!("nightly --sha {sha}"))),
+            Ok(Invocation::Nightly {
+                sha: sha.to_owned(),
+                trial: false
+            })
+        );
+        assert_eq!(
+            parse(&words(&format!("nightly --sha {sha} --trial"))),
+            Ok(Invocation::Nightly {
+                sha: sha.to_owned(),
+                trial: true
+            })
+        );
+        assert!(parse(&words("nightly --sha 0123456")).is_err());
+        assert!(parse(&words(&format!("nightly --sha {}x", &sha[..39]))).is_err());
+        assert!(parse(&words("nightly")).is_err());
+    }
+
+    #[test]
     fn the_command_line_reads_a_full_run_one_step_and_the_list() {
-        assert_eq!(parse(&words("ci")), Ok(Invocation::All(None)));
+        assert_eq!(
+            parse(&words("ci")),
+            Ok(Invocation::All {
+                summary: None,
+                nightly: false
+            })
+        );
         assert_eq!(
             parse(&words("ci --step fmt")),
             Ok(Invocation::One("fmt".to_owned()))

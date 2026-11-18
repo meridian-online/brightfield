@@ -41,9 +41,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
 
       # The command's own reading of the workflow files: every step it carries
-      # is invoked by a workflow, no workflow invokes a step it lacks, and no
-      # workflow a pull request or a push to `main` triggers calls a gate
-      # around it.
+      # is invoked by a workflow, no workflow invokes a step it lacks, no
+      # workflow that starts on its own, other than on a tag, calls a gate
+      # around it, and no such workflow runs a macOS job.
       - name: the command and the workflows agree
         run: cargo xtask ci --step workflow-coverage
 
