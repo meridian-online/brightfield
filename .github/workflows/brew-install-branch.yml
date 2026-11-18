@@ -7,17 +7,21 @@
 # after a tag is pushed and the release is out. Brightfield 0.1.5 was published
 # with a finetype extension Homebrew rewrote on install, so the installed copy
 # refused its own type source, and nothing read the installed copy until a person
-# had run `brew install`. This job reads it on the pull request that changes
-# packaging or the formula: the same aarch64 package release.yml builds (same
+# had run `brew install`. This job reads it on a branch that changes packaging
+# or the formula: the same aarch64 package release.yml builds (same
 # FineType pin, same DuckDB CLI, same scripts/package.sh), the same formula
 # generator, the same installed-copy check, and a local tap in place of the
 # published one. It also installs the package without the formula's
 # `preserve_rpath` line and with one byte of the extension changed, and requires
 # both to be refused; the script's header says why each is there.
 #
-# Only on the paths that decide what Homebrew installs, because it compiles the
-# release binary, which takes most of the job's time. `workflow_dispatch` runs it
-# by hand on a branch once this file is on the default branch.
+# By hand only: `gh workflow run brew-install-branch.yml --ref <branch>`, once
+# this file is on the default branch. It installs through Homebrew, which on the
+# Mac Studio would be a person's own Homebrew, so the nightly does not run it;
+# the release tag covers it, since release.yml's `brew-install` job reads the
+# installed copy of every release. When a pull request touches the paths that
+# decide what Homebrew installs, `cargo xtask gate` prints this command for its
+# branch; those paths are `BREW_INSTALL_BRANCH_PATHS` in xtask/src/gate.rs.
 #
 # macos-15 is the hosted arm64 image release.yml builds the aarch64 package on.
 # The Intel package is not installed here, for the reason brew-install.yml gives.
@@ -25,18 +29,6 @@
 name: brew-install-branch
 
 on:
-  pull_request:
-    paths:
-      - scripts/package.sh
-      - scripts/set-extension-rpath-id.sh
-      - scripts/write-brightfield-formula.sh
-      - scripts/check-formula-layout.sh
-      - scripts/check-brew-install.sh
-      - scripts/check-brew-install-branch.sh
-      - scripts/fetch-finetype-bundle.sh
-      - scripts/finetype-pin.sh
-      - scripts/fetch-duckdb-cli.sh
-      - .github/workflows/brew-install-branch.yml
   workflow_dispatch:
 
 permissions:

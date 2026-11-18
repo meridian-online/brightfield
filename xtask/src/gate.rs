@@ -101,6 +101,8 @@ struct Posted {
     text: String,
     /// test-default's own log, kept beside the gate's, when the run left one.
     kept: Option<PathBuf>,
+    /// A line for each by-hand macOS check the pull request's changes call for.
+    hints: Vec<String>,
 }
 
 /// Run the gate on pull request `pr` and post its verdict.
@@ -130,7 +132,7 @@ pub fn run(pr: u64) -> ExitCode {
 
     check_backstop();
 
-    let (head, repository) = match head_of(pr) {
+    let (head, repository, branch) = match head_of(pr) {
         Ok(found) => found,
         Err(e) => {
             say(&e);
@@ -161,6 +163,7 @@ pub fn run(pr: u64) -> ExitCode {
             kept: &kept,
         },
         &head,
+        &branch,
         &scratch,
         &tree,
     );
@@ -181,6 +184,9 @@ pub fn run(pr: u64) -> ExitCode {
     println!("the full log is {}", log.display());
     if let Some(kept) = &posted.kept {
         println!("test-default's own log is {}", kept.display());
+    }
+    for hint in &posted.hints {
+        println!("{hint}");
     }
     if posted.state == "success" {
         ExitCode::SUCCESS
@@ -204,9 +210,9 @@ fn post_failure(gh: &OsStr, head: &str, failure: &Failure) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The pull request's head commit, and the repository it lives in as
-/// `owner/name`.
-fn head_of(pr: u64) -> Result<(String, String), String> {
+/// The pull request's head commit, the repository it lives in as
+/// `owner/name`, and its branch.
+fn head_of(pr: u64) -> Result<(String, String, String), String> {
     let pr_text = pr.to_string();
     let json = output_of(
         "gh",
@@ -217,7 +223,7 @@ fn head_of(pr: u64) -> Result<(String, String), String> {
             "--repo",
             REPO,
             "--json",
-            "headRefOid,headRepository,headRepositoryOwner",
+            "headRefName,headRefOid,headRepository,headRepositoryOwner",
         ],
     )?;
     let view: Value =
@@ -236,7 +242,12 @@ fn head_of(pr: u64) -> Result<(String, String), String> {
         (Some(owner), Some(name)) => format!("{owner}/{name}"),
         _ => "a repository that no longer exists".to_owned(),
     };
-    Ok((head, repository))
+    let branch = view
+        .get("headRefName")
+        .and_then(Value::as_str)
+        .unwrap_or("<branch>")
+        .to_owned();
+    Ok((head, repository, branch))
 }
 
 /// Refuse a head outside this repository: the gate builds and runs the
@@ -271,6 +282,7 @@ fn gate_head(
     pr: u64,
     paths: &Paths,
     head: &str,
+    branch: &str,
     scratch: &Scratch,
     tree: &Path,
 ) -> Result<Posted, Stop> {
@@ -298,6 +310,17 @@ fn gate_head(
     git_in_root(&["worktree", "add", "--quiet", "--detach", &tree_text, head])
         .map_err(fail(Stage::Worktree))?;
     merge_with_main(tree, "origin/main").map_err(fail(Stage::Merge))?;
+    let hints = changed_files(tree)
+        .map(|changed| {
+            let changed: Vec<&str> = changed.iter().map(String::as_str).collect();
+            packaging_hints(&changed, branch)
+        })
+        .unwrap_or_else(|e| {
+            say(&format!(
+                "could not read the files the pull request changes, so no packaging check is named: {e}"
+            ));
+            Vec::new()
+        });
 
     let summary = scratch.dir.join("summary.json");
     let mut command =
@@ -335,6 +358,24 @@ fn gate_head(
             "the gate panicked while its run was under way",
         )))
     })
+    .map(|posted| Posted { hints, ..posted })
+}
+
+/// The files the merged tree at `tree` changes from main, read as
+/// `git diff --name-only origin/main...HEAD`.
+fn changed_files(tree: &Path) -> Result<Vec<String>, String> {
+    let tree_text = tree.display().to_string();
+    let listed = output_of(
+        "git",
+        &[
+            "-C",
+            &tree_text,
+            "diff",
+            "--name-only",
+            "origin/main...HEAD",
+        ],
+    )?;
+    Ok(listed.lines().map(str::to_owned).collect())
 }
 
 /// Run the tree's gate, keep test-default's own log, and read the verdict.
@@ -391,6 +432,7 @@ fn run_and_read(
         state,
         text: description(&verdict, took, main_sha),
         kept,
+        hints: Vec::new(),
     })
 }
 
@@ -629,6 +671,71 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
     }
 }
 
+/// The paths whose change `brew-install-branch.yml` checks: what decides the
+/// package Homebrew installs and the formula it installs it by. That workflow
+/// runs only by hand, so the gate names it when a pull request touches one.
+pub const BREW_INSTALL_BRANCH_PATHS: &[&str] = &[
+    "scripts/package.sh",
+    "scripts/set-extension-rpath-id.sh",
+    "scripts/write-brightfield-formula.sh",
+    "scripts/check-formula-layout.sh",
+    "scripts/check-brew-install.sh",
+    "scripts/check-brew-install-branch.sh",
+    "scripts/fetch-finetype-bundle.sh",
+    "scripts/finetype-pin.sh",
+    "scripts/fetch-duckdb-cli.sh",
+    ".github/workflows/brew-install-branch.yml",
+];
+
+/// The paths whose change `signing-rehearsal.yml` checks: release signing and
+/// the code nested in the bundle. That workflow runs only by hand, so the gate
+/// names it when a pull request touches one.
+pub const SIGNING_REHEARSAL_PATHS: &[&str] = &[
+    "scripts/release-signing.sh",
+    "scripts/package.sh",
+    "scripts/set-extension-rpath-id.sh",
+    "scripts/fetch-finetype-bundle.sh",
+    "scripts/fetch-duckdb-cli.sh",
+    "scripts/finetype-pin.sh",
+    "packaging/finetype-pin.env",
+    ".github/workflows/release.yml",
+    ".github/workflows/signing-rehearsal.yml",
+];
+
+/// The by-hand macOS checks, by workflow file, with the paths each checks.
+const PACKAGING_CHECKS: &[(&str, &[&str])] = &[
+    ("brew-install-branch.yml", BREW_INSTALL_BRANCH_PATHS),
+    ("signing-rehearsal.yml", SIGNING_REHEARSAL_PATHS),
+];
+
+/// True when `file` is `pattern`, or sits under the directory a pattern
+/// ending in `/**` names. The paths above use no other glob form.
+pub fn path_matches(pattern: &str, file: &str) -> bool {
+    match pattern.strip_suffix("/**") {
+        Some(dir) => file
+            .strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/')),
+        None => file == pattern,
+    }
+}
+
+/// One line for each by-hand macOS check whose paths a file in `changed`
+/// matches, naming the first such file and the command that runs the check on
+/// `branch`.
+pub fn packaging_hints(changed: &[&str], branch: &str) -> Vec<String> {
+    PACKAGING_CHECKS
+        .iter()
+        .filter_map(|(workflow, paths)| {
+            let touched = changed
+                .iter()
+                .find(|file| paths.iter().any(|pattern| path_matches(pattern, file)))?;
+            Some(format!(
+                "this pull request touches {touched}; run gh workflow run {workflow} --ref {branch} for its macOS check"
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,5 +964,55 @@ mod tests {
             output_within("echo", &["hello"], Duration::from_secs(10)),
             Ok("hello\n".to_owned())
         );
+    }
+
+    #[test]
+    fn the_packaging_hint_paths_name_tracked_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let listed = output_of("git", &["-C", &root.display().to_string(), "ls-files"])
+            .expect("git ls-files runs");
+        let tracked: Vec<&str> = listed.lines().collect();
+        for pattern in BREW_INSTALL_BRANCH_PATHS
+            .iter()
+            .chain(SIGNING_REHEARSAL_PATHS)
+        {
+            assert!(
+                tracked.iter().any(|file| path_matches(pattern, file)),
+                "{pattern} matches no tracked file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_to_package_sh_names_both_workflows() {
+        assert_eq!(
+            packaging_hints(&["README.md", "scripts/package.sh"], "ci/a-branch"),
+            [
+                "this pull request touches scripts/package.sh; run gh workflow run brew-install-branch.yml --ref ci/a-branch for its macOS check",
+                "this pull request touches scripts/package.sh; run gh workflow run signing-rehearsal.yml --ref ci/a-branch for its macOS check",
+            ]
+        );
+        assert_eq!(
+            packaging_hints(&["scripts/release-signing.sh"], "b"),
+            ["this pull request touches scripts/release-signing.sh; run gh workflow run signing-rehearsal.yml --ref b for its macOS check"]
+        );
+        assert!(packaging_hints(&["crates/a/src/lib.rs"], "b").is_empty());
+    }
+
+    #[test]
+    fn a_trailing_double_star_matches_only_under_its_directory() {
+        assert!(path_matches(
+            "scripts/duckdb-managed/**",
+            "scripts/duckdb-managed/a/b.sh"
+        ));
+        assert!(!path_matches(
+            "scripts/duckdb-managed/**",
+            "scripts/duckdb-managed.sh"
+        ));
+        assert!(path_matches("scripts/package.sh", "scripts/package.sh"));
+        assert!(!path_matches(
+            "scripts/package.sh",
+            "scripts/package.sh.bak"
+        ));
     }
 }

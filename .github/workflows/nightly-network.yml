@@ -1,16 +1,21 @@
-# Scheduled run for the tests the push suites deliberately do not run.
+# By hand only: `gh workflow run nightly-network.yml --ref <branch>`. The Mac
+# Studio's nightly (`cargo xtask nightly`) runs the same step,
+# `cargo xtask ci --step nightly-network`, on `main` each night and posts its
+# own `nightly-network` status, so this hosted run is for asking the question
+# again on GitHub's runner, or of a branch.
 #
 # WHY THIS EXISTS. One shipped starting point reads a large published Parquet
 # over https. Its load gate, and the check that its committed reduced copy
-# still matches the published table, cannot sit in `test`: that workflow runs
-# on every push and every pull request, so those checks would fetch someone
-# else's server on every CI run, and would go red for
+# still matches the published table, cannot sit in the per-push suite: the
+# gate runs that suite on every pull request, so those checks would fetch
+# someone else's server on every run, and would go red for
 # reasons — host down, DNS, a slow object store — that say nothing about the
 # commit under test. So they are `#[ignore]`d, which is the right call for a
 # per-push suite and the wrong end state on its own: the start most able to
 # break for reasons OUTSIDE this repo (file moved, schema changed, host down)
 # became the one nothing checked automatically. "Run it when you think of it"
-# is not a check. This workflow is the other half of that trade.
+# is not a check. The nightly's `nightly-network` step is the other half of
+# that trade, and this workflow is the hosted way to run it.
 #
 # A workflow of its own rather than a job in `test`, for three reasons:
 #
@@ -22,58 +27,23 @@
 # * It is not on the push path at all, so it must not be able to delay,
 #   cancel, or be cancelled by, a run somebody is waiting on.
 #
-# TWO LIMITATIONS, STATED SO NOBODY READS MORE INTO A GREEN BADGE THAN IS
-# THERE:
-#
-# 1. A `schedule:` trigger only ever fires for the workflow file as it exists
-#    on the DEFAULT BRANCH. Until this file is on `main` it runs on no
-#    schedule at all, and edits to it on a branch change nothing about what
-#    the cron executes. Nor can a branch reach it through
-#    `workflow_dispatch`: that path wants the workflow on the default branch
-#    too. Confirmed by asking for one before this landed, which GitHub refused
-#    by name — "HTTP 404: workflow nightly-network.yml not found on the default
-#    branch". So the FIRST real execution of this file is after it merges.
-# 2. GitHub DISABLES scheduled workflows in a repository with no activity for
-#    60 days, and re-enabling is a manual action. A quiet quarter therefore
-#    turns this off silently — the badge does not go red, the runs simply stop
-#    happening. If this repo goes quiet, check the Actions tab before trusting
-#    the absence of failures.
-#
-# Neither limitation is worked around here. Both are the platform's, and a
-# comment that says so is worth more than a cron job that pretends otherwise.
+# `workflow_dispatch` wants the workflow file on the DEFAULT BRANCH: GitHub
+# refuses a dispatch of a file only a branch has, by name — "HTTP 404: workflow
+# nightly-network.yml not found on the default branch". Once it is there,
+# `--ref` runs it against a branch's tree.
 
 name: nightly-network
 
 on:
-  # 06:37 UTC daily.
-  #
-  # The MINUTE is off the top of the hour on purpose: GitHub's own scheduling
-  # guidance is that runs queued on the hour contend with everybody else's and
-  # get delayed, sometimes by a lot. A scheduled job nobody is waiting on can
-  # absorb the delay, but there is no reason to volunteer for it.
-  #
-  # The HOUR is outside roughly 13:00-23:00 UTC, when hosted-runner demand
-  # peaks with the US working day, so a 60-minute macOS job is less likely to
-  # sit in a queue. It is also late afternoon in the timezone this repo's
-  # commits are authored in (UTC+10), which is the property that actually
-  # matters: a red run lands inside a working day and gets looked at, instead
-  # of arriving at 3am and being scrolled past.
-  schedule:
-    - cron: "37 6 * * *"
-
-  # On demand, so the answer to "is the published data still there?" does not
-  # have to wait for tomorrow's cron — and so this is runnable at all before
-  # the first scheduled fire.
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 # `test` groups per commit and event and cancels nothing. The group here is
-# the workflow itself (a schedule has one meaningful ref), and cancellation is
-# OFF: if a cron run is under way when somebody dispatches manually, the
-# already-running answer is the one worth keeping, and two runs of a job that
-# only reads is harmless.
+# the workflow itself, and cancellation is OFF: if a run is under way when
+# somebody dispatches another, the already-running answer is the one worth
+# keeping, and two runs of a job that only reads is harmless.
 concurrency:
   group: nightly-network
   cancel-in-progress: false
@@ -84,7 +54,7 @@ permissions:
 
 jobs:
   network-gated:
-    # macos-15, the same single runner `test` and `lint` use, and for the same
+    # macos-15, the same single runner `test` and `lint-macos` use, and for the same
     # reason `test.yml` records at length: it is the hosted runner where the
     # winit/wgpu window stack is validated in this repo, and where the
     # egui_kittest pixel tier has a real adapter to render through. None of
@@ -102,22 +72,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The same exact pin as `test` and `lint` — `dtolnay/rust-toolchain` at
+      # The same exact pin as `test` and `lint-macos` — `dtolnay/rust-toolchain` at
       # `1.95.0`, not `stable`. Read from those files rather than assumed; the
       # local loop is `cargo +1.95.0 ...` and a red run here has to be
       # reproducible with it.
       - uses: dtolnay/rust-toolchain@1.95.0
 
-      # Shares the cache `test` and `lint` populate on `main`. Worth having on
-      # a nightly specifically: without it every run is a full cold build of
-      # the git dependencies plus wgpu/vello, to execute six tests.
+      # Shares the cache `test` and `lint-macos` populate. Worth having here
+      # specifically: without it every run is a full cold build of the git
+      # dependencies plus wgpu/vello, to execute six tests.
       - uses: Swatinem/rust-cache@v2
 
       # What the job runs, and why each check is shaped as it is, is in
       # scripts/nightly-network.sh, which `cargo xtask ci --step
       # nightly-network` runs. The script fetches the pinned FineType bundle
       # when it is absent; this cache, keyed on the pin file, keeps the fetch to
-      # once per bump rather than once per night, so a restored bundle is always
+      # once per bump rather than once per run, so a restored bundle is always
       # the pinned one. The path is read by the script from
       # BRIGHTFIELD_FINETYPE_BUNDLE, and a bundle named there is never deleted.
       - name: cache the pinned FineType bundle

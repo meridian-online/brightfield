@@ -124,7 +124,7 @@ fn report_error(title: &str, message: &str) {
 pub static STEPS: &[Step] = &[
     Step {
         name: "workflow-coverage",
-        runs: "the command's own reading of .github/workflows: every step invoked, no unknown step, no gate called around it",
+        runs: "the command's own reading of .github/workflows: every step invoked, no unknown step, no gate called around it, no macOS job off a release tag",
         only_in_ci: None,
         only_at_night: None,
         run: workflow_coverage,
@@ -550,7 +550,7 @@ fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
     }
     if problems.is_empty() {
         println!(
-            "{} step(s), each invoked by a workflow; no workflow invokes an unknown step or calls a gate around the command",
+            "{} step(s), each invoked by a workflow; no workflow invokes an unknown step, calls a gate around the command, or starts a macOS job on its own off a release tag",
             names.len()
         );
         Ok(())

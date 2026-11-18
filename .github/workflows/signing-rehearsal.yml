@@ -1,5 +1,5 @@
-# Rehearse release signing on a pull request, before the Developer ID
-# certificate exists and without it.
+# Rehearse release signing on a branch, before the Developer ID certificate
+# exists and without it.
 #
 # release.yml's build job runs scripts/release-signing.sh before it packages:
 # with no Apple secrets it signs ad-hoc, and with all five it imports the
@@ -27,24 +27,17 @@
 # What it cannot prove is that Apple accepts the result: that waits on the real
 # certificate and the real key.
 #
-# Only on the paths that decide signing and the code nested in the bundle,
-# because it compiles the release binary, which takes most of the job's time. `workflow_dispatch` runs it by
-# hand on a branch once this file is on the default branch.
+# By hand only: `gh workflow run signing-rehearsal.yml --ref <branch>`, once
+# this file is on the default branch. It puts a keychain on the search list,
+# which on the Mac Studio would be a person's own, so the nightly does not run
+# it; the release tag covers signing, since release.yml's build job runs the
+# same script. When a pull request touches the paths that decide signing and
+# the code nested in the bundle, `cargo xtask gate` prints this command for its
+# branch; those paths are `SIGNING_REHEARSAL_PATHS` in xtask/src/gate.rs.
 
 name: signing-rehearsal
 
 on:
-  pull_request:
-    paths:
-      - scripts/release-signing.sh
-      - scripts/package.sh
-      - scripts/set-extension-rpath-id.sh
-      - scripts/fetch-finetype-bundle.sh
-      - scripts/fetch-duckdb-cli.sh
-      - scripts/finetype-pin.sh
-      - packaging/finetype-pin.env
-      - .github/workflows/release.yml
-      - .github/workflows/signing-rehearsal.yml
   workflow_dispatch:
 
 permissions:

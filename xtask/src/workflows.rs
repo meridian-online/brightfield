@@ -1,23 +1,26 @@
-//! Reading the workflow files, so the command and CI cannot drift apart.
+//! Reading the workflow files, so the command and CI cannot drift apart, and
+//! so no hosted Mac runs on anything but a release tag or a person's say-so.
 //!
-//! Three things are reported, each with the file and line it was read at:
+//! Four things are reported, each with the file and line it was read at:
 //!
-//! * a step the command carries that no workflow invokes, which a local run
-//!   would run and CI would not;
+//! * a step the command carries that no workflow invokes, so that no step is
+//!   left without a hosted way to run it (a workflow run by hand counts);
 //! * a workflow invoking a step the command does not carry, which CI would
 //!   fail on with an unknown step;
-//! * a workflow that a pull request or a push to `main` triggers calling a
+//! * a workflow that starts on its own, on anything but a tag push, calling a
 //!   gate script or cargo directly rather than through the command, which CI
-//!   would run and a local run would not. A push to `main` counts because the
-//!   hosted `test` and `lint` runs there are the backstop for the local gate,
-//!   which runs the command on each pull request. The one call that is not a gate is named in
-//!   `DIRECT_CALLS_ALLOWED`, and the workflows that stay outside the command
-//!   are named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
+//!   would run and a local run would not;
+//! * a macOS job in a workflow that starts on its own, on anything but a tag
+//!   push, or a call from such a workflow to one that has a macOS job. Hosted
+//!   macOS minutes are for release tags; the Mac Studio's nightly runs every
+//!   step of the command on `main`, and the hosted Mac workflows are run by
+//!   hand.
 //!
 //! The reader is line-based rather than a YAML parser: it reads `run:` values
-//! (a single line, or a block scalar's more-indented lines) and the `on:`
-//! block, and it skips every line whose first non-blank character is `#`,
-//! which is a comment in YAML and in the shell alike.
+//! (a single line, or a block scalar's more-indented lines), `runs-on:` and
+//! `uses:` lines, and the `on:` block, and it skips every line whose first
+//! non-blank character is `#`, which is a comment in YAML and in the shell
+//! alike.
 
 use std::fs;
 use std::path::Path;
@@ -27,27 +30,6 @@ pub struct Workflow {
     pub path: String,
     pub text: String,
 }
-
-/// The direct calls a checked workflow may make, by file name and the text
-/// the call contains, with the reason each is not a gate the command must run.
-pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
-    "test.yml",
-    "scripts/fetch-duckdb-cli.sh",
-    "it fetches the pinned DuckDB CLI the test steps hand to arc, and checks nothing in the tree; locally the test steps say where to put it",
-)];
-
-/// Workflows a pull request or a push to `main` can trigger that call scripts
-/// directly and stay outside the command, by file name, with the reason.
-pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[
-    (
-        "brew-install-branch.yml",
-        "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
-    ),
-    (
-        "signing-rehearsal.yml",
-        "it runs only on a pull request that changes release signing or the code nested in the bundle, builds the release binary and signs it with a throwaway identity in a keychain it creates and deletes; that changes a machine's keychain search list, which is not a step to run on a person's machine before each commit",
-    ),
-];
 
 /// Every `.yml` and `.yaml` file in `.github/workflows`, sorted by path.
 pub fn read_all(root: &Path) -> Result<Vec<Workflow>, String> {
@@ -172,56 +154,36 @@ fn unquote(word: &str) -> String {
     word.trim_matches(|c| c == '"' || c == '\'').to_owned()
 }
 
-/// True when the workflow's `on:` names `pull_request`, inline or in its block.
-pub fn runs_on_pull_request(text: &str) -> bool {
-    let mut in_on = false;
-    for line in text.lines() {
-        if line.trim_start().starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-        let top_level = indent(line) == 0;
-        if top_level {
-            in_on = false;
-            if let Some(rest) = line.strip_prefix("on:") {
-                if rest.contains("pull_request") {
-                    return true;
-                }
-                in_on = true;
-            }
-            continue;
-        }
-        if in_on && line.contains("pull_request") {
-            return true;
-        }
-    }
-    false
-}
-
-/// True when a push to `main` triggers the workflow, or may: `on:` names
-/// `push` inline, or its `push:` block lists `main` or a glob under
-/// `branches:`, ignores branches without naming `main`, or filters by neither
-/// branch nor tag. A form it cannot read counts as a push to `main`, so a
-/// workflow it misreads is checked rather than skipped.
-pub fn runs_on_push_to_main(text: &str) -> bool {
+/// The triggers under the workflow's `on:` that start it without a person:
+/// every one but `workflow_dispatch` and `workflow_call`, in the order
+/// written. A `push` whose filter names tags and no branches is reported as
+/// `push(tags-only)`, since only a tag push starts it. A form the reader cannot
+/// rule out as a branch push, such as `push: ~`, is a plain `push`, so a
+/// workflow it misreads is checked rather than passed over.
+pub fn automatic_triggers(text: &str) -> Vec<String> {
+    let mut found: Vec<(String, Vec<String>)> = Vec::new();
     let mut in_on = false;
     let mut trigger_indent = None;
-    let mut in_push = false;
-    let mut push: Option<Vec<String>> = None;
     for raw in text.lines() {
         if raw.trim_start().starts_with('#') || raw.trim().is_empty() {
             continue;
         }
-        let line = raw.split(" #").next().unwrap_or(raw);
+        let line = raw.split(" #").next().unwrap_or(raw).trim_end();
         if indent(line) == 0 {
             if in_on {
                 break;
             }
             if let Some(rest) = line.strip_prefix("on:") {
-                if rest
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .any(|word| word == "push")
-                {
-                    return true;
+                let rest = rest.trim();
+                if !rest.is_empty() {
+                    // `on: push` or `on: [push, pull_request]`: each word is a
+                    // trigger with no filter.
+                    found = rest
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .filter(|word| !word.is_empty())
+                        .map(|word| (word.to_owned(), Vec::new()))
+                        .collect();
+                    break;
                 }
                 in_on = true;
             }
@@ -231,67 +193,83 @@ pub fn runs_on_push_to_main(text: &str) -> bool {
             continue;
         }
         if indent(line) == *trigger_indent.get_or_insert(indent(line)) {
-            in_push = false;
-            if let Some(rest) = line.trim().strip_prefix("push:") {
-                let rest = rest.trim();
-                if rest.is_empty() {
-                    in_push = true;
-                    push = Some(Vec::new());
-                } else {
-                    // An inline mapping or a null: read it as one line of the
-                    // block, so only a tag-only filter is left out.
-                    return !rest.contains("tags") || rest.contains("branches");
-                }
-            }
-        } else if in_push {
-            if let Some(body) = push.as_mut() {
-                body.push(line.trim().to_owned());
-            }
+            let item = line.trim();
+            let (name, rest) = item.split_once(':').unwrap_or((item, ""));
+            let rest = rest.trim();
+            // An inline value is read as one line of the trigger's block.
+            let body = if rest.is_empty() {
+                Vec::new()
+            } else {
+                vec![rest.to_owned()]
+            };
+            found.push((name.trim().to_owned(), body));
+        } else if let Some((_, body)) = found.last_mut() {
+            body.push(line.trim().to_owned());
         }
     }
-    let Some(body) = push else {
-        return false;
-    };
-    let matches_main = |item: &str| {
-        item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '*')
-            .any(|word| word == "main" || word.contains('*'))
-    };
-    let names_main = |item: &str| {
-        item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-            .any(|word| word == "main")
-    };
-    let mut filtered = false;
-    // Which branch list the `- item` lines belong to, if any.
-    let mut list: Option<bool> = None;
-    let mut ignore_names_main = false;
-    let mut has_ignore = false;
-    for line in &body {
-        if let Some(rest) = line.strip_prefix("branches-ignore:") {
-            filtered = true;
-            has_ignore = true;
-            list = Some(false);
-            ignore_names_main |= names_main(rest);
-        } else if let Some(rest) = line.strip_prefix("branches:") {
-            filtered = true;
-            list = Some(true);
-            if matches_main(rest) {
-                return true;
+    found
+        .into_iter()
+        .filter(|(name, _)| name != "workflow_dispatch" && name != "workflow_call")
+        .map(|(name, body)| {
+            let tags = body.iter().any(|line| line.contains("tags"));
+            let branches = body.iter().any(|line| line.contains("branches"));
+            if name == "push" && tags && !branches {
+                "push(tags-only)".to_owned()
+            } else {
+                name
             }
-        } else if let Some(item) = line.strip_prefix('-') {
-            match list {
-                Some(true) if matches_main(item) => return true,
-                Some(false) => ignore_names_main |= names_main(item),
-                _ => {}
-            }
-        } else {
-            list = None;
-            filtered |= line.starts_with("tags");
+        })
+        .collect()
+}
+
+/// The first trigger that starts the workflow on something other than a tag
+/// push, if it has one.
+fn untagged_trigger(text: &str) -> Option<String> {
+    automatic_triggers(text)
+        .into_iter()
+        .find(|trigger| trigger != "push(tags-only)")
+}
+
+/// Each job runner in `text` that names a hosted macOS image (`macos-*`), with
+/// its 1-based line number and the `runs-on` value as written. A runner chosen
+/// through an expression is not read.
+pub fn macos_jobs(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(value) = trimmed.strip_prefix("runs-on:") else {
+            continue;
+        };
+        let value = value.split(" #").next().unwrap_or(value).trim();
+        let names_macos = value
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.' && c != '_')
+            .any(|word| word.starts_with("macos-"));
+        if names_macos {
+            out.push((i + 1, value.to_owned()));
         }
     }
-    if has_ignore {
-        return !ignore_names_main;
+    out
+}
+
+/// Each `uses: ./.github/workflows/<file>` call in `text`, with its 1-based
+/// line number and the file name it calls.
+fn workflow_calls(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+        let Some(value) = trimmed.strip_prefix("uses:") else {
+            continue;
+        };
+        let value = unquote(value.split(" #").next().unwrap_or(value).trim());
+        if let Some(file) = value.strip_prefix("./.github/workflows/") {
+            out.push((i + 1, file.to_owned()));
+        }
     }
-    !filtered
+    out
 }
 
 /// A call in `line` to a gate script or to cargo other than `cargo xtask`.
@@ -310,18 +288,14 @@ pub fn direct_gate_call(line: &str) -> Option<String> {
 }
 
 /// Every disagreement between the command's `steps` and what `workflows`
-/// invoke; empty when they agree.
+/// invoke, and every macOS job a workflow can start without a person; empty
+/// when there is none.
 pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
     let mut problems = Vec::new();
     let mut invoked: Vec<String> = Vec::new();
+    let has_macos = runs_a_macos_job(workflows);
     for workflow in workflows {
-        let file = workflow.path.rsplit('/').next().unwrap_or(&workflow.path);
-        let outside = WORKFLOWS_OUTSIDE_THE_COMMAND
-            .iter()
-            .any(|(name, _)| *name == file);
-        let checked = (runs_on_pull_request(&workflow.text)
-            || runs_on_push_to_main(&workflow.text))
-            && !outside;
+        let started_by = untagged_trigger(&workflow.text);
         for (line_no, line) in run_lines(&workflow.text) {
             for name in invoked_steps(&line) {
                 if !steps.contains(&name.as_str()) {
@@ -332,30 +306,83 @@ pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
                 }
                 invoked.push(name);
             }
-            if !checked {
+            let Some(trigger) = &started_by else {
                 continue;
-            }
+            };
             if let Some(call) = direct_gate_call(&line) {
-                let allowed = DIRECT_CALLS_ALLOWED
-                    .iter()
-                    .any(|(name, needle, _)| *name == file && call.contains(needle));
-                if !allowed {
-                    problems.push(format!(
-                        "{}:{line_no} runs `{call}` directly in a workflow a pull request or a push to `main` triggers; call the command's step instead (`cargo xtask ci --step <name>`), so the check runs what a local run runs",
-                        workflow.path
-                    ));
-                }
+                problems.push(format!(
+                    "{}:{line_no} runs `{call}` directly in a workflow that {trigger} starts; call the command's step instead (`cargo xtask ci --step <name>`), so the check runs what a local run runs",
+                    workflow.path
+                ));
             }
+        }
+        let Some(trigger) = &started_by else {
+            continue;
+        };
+        let macos_lines = macos_jobs(&workflow.text).into_iter().map(|(at, _)| at);
+        let calls = workflow_calls(&workflow.text)
+            .into_iter()
+            .filter(|(_, called)| {
+                workflows
+                    .iter()
+                    .zip(&has_macos)
+                    .any(|(other, mac)| *mac && file_name(other) == called)
+            })
+            .map(|(at, _)| at);
+        let mut lines: Vec<usize> = macos_lines.chain(calls).collect();
+        lines.sort_unstable();
+        for line_no in lines {
+            problems.push(format!(
+                "{}:{line_no}: a macOS job in a workflow that {trigger} starts; macOS runners are for release tags only",
+                workflow.path
+            ));
         }
     }
     for step in steps {
         if !invoked.iter().any(|name| name == step) {
             problems.push(format!(
-                "the step '{step}' is carried by `cargo xtask ci` and invoked by no workflow, so a local run runs it and CI does not; add `cargo xtask ci --step {step}` to the job that should run it, or remove the step"
+                "the step '{step}' is carried by `cargo xtask ci` and invoked by no workflow, so no hosted run can run it; add `cargo xtask ci --step {step}` to the job that should run it, or remove the step"
             ));
         }
     }
     problems
+}
+
+/// The workflow's file name, without its directory.
+fn file_name(workflow: &Workflow) -> &str {
+    workflow.path.rsplit('/').next().unwrap_or(&workflow.path)
+}
+
+/// For each of `workflows`, whether it runs a macOS job itself or through a
+/// workflow it calls, at any depth.
+fn runs_a_macos_job(workflows: &[Workflow]) -> Vec<bool> {
+    let calls: Vec<Vec<String>> = workflows
+        .iter()
+        .map(|w| {
+            workflow_calls(&w.text)
+                .into_iter()
+                .map(|(_, f)| f)
+                .collect()
+        })
+        .collect();
+    let mut mac: Vec<bool> = workflows
+        .iter()
+        .map(|w| !macos_jobs(&w.text).is_empty())
+        .collect();
+    // Each pass marks the callers of a workflow marked before it, so as many
+    // passes as there are workflows reach every depth a chain of calls has.
+    for _ in 0..workflows.len() {
+        let marked: Vec<&str> = workflows
+            .iter()
+            .zip(&mac)
+            .filter(|(_, m)| **m)
+            .map(|(w, _)| file_name(w))
+            .collect();
+        for (i, called) in calls.iter().enumerate() {
+            mac[i] |= called.iter().any(|file| marked.contains(&file.as_str()));
+        }
+    }
+    mac
 }
 
 #[cfg(test)]
@@ -397,63 +424,6 @@ mod tests {
         );
         assert!(invoked_steps("cargo xtask ci --list").is_empty());
         assert!(invoked_steps("echo cargo xtask --step fmt").is_empty());
-    }
-
-    #[test]
-    fn the_trigger_reader_sees_pull_request_inline_and_in_a_block_and_not_elsewhere() {
-        assert!(runs_on_pull_request(PR));
-        assert!(runs_on_pull_request("on: [push, pull_request]\njobs:\n"));
-        assert!(!runs_on_pull_request(
-            "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    if: github.event_name == 'pull_request'\n"
-        ));
-    }
-
-    #[test]
-    fn the_trigger_reader_sees_a_push_to_main_and_not_a_tag_or_another_branch() {
-        assert!(runs_on_push_to_main(PR));
-        assert!(runs_on_push_to_main("on: [push, pull_request]\njobs:\n"));
-        assert!(runs_on_push_to_main(
-            "on:\n  workflow_dispatch:\n  push:\n  schedule:\n    - cron: '17 3 * * *'\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main(
-            "on:\n  push:\n    branches:\n      - main\n  workflow_dispatch:\njobs:\n"
-        ));
-        assert!(!runs_on_push_to_main(
-            "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    steps:\n      - run: git push main\n"
-        ));
-        assert!(!runs_on_push_to_main(
-            "on:\n  push:\n    branches: [release]\njobs:\n"
-        ));
-        assert!(!runs_on_push_to_main(
-            "on:\n  schedule:\n    - cron: '37 6 * * *'\n  workflow_dispatch:\njobs:\n"
-        ));
-        assert!(!runs_on_push_to_main("on:\n  pull_request:\njobs:\n"));
-    }
-
-    #[test]
-    fn the_push_reader_counts_a_form_it_cannot_rule_out_as_main() {
-        assert!(runs_on_push_to_main(
-            "on:\n  push:  # every branch\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main(
-            "on:\n  push: {branches: [main]}\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main("on:\n  push: ~\njobs:\n"));
-        assert!(!runs_on_push_to_main(
-            "on:\n  push: {tags: ['v*']}\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main(
-            "on:\n  push:\n    branches: ['**']\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main(
-            "on:\n  push:\n    branches:\n      - 'release/*'\njobs:\n"
-        ));
-        assert!(runs_on_push_to_main(
-            "on:\n  push:\n    branches-ignore: [release]\njobs:\n"
-        ));
-        assert!(!runs_on_push_to_main(
-            "on:\n  push:\n    branches-ignore:\n      - main\njobs:\n"
-        ));
     }
 
     #[test]
@@ -509,41 +479,171 @@ mod tests {
                 &format!("{PR}      - run: cargo xtask ci --step one\n"),
             ),
             workflow("release.yml", tag_only),
+            workflow(
+                "by-hand.yml",
+                "on:\n  workflow_dispatch:\njobs:\n  a:\n    steps:\n      - run: scripts/package.sh\n",
+            ),
         ];
         assert_eq!(coverage(&["one"], &files), Vec::<String>::new());
+
+        let scheduled = "on:\n  schedule:\n    - cron: '37 6 * * *'\njobs:\n  a:\n    steps:\n      - run: cargo xtask ci --step one\n      - run: scripts/nightly-network.sh\n";
+        let problems = coverage(&["one"], &[workflow("a.yml", scheduled)]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("a workflow that schedule starts"),
+            "{}",
+            problems[0]
+        );
+    }
+
+    const MAC_JOB: &str =
+        "jobs:\n  a:\n    runs-on: macos-15\n    steps:\n      - run: cargo xtask ci --step one\n";
+
+    fn macos_findings(files: &[Workflow]) -> Vec<String> {
+        coverage(&["one"], files)
+            .into_iter()
+            .filter(|p| p.contains("a macOS job"))
+            .collect()
     }
 
     #[test]
-    fn a_workflow_named_outside_the_command_may_call_scripts_and_no_other_may() {
-        let direct = format!("{PR}      - run: scripts/package.sh \"$TAG\" aarch64-apple-darwin\n");
-        let named = workflow("brew-install-branch.yml", &direct);
-        let other = workflow("brew-install-other.yml", &direct);
-        let carried = workflow(
+    fn a_macos_job_on_a_pull_request_is_refused() {
+        let files = [workflow(
             "a.yml",
-            &format!("{PR}      - run: cargo xtask ci --step one\n"),
+            &format!("on:\n  pull_request:\n  workflow_dispatch:\n{MAC_JOB}"),
+        )];
+        assert_eq!(
+            macos_findings(&files),
+            [".github/workflows/a.yml:6: a macOS job in a workflow that pull_request starts; macOS runners are for release tags only"]
         );
-        assert_eq!(coverage(&["one"], &[named, carried]), Vec::<String>::new());
-        let carried = workflow(
-            "a.yml",
-            &format!("{PR}      - run: cargo xtask ci --step one\n"),
-        );
-        assert_eq!(coverage(&["one"], &[other, carried]).len(), 1);
     }
 
     #[test]
-    fn the_allowed_direct_calls_pass_only_in_the_file_they_are_allowed_in() {
-        let fetch =
-            "      - run: |\n          engine=$(scripts/fetch-duckdb-cli.sh \"$host\" dir)\n";
-        let in_test = workflow(
-            "test.yml",
-            &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"),
+    fn a_macos_job_on_a_schedule_is_refused() {
+        let files = [workflow(
+            "a.yml",
+            &format!("on:\n  schedule:\n    - cron: '17 3 * * *'\n{MAC_JOB}"),
+        )];
+        let found = macos_findings(&files);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("that schedule starts"), "{}", found[0]);
+    }
+
+    #[test]
+    fn a_macos_job_on_a_branch_push_beside_tags_is_refused() {
+        let files = [workflow(
+            "a.yml",
+            &format!("on:\n  push:\n    branches: [main]\n    tags: ['v*']\n{MAC_JOB}"),
+        )];
+        let found = macos_findings(&files);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("that push starts"), "{}", found[0]);
+    }
+
+    #[test]
+    fn a_macos_job_on_a_tag_push_or_dispatch_or_call_is_allowed() {
+        let tag = workflow(
+            "tag.yml",
+            &format!("on:\n  push:\n    tags: ['v*']\n{MAC_JOB}"),
         );
-        assert_eq!(coverage(&["one"], &[in_test]), Vec::<String>::new());
-        let elsewhere = workflow(
-            "lint.yml",
-            &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"),
+        let dispatch = workflow(
+            "dispatch.yml",
+            &format!("on:\n  workflow_dispatch:\n{MAC_JOB}"),
         );
-        assert_eq!(coverage(&["one"], &[elsewhere]).len(), 1);
+        let call = workflow(
+            "call.yml",
+            &format!("on:\n  workflow_call:\n    inputs:\n      tag:\n        type: string\n  workflow_dispatch:\n{MAC_JOB}"),
+        );
+        assert_eq!(macos_findings(&[tag, dispatch, call]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_trigger_reader_names_each_automatic_trigger_and_reads_a_tag_push() {
+        assert_eq!(automatic_triggers(PR), ["push", "pull_request"]);
+        assert_eq!(
+            automatic_triggers("on: [push, pull_request]\njobs:\n"),
+            ["push", "pull_request"]
+        );
+        assert_eq!(
+            automatic_triggers("on: workflow_dispatch\njobs:\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  # 06:37 UTC.\n  schedule:\n    - cron: '37 6 * * *'\n  workflow_dispatch:\njobs:\n"),
+            ["schedule"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push:\n    # a version tag\n    tags: ['v*']\njobs:\n"),
+            ["push(tags-only)"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push: {tags: ['v*']}\njobs:\n"),
+            ["push(tags-only)"]
+        );
+        assert_eq!(
+            automatic_triggers(
+                "on:\n  push:\n    branches-ignore: [main]\n    tags: ['v*']\njobs:\n"
+            ),
+            ["push"]
+        );
+        assert_eq!(
+            automatic_triggers("on:\n  push:  # every branch\njobs:\n"),
+            ["push"]
+        );
+        assert_eq!(automatic_triggers("on:\n  push: ~\njobs:\n"), ["push"]);
+        assert_eq!(
+            automatic_triggers(
+                "on:\n  workflow_call:\n    inputs:\n      push:\n        type: string\njobs:\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_macos_runner_is_read_in_its_forms_and_no_other_runner_is() {
+        let text = "jobs:\n  a:\n    runs-on: macos-15\n  b:\n    runs-on: ubuntu-latest\n  c:\n    runs-on: \"macos-latest\"  # newest\n    # runs-on: macos-14\n  d:\n    runs-on: [self-hosted, macos-14]\n";
+        assert_eq!(
+            macos_jobs(text),
+            [
+                (3, "macos-15".to_owned()),
+                (7, "\"macos-latest\"".to_owned()),
+                (10, "[self-hosted, macos-14]".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pull_request_workflow_calling_a_macos_workflow_is_refused() {
+        let called = workflow(
+            "brew-install.yml",
+            &format!("on:\n  workflow_call:\n  workflow_dispatch:\n{MAC_JOB}"),
+        );
+        let caller = workflow(
+            "a.yml",
+            "on:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo xtask ci --step one\n  b:\n    uses: ./.github/workflows/brew-install.yml\n",
+        );
+        let release = workflow(
+            "release.yml",
+            "on:\n  push:\n    tags: ['v*']\njobs:\n  c:\n    uses: ./.github/workflows/brew-install.yml\n",
+        );
+        assert_eq!(
+            macos_findings(&[caller, called, release]),
+            [".github/workflows/a.yml:9: a macOS job in a workflow that pull_request starts; macOS runners are for release tags only"]
+        );
+    }
+
+    /// Goal 1, read from the real files: nothing a push, a pull request or a
+    /// schedule starts runs on a hosted Mac.
+    #[test]
+    fn the_repository_s_workflows_start_no_macos_job_automatically() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let files = read_all(&root).expect("the workflow files read");
+        let names: Vec<&str> = crate::steps::STEPS.iter().map(|s| s.name).collect();
+        let found: Vec<String> = coverage(&names, &files)
+            .into_iter()
+            .filter(|p| p.contains("a macOS job"))
+            .collect();
+        assert_eq!(found, Vec::<String>::new());
     }
 
     /// The repository's own workflow files against the command's own steps.
