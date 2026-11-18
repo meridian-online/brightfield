@@ -61,12 +61,14 @@ sha=$(git -C "$repo" rev-parse --verify "FETCH_HEAD^{commit}")
 # The installed copy follows main: if the fetched ref's run.sh differs, replace
 # this file with it before handing over, so a change to stage one reaches the
 # next night without anyone re-running install. Only the installed copy is
-# replaced; `run-now` runs the checkout's file, which is left alone. The temp
+# replaced, and only from main: a trial branch must not install its launcher
+# for the nights after it. `run-now` runs the checkout's file, which is left
+# alone. The temp
 # file sits beside the copy so mv is an atomic rename, and the running shell
 # keeps reading the old inode.
 installed_dir="$HOME/.cache/meridian/gate/nightly"
 self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-if [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)" ] \
+if [ "$ref" = "main" ] && [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)" ] \
   && [ "$(basename "${BASH_SOURCE[0]}")" = "run.sh" ]; then
   fresh="$(mktemp "$installed_dir/run.sh.XXXXXX")"
   if git -C "$repo" show "${sha}:scripts/nightly/run.sh" > "$fresh" 2>/dev/null && [ -s "$fresh" ]; then
@@ -82,15 +84,18 @@ if [ -d "$installed_dir" ] && [ "$self_dir" = "$(cd "$installed_dir" && pwd -P)"
   fi
 fi
 
-tree="$HOME/.cache/meridian/gate/trees/nightly-${sha:0:7}"
+# Each run makes its own tree, and removes only the one it made. A fixed name
+# per commit would let a hand-started run overlapping the scheduled one (say,
+# while it waits on the gate lock) delete the other's tree mid-build.
+trees="$HOME/.cache/meridian/gate/trees"
+mkdir -p "$trees"
+tree="$(mktemp -d "$trees/nightly-${sha:0:7}.XXXXXX")"
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
   git -C "$repo" worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"
   git -C "$repo" worktree prune >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-# A tree left by a run that was killed would make `worktree add` refuse.
-if [ -e "$tree" ]; then cleanup; fi
-mkdir -p "$(dirname "$tree")"
 git -C "$repo" worktree add --quiet --detach "$tree" "$sha"
 [ -f "$tree/scripts/nightly/run.sh" ] \
   || die "${ref} (${sha:0:7}) has no scripts/nightly/run.sh"

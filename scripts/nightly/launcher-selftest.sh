@@ -124,19 +124,26 @@ export MARKER_FILE="$TMP/marker.log"
 run_installed() {
   HOME="$HOME" BRIGHTFIELD_NIGHTLY_REPO="$CLONE" "$@" "$INSTALLED" >"$TMP/run.out" 2>&1
 }
+# Another run's tree for the same commit, which this run must not touch.
+OTHER="$HOME/.cache/meridian/gate/trees/nightly-${MAIN_SHA:0:7}.other"
+mkdir -p "$OTHER" && echo keep > "$OTHER/file"
 : > "$STUB_LOG"
 run_installed env; status=$?
 if [ "$status" -eq 0 ]; then pass "exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
-TREE="$HOME/.cache/meridian/gate/trees/nightly-${MAIN_SHA:0:7}"
+TREES="$HOME/.cache/meridian/gate/trees"
+TREE=$(sed -n 's/^pwd=//p' "$STUB_LOG" | head -n 1)
 if grep -qxF "args=+9.9.9 xtask nightly --sha $MAIN_SHA" "$STUB_LOG"; then pass "cargo saw +<tree's channel> xtask nightly --sha <origin's main>, no --trial"
 else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
-if grep -qxF "pwd=$TREE" "$STUB_LOG" && grep -qxF "head=$MAIN_SHA" "$STUB_LOG" && grep -qxF "dirty=0" "$STUB_LOG"; then
+case "$TREE" in "$TREES/nightly-${MAIN_SHA:0:7}."*) tree_ok=1 ;; *) tree_ok=0 ;; esac
+if [ "$tree_ok" = 1 ] && grep -qxF "head=$MAIN_SHA" "$STUB_LOG" && grep -qxF "dirty=0" "$STUB_LOG"; then
   pass "cargo ran in a clean worktree at that sha"
 else fail "cargo's surroundings were: $(cat "$STUB_LOG")"; fi
 if grep -qF "$MARKER $TREE/scripts/nightly/run.sh" "$MARKER_FILE" 2>/dev/null; then pass "the worktree's own run.sh ran"
 else fail "no marker from the worktree's run.sh: $(cat "$MARKER_FILE" 2>/dev/null)"; fi
 if [ ! -e "$TREE" ] && ! git -C "$CLONE" worktree list | grep -qF "$TREE"; then pass "the worktree is gone afterwards"
 else fail "the worktree is still there"; fi
+if [ -f "$OTHER/file" ]; then pass "another run's tree for the same commit survived"
+else fail "a pre-existing tree was removed"; fi
 if cmp -s "$INSTALLED" "$ORIGIN/scripts/nightly/run.sh"; then pass "the installed copy now matches the fetched ref's"
 else fail "the installed copy still differs from the fetched ref's run.sh"; fi
 leftovers=$(find "$(dirname "$INSTALLED")" -type f ! -name run.sh)
@@ -147,6 +154,7 @@ echo "== the worktree is removed, and the exit code passed on, when the build fa
 : > "$STUB_LOG"
 run_installed env STUB_EXIT=1; status=$?
 if [ "$status" -eq 1 ]; then pass "exited with the build's code, 1"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
+TREE=$(sed -n 's/^pwd=//p' "$STUB_LOG" | head -n 1)
 if grep -q '^args=' "$STUB_LOG"; then pass "the stub did run"; else fail "the stub never ran: $(cat "$TMP/run.out")"; fi
 if [ ! -e "$TREE" ] && ! git -C "$CLONE" worktree list | grep -qF "$TREE"; then pass "the worktree is gone afterwards"
 else fail "the worktree is still there after a failed build"; fi
@@ -154,13 +162,18 @@ else fail "the worktree is still there after a failed build"; fi
 echo "== another ref is a trial run at that ref's sha"
 git -C "$ORIGIN" checkout -q -b trial-x
 echo "third" > "$ORIGIN/note.txt"
-git -C "$ORIGIN" add note.txt && git -C "$ORIGIN" commit -qm "third"
+echo "# trial launcher" >> "$ORIGIN/scripts/nightly/run.sh"
+git -C "$ORIGIN" add note.txt scripts/nightly/run.sh && git -C "$ORIGIN" commit -qm "third"
+BEFORE_TRIAL=$(cksum < "$INSTALLED")
 TRIAL_SHA=$(git -C "$ORIGIN" rev-parse trial-x)
 : > "$STUB_LOG"
 run_installed env BRIGHTFIELD_NIGHTLY_REF=trial-x; status=$?
 if [ "$status" -eq 0 ]; then pass "exited 0"; else fail "exited $status: $(cat "$TMP/run.out")"; fi
 if grep -qxF "args=+9.9.9 xtask nightly --sha $TRIAL_SHA --trial" "$STUB_LOG"; then pass "cargo saw the branch's sha and --trial"
 else fail "cargo's arguments were: $(grep '^args=' "$STUB_LOG")"; fi
+
+if [ "$(cksum < "$INSTALLED")" = "$BEFORE_TRIAL" ]; then pass "a trial run left the installed copy unchanged"
+else fail "a trial run replaced the installed copy"; fi
 
 echo "== run.sh without a repository says so"
 out=$(env -u BRIGHTFIELD_NIGHTLY_REPO "$INSTALLED" 2>&1); status=$?
