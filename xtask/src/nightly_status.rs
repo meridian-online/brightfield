@@ -189,8 +189,13 @@ pub fn post_status(
 }
 
 /// Whether `gh` said GitHub refused the request as the client's fault: an
-/// HTTP 4xx other than 429, which asks the client to wait and try again.
+/// HTTP 4xx other than 429, and other than a rate limit, which GitHub's
+/// secondary limits answer with a 403; both ask the client to wait and try
+/// again.
 fn is_refusal(error: &str) -> bool {
+    if error.to_ascii_lowercase().contains("rate limit") {
+        return false;
+    }
     error.match_indices("HTTP 4").any(|(at, _)| {
         let code = error.get(at + 5..at + 8).unwrap_or("");
         code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()) && code != "429"
@@ -495,6 +500,19 @@ mod tests {
         let (gh, calls) = flaky_gh(&dir, 2, "HTTP 429: Too Many Requests");
         post_quickly(&gh).unwrap();
         assert_eq!(calls_made(&calls), 3);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_post_held_by_githubs_secondary_rate_limit_is_tried_again() {
+        let dir = scratch("retry-secondary");
+        let (gh, calls) = flaky_gh(
+            &dir,
+            1,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)",
+        );
+        post_quickly(&gh).unwrap();
+        assert_eq!(calls_made(&calls), 2);
         fs::remove_dir_all(&dir).unwrap();
     }
 
