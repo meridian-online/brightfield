@@ -56,7 +56,7 @@ use duckdb::arrow::array::{Array, Float64Array, StringArray, StructArray};
 use duckdb::Connection;
 
 mod split;
-pub use split::{cache_root, materialise_split};
+pub use split::{cache_root, materialise_split, PartHashes};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // THE ANSWER
@@ -594,6 +594,11 @@ impl FinetypeBundle {
         // all, which is the difference between these checks being exercised on
         // every CI run and only when somebody has a 30 MB artefact to hand.
         verify_against_manifest(dir, conn).map_err(|e| at(MANIFEST_FILE, e))?;
+        let recorded = if split {
+            recorded_part_hashes(dir).map_err(|e| at(MANIFEST_FILE, e))?
+        } else {
+            None
+        };
 
         let model = dir.join(MODEL_DIR);
         if !model.join("model.safetensors").exists() {
@@ -617,12 +622,12 @@ impl FinetypeBundle {
 
         // The join comes after the checks above because it writes outside the
         // bundle, and nothing should be written for a bundle that is going to
-        // be refused. It reads the parts again rather than the bytes the
-        // manifest hashed, which is no weaker than the joined layout: the
-        // manifest catches a bad unpack, not a file replaced after it.
+        // be refused. It reads the parts from disk again, so it is handed the
+        // manifest's hashes and checks the bytes it joins against them: what
+        // lands in the cache, and is loaded, is what the manifest recorded.
         let ext = if split {
             let root = cache_root().map_err(|e| at("cache", e))?;
-            materialise_split(dir, &root).map_err(|e| at("cache", e))?
+            materialise_split(dir, &root, recorded.as_ref()).map_err(|e| at("cache", e))?
         } else {
             dir.join(EXTENSION_FILE)
         };
@@ -798,11 +803,37 @@ pub const LABEL_MAP_FILE: &str = "label_map.json";
 ///
 /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
 pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), String> {
-    let manifest = dir.join(MANIFEST_FILE);
-    let Ok(text) = std::fs::read_to_string(&manifest) else {
+    let Some(entries) = manifest_entries(dir)? else {
         return Ok(());
     };
-    let mut checked = 0usize;
+    for (want, rel) in &entries {
+        let path = dir.join(rel);
+        let got: String = conn
+            .query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![path.to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("{rel}: cannot be read to hash it: {e}"))?;
+        if got != *want {
+            return Err(format!(
+                "{rel} is not the file that was packaged (recorded {want}, found {got})"
+            ));
+        }
+    }
+    if entries.is_empty() {
+        return Err("the manifest names no files, so it verified nothing".to_string());
+    }
+    Ok(())
+}
+
+/// The bundle manifest's entries as `(lowercase sha256, path)`, or `None` when
+/// the bundle has no manifest.
+fn manifest_entries(dir: &Path) -> Result<Option<Vec<(String, String)>>, String> {
+    let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
+        return Ok(None);
+    };
+    let mut entries = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -819,25 +850,33 @@ pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), Stri
         if rel.contains("..") || rel.starts_with('/') {
             return Err(format!("line {}: {rel:?} is not inside the bundle", n + 1));
         }
-        let path = dir.join(rel);
-        let got: String = conn
-            .query_row(
-                "SELECT lower(sha256(content)) FROM read_blob(?)",
-                duckdb::params![path.to_string_lossy().as_ref()],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("{rel}: cannot be read to hash it: {e}"))?;
-        if got != want.to_ascii_lowercase() {
-            return Err(format!(
-                "{rel} is not the file that was packaged (recorded {want}, found {got})"
-            ));
-        }
-        checked += 1;
+        entries.push((want.to_ascii_lowercase(), rel.to_string()));
     }
-    if checked == 0 {
-        return Err("the manifest names no files, so it verified nothing".to_string());
-    }
-    Ok(())
+    Ok(Some(entries))
+}
+
+/// The hashes a split bundle's manifest records for its two parts, or `None`
+/// when the bundle has no manifest.
+///
+/// [`verify_against_manifest`] checks only the files a manifest lists, so a
+/// manifest that leaves out a part says nothing about it. A split bundle that
+/// carries a manifest must therefore list both parts; one with no manifest is
+/// locally assembled and passes, as a joined one does.
+fn recorded_part_hashes(dir: &Path) -> Result<Option<PartHashes>, String> {
+    let Some(entries) = manifest_entries(dir)? else {
+        return Ok(None);
+    };
+    let recorded = |part: &str| {
+        entries
+            .iter()
+            .find(|(_, rel)| rel == part)
+            .map(|(hash, _)| hash.clone())
+            .ok_or_else(|| format!("records no hash for {part}, so that part is unverified"))
+    };
+    Ok(Some(PartHashes {
+        library: recorded(SPLIT_LIBRARY_FILE)?,
+        trailer: recorded(SPLIT_TRAILER_FILE)?,
+    }))
 }
 
 /// How much of the model's label set the schema catalogue describes.
@@ -1704,6 +1743,43 @@ mod tests {
             .err()
             .expect("the library is not the packaged one");
         assert!(err.contains("is not the file that was packaged"), "{err}");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+    }
+
+    #[test]
+    fn a_split_bundle_whose_manifest_omits_a_part_is_refused_naming_it() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        let hash = |name: &str| -> String {
+            conn.query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![dir.path().join(name).to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let (library, trailer) = (hash(SPLIT_LIBRARY_FILE), hash(SPLIT_TRAILER_FILE));
+
+        // Every line it has is true, but it says nothing about the trailer.
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{library}  {SPLIT_LIBRARY_FILE}\n"),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the trailer is unrecorded");
+        assert!(err.contains(MANIFEST_FILE), "{err}");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{trailer}  {SPLIT_TRAILER_FILE}\n"),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the library is unrecorded");
         assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
     }
 }

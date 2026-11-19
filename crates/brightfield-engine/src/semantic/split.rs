@@ -48,8 +48,22 @@ pub(crate) fn cache_root_from(home: Option<&OsStr>) -> Result<PathBuf, String> {
     Ok(home.join("Library/Caches/online.meridian.brightfield/finetype"))
 }
 
+/// The SHA-256 a bundle manifest records for each part of a split bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartHashes {
+    /// The recorded hash of the library part, in hex.
+    pub library: String,
+    /// The recorded hash of the trailer part, in hex.
+    pub trailer: String,
+}
+
 /// Join the split bundle in `dir` into a copy under `cache_root`, and return
 /// the copy's path.
+///
+/// With `recorded`, each part's bytes as read here are checked against its
+/// recorded hash before anything is joined or written, so the copy holds
+/// exactly the bytes the manifest describes, even if a part changed on disk
+/// after the manifest was first checked.
 ///
 /// An existing copy is reused only when its bytes still hash to its
 /// directory's name, so a copy changed since it was written is written again
@@ -59,14 +73,31 @@ pub(crate) fn cache_root_from(home: Option<&OsStr>) -> Result<PathBuf, String> {
 ///
 /// # Errors
 ///
-/// A part that cannot be read, or a cache folder that cannot be written. The
-/// latter names the folder.
-pub fn materialise_split(dir: &Path, cache_root: &Path) -> Result<PathBuf, String> {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name)).map_err(|e| format!("{name}: cannot be read: {e}"))
+/// A part that cannot be read or does not match its recorded hash, or a cache
+/// folder that cannot be written. The last names the folder.
+pub fn materialise_split(
+    dir: &Path,
+    cache_root: &Path,
+    recorded: Option<&PartHashes>,
+) -> Result<PathBuf, String> {
+    let read = |name: &str, want: Option<&str>| {
+        let bytes =
+            std::fs::read(dir.join(name)).map_err(|e| format!("{name}: cannot be read: {e}"))?;
+        if let Some(want) = want {
+            let got = sha256_hex(&bytes);
+            if !got.eq_ignore_ascii_case(want) {
+                return Err(format!(
+                    "{name} is not the file that was packaged (recorded {want}, found {got})"
+                ));
+            }
+        }
+        Ok(bytes)
     };
-    let mut joined = read(SPLIT_LIBRARY_FILE)?;
-    joined.extend_from_slice(&read(SPLIT_TRAILER_FILE)?);
+    let mut joined = read(SPLIT_LIBRARY_FILE, recorded.map(|r| r.library.as_str()))?;
+    joined.extend_from_slice(&read(
+        SPLIT_TRAILER_FILE,
+        recorded.map(|r| r.trailer.as_str()),
+    )?);
 
     let key = sha256_hex(&joined);
     let folder = cache_root.join(&key);
@@ -133,7 +164,7 @@ mod tests {
     fn split_parts_join_back_byte_for_byte() {
         let bundle = split_bundle();
         let cache = tempfile::tempdir().unwrap();
-        let copy = materialise_split(bundle.path(), cache.path()).expect("materialised");
+        let copy = materialise_split(bundle.path(), cache.path(), None).expect("materialised");
 
         assert_eq!(std::fs::read(&copy).unwrap(), joined());
         // DuckDB derives the extension's entry point from its file name, so the
@@ -153,11 +184,11 @@ mod tests {
     fn a_second_materialise_reuses_the_copy() {
         let bundle = split_bundle();
         let cache = tempfile::tempdir().unwrap();
-        let first = materialise_split(bundle.path(), cache.path()).unwrap();
+        let first = materialise_split(bundle.path(), cache.path(), None).unwrap();
         let written = std::fs::metadata(&first).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
 
-        let second = materialise_split(bundle.path(), cache.path()).unwrap();
+        let second = materialise_split(bundle.path(), cache.path(), None).unwrap();
         assert_eq!(first, second);
         assert_eq!(
             std::fs::metadata(&second).unwrap().modified().unwrap(),
@@ -170,10 +201,10 @@ mod tests {
     fn a_cache_copy_whose_bytes_changed_is_rewritten_before_load() {
         let bundle = split_bundle();
         let cache = tempfile::tempdir().unwrap();
-        let first = materialise_split(bundle.path(), cache.path()).unwrap();
+        let first = materialise_split(bundle.path(), cache.path(), None).unwrap();
         std::fs::write(&first, b"somebody else's library").unwrap();
 
-        let second = materialise_split(bundle.path(), cache.path()).unwrap();
+        let second = materialise_split(bundle.path(), cache.path(), None).unwrap();
         assert_eq!(first, second);
         assert_eq!(std::fs::read(&second).unwrap(), joined());
     }
@@ -184,8 +215,8 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let (b, c) = (bundle.path(), cache.path());
         let (one, two) = std::thread::scope(|s| {
-            let one = s.spawn(|| materialise_split(b, c));
-            let two = s.spawn(|| materialise_split(b, c));
+            let one = s.spawn(|| materialise_split(b, c, None));
+            let two = s.spawn(|| materialise_split(b, c, None));
             (one.join().unwrap(), two.join().unwrap())
         });
         let one = one.expect("first thread");
@@ -205,7 +236,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         std::fs::set_permissions(cache.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        let result = materialise_split(bundle.path(), cache.path());
+        let result = materialise_split(bundle.path(), cache.path(), None);
         // Restored before asserting, so the temp dir can still be removed.
         std::fs::set_permissions(cache.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
@@ -214,6 +245,44 @@ mod tests {
             err.contains(&cache.path().display().to_string()),
             "the error does not name the cache folder: {err}"
         );
+    }
+
+    #[test]
+    fn parts_matching_the_manifest_are_joined_and_a_changed_part_is_refused() {
+        let bundle = split_bundle();
+        let cache = tempfile::tempdir().unwrap();
+        let recorded = PartHashes {
+            library: sha256_hex(BODY),
+            trailer: sha256_hex(TRAILER),
+        };
+        let copy = materialise_split(bundle.path(), cache.path(), Some(&recorded))
+            .expect("parts that match their recorded hashes");
+        assert_eq!(std::fs::read(&copy).unwrap(), joined());
+
+        // The library swapped after the manifest was checked: the bytes read
+        // for the join are not the ones that were verified.
+        std::fs::write(bundle.path().join(SPLIT_LIBRARY_FILE), b"another library").unwrap();
+        let fresh = tempfile::tempdir().unwrap();
+        let err = materialise_split(bundle.path(), fresh.path(), Some(&recorded))
+            .expect_err("a part that changed since it was verified");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+        assert!(err.contains("is not the file that was packaged"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(fresh.path()).unwrap().count(),
+            0,
+            "a refused join wrote to the cache"
+        );
+
+        // The same for the trailer, with a recorded hash that is uppercase,
+        // as a hand-written manifest may carry it.
+        std::fs::write(bundle.path().join(SPLIT_LIBRARY_FILE), BODY).unwrap();
+        let wrong_trailer = PartHashes {
+            library: sha256_hex(BODY).to_ascii_uppercase(),
+            trailer: sha256_hex(b"some other trailer"),
+        };
+        let err = materialise_split(bundle.path(), fresh.path(), Some(&wrong_trailer))
+            .expect_err("a trailer that is not the recorded one");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
     }
 
     #[test]
