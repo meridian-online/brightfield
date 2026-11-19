@@ -386,6 +386,27 @@ else fail "run said: $(cat "$TMP/run.out")"; fi
 if grep -qxF "oa_dir=" "$STUB_LOG" && grep -q "^args=+9.9.9 xtask nightly --sha " "$STUB_LOG"; then pass "stage two ran xtask with no OPEN_ANALYTICS_DIR"
 else fail "stage two saw: $(cat "$STUB_LOG")"; fi
 
+echo "== install warns when the timezone changed after launchd's calendar agent started"
+# This script's own process stands in for the agent, and a file whose time is
+# set by hand for /etc/localtime, so the check reads real ps and stat output.
+ZONE="$TMP/localtime"
+zone_install() {
+  BRIGHTFIELD_NIGHTLY_DRY_RUN=1 BRIGHTFIELD_NIGHTLY_ZONE_FILE="$ZONE" BRIGHTFIELD_NIGHTLY_CALENDAR_PID="$1" \
+    bash "$ROOT/scripts/nightly/install.sh" install >"$TMP/zone.out" 2>&1
+}
+touch -t 203001010000 "$ZONE"
+if zone_install $$ && grep -qF "the timezone changed after launchd's calendar agent started" "$TMP/zone.out"; then
+  pass "a zone changed after the agent started is reported"
+else fail "no warning: $(cat "$TMP/zone.out")"; fi
+touch -t 200001010000 "$ZONE"
+if zone_install $$ && ! grep -qF "timezone changed" "$TMP/zone.out"; then
+  pass "a zone set before the agent started is not reported"
+else fail "warned anyway: $(cat "$TMP/zone.out")"; fi
+touch -t 203001010000 "$ZONE"
+if zone_install 999999999 && ! grep -qF "timezone changed" "$TMP/zone.out"; then
+  pass "no warning when there is no such agent"
+else fail "warned with no agent: $(cat "$TMP/zone.out")"; fi
+
 echo "== uninstall removes what install wrote"
 BRIGHTFIELD_NIGHTLY_DRY_RUN=1 bash "$ROOT/scripts/nightly/install.sh" uninstall >"$TMP/uninstall.out" 2>&1; status=$?
 if [ "$status" -eq 0 ] && [ ! -e "$PLIST" ] && [ ! -e "$INSTALLED" ]; then pass "plist and installed copy are gone"
