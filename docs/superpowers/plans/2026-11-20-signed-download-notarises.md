@@ -139,6 +139,7 @@ This task produces evidence, not code. It needs Hugh's `op signin`. Flag the iss
   - `--check-engine` reports a match.
   - A query with `INSTALL spatial; LOAD spatial;`, run once online, then loads offline. That is the downloaded-extension leg.
   - Also run `scripts/verify-airgapped.sh` and `scripts/check-artifact-type-source.sh` on the signed `.dmg`.
+  - Repeat the type-source and spatial checks on the signed tarball's bare `brightfield`, unpacked. That is what Homebrew and the install command deliver: a Developer-ID-signed, hardened-runtime binary loading the ad-hoc joined FineType file. It relies on the same entitlement.
 - [ ] **Step 3: Prepare the second-Mac check.** Copy the `.dmg` and its `.sha256` to a stable path outside `dist/`, and run `xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" <dmg>`. Report the path, the checksum, and the steps for Hugh: a separate macOS user account, network off, open the `.dmg`, drag the app to Applications, launch it, and open an example with typed columns.
 - [ ] **Step 4: Run `scripts/local-signing.sh cleanup`.** Record the submission id and the results as a comment on the issue.
 
