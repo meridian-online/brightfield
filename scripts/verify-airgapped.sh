@@ -438,9 +438,19 @@ is_png "$TMP/parquet.png" 20000
 # One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
 # match can leave find dying of SIGPIPE, and the pipeline's 141 would read as
 # "nothing installed".
-if [ -n "$(find "$TMP/home" -name '*.duckdb_extension' 2>/dev/null)" ]; then
+#
+# FineType's own cache copy is not an install and is left out. The app ships
+# the extension split, and the engine joins the parts into
+# Library/Caches/online.meridian.brightfield/finetype/<sha256>/ under HOME
+# before LOAD; it comes from the artifact, not the network.
+FT_CACHE="$TMP/home/Library/Caches/online.meridian.brightfield/finetype"
+if [ -n "$(find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null)" ]; then
   echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
+  find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print | sed 's/^/     /'
   exit 1
+fi
+if [ -d "$FT_CACHE" ]; then
+  echo "   ok: FineType joined from the artifact into ${FT_CACHE#"$TMP"/}, offline"
 fi
 
 echo "== run 3: a spec that needs the network, jailed — it must REFUSE"

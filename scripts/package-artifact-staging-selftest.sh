@@ -272,11 +272,13 @@ done
 LOOK="$TMP/look"
 # extension_named_in KIND — the staged extension in KIND carries an `@rpath/`
 # install name, and the bundle matches the manifest packaging wrote beside it.
+# The app ships the extension split, so there the name is read off its library
+# part, which is the Mach-O; the tarball ships it joined.
 # An absolute install name is what Homebrew rewrites on install, which changes
 # the file and makes the application refuse it; see
 # scripts/set-extension-rpath-id.sh.
 extension_named_in() {
-	local kind="$1" dir status=0 id
+	local kind="$1" dir lib=finetype.duckdb_extension status=0 id
 	rm -rf "$LOOK"
 	mkdir -p "$LOOK"
 	case "$kind" in
@@ -287,9 +289,10 @@ extension_named_in() {
 	dmg)
 		attach_image "$COPY/dist/${NAME}.dmg" "$LOOK" || return 1
 		dir="$LOOK/Brightfield.app/Contents/Resources/finetype"
+		lib=finetype.dylib
 		;;
 	esac
-	id="$(otool -D "$dir/finetype.duckdb_extension" 2>&1 | sed -n 2p)"
+	id="$(otool -D "$dir/$lib" 2>&1 | sed -n 2p)"
 	case "$id" in
 	@rpath/libfixture.dylib) ;;
 	*)
@@ -298,6 +301,12 @@ extension_named_in() {
 		;;
 	esac
 	(cd "$dir" && shasum -a 256 -c bundle-manifest.sha256) >>"$out" 2>&1 || status=1
+	# The joined file left in the app beside its parts would be a Mach-O that
+	# fails strict validation, and notarisation reads every one in the bundle.
+	if [ "$kind" = dmg ] && [ -e "$dir/finetype.duckdb_extension" ]; then
+		echo "the dmg's bundle still carries finetype.duckdb_extension beside its split parts" >>"$out"
+		status=1
+	fi
 	if [ "$kind" = dmg ]; then
 		hdiutil detach "$LOOK" -quiet >/dev/null 2>&1 || hdiutil detach "$LOOK" -force -quiet >/dev/null 2>&1 || true
 	fi
@@ -379,17 +388,17 @@ broken_case() { # broken_case NAME OLD NEW REFUSED_KIND REFUSED_NEEDLE OK_KIND
 echo "== packaging with the type source dropped from one artifact"
 
 broken_case "the app bundle's staging call is deleted" \
-	'    stage_finetype "$APP/Contents/Resources/finetype"' \
+	'    stage_finetype "$APP/Contents/Resources/finetype" split' \
 	'    :' \
 	dmg "carries no type source at Brightfield.app/Contents/Resources/finetype" tar.gz
 
 broken_case "the app bundle's staging call is reduced to a mkdir" \
-	'    stage_finetype "$APP/Contents/Resources/finetype"' \
+	'    stage_finetype "$APP/Contents/Resources/finetype" split' \
 	'    mkdir -p "$APP/Contents/Resources/finetype"' \
 	dmg "finetype.duckdb_extension" tar.gz
 
 broken_case "the tarball's staging call is deleted" \
-	'stage_finetype "$STAGE/finetype"' \
+	'stage_finetype "$STAGE/finetype" joined' \
 	':' \
 	tar.gz "carries no type source at finetype" dmg
 

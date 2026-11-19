@@ -5,7 +5,8 @@
 #
 # A bundle is three things and this reads all of them:
 #
-#   finetype.duckdb_extension   the DuckDB loadable extension
+#   finetype.duckdb_extension   the DuckDB loadable extension, or the same
+#                               file in two parts (see THE SPLIT LAYOUT below)
 #   model/                      what FINETYPE_MODEL_DIR is pointed at, including
 #                               model2vec/ (loaded unconditionally) and, when
 #                               the config names one, the optional second
@@ -67,6 +68,24 @@
 #   it describes — and a bundle nobody has packaged has none, so the check is
 #   conditional on its presence and strict once it is there.
 #
+# THE SPLIT LAYOUT. The app ships the extension as two files, because
+# codesign cannot sign a file with bytes after its Mach-O and DuckDB puts its
+# metadata trailer exactly there:
+#
+#   finetype.dylib                     the Mach-O alone, signed
+#   finetype.duckdb_extension.trailer  the trailer, as data
+#
+# scripts/split-extension.sh makes them and the engine joins them before LOAD.
+# The layouts are told apart as the engine tells them apart: the joined file
+# wins when it is there, and otherwise either part makes the bundle split, so a
+# bundle that lost one part is refused naming it rather than as a bundle with
+# no extension. In a split bundle the stamp is read from the trailer file, and
+# the library must pass `codesign --verify --strict` on its own: that is the
+# property the split exists to give the app, and a library that has lost it
+# would sink notarisation while loading fine here. codesign is a macOS tool, so
+# a split bundle read where there is none is refused rather than passed
+# unverified.
+#
 # WHAT IT DOES NOT CHECK, AND SHOULD: the extension's own load commands. This
 # reads the metadata trailer and the file tree; it never asks what the shared
 # library needs in order to load. An extension linking a non-system dylib — a
@@ -105,7 +124,20 @@ fail() { echo "check-bundled-extension: $*" >&2; exit 1; }
 
 [ -d "$BUNDLE" ] || fail "no such directory: ${BUNDLE}"
 
+# The layout, decided the way `brightfield_engine::semantic::FinetypeBundle::open`
+# decides it. STAMPED is the file whose last 512 bytes are the trailer.
 EXT="${BUNDLE}/finetype.duckdb_extension"
+SPLIT_LIBRARY=finetype.dylib
+SPLIT_TRAILER=finetype.duckdb_extension.trailer
+if [ ! -f "$EXT" ] && { [ -f "${BUNDLE}/${SPLIT_LIBRARY}" ] || [ -f "${BUNDLE}/${SPLIT_TRAILER}" ]; }; then
+  layout="split"
+  extension_files="${SPLIT_LIBRARY} ${SPLIT_TRAILER}"
+  STAMPED="${BUNDLE}/${SPLIT_TRAILER}"
+else
+  layout="joined"
+  extension_files=finetype.duckdb_extension
+  STAMPED="$EXT"
+fi
 
 # WHAT THE LOADER OPENS, NOT WHAT THE CONFIG DECLARES, and the difference cost
 # a review round. `model2vec/` is loaded unconditionally by FineType's model
@@ -126,8 +158,9 @@ EXT="${BUNDLE}/finetype.duckdb_extension"
 # opens, and a list is the wrong primary evidence either way — see the note at
 # the foot of this comment block and scripts/check-artifact-type-source.sh,
 # which runs the binary.
+# shellcheck disable=SC2086  # extension_files is a list of fixed names
 for required in \
-  finetype.duckdb_extension \
+  $extension_files \
   model/model.safetensors \
   model/config.json \
   model/label_map.json \
@@ -170,22 +203,35 @@ fi
 # (the magic, "4") therefore lands at offset 224, and below it sit the platform
 # (192), the DuckDB version (160), the extension version (128) and the ABI type
 # (96). `brightfield_engine::semantic::read_stamp` reads the same offsets.
-field() { tail -c 512 "$EXT" | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'; }
+field() { tail -c 512 "$STAMPED" | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'; }
 
-size=$(wc -c < "$EXT" | tr -d ' ')
-[ "$size" -ge 512 ] || fail "${EXT} is ${size} bytes — shorter than the metadata trailer"
+size=$(wc -c < "$STAMPED" | tr -d ' ')
+[ "$size" -ge 512 ] || fail "${STAMPED} is ${size} bytes — shorter than the metadata trailer"
 
 magic=$(field 224)
-[ "$magic" = "4" ] || fail "${EXT} carries no DuckDB metadata trailer (magic '${magic}'); \
+[ "$magic" = "4" ] || fail "${STAMPED} carries no DuckDB metadata trailer (magic '${magic}'); \
 an unstamped shared library will not LOAD"
 
 abi=$(field 96)
-[ "$abi" = "C_STRUCT" ] || fail "${EXT} declares ABI '${abi}', not C_STRUCT — only DuckDB's \
+[ "$abi" = "C_STRUCT" ] || fail "${STAMPED} declares ABI '${abi}', not C_STRUCT — only DuckDB's \
 stable C API survives a DuckDB version bump"
 
 platform=$(field 192)
 version=$(field 128)
 duckdb_floor=$(field 160)
+
+# The split library, signed on its own. Strict, because notarisation reads it
+# strictly: a signature that verifies only leniently is one Apple refuses.
+layout_note="joined"
+if [ "$layout" = split ]; then
+  command -v codesign >/dev/null 2>&1 \
+    || fail "${BUNDLE} is a split bundle and codesign is not on PATH to verify ${SPLIT_LIBRARY} \
+(it is a macOS tool)"
+  codesign --verify --strict "${BUNDLE}/${SPLIT_LIBRARY}" 2>&1 | sed 's/^/  /' >&2 \
+    || fail "${BUNDLE}/${SPLIT_LIBRARY} does not pass codesign --verify --strict, so the app \
+carrying it would not notarise"
+  layout_note="split, ${SPLIT_LIBRARY} verifies"
+fi
 
 # The manifest scripts/package.sh writes over the staged copy. Absent for a
 # locally assembled bundle nobody has packaged, which is why this is
@@ -204,7 +250,7 @@ was packaged (run 'shasum -a 256 -c bundle-manifest.sha256' in it to see which f
 fi
 
 if [ -n "$WANT_PLATFORM" ] && [ "$platform" != "$WANT_PLATFORM" ]; then
-  fail "${EXT} is built for '${platform}' and this artifact needs '${WANT_PLATFORM}' — \
+  fail "${STAMPED} is built for '${platform}' and this artifact needs '${WANT_PLATFORM}' — \
 DuckDB would refuse to load it on every machine the artifact is for"
 fi
 
@@ -215,9 +261,9 @@ fi
 if [ -n "$WANT_VERSION" ]; then
   want_core="${WANT_VERSION#v}"
   have_core="${version#v}"
-  [ "$want_core" = "$have_core" ] || fail "${EXT} is stamped version '${version}' and the pin in \
+  [ "$want_core" = "$have_core" ] || fail "${STAMPED} is stamped version '${version}' and the pin in \
 packaging/finetype-pin.env declares '${WANT_VERSION}' — this bundle is not the FineType release \
 this repository says it stages"
 fi
 
-echo "check-bundled-extension: finetype ${version}, ${abi}, ${platform}, DuckDB floor ${duckdb_floor}, no symlinks, ${manifest_note}."
+echo "check-bundled-extension: finetype ${version}, ${abi}, ${platform}, DuckDB floor ${duckdb_floor}, ${layout_note}, no symlinks, ${manifest_note}."

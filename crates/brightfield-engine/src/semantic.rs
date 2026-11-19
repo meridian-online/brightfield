@@ -474,11 +474,14 @@ pub fn check_abi(
 // THE FINETYPE BUNDLE
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The three things a bundle directory must contain.
+/// The extension as one file, which is how the tarball ships it.
 ///
-/// Named here rather than spelled inline so `scripts/package.sh` and this
-/// module cannot drift apart silently — the packaging script stages exactly
-/// these paths and this is what refuses a bundle missing any of them.
+/// A bundle holds the extension, [`MODEL_DIR`] and [`SCHEMA_CATALOGUE`]. The
+/// app ships the extension as [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]
+/// instead, and [`FinetypeBundle::open`] refuses a bundle missing whichever
+/// files its layout needs. `scripts/package.sh` and
+/// `scripts/check-bundled-extension.sh` spell the same names, and a rename
+/// here has to be made there too.
 pub const EXTENSION_FILE: &str = "finetype.duckdb_extension";
 /// The extension's shared library alone, cut where DuckDB's metadata trailer
 /// begins, in a bundle shipped split.

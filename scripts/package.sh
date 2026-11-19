@@ -63,9 +63,9 @@
 #
 #   BRIGHTFIELD_SIGN_IDENTITY   a codesign identity, e.g.
 #                               "Developer ID Application: … (TEAMID)". Signs
-#                               the tarball's bare Mach-O and the bundle, both
-#                               with the hardened runtime and a secure
-#                               timestamp.
+#                               the tarball's bare Mach-O, the bundle's FineType
+#                               library and the bundle, all with the hardened
+#                               runtime and a secure timestamp.
 #   BRIGHTFIELD_NOTARY_PROFILE  a keychain profile stored by
 #                               `xcrun notarytool store-credentials`. Read only
 #                               when an identity is also set. Submits the
@@ -80,6 +80,34 @@
 #                               scripts/release-signing.sh sets it on a CI
 #                               runner, whose default notarytool crashes; its
 #                               header says why.
+#
+# WHAT IS SIGNED. Three things. An ad-hoc build signs the last two the same way
+# with no identity, so an ad-hoc app and a signed one differ only in identity,
+# timestamp and the runtime flag:
+#
+#   the tarball's brightfield   with an identity only (see the step below)
+#   finetype.dylib in the app   the FineType extension's Mach-O, cut from its
+#                               metadata trailer by scripts/split-extension.sh,
+#                               because codesign cannot sign a file with bytes
+#                               after its Mach-O and notarisation refuses a
+#                               nested Mach-O that fails strict validation.
+#                               The engine joins the two parts again before
+#                               DuckDB loads them. The tarball keeps the joined
+#                               file, since no ticket can be stapled to it.
+#   Brightfield.app             sealing everything inside it. The DuckDB CLI in
+#                               Contents/Helpers keeps the DuckDB Foundation's
+#                               own signature.
+#
+# THE ENTITLEMENT. The app, and the tarball's binary when an identity signs it,
+# are signed with packaging/Brightfield.entitlements, which carries one key,
+# `com.apple.security.cs.disable-library-validation`. Under the hardened
+# runtime a process loads only libraries signed by its own team, and Brightfield
+# loads DuckDB extensions DuckDB's repository serves at run time (spatial, excel,
+# sqlite and others), which Meridian's team did not sign. DuckDB's own CLI
+# carries the same entitlement for the same reason. The ad-hoc app carries it
+# too, so ad-hoc and signed apps run under the same rules apart from the runtime
+# flag. FineType does not need it in a signed app, whose FineType library is
+# signed by the same team.
 #
 # The chain runs in this order: sign the bare Mach-O → sign the bundle → zip the
 # bundle for submission → one `notarytool submit` → one `stapler staple` on the
@@ -310,7 +338,10 @@ if [ -n "$audit_rule" ]; then
   echo "   clean: OS libraries only (${audit_lines} entries read)"
 fi
 
-# stage_finetype DEST — copy the bundle in and record what was copied.
+# stage_finetype DEST LAYOUT — copy the bundle in and record what was copied.
+# LAYOUT is `joined`, the extension as one file, or `split`, its Mach-O and its
+# metadata trailer as two (the header's WHAT IS SIGNED says why the app needs
+# that).
 #
 # `cp -RL` dereferences: a model fetched through a content-addressed cache is a
 # tree of symlinks into that cache, and copying the links produces an artifact
@@ -328,11 +359,31 @@ fi
 # install name when it installs the tarball, which left a Homebrew install
 # refusing its own extension; scripts/set-extension-rpath-id.sh says why and
 # how, and scripts/write-brightfield-formula.sh carries the other half.
+#
+# The split runs after the rename, so the library carries the `@rpath/` name,
+# and before the manifest, so the manifest records the two parts that ship and
+# not the joined file, which does not. The library is signed after the split
+# and verified strictly on its own, which is the check notarisation makes of it.
 stage_finetype() {
-  local dest="$1"
+  local dest="$1" layout="$2"
+  case "$layout" in
+    joined|split) ;;
+    *) echo "package.sh: stage_finetype layout '${layout}' is neither joined nor split" >&2; exit 1 ;;
+  esac
   [ -n "$FINETYPE_BUNDLE" ] || return 0
   cp -RL "$FINETYPE_BUNDLE" "$dest"
   scripts/set-extension-rpath-id.sh "$dest/finetype.duckdb_extension"
+  if [ "$layout" = split ]; then
+    scripts/split-extension.sh "$dest/finetype.duckdb_extension" "$dest"
+    if [ -n "$SIGN_IDENTITY" ]; then
+      codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$dest/finetype.dylib"
+    else
+      codesign --force --sign - "$dest/finetype.dylib"
+    fi
+    codesign --verify --strict "$dest/finetype.dylib" \
+      || { echo "package.sh: ${dest}/finetype.dylib does not pass strict validation after signing." >&2; exit 1; }
+    rm "$dest/finetype.duckdb_extension"
+  fi
   rm -f "$dest/bundle-manifest.sha256"
   # Relative paths, sorted, so the manifest is identical for identical input
   # and a diff between two packaging runs means something. The manifest EXCLUDES
@@ -377,7 +428,7 @@ cp -R examples/remote "$STAGE/examples/remote"
 # package.
 mkdir -p "$STAGE/examples/data"
 cp crates/brightfield-shell/tests/data/edgar_gleif_reduced.parquet crates/brightfield-shell/tests/data/edgar_gleif_reduced.json "$STAGE/examples/data/"
-stage_finetype "$STAGE/finetype"
+stage_finetype "$STAGE/finetype" joined
 stage_engine "$STAGE/engine/duckdb"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
@@ -461,6 +512,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
     *-apple-darwin)
       echo "== sign: ${STAGE}/brightfield"
       codesign --force --options runtime --timestamp \
+        --entitlements packaging/Brightfield.entitlements \
         --sign "$SIGN_IDENTITY" "$STAGE/brightfield"
       ;;
   esac
@@ -492,7 +544,7 @@ case "$TARGET" in
     # Resources/, not MacOS/: an app launched from /Applications has no sibling
     # directory, and `semantic::bundle_beside` looks in both places for exactly
     # this reason.
-    stage_finetype "$APP/Contents/Resources/finetype"
+    stage_finetype "$APP/Contents/Resources/finetype" split
     # Contents/Helpers/, the bundle's place for a helper tool: codesign seals
     # nested code there as code, where a Mach-O under Resources/ is sealed as
     # a data file.
@@ -537,9 +589,10 @@ case "$TARGET" in
 
     echo "== sign: ${APP}"
     if [ -n "$SIGN_IDENTITY" ]; then
-      codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+      codesign --force --options runtime --timestamp \
+        --entitlements packaging/Brightfield.entitlements --sign "$SIGN_IDENTITY" "$APP"
     else
-      codesign --force --sign - "$APP"
+      codesign --force --entitlements packaging/Brightfield.entitlements --sign - "$APP"
     fi
     codesign --verify --strict "$APP"
 
