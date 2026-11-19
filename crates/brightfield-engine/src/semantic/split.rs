@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use super::{EXTENSION_FILE, SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE};
 
-/// The folder every cache copy lives under, from the process's `HOME`.
+/// The folder the cache copies live under, from the process's `HOME`.
 ///
 /// # Errors
 ///

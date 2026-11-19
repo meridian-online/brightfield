@@ -532,9 +532,9 @@ impl FinetypeBundle {
     /// answer is known.
     ///
     /// The extension is either [`EXTENSION_FILE`] or, when that is absent,
-    /// [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]. A split bundle is
-    /// checked part by part exactly as a joined one is checked whole, and only
-    /// then joined into a copy under [`cache_root`], which is what is loaded.
+    /// [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]. A split bundle's
+    /// parts go through the checks a joined file does, and after them are
+    /// joined into a copy under [`cache_root`], which is what is loaded.
     ///
     /// The last step is not ceremony. With no model reachable, the extension's
     /// classifier panics inside its own `catch_unwind` and `ft_profile` returns
