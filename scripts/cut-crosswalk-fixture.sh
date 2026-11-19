@@ -22,10 +22,12 @@
 # is the same as over the published table, and none of the published text is
 # copied into this repository. It is about 240 KB against 10 MB.
 #
-# WHEN TO RUN IT. When the nightly's check that the published table is still
-# the one this copy was cut from goes red: the provenance file records the
-# published file's size, sha256 and row count, and the check compares them.
-# Then re-shoot the crosswalk chart's thumbnails offline with
+# WHEN TO RUN IT. Only when the chart's thumbnails should show a newer
+# published table. The copy is a frozen input: nothing compares it with the
+# published file, which changes each time the crosswalk's matching is re-run.
+# The provenance file records the published file's size, sha256 and row count
+# at the cut, so a reader can tell which table the copy came from. After a
+# re-cut, re-shoot the crosswalk chart's thumbnails offline with
 #   UPDATE_SNAPSHOTS=1 cargo test -p brightfield-shell --test front_door every_shipped_start
 # and commit the copy, its provenance file and the PNGs together.
 set -euo pipefail

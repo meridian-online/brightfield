@@ -213,8 +213,8 @@
 //! chart reads the tier, the method and the length of the search text, so a
 //! copy keeping those three draws the same bins and the same counts at a
 //! fortieth of the size. `scripts/cut-crosswalk-fixture.sh` cuts it and says
-//! why; the nightly network run checks the published table has not moved
-//! since. [`CALIFORNIA_HOUSING`]'s are drawn the same way, through
+//! why. The copy is a frozen input, re-cut only when the thumbnails should
+//! show a newer table. [`CALIFORNIA_HOUSING`]'s are drawn the same way, through
 //! [`load_with`], from a committed copy of the archive its authors gave
 //! StatLib, which `crates/brightfield-shell/tests/data/houses.json`
 //! accounts for.

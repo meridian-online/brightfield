@@ -2972,9 +2972,9 @@ fn front_door_return_dark_surface() {
 /// reduced copy of that table instead (see [`REMOTE_FIXTURES`]). Until it did,
 /// the remote start's thumbnails could be redrawn by the nightly network run
 /// alone, interface changes left them behind, and they drifted until that run
-/// went red. Whether the copy
-/// still matches the published table is the nightly's question, asked by
-/// `the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from`.
+/// went red. The crosswalk's copy is a frozen input: nothing compares it with
+/// the published table, which keeps changing as its matching is re-run, so
+/// the thumbnails show the chart over the copy rather than over today's table.
 #[test]
 fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
     let all: Vec<&'static starts::Start> = starts::STARTS.iter().collect();
@@ -2999,7 +2999,7 @@ fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
 ///
 /// The crosswalk's is a reduced copy cut by `scripts/cut-crosswalk-fixture.sh`,
 /// which says what it keeps and why, and writes the provenance file beside it
-/// that the two tests below read. California Housing's is the authors'
+/// that the test below reads. California Housing's is the authors'
 /// archive as StatLib serves it, unaltered, with `tests/data/houses.json`
 /// beside it. A remote start whose source is missing here fails
 /// [`remote_stand_in`] by name rather than reaching the network.
@@ -3114,8 +3114,8 @@ fn parquet_rows(path: &std::path::Path) -> u64 {
 ///
 /// Offline, so a copy replaced by hand — or re-cut without the provenance
 /// file that goes with it — fails on the push that does it, rather than
-/// leaving the nightly comparing the published table with numbers that no
-/// longer describe the copy the thumbnails were drawn from.
+/// leaving a provenance file that no longer describes the copy the
+/// thumbnails were drawn from.
 #[test]
 fn the_crosswalk_fixture_is_the_copy_its_provenance_describes() {
     let provenance = crosswalk_provenance();
@@ -3138,48 +3138,6 @@ fn the_crosswalk_fixture_is_the_copy_its_provenance_describes() {
         provenance["source"]["rows"].as_u64(),
         "the copy does not have the published table's row count, so its \
          thumbnail does not count what the live chart counts"
-    );
-}
-
-/// The published crosswalk is still the table its committed copy was cut
-/// from: the same size, the same sha256 and the same row count as the
-/// provenance file records.
-///
-/// The only network question the crosswalk chart's thumbnails still raise.
-/// They are drawn offline from the copy on every push; what the copy cannot
-/// tell by itself is whether the published table has moved since it was cut.
-/// When it has, this reddens and the fix is to re-cut the copy with
-/// `scripts/cut-crosswalk-fixture.sh` and re-shoot the thumbnails, as that
-/// script's header says. The sha256 is what decides; the size and the row
-/// count are there so a red names what moved.
-///
-/// `cargo +1.95.0 test -p brightfield-shell --test front_door -- --ignored`.
-/// The nightly network workflow runs it.
-#[test]
-#[ignore = "network: reads the published crosswalk over https"]
-fn the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from() {
-    let provenance = crosswalk_provenance();
-    let url = REMOTE_FIXTURES[0].0;
-    let fetched = brightfield_shell::remote::Fetch::begin(vec![url.to_string()], || {})
-        .wait()
-        .unwrap_or_else(|e| panic!("{e}"));
-    let path = fetched.local_path(url).expect("the fetch wrote the source");
-    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let recorded = &provenance["source"];
-    let published = (bytes.len() as u64, sha256_hex(&bytes), parquet_rows(path));
-    let cut_from = (
-        recorded["bytes"].as_u64().expect("source.bytes"),
-        recorded["sha256"]
-            .as_str()
-            .expect("source.sha256")
-            .to_string(),
-        recorded["rows"].as_u64().expect("source.rows"),
-    );
-    assert_eq!(
-        published, cut_from,
-        "{url} has moved since the crosswalk chart's fixture was cut from it \
-         (bytes, sha256, rows). Re-cut it with scripts/cut-crosswalk-fixture.sh \
-         and re-shoot the thumbnails with UPDATE_SNAPSHOTS=1, as that script says"
     );
 }
 

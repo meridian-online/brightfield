@@ -7,11 +7,6 @@
 # the network, enumerated from the source (`grep -rn '#\[ignore' crates/`):
 #
 #   crates/brightfield-shell/tests/front_door.rs
-#     the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from
-#       - the published crosswalk Parquet still has the size, sha256 and row
-#         count recorded when its committed reduced copy was cut. Red means
-#         re-cut it with scripts/cut-crosswalk-fixture.sh and re-shoot the
-#         thumbnails.
 #     statlib_still_serves_the_housing_archive_the_fixture_is
 #       - StatLib still serves California Housing's archive with the size and
 #         sha256 recorded beside the committed copy. Red means replace the
@@ -91,13 +86,13 @@ executed() {
 
 # label | cargo target selector | how many ignored tests must run
 targets=(
-  "front_door|-p brightfield-shell --test front_door|2"
+  "front_door|-p brightfield-shell --test front_door|1"
   "crosswalk_chart|-p brightfield-shell --test crosswalk_chart|2"
   "engine_httpfs|-p brightfield-engine --lib|2"
 )
 # The sum of the floors above, stated once so a reader and the log both see
 # what this run expects to have executed.
-expected_total=6
+expected_total=5
 
 failed=0
 total=0
