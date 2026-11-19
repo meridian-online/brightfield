@@ -552,10 +552,23 @@ impl FinetypeBundle {
     pub fn open(dir: &Path, conn: &Connection) -> Result<Self, String> {
         let at = |what: &str, e: String| format!("finetype bundle {}: {what}: {e}", dir.display());
 
-        // The joined file wins when both layouts are present. The stamp is the
-        // last bytes of the joined file, which in a split bundle are the whole
-        // trailer file, so `read_stamp` reads either.
-        let split = !dir.join(EXTENSION_FILE).is_file() && dir.join(SPLIT_LIBRARY_FILE).is_file();
+        // The joined file wins when both layouts are present. Either split part
+        // alone makes the bundle split, so a bundle that has lost the other one
+        // is refused naming it rather than as a missing joined file. The stamp
+        // is the last bytes of the joined file, which in a split bundle are the
+        // whole trailer file, so `read_stamp` reads either.
+        let split = !dir.join(EXTENSION_FILE).is_file()
+            && (dir.join(SPLIT_LIBRARY_FILE).is_file() || dir.join(SPLIT_TRAILER_FILE).is_file());
+        if split {
+            for part in [SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE] {
+                if !dir.join(part).is_file() {
+                    return Err(at(
+                        part,
+                        "missing, and a split bundle needs both its library and its trailer".into(),
+                    ));
+                }
+            }
+        }
         let stamped = if split {
             SPLIT_TRAILER_FILE
         } else {
@@ -602,9 +615,11 @@ impl FinetypeBundle {
         let coverage = catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
         coverage.accept().map_err(|e| at("coverage", e))?;
 
-        // The join comes after every check above, so it reads only parts the
-        // manifest has just passed. It writes outside the bundle, and nothing
-        // should be written for a bundle that is going to be refused.
+        // The join comes after the checks above because it writes outside the
+        // bundle, and nothing should be written for a bundle that is going to
+        // be refused. It reads the parts again rather than the bytes the
+        // manifest hashed, which is no weaker than the joined layout: the
+        // manifest catches a bad unpack, not a file replaced after it.
         let ext = if split {
             let root = cache_root().map_err(|e| at("cache", e))?;
             materialise_split(dir, &root).map_err(|e| at("cache", e))?
@@ -1164,17 +1179,19 @@ impl TypeSource for FinetypeBundle {
 /// sits in `Contents/MacOS/`. Returns `None` when neither exists — a build
 /// packaged without a bundle runs with no type source rather than failing.
 ///
-/// A directory counts when it holds the joined extension or both halves of a
-/// split one; [`FinetypeBundle::open`] takes either.
+/// A directory counts when it holds the joined extension or either half of a
+/// split one. Half a split bundle is still found, so that
+/// [`FinetypeBundle::open`] refuses it naming the missing part instead of the
+/// app running with no type source and no word why.
 #[must_use]
 pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [dir.join("finetype"), dir.join("../Resources/finetype")]
         .into_iter()
         .find(|candidate| {
-            candidate.join(EXTENSION_FILE).is_file()
-                || (candidate.join(SPLIT_LIBRARY_FILE).is_file()
-                    && candidate.join(SPLIT_TRAILER_FILE).is_file())
+            [EXTENSION_FILE, SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE]
+                .iter()
+                .any(|file| candidate.join(file).is_file())
         })
 }
 
@@ -1614,8 +1631,14 @@ mod tests {
             Some(app.join("Contents/MacOS/../Resources/finetype"))
         );
 
-        // Half a split bundle is not a bundle.
+        // Half a split bundle is still found, so opening it can say what is
+        // missing.
         std::fs::remove_file(res.join(SPLIT_TRAILER_FILE)).unwrap();
+        assert_eq!(
+            bundle_beside(&app.join("Contents/MacOS/brightfield")),
+            Some(app.join("Contents/MacOS/../Resources/finetype"))
+        );
+        std::fs::remove_file(res.join(SPLIT_LIBRARY_FILE)).unwrap();
         assert_eq!(bundle_beside(&app.join("Contents/MacOS/brightfield")), None);
     }
 
@@ -1628,6 +1651,15 @@ mod tests {
             .err()
             .expect("no trailer");
         assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+
+        // And the mirror case: a trailer whose library is gone.
+        std::fs::remove_file(dir.path().join(SPLIT_LIBRARY_FILE)).unwrap();
+        std::fs::write(dir.path().join(SPLIT_TRAILER_FILE), b"a trailer").unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("no library");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+        assert!(!err.contains(EXTENSION_FILE), "{err}");
     }
 
     /// A split bundle as packaging lays it out: the library, its trailer, and
