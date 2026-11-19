@@ -31,6 +31,9 @@ duckdb = { workspace = true, features = ["parquet"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 calamine = { workspace = true }
+# Keys the cache copy a split FineType extension is joined into by the hash of
+# its bytes. Already in the graph through the shell, so this adds no build.
+sha2 = { workspace = true }
 # Only for the managed edition's feature below.
 libduckdb-sys = { workspace = true, optional = true }
 

@@ -94,6 +94,9 @@ pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+# SHA-256: the shell's column-record keys and dataset checks, and the engine's
+# content-addressed cache copy of a split FineType extension.
+sha2 = "0.10"
 sqlparser = { version = "0.61", features = ["visitor"] }
 thiserror = "2"
 vello = "0.9"

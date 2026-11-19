@@ -159,7 +159,7 @@ tempfile = "3"
 # The stable key of a lone file's column record in `crate::column_record`, and the SHA-256 the
 # bundled gallery dataset test checks against its Frictionless descriptor. Not a new crate in the
 # graph: 0.10 is already in Cargo.lock, on the same version line, so this adds no build.
-sha2 = "0.10"
+sha2 = { workspace = true }
 # Sets a Protocol's report.md as the PDF `export-pdf` writes, with the charts
 # this crate draws handed to it as pictures.
 brightfield-report = { path = "../brightfield-report" }

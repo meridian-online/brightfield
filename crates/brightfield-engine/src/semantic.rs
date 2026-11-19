@@ -55,6 +55,9 @@ use std::path::{Path, PathBuf};
 use duckdb::arrow::array::{Array, Float64Array, StringArray, StructArray};
 use duckdb::Connection;
 
+mod split;
+pub use split::{cache_root, materialise_split};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE ANSWER
 // ═══════════════════════════════════════════════════════════════════════════
@@ -477,6 +480,16 @@ pub fn check_abi(
 /// module cannot drift apart silently — the packaging script stages exactly
 /// these paths and this is what refuses a bundle missing any of them.
 pub const EXTENSION_FILE: &str = "finetype.duckdb_extension";
+/// The extension's shared library alone, cut where DuckDB's metadata trailer
+/// begins, in a bundle shipped split.
+///
+/// A signed macOS app ships the extension this way because `codesign` cannot
+/// sign a file with bytes after the end of its Mach-O. [`EXTENSION_FILE`] is
+/// this file with [`SPLIT_TRAILER_FILE`] appended.
+pub const SPLIT_LIBRARY_FILE: &str = "finetype.dylib";
+/// The metadata trailer DuckDB appends to an extension, in a bundle shipped
+/// split. It carries the stamp [`read_stamp`] reads.
+pub const SPLIT_TRAILER_FILE: &str = "finetype.duckdb_extension.trailer";
 /// The model directory inside a bundle. `FINETYPE_MODEL_DIR` is pointed here.
 pub const MODEL_DIR: &str = "model";
 /// The per-label JSON Schema catalogue inside a bundle, as emitted by
@@ -518,6 +531,11 @@ impl FinetypeBundle {
     /// at the bundled model, `LOAD` it, and make it classify a column whose
     /// answer is known.
     ///
+    /// The extension is either [`EXTENSION_FILE`] or, when that is absent,
+    /// [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]. A split bundle is
+    /// checked part by part exactly as a joined one is checked whole, and only
+    /// then joined into a copy under [`cache_root`], which is what is loaded.
+    ///
     /// The last step is not ceremony. With no model reachable, the extension's
     /// classifier panics inside its own `catch_unwind` and `ft_profile` returns
     /// `unknown` at confidence 0 — which is indistinguishable, at the SQL
@@ -534,9 +552,17 @@ impl FinetypeBundle {
     pub fn open(dir: &Path, conn: &Connection) -> Result<Self, String> {
         let at = |what: &str, e: String| format!("finetype bundle {}: {what}: {e}", dir.display());
 
-        let ext = dir.join(EXTENSION_FILE);
-        let bytes = std::fs::read(&ext).map_err(|e| at(EXTENSION_FILE, e.to_string()))?;
-        let stamp = read_stamp(&bytes).map_err(|e| at(EXTENSION_FILE, e))?;
+        // The joined file wins when both layouts are present. The stamp is the
+        // last bytes of the joined file, which in a split bundle are the whole
+        // trailer file, so `read_stamp` reads either.
+        let split = !dir.join(EXTENSION_FILE).is_file() && dir.join(SPLIT_LIBRARY_FILE).is_file();
+        let stamped = if split {
+            SPLIT_TRAILER_FILE
+        } else {
+            EXTENSION_FILE
+        };
+        let bytes = std::fs::read(dir.join(stamped)).map_err(|e| at(stamped, e.to_string()))?;
+        let stamp = read_stamp(&bytes).map_err(|e| at(stamped, e))?;
 
         let platform: String = conn
             .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))
@@ -544,7 +570,7 @@ impl FinetypeBundle {
         let version: String = conn
             .query_row("SELECT version()", [], |r| r.get(0))
             .map_err(|e| at("version()", e.to_string()))?;
-        check_abi(&stamp, &platform, &version).map_err(|e| at(EXTENSION_FILE, e))?;
+        check_abi(&stamp, &platform, &version).map_err(|e| at(stamped, e))?;
 
         // ── Everything readable off disk is decided HERE, before the LOAD. ──
         //
@@ -575,6 +601,16 @@ impl FinetypeBundle {
             .map_err(|e| at(LABEL_MAP_FILE, e.to_string()))?;
         let coverage = catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
         coverage.accept().map_err(|e| at("coverage", e))?;
+
+        // The join comes after every check above, so it reads only parts the
+        // manifest has just passed. It writes outside the bundle, and nothing
+        // should be written for a bundle that is going to be refused.
+        let ext = if split {
+            let root = cache_root().map_err(|e| at("cache", e))?;
+            materialise_split(dir, &root).map_err(|e| at("cache", e))?
+        } else {
+            dir.join(EXTENSION_FILE)
+        };
 
         // ── From here the extension is running. ──
         let quoted = ext.to_string_lossy().replace('\'', "''");
@@ -1127,12 +1163,19 @@ impl TypeSource for FinetypeBundle {
 /// the macOS app bundle puts it under `Contents/Resources/` while the binary
 /// sits in `Contents/MacOS/`. Returns `None` when neither exists — a build
 /// packaged without a bundle runs with no type source rather than failing.
+///
+/// A directory counts when it holds the joined extension or both halves of a
+/// split one; [`FinetypeBundle::open`] takes either.
 #[must_use]
 pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [dir.join("finetype"), dir.join("../Resources/finetype")]
         .into_iter()
-        .find(|candidate| candidate.join(EXTENSION_FILE).is_file())
+        .find(|candidate| {
+            candidate.join(EXTENSION_FILE).is_file()
+                || (candidate.join(SPLIT_LIBRARY_FILE).is_file()
+                    && candidate.join(SPLIT_TRAILER_FILE).is_file())
+        })
 }
 
 /// The catalogue of the bundle in `dir`, when it reads.
@@ -1554,5 +1597,81 @@ mod tests {
         );
         assert_eq!(bundle_beside(&tmp.join("nowhere/brightfield")), None);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn bundle_beside_finds_a_split_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("Brightfield.app");
+        let res = app.join("Contents/Resources/finetype");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(&res).unwrap();
+        std::fs::write(res.join(SPLIT_LIBRARY_FILE), b"x").unwrap();
+        std::fs::write(res.join(SPLIT_TRAILER_FILE), b"x").unwrap();
+
+        assert_eq!(
+            bundle_beside(&app.join("Contents/MacOS/brightfield")),
+            Some(app.join("Contents/MacOS/../Resources/finetype"))
+        );
+
+        // Half a split bundle is not a bundle.
+        std::fs::remove_file(res.join(SPLIT_TRAILER_FILE)).unwrap();
+        assert_eq!(bundle_beside(&app.join("Contents/MacOS/brightfield")), None);
+    }
+
+    #[test]
+    fn a_split_bundle_missing_its_trailer_is_refused_by_name() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SPLIT_LIBRARY_FILE), b"a Mach-O").unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("no trailer");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+    }
+
+    /// A split bundle as packaging lays it out: the library, its trailer, and
+    /// the stamp the running DuckDB would accept unless `platform` says
+    /// otherwise.
+    fn split_bundle(conn: &Connection, platform: Option<&str>) -> tempfile::TempDir {
+        let running: String = conn
+            .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SPLIT_LIBRARY_FILE), b"a Mach-O").unwrap();
+        std::fs::write(
+            dir.path().join(SPLIT_TRAILER_FILE),
+            trailer(platform.unwrap_or(&running), "v1.0.0", "0.6.56", "C_STRUCT"),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_stamp_is_read_from_the_trailer_file_in_a_split_bundle() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, Some("nowhere_arch"));
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("wrong platform");
+        assert!(err.contains("nowhere_arch"), "{err}");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+        assert!(!err.contains("LOAD"), "it got as far as loading: {err}");
+    }
+
+    #[test]
+    fn a_split_part_that_fails_the_manifest_is_refused_before_load() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{}  {SPLIT_LIBRARY_FILE}\n", "0".repeat(64)),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the library is not the packaged one");
+        assert!(err.contains("is not the file that was packaged"), "{err}");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
     }
 }
