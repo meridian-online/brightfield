@@ -858,11 +858,11 @@ fn manifest_entries(dir: &Path) -> Result<Option<Vec<(String, String)>>, String>
 /// The hashes a split bundle's manifest records for its two parts, or `None`
 /// when the bundle has no manifest.
 ///
-/// [`verify_against_manifest`] checks the files a manifest lists
-/// (`a_split_bundle_whose_manifest_omits_a_part_is_refused_naming_it`), so a
-/// manifest that leaves out a part says nothing about it. A split bundle that
-/// carries a manifest must therefore list both parts; one with no manifest is
-/// locally assembled and passes, as a joined one does.
+/// [`verify_against_manifest`] hashes the files a manifest lists and no
+/// others, so a manifest that leaves out a part says nothing about it. A split
+/// bundle that carries a manifest must therefore list both parts
+/// (`a_split_bundle_whose_manifest_omits_a_part_is_refused_naming_it`); one
+/// with no manifest is locally assembled and passes, as a joined one does.
 fn recorded_part_hashes(dir: &Path) -> Result<Option<PartHashes>, String> {
     let Some(entries) = manifest_entries(dir)? else {
         return Ok(None);
