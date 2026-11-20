@@ -3,7 +3,7 @@
 # this Mac, from 1Password, with nothing for the person to do but sign in.
 #
 #   op signin
-#   eval "$(scripts/local-signing.sh setup)"   # exports the four BRIGHTFIELD_* variables
+#   exports="$(scripts/local-signing.sh setup)" && eval "$exports"
 #   scripts/package.sh ...
 #   scripts/local-signing.sh cleanup
 #
@@ -19,7 +19,9 @@
 # could sign code as Meridian without anyone knowing.
 #
 # `setup` prints only the export lines, on stdout. Progress goes to stderr, so
-# the eval above sees nothing else. No secret is ever printed: the values move
+# the eval above sees nothing else. The two-step form matters: `eval "$(...)"`
+# would swallow a failed setup, and package.sh would then sign ad-hoc without
+# saying so. No secret is ever printed: the values move
 # from `op read` into environment variables of one child process and nowhere
 # else.
 #
@@ -83,7 +85,9 @@ attachment_name() {
 
 # op_read <item id> <field or file name>
 op_read() {
-  quietly op read "op://${VAULT}/$1/$2" || refuse "cannot read a secret from the ${VAULT} vault."
+  # --no-newline keeps a binary attachment exact; a newline after the .p12 would
+  # sit past the end of its DER structure.
+  quietly op read --no-newline "op://${VAULT}/$1/$2" || refuse "cannot read a secret from the ${VAULT} vault."
 }
 
 setup() {
@@ -115,14 +119,16 @@ setup() {
   : > "$SCRATCH/github_env"
 
   echo "== local signing: setting up in ${SCRATCH}" >&2
-  # release-signing.sh's own output goes to stderr so stdout carries only the exports.
+  # release-signing.sh's own output goes to stderr so stdout carries only the
+  # exports. Its ::add-mask:: line carries the throwaway keychain's password,
+  # which only a CI log needs masked, so it is dropped before the terminal.
   if ! RUNNER_TEMP="$SCRATCH/runner" GITHUB_ENV="$SCRATCH/github_env" \
        MACOS_DEVELOPER_ID_P12_BASE64="$p12_b64" \
        MACOS_DEVELOPER_ID_P12_PASSWORD="$p12_pw" \
        APPLE_NOTARY_KEY_P8_BASE64="$p8_b64" \
        APPLE_NOTARY_KEY_ID="$key_id" \
        APPLE_NOTARY_ISSUER_ID="$issuer_id" \
-       "$HERE/release-signing.sh" setup >&2; then
+       "$HERE/release-signing.sh" setup 2>&1 | sed '/^::add-mask::/d' >&2; then
     echo "local-signing.sh: release-signing.sh setup failed; cleaning up." >&2
     cleanup >&2 || true
     exit 1
