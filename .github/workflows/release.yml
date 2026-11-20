@@ -528,7 +528,7 @@ jobs:
             artifacts/brightfield-*.dmg
             artifacts/brightfield-*.sha256
 
-  # The tap formula moves with the release instead of with somebody's memory.
+  # The tap cask moves with the release instead of with somebody's memory.
   #
   # Ported from the `update-homebrew` job in the finetype release workflow,
   # which drives Formula/finetype.rb in meridian-online/homebrew-tap today:
