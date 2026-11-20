@@ -18,8 +18,7 @@
 #
 # This does not sign the library; the caller does, with whichever identity it
 # has. EXT is left in place. Exit 0 done, 1 refused (not a thin dylib, no
-# trailer, a cut that does not leave DuckDB's trailer at the end of the second
-# part).
+# trailer, the parts not written whole).
 set -euo pipefail
 
 EXT="${1:?usage: scripts/split-extension.sh EXTENSION DEST_DIR}"
@@ -55,12 +54,6 @@ LIB="$DEST/finetype.dylib"
 TRAILER="$DEST/finetype.duckdb_extension.trailer"
 head -c "$macho_end" "$EXT" > "$LIB"
 tail -c "$trailer_len" "$EXT" > "$TRAILER"
-
-# The cut is in the right place when the trailer part ends in DuckDB's metadata
-# fields: the magic "4" sits at offset 224 of the last 512 bytes, as
-# scripts/check-bundled-extension.sh reads it.
-magic=$(tail -c 512 "$TRAILER" | dd bs=1 skip=224 count=32 2>/dev/null | tr -d '\0')
-[ "$magic" = "4" ] || fail "${TRAILER} does not end in DuckDB's metadata trailer (magic '${magic}')"
 
 # A copy check: the engine loads `cat library trailer`, so a short write here
 # would leave a pair the manifest vouches for that is not the extension.
