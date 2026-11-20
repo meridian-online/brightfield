@@ -1804,9 +1804,9 @@ mod tests {
     }
 
     /// A split bundle that passes the checks before the join is joined into a
-    /// copy under the cache folder it is given, keyed by the joined bytes' hash, and that
-    /// copy is what reaches `LOAD`. The parts here are not a real extension,
-    /// so the `LOAD` fails, and its error names the copy.
+    /// copy under the cache folder it is given, keyed by the joined bytes'
+    /// hash, and that copy is what reaches `LOAD`. The parts here are not a
+    /// real extension, so the `LOAD` fails, and its error names the copy.
     #[test]
     fn a_split_bundle_is_loaded_from_its_joined_copy_in_the_cache() {
         use sha2::{Digest, Sha256};
