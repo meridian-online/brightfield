@@ -235,7 +235,17 @@ says() { # says <description> <needle>
 }
 
 echo "the real pairs pass, and say what they fetched:"
-cask "$TMP/good.rb" 0.0.1 "$ARM_SHA" "$INTEL_SHA"
+# The passing and wrong-digest fixtures come from the real generator, so a
+# change to how it writes the stanzas this check reads turns these red instead
+# of leaving a hand-written copy green. The hand-written helper above is for
+# the malformed shapes the generator refuses to write.
+real_cask() { # real_cask <path> <tag> <arm-sha> <intel-sha>
+	"$HERE/write-brightfield-cask.sh" "$2" "$BASE/$2" "$3" "$4" >"$1" || {
+		echo "selftest: the generator refused to write $1" >&2
+		exit 1
+	}
+}
+real_cask "$TMP/good.rb" v0.0.1 "$ARM_SHA" "$INTEL_SHA"
 if run 0 "both architectures fetch and match" -- --min-pairs 2 "$TMP/good.rb"; then
 	says "the output names the arm url" "$ARM_URL"
 	says "the output names the intel url" "$INTEL_URL"
@@ -250,7 +260,7 @@ fi
 
 echo
 echo "a wrong checksum goes red, and the message is usable:"
-cask "$TMP/wrong-intel.rb" 0.0.1 "$ARM_SHA" "$WRONG_INTEL_SHA"
+real_cask "$TMP/wrong-intel.rb" v0.0.1 "$ARM_SHA" "$WRONG_INTEL_SHA"
 if run 1 "the intel checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-intel.rb"; then
 	says "the message names the url" "$INTEL_URL"
 	says "the message names the declared digest" "$WRONG_INTEL_SHA"
@@ -260,7 +270,7 @@ fi
 # The arm digest, not the intel one: a check that stopped at the first pair
 # would pass the case above and fail this one, and a check that only ever
 # looked at the last pair would do the reverse.
-cask "$TMP/wrong-arm.rb" 0.0.1 "$WRONG_ARM_SHA" "$INTEL_SHA"
+real_cask "$TMP/wrong-arm.rb" v0.0.1 "$WRONG_ARM_SHA" "$INTEL_SHA"
 if run 1 "the arm checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-arm.rb"; then
 	says "the message names the arm url" "$ARM_URL"
 	says "the message names the declared digest" "$WRONG_ARM_SHA"
@@ -269,7 +279,7 @@ fi
 
 echo
 echo "a url nobody can download goes red:"
-cask "$TMP/missing.rb" 0.0.2 "$ARM_SHA" "$INTEL_SHA"
+real_cask "$TMP/missing.rb" v0.0.2 "$ARM_SHA" "$INTEL_SHA"
 if run 1 "the intel image was never published" -- --min-pairs 2 "$TMP/missing.rb"; then
 	says "the message names the url" "$MISSING_URL"
 	says "the message names the status" "HTTP 404"
