@@ -173,6 +173,7 @@ cat >"$TMP/installed-brightfield" <<'BIN'
 #!/usr/bin/env bash
 case "$1" in
 --check-type-source)
+	[[ -n "${FAKE_LAUNCH_SLEEP:-}" ]] && sleep "$FAKE_LAUNCH_SLEEP"
 	echo "fixture-installed-check: ${FAKE_CHECK_MSG:-came up}"
 	exit "${FAKE_CHECK_RC:-0}"
 	;;
@@ -302,6 +303,10 @@ lacks "and does not blame the engine check" "--check-engine\` exited"
 run 1 "the engine check red alone" FAKE_ENGINE_RC=1 -- --tag v0.1.6
 has "the failure names the engine check" "--check-engine\` exited 1"
 lacks "and does not blame the type-source check" "--check-type-source\` exited"
+
+run 1 "a launch that never returns is cut off and named" FAKE_LAUNCH_SLEEP=30 BRIGHTFIELD_LAUNCH_LIMIT_SECONDS=1 -- --tag v0.1.6
+has "the failure names the launch as blocked" "the launch is blocked, most likely waiting on Gatekeeper"
+has "and names the launch" "brightfield --check-type-source\` was still running after 1 s"
 
 run 1 "a link to the app's own binary, the rest green" FAKE_LINK_TO_APP=1 -- --tag v0.1.6
 has "the failure names the link" "not the cask's exec shim"

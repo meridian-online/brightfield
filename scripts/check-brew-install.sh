@@ -286,8 +286,16 @@ run_installed() {
 	echo
 	echo "--- $CASK_NAME $1, from the linked command ($BIN)"
 	if [[ -x "$BIN" ]]; then
-		"$BIN" "$1" 2>&1
+		# Bounded, since a launch Gatekeeper blocks, or a locked session, waits for
+		# an answer nobody gives, and the job would show only its own timeout.
+		# macOS has no timeout(1); perl's alarm is the SIGALRM kill. The limit is
+		# overridable for the self-test only.
+		perl -e 'alarm shift; exec @ARGV' -- "${BRIGHTFIELD_LAUNCH_LIMIT_SECONDS:-120}" "$BIN" "$1" 2>&1
 		rc=$?
+		if [[ $rc -eq 142 ]]; then
+			echo "FAIL  \`$CASK_NAME $1\` was still running after ${BRIGHTFIELD_LAUNCH_LIMIT_SECONDS:-120} s: the launch is blocked, most likely waiting on Gatekeeper or a locked session" >&2
+			exit 1
+		fi
 	else
 		echo "no executable at $BIN"
 		rc=127
