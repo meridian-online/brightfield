@@ -221,10 +221,12 @@ if "${JAIL[@]}" curl -sS --max-time 10 https://example.com -o /dev/null 2>/dev/n
 fi
 echo "   ok: curl cannot reach the network in the jail"
 
-# Each leg sets four things and nothing else: PKG (the directory to run from),
-# EXE (the executable, relative to PKG), EXAMPLES (where the specs live,
-# relative to PKG) and REMOTE_SPEC (the negative case's spec, likewise
-# relative to PKG). Everything below is common.
+# Each leg sets these and nothing else: PKG (the directory to run from), EXE
+# (the executable, relative to PKG), EXAMPLES (where the specs live, relative
+# to PKG), REMOTE_SPEC (the negative case's spec, likewise relative to PKG),
+# FTBUNDLE (the FineType bundle, likewise) and APP (the application bundle
+# that seals FTBUNDLE, relative to PKG, or empty when nothing seals it).
+# Everything below is common.
 
 # The negative case's subject, and the location its refusal has to name. The
 # URL is written out rather than read from the spec so that a spec silently
@@ -241,6 +243,7 @@ case "$ARTIFACT" in
     EXAMPLES="examples"
     REMOTE_SPEC="examples/remote/edgar-gleif-crosswalk.yaml"
     FTBUNDLE="finetype"
+    APP=""
     [ -x "$PKG/$EXE" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
     ;;
   *.dmg)
@@ -256,6 +259,7 @@ case "$ARTIFACT" in
     EXAMPLES="Brightfield.app/Contents/Resources/examples"
     REMOTE_SPEC="Brightfield.app/Contents/Resources/examples/remote/edgar-gleif-crosswalk.yaml"
     FTBUNDLE="Brightfield.app/Contents/Resources/finetype"
+    APP="Brightfield.app"
     [ -x "$PKG/$EXE" ] || { echo "no executable inside Brightfield.app on the image"; exit 1; }
     ;;
   *)
@@ -398,6 +402,26 @@ p, enc = sys.argv[1], sys.argv[2]
 c = json.load(open(p)); c["value_embed_model"] = enc
 json.dump(c, open(p, "w"), indent=2)' "$ESC_MODEL/config.json" "$OUTSIDE/$ENCODER"
   rm -f "$TMP/escape/${FTBUNDLE}/bundle-manifest.sha256"
+  # THE COPY IS SIGNED AGAIN, ad-hoc, when an application bundle seals the
+  # model. Brightfield.app's signature covers every file under Resources, so the
+  # rewritten config and the missing encoder break its seal, and macOS kills a
+  # signed app whose seal no longer matches its contents: on a Developer ID
+  # build the control below died of SIGKILL (exit 137) and Gatekeeper called
+  # the copy damaged. Ad-hoc builds, the only ones this case ran on before, ran
+  # the broken copy without complaint. The new signature is the one
+  # scripts/package.sh gives an ad-hoc app, without the hardened runtime, so
+  # the copy runs as an ad-hoc build would. Only the bundle's own seal and main
+  # executable change; the nested FineType library and DuckDB CLI keep their
+  # signatures. The com.apple.provenance attribute the copy carries from the
+  # image is left alone: a re-signed copy was measured running with it. The
+  # tarball needs none of this, since nothing seals its finetype directory and
+  # planting does not touch its binary.
+  if [ -n "$APP" ]; then
+    codesign --force --entitlements "${HERE}/../packaging/Brightfield.entitlements" \
+      --sign - "$TMP/escape/$APP" 2>&1 | sed 's/^/   /'
+    codesign --verify --strict "$TMP/escape/$APP" || {
+      echo "   FAILED: the planted copy of ${APP} would not take an ad-hoc signature"; exit 1; }
+  fi
 
   esc_open=$(type_source "$TMP/escape" "$TMP/escape-open.log" "${JAIL[@]}")
   if [ "$esc_open" -ne 0 ]; then
@@ -438,9 +462,19 @@ is_png "$TMP/parquet.png" 20000
 # One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
 # match can leave find dying of SIGPIPE, and the pipeline's 141 would read as
 # "nothing installed".
-if [ -n "$(find "$TMP/home" -name '*.duckdb_extension' 2>/dev/null)" ]; then
+#
+# FineType's own cache copy is not an install and is left out. The app ships
+# the extension split, and the engine joins the parts into
+# Library/Caches/online.meridian.brightfield/finetype/<sha256>/ under HOME
+# before LOAD; it comes from the artifact, not the network.
+FT_CACHE="$TMP/home/Library/Caches/online.meridian.brightfield/finetype"
+if [ -n "$(find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null)" ]; then
   echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
+  find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null | sed 's/^/     /'
   exit 1
+fi
+if [ -d "$FT_CACHE" ]; then
+  echo "   ok: FineType joined from the artifact into ${FT_CACHE#"$TMP"/}, offline"
 fi
 
 echo "== run 3: a spec that needs the network, jailed — it must REFUSE"

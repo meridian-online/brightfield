@@ -55,6 +55,9 @@ use std::path::{Path, PathBuf};
 use duckdb::arrow::array::{Array, Float64Array, StringArray, StructArray};
 use duckdb::Connection;
 
+mod split;
+pub(crate) use split::{materialise_split, PartHashes};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE ANSWER
 // ═══════════════════════════════════════════════════════════════════════════
@@ -471,12 +474,25 @@ pub fn check_abi(
 // THE FINETYPE BUNDLE
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The three things a bundle directory must contain.
+/// The extension as one file, which is how the tarball ships it.
 ///
-/// Named here rather than spelled inline so `scripts/package.sh` and this
-/// module cannot drift apart silently — the packaging script stages exactly
-/// these paths and this is what refuses a bundle missing any of them.
+/// A bundle holds the extension, [`MODEL_DIR`] and [`SCHEMA_CATALOGUE`]. The
+/// app ships the extension as [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]
+/// instead, and [`FinetypeBundle::open`] refuses a bundle missing whichever
+/// files its layout needs. `scripts/package.sh` and
+/// `scripts/check-bundled-extension.sh` spell the same names, and a rename
+/// here has to be made there too.
 pub const EXTENSION_FILE: &str = "finetype.duckdb_extension";
+/// The extension's shared library alone, cut where DuckDB's metadata trailer
+/// begins, in a bundle shipped split.
+///
+/// A signed macOS app ships the extension this way because `codesign` cannot
+/// sign a file with bytes after the end of its Mach-O. [`EXTENSION_FILE`] is
+/// this file with [`SPLIT_TRAILER_FILE`] appended.
+pub const SPLIT_LIBRARY_FILE: &str = "finetype.dylib";
+/// The metadata trailer DuckDB appends to an extension, in a bundle shipped
+/// split. It carries the stamp [`read_stamp`] reads.
+pub const SPLIT_TRAILER_FILE: &str = "finetype.duckdb_extension.trailer";
 /// The model directory inside a bundle. `FINETYPE_MODEL_DIR` is pointed here.
 pub const MODEL_DIR: &str = "model";
 /// The per-label JSON Schema catalogue inside a bundle, as emitted by
@@ -518,6 +534,13 @@ impl FinetypeBundle {
     /// at the bundled model, `LOAD` it, and make it classify a column whose
     /// answer is known.
     ///
+    /// The extension is either [`EXTENSION_FILE`] or, when that is absent,
+    /// [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]. A split bundle's
+    /// parts go through the checks a joined file does, and after them are
+    /// joined into a copy under the user's cache folder,
+    /// `~/Library/Caches/online.meridian.brightfield/finetype/`, which is what
+    /// is loaded.
+    ///
     /// The last step is not ceremony. With no model reachable, the extension's
     /// classifier panics inside its own `catch_unwind` and `ft_profile` returns
     /// `unknown` at confidence 0 — which is indistinguishable, at the SQL
@@ -529,14 +552,49 @@ impl FinetypeBundle {
     /// # Errors
     ///
     /// A missing file, an ABI the running DuckDB cannot take, a `LOAD` DuckDB
-    /// refuses, or a canary that comes back wrong. Every one names the bundle
-    /// directory.
+    /// refuses, or a canary that comes back wrong. A split bundle can also
+    /// fail for want of its cache copy: `HOME` unset, empty or relative, or a
+    /// cache folder that cannot be written, which the error names. Every one
+    /// names the bundle directory.
     pub fn open(dir: &Path, conn: &Connection) -> Result<Self, String> {
+        Self::open_with_cache_root(dir, conn, split::cache_root)
+    }
+
+    /// [`Self::open`] with the cache folder a split bundle is joined under
+    /// passed in, so a test can drive the join and the `LOAD` after it without
+    /// writing under the real `HOME`. A split bundle calls `cache_root` after
+    /// its checks have passed, to place the joined copy.
+    fn open_with_cache_root(
+        dir: &Path,
+        conn: &Connection,
+        cache_root: impl FnOnce() -> Result<PathBuf, String>,
+    ) -> Result<Self, String> {
         let at = |what: &str, e: String| format!("finetype bundle {}: {what}: {e}", dir.display());
 
-        let ext = dir.join(EXTENSION_FILE);
-        let bytes = std::fs::read(&ext).map_err(|e| at(EXTENSION_FILE, e.to_string()))?;
-        let stamp = read_stamp(&bytes).map_err(|e| at(EXTENSION_FILE, e))?;
+        // The joined file wins when both layouts are present. Either split part
+        // alone makes the bundle split, so a bundle that has lost the other one
+        // is refused naming it rather than as a missing joined file. The stamp
+        // is the last bytes of the joined file, which in a split bundle are the
+        // whole trailer file, so `read_stamp` reads either.
+        let split = !dir.join(EXTENSION_FILE).is_file()
+            && (dir.join(SPLIT_LIBRARY_FILE).is_file() || dir.join(SPLIT_TRAILER_FILE).is_file());
+        if split {
+            for part in [SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE] {
+                if !dir.join(part).is_file() {
+                    return Err(at(
+                        part,
+                        "missing, and a split bundle needs both its library and its trailer".into(),
+                    ));
+                }
+            }
+        }
+        let stamped = if split {
+            SPLIT_TRAILER_FILE
+        } else {
+            EXTENSION_FILE
+        };
+        let bytes = std::fs::read(dir.join(stamped)).map_err(|e| at(stamped, e.to_string()))?;
+        let stamp = read_stamp(&bytes).map_err(|e| at(stamped, e))?;
 
         let platform: String = conn
             .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))
@@ -544,7 +602,7 @@ impl FinetypeBundle {
         let version: String = conn
             .query_row("SELECT version()", [], |r| r.get(0))
             .map_err(|e| at("version()", e.to_string()))?;
-        check_abi(&stamp, &platform, &version).map_err(|e| at(EXTENSION_FILE, e))?;
+        check_abi(&stamp, &platform, &version).map_err(|e| at(stamped, e))?;
 
         // ── Everything readable off disk is decided HERE, before the LOAD. ──
         //
@@ -555,6 +613,11 @@ impl FinetypeBundle {
         // all, which is the difference between these checks being exercised on
         // every CI run and only when somebody has a 30 MB artefact to hand.
         verify_against_manifest(dir, conn).map_err(|e| at(MANIFEST_FILE, e))?;
+        let recorded = if split {
+            recorded_part_hashes(dir).map_err(|e| at(MANIFEST_FILE, e))?
+        } else {
+            None
+        };
 
         let model = dir.join(MODEL_DIR);
         if !model.join("model.safetensors").exists() {
@@ -575,6 +638,18 @@ impl FinetypeBundle {
             .map_err(|e| at(LABEL_MAP_FILE, e.to_string()))?;
         let coverage = catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
         coverage.accept().map_err(|e| at("coverage", e))?;
+
+        // The join comes after the checks above because it writes outside the
+        // bundle, and nothing should be written for a bundle that is going to
+        // be refused. It reads the parts from disk again, so it is handed the
+        // manifest's hashes and checks the bytes it joins against them: what
+        // lands in the cache, and is loaded, is what the manifest recorded.
+        let ext = if split {
+            let root = cache_root().map_err(|e| at("cache", e))?;
+            materialise_split(dir, &root, recorded.as_ref()).map_err(|e| at("cache", e))?
+        } else {
+            dir.join(EXTENSION_FILE)
+        };
 
         // ── From here the extension is running. ──
         let quoted = ext.to_string_lossy().replace('\'', "''");
@@ -747,11 +822,37 @@ pub const LABEL_MAP_FILE: &str = "label_map.json";
 ///
 /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
 pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), String> {
-    let manifest = dir.join(MANIFEST_FILE);
-    let Ok(text) = std::fs::read_to_string(&manifest) else {
+    let Some(entries) = manifest_entries(dir)? else {
         return Ok(());
     };
-    let mut checked = 0usize;
+    for (want, rel) in &entries {
+        let path = dir.join(rel);
+        let got: String = conn
+            .query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![path.to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("{rel}: cannot be read to hash it: {e}"))?;
+        if got != *want {
+            return Err(format!(
+                "{rel} is not the file that was packaged (recorded {want}, found {got})"
+            ));
+        }
+    }
+    if entries.is_empty() {
+        return Err("the manifest names no files, so it verified nothing".to_string());
+    }
+    Ok(())
+}
+
+/// The bundle manifest's entries as `(lowercase sha256, path)`, or `None` when
+/// the bundle has no manifest.
+fn manifest_entries(dir: &Path) -> Result<Option<Vec<(String, String)>>, String> {
+    let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST_FILE)) else {
+        return Ok(None);
+    };
+    let mut entries = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -768,25 +869,34 @@ pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), Stri
         if rel.contains("..") || rel.starts_with('/') {
             return Err(format!("line {}: {rel:?} is not inside the bundle", n + 1));
         }
-        let path = dir.join(rel);
-        let got: String = conn
-            .query_row(
-                "SELECT lower(sha256(content)) FROM read_blob(?)",
-                duckdb::params![path.to_string_lossy().as_ref()],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("{rel}: cannot be read to hash it: {e}"))?;
-        if got != want.to_ascii_lowercase() {
-            return Err(format!(
-                "{rel} is not the file that was packaged (recorded {want}, found {got})"
-            ));
-        }
-        checked += 1;
+        entries.push((want.to_ascii_lowercase(), rel.to_string()));
     }
-    if checked == 0 {
-        return Err("the manifest names no files, so it verified nothing".to_string());
-    }
-    Ok(())
+    Ok(Some(entries))
+}
+
+/// The hashes a split bundle's manifest records for its two parts, or `None`
+/// when the bundle has no manifest.
+///
+/// [`verify_against_manifest`] hashes the files a manifest lists, so a part
+/// the manifest leaves out goes unchecked. A split
+/// bundle that carries a manifest must therefore list both parts
+/// (`a_split_bundle_whose_manifest_omits_a_part_is_refused_naming_it`); one
+/// with no manifest is locally assembled and passes, as a joined one does.
+fn recorded_part_hashes(dir: &Path) -> Result<Option<PartHashes>, String> {
+    let Some(entries) = manifest_entries(dir)? else {
+        return Ok(None);
+    };
+    let recorded = |part: &str| {
+        entries
+            .iter()
+            .find(|(_, rel)| rel == part)
+            .map(|(hash, _)| hash.clone())
+            .ok_or_else(|| format!("records no hash for {part}, so that part is unverified"))
+    };
+    Ok(Some(PartHashes {
+        library: recorded(SPLIT_LIBRARY_FILE)?,
+        trailer: recorded(SPLIT_TRAILER_FILE)?,
+    }))
 }
 
 /// How much of the model's label set the schema catalogue describes.
@@ -1127,12 +1237,21 @@ impl TypeSource for FinetypeBundle {
 /// the macOS app bundle puts it under `Contents/Resources/` while the binary
 /// sits in `Contents/MacOS/`. Returns `None` when neither exists — a build
 /// packaged without a bundle runs with no type source rather than failing.
+///
+/// A directory counts when it holds the joined extension or either half of a
+/// split one. Half a split bundle is still found, so that
+/// [`FinetypeBundle::open`] refuses it naming the missing part instead of the
+/// app running with no type source and no word why.
 #[must_use]
 pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [dir.join("finetype"), dir.join("../Resources/finetype")]
         .into_iter()
-        .find(|candidate| candidate.join(EXTENSION_FILE).is_file())
+        .find(|candidate| {
+            [EXTENSION_FILE, SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE]
+                .iter()
+                .any(|file| candidate.join(file).is_file())
+        })
 }
 
 /// The catalogue of the bundle in `dir`, when it reads.
@@ -1554,5 +1673,198 @@ mod tests {
         );
         assert_eq!(bundle_beside(&tmp.join("nowhere/brightfield")), None);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn bundle_beside_finds_a_split_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("Brightfield.app");
+        let res = app.join("Contents/Resources/finetype");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(&res).unwrap();
+        std::fs::write(res.join(SPLIT_LIBRARY_FILE), b"x").unwrap();
+        std::fs::write(res.join(SPLIT_TRAILER_FILE), b"x").unwrap();
+
+        assert_eq!(
+            bundle_beside(&app.join("Contents/MacOS/brightfield")),
+            Some(app.join("Contents/MacOS/../Resources/finetype"))
+        );
+
+        // Half a split bundle is still found, so opening it can say what is
+        // missing.
+        std::fs::remove_file(res.join(SPLIT_TRAILER_FILE)).unwrap();
+        assert_eq!(
+            bundle_beside(&app.join("Contents/MacOS/brightfield")),
+            Some(app.join("Contents/MacOS/../Resources/finetype"))
+        );
+        std::fs::remove_file(res.join(SPLIT_LIBRARY_FILE)).unwrap();
+        assert_eq!(bundle_beside(&app.join("Contents/MacOS/brightfield")), None);
+    }
+
+    #[test]
+    fn a_split_bundle_missing_its_trailer_is_refused_by_name() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SPLIT_LIBRARY_FILE), b"a Mach-O").unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("no trailer");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+
+        // And the mirror case: a trailer whose library is gone.
+        std::fs::remove_file(dir.path().join(SPLIT_LIBRARY_FILE)).unwrap();
+        std::fs::write(dir.path().join(SPLIT_TRAILER_FILE), b"a trailer").unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("no library");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+        assert!(!err.contains(EXTENSION_FILE), "{err}");
+    }
+
+    /// A split bundle as packaging lays it out: the library, its trailer, and
+    /// the stamp the running DuckDB would accept unless `platform` says
+    /// otherwise.
+    fn split_bundle(conn: &Connection, platform: Option<&str>) -> tempfile::TempDir {
+        let running: String = conn
+            .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SPLIT_LIBRARY_FILE), b"a Mach-O").unwrap();
+        std::fs::write(
+            dir.path().join(SPLIT_TRAILER_FILE),
+            trailer(platform.unwrap_or(&running), "v1.0.0", "0.6.56", "C_STRUCT"),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_stamp_is_read_from_the_trailer_file_in_a_split_bundle() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, Some("nowhere_arch"));
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("wrong platform");
+        assert!(err.contains("nowhere_arch"), "{err}");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+        assert!(!err.contains("LOAD"), "it got as far as loading: {err}");
+    }
+
+    #[test]
+    fn a_split_part_that_fails_the_manifest_is_refused_before_load() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{}  {SPLIT_LIBRARY_FILE}\n", "0".repeat(64)),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the library is not the packaged one");
+        assert!(err.contains("is not the file that was packaged"), "{err}");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+    }
+
+    #[test]
+    fn a_split_bundle_whose_manifest_omits_a_part_is_refused_naming_it() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        let hash = |name: &str| -> String {
+            conn.query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![dir.path().join(name).to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let (library, trailer) = (hash(SPLIT_LIBRARY_FILE), hash(SPLIT_TRAILER_FILE));
+
+        // Every line it has is true, but it says nothing about the trailer.
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{library}  {SPLIT_LIBRARY_FILE}\n"),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the trailer is unrecorded");
+        assert!(err.contains(MANIFEST_FILE), "{err}");
+        assert!(err.contains(SPLIT_TRAILER_FILE), "{err}");
+
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!("{trailer}  {SPLIT_TRAILER_FILE}\n"),
+        )
+        .unwrap();
+        let err = FinetypeBundle::open(dir.path(), &conn)
+            .err()
+            .expect("the library is unrecorded");
+        assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+    }
+
+    /// A split bundle that passes the checks before the join is joined into a
+    /// copy under the cache folder it is given, keyed by the joined bytes'
+    /// hash, and that copy is what reaches `LOAD`. The parts here are not a
+    /// real extension, so the `LOAD` fails, and its error names the copy.
+    #[test]
+    fn a_split_bundle_is_loaded_from_its_joined_copy_in_the_cache() {
+        use sha2::{Digest, Sha256};
+
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        let model = dir.path().join(MODEL_DIR);
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(model.join("model.safetensors"), b"weights").unwrap();
+        std::fs::write(
+            model.join(LABEL_MAP_FILE),
+            r#"["identity.person.email", "representation.text.plain_text"]"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(SCHEMA_CATALOGUE), CATALOGUE).unwrap();
+
+        // A manifest over both parts, so the join runs against recorded hashes
+        // as it does in a packaged app.
+        let hash = |name: &str| -> String {
+            conn.query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![dir.path().join(name).to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!(
+                "{}  {SPLIT_LIBRARY_FILE}\n{}  {SPLIT_TRAILER_FILE}\n",
+                hash(SPLIT_LIBRARY_FILE),
+                hash(SPLIT_TRAILER_FILE)
+            ),
+        )
+        .unwrap();
+
+        let mut joined = std::fs::read(dir.path().join(SPLIT_LIBRARY_FILE)).unwrap();
+        joined.extend_from_slice(&std::fs::read(dir.path().join(SPLIT_TRAILER_FILE)).unwrap());
+        let key: String = Sha256::digest(&joined)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path().join("finetype");
+        let err = FinetypeBundle::open_with_cache_root(dir.path(), &conn, || Ok(root.clone()))
+            .err()
+            .expect("synthesised parts are not an extension DuckDB can load");
+
+        let copy = root.join(&key).join(EXTENSION_FILE);
+        assert_eq!(
+            std::fs::read(&copy).expect("the joined copy is written under the given root"),
+            joined
+        );
+        assert!(err.contains(": LOAD: "), "it failed before loading: {err}");
+        assert!(
+            err.contains(copy.to_string_lossy().as_ref()),
+            "the LOAD was not of the cache copy: {err}"
+        );
     }
 }

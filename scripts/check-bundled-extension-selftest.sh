@@ -186,6 +186,49 @@ expect_fail "an extension for another platform" "built for 'linux_amd64'" \
   "$TMP/wrongarch" osx_arm64
 expect_pass "the same extension against its own platform" "$TMP/wrongarch" linux_amd64
 
+echo "== a bundle that ships the extension split in two"
+# The app's layout: the extension's Mach-O alone, signed, and DuckDB's metadata
+# trailer beside it as data, because codesign cannot sign a file with bytes
+# after its Mach-O. The fixture cuts the trailer at its last 512 bytes, which is
+# where the check reads it; scripts/split-extension.sh cuts a real extension at
+# the end of __LINKEDIT instead, and the trailer it leaves is longer.
+make_split_bundle() {
+  local dir="$1" ext
+  make_bundle "$dir"
+  ext="$dir/finetype.duckdb_extension"
+  head -c "$(($(wc -c < "$ext") - 512))" "$ext" > "$dir/finetype.dylib"
+  tail -c 512 "$ext" > "$dir/finetype.duckdb_extension.trailer"
+  rm "$ext"
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - "$dir/finetype.dylib" 2>/dev/null
+  fi
+}
+
+for missing in finetype.dylib finetype.duckdb_extension.trailer; do
+  make_split_bundle "$TMP/split-missing"
+  rm "$TMP/split-missing/$missing"
+  expect_fail "a split bundle without ${missing}" "carries no ${missing}" "$TMP/split-missing"
+done
+
+# codesign is a macOS tool and the hygiene job that runs this file is Linux, so
+# the two cases that need it run only where it is: the local gate and the
+# nightly, both on macOS. Without codesign the check refuses a split bundle
+# rather than passing one it could not verify, and that refusal is asserted
+# instead.
+if command -v codesign >/dev/null 2>&1; then
+  make_split_bundle "$TMP/split"
+  expect_pass "a split bundle whose library verifies" "$TMP/split" osx_arm64 0.6.56
+
+  make_split_bundle "$TMP/split-tampered"
+  printf 'x' >> "$TMP/split-tampered/finetype.dylib"
+  expect_fail "a split bundle whose library fails strict verification" \
+    "finetype.dylib does not pass codesign --verify --strict" "$TMP/split-tampered"
+else
+  make_split_bundle "$TMP/split"
+  expect_fail "a split bundle where codesign cannot verify it" "codesign is not on PATH" "$TMP/split"
+  echo "  skip a split bundle that verifies, and one that does not: no codesign on $(uname -s)"
+fi
+
 echo "== an extension that is not the pinned FineType release"
 # The third argument is what scripts/package.sh passes from
 # packaging/finetype-pin.env. Without this comparison the pin is a string two

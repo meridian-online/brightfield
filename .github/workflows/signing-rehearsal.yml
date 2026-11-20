@@ -23,9 +23,13 @@
 #      timestamp, without a keychain prompt, and package.sh reaches
 #      `notarytool submit` — where Apple refuses the throwaway key, and the job
 #      requires that it does, since it means the step after signing ran;
-#   4. cleanup deletes the keychain and takes it off the search list.
-# What it cannot prove is that Apple accepts the result: that waits on the real
-# certificate and the real key.
+#   4. the nested code carries what notarisation needs: FineType's library
+#      signed with the rehearsal identity, the runtime flag and a timestamp,
+#      the DuckDB CLI with DuckDB Foundation's Developer ID, and the app's
+#      library-validation entitlement;
+#   5. cleanup deletes the keychain and takes it off the search list.
+# What it cannot prove is that Apple accepts the result: that waits on a real
+# certificate and key. A bundle of this shape was accepted with Meridian's.
 #
 # By hand only: `gh workflow run signing-rehearsal.yml --ref <branch>`, once
 # this file is on the default branch. It puts a keychain on the search list,
@@ -155,7 +159,9 @@ jobs:
         run: scripts/fetch-duckdb-cli.sh aarch64-apple-darwin "${RUNNER_TEMP}/duckdb-cli"
 
       # package.sh must fail, and at notarytool submit: signing both artefacts
-      # comes before it, and stapling and the disk image after it.
+      # comes before it, and stapling and the disk image after it. It fails
+      # there only because the throwaway key is refused; with a real key the
+      # same bundle is accepted.
       - name: Package signs both artefacts and stops at Apple's refusal
         env:
           BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
@@ -196,16 +202,49 @@ jobs:
             grep -q '^Timestamp=' <<<"$info"
           done
 
-      # A report, not a gate. package.sh signs the bundle and the bare Mach-O
-      # with the identity, and leaves the code nested in the bundle as it was
-      # staged: the DuckDB CLI with its upstream Developer ID signature, and the
-      # FineType extension ad-hoc, because its DuckDB metadata trailer sits past
-      # the signature. Notarisation refuses nested code without a Developer ID
-      # signature and a timestamp, and the hardened runtime's library
-      # validation refuses to load an extension signed by another team. Making
-      # the nested code pass is separate work; this step writes down, on every
-      # rehearsal, what each nested Mach-O carries, so that work starts from
-      # the record rather than from the first signed tag.
+      # The code nested in the bundle, asserted. Notarisation refuses nested
+      # code that lacks a Developer ID signature and a secure timestamp, and
+      # the hardened runtime's library validation refuses to load an extension
+      # signed by another team. package.sh therefore ships FineType as a
+      # library signed with the identity, the runtime flag and a timestamp, and
+      # leaves the DuckDB CLI with DuckDB Foundation's own Developer ID
+      # signature, which already passes. The app also carries the one
+      # entitlement, set to true, that lets its in-process engine load the
+      # extensions it downloads at run time, which other teams signed or which
+      # are ad-hoc. These assertions are what the rehearsal can know about
+      # notarisation without Apple's answer.
+      - name: The nested code and the entitlement are what notarisation needs
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          APP="dist/brightfield-${TAG}-aarch64-apple-darwin.image/Brightfield.app"
+          lib="$APP/Contents/Resources/finetype/finetype.dylib"
+          echo "== ${lib}"
+          codesign --verify --strict "$lib"
+          info=$(codesign -dvv "$lib" 2>&1)
+          echo "$info"
+          grep -q '^Authority=Brightfield signing rehearsal (self-signed)$' <<<"$info"
+          grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]*\(runtime\)' <<<"$info"
+          grep -q '^Timestamp=' <<<"$info"
+          duck="$APP/Contents/Helpers/duckdb"
+          echo "== ${duck}"
+          info=$(codesign -dvv "$duck" 2>&1)
+          echo "$info"
+          grep -Fxq 'Authority=Developer ID Application: Stichting DuckDB Foundation (7NCTQWA3HA)' <<<"$info"
+          grep -q '^Timestamp=' <<<"$info"
+          echo "== entitlements on ${APP}"
+          ents="${RUNNER_TEMP}/entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$ents"
+          cat "$ents"; echo
+          # PlistBuddy, because its key paths split on ':' and this key is full
+          # of dots. The value must be true: a key present as false grants
+          # nothing.
+          value=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.disable-library-validation' "$ents")
+          test "$value" = true
+
+      # A table for the run summary: what each Mach-O nested in the bundle
+      # carries, so a reader sees the whole bundle at a glance. The step above
+      # asserts; this one only reports.
       - name: Report the signature on each Mach-O nested in the bundle
         env:
           TAG: ${{ steps.version.outputs.tag }}

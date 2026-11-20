@@ -675,6 +675,7 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
 pub const BREW_INSTALL_BRANCH_PATHS: &[&str] = &[
     "scripts/package.sh",
     "scripts/set-extension-rpath-id.sh",
+    "scripts/lib/extension-macho-end.sh",
     "scripts/write-brightfield-formula.sh",
     "scripts/check-formula-layout.sh",
     "scripts/check-brew-install.sh",
@@ -692,6 +693,9 @@ pub const SIGNING_REHEARSAL_PATHS: &[&str] = &[
     "scripts/release-signing.sh",
     "scripts/package.sh",
     "scripts/set-extension-rpath-id.sh",
+    "scripts/split-extension.sh",
+    "scripts/lib/extension-macho-end.sh",
+    "packaging/Brightfield.entitlements",
     "scripts/fetch-finetype-bundle.sh",
     "scripts/fetch-duckdb-cli.sh",
     "scripts/finetype-pin.sh",

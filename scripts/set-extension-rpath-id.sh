@@ -50,13 +50,11 @@ case "$old_id" in
 esac
 new_id="@rpath/${old_id##*/}"
 
-# Where __LINKEDIT ends is where the Mach-O ends; everything after it is the
-# trailer. The linker writes __LINKEDIT as the last segment in the file.
-linkedit_end=$(otool -l "$EXT" | awk '
-  /segname __LINKEDIT/ { inside = 1; next }
-  inside && $1 == "fileoff"  { off = $2 }
-  inside && $1 == "filesize" { print off + $2; exit }
-')
+# Everything after the end of the Mach-O is the trailer; the helper says where
+# that is, for this script and scripts/split-extension.sh alike.
+# shellcheck source=scripts/lib/extension-macho-end.sh
+. "$(dirname "$0")/lib/extension-macho-end.sh"
+linkedit_end=$(extension_macho_end "$EXT")
 size=$(wc -c < "$EXT" | tr -d ' ')
 [ -n "$linkedit_end" ] || fail "${EXT} has no __LINKEDIT segment"
 trailer_len=$((size - linkedit_end))
