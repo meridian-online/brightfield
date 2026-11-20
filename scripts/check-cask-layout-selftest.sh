@@ -158,6 +158,24 @@ expect_fail "a preflight do block" "uses a 'preflight do' block" "$TMP/preflight
 sed 's|#{arch}|aarch64|' "$TMP/generated.rb" >"$TMP/noarch.rb"
 expect_fail "a url without #{arch}" "does not contain #{arch}" "$TMP/noarch.rb"
 
+# Present in the cask but outside preflight_steps, which Homebrew does not run.
+sed '/brew uninstall --formula brightfield/d' "$TMP/generated.rb" >"$TMP/outside.rb"
+{ cat "$TMP/outside.rb"; echo '# brew uninstall --formula brightfield'; echo 'brew uninstall --formula brightfield'; } >"$TMP/outside2.rb"
+expect_fail "the uninstall text outside the preflight_steps block" \
+	"does not refuse an install over the old formula" "$TMP/outside2.rb"
+
+sed '/\*\/Cellar\/brightfield\//d' "$TMP/generated.rb" >"$TMP/nocellar.rb"
+expect_fail "a preflight that never tests the Cellar" "does not test whether" "$TMP/nocellar.rb"
+
+sed 's|^    write_file "brightfield.wrapper.sh"|    write_file "other.sh"|' "$TMP/generated.rb" >"$TMP/nowrite.rb"
+expect_fail "a preflight that does not write the shim" "does not write_file the shim" "$TMP/nowrite.rb"
+
+sed '/set_permissions/d' "$TMP/generated.rb" >"$TMP/nochmod.rb"
+expect_fail "a preflight that does not set the shim executable" "does not set_permissions" "$TMP/nochmod.rb"
+
+sed 's|/v#{version}/brightfield-v#{version}|/latest/brightfield|' "$TMP/generated.rb" >"$TMP/noversion.rb"
+expect_fail "a url without v#{version}" "does not contain v#{version}" "$TMP/noversion.rb"
+
 echo "== a cask that is not there"
 "$CHECK" "$TMP/absent.rb" >"$out" 2>&1
 rc=$?

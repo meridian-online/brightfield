@@ -82,18 +82,39 @@ EXECS=$(printf '%s\n' "$BODY" | grep -E '^[[:space:]]*exec[[:space:]]' || true)
 [ -n "$EXECS" ] \
   || fail "${CASK} writes no shim that execs the app's binary. A symlink in bin/ is not
   equivalent: current_exe() on macOS does not resolve one, so the binary finds no finetype/."
+# grep -v succeeds when some exec line is NOT the absolute one, and that is the refusal.
 printf '%s\n' "$EXECS" \
   | grep -Eqv "^[[:space:]]*exec[[:space:]]+'\{\{appdir\}\}/Brightfield\.app/Contents/MacOS/brightfield'([[:space:]]|\$)" \
   && fail "${CASK}'s shim execs something other than the absolute path
   {{appdir}}/Brightfield.app/Contents/MacOS/brightfield. A relative path or a bare
   'brightfield' runs whatever the shell finds, not the app's binary."
 
-has '^[[:space:]]*preflight_steps[[:space:]]+do' \
+# The preflight's own lines, and only those: the refusal, the shim and its
+# permissions must be inside the block, where Homebrew runs them. The block ends
+# at the first `end` indented as `preflight_steps` is, so heredoc text inside it
+# cannot close it early.
+PRE=$(printf '%s\n' "$BODY" | awk '
+  /^[[:space:]]*preflight_steps[[:space:]]+do[[:space:]]*$/ { inside = 1; next }
+  inside && /^  end[[:space:]]*$/                          { inside = 0 }
+  inside                                                   { print }')
+[ -n "$PRE" ] \
   || fail "${CASK} has no preflight_steps block, so nothing refuses an install over the old formula"
-has 'brew uninstall --formula brightfield' \
+pre_has() { printf '%s\n' "$PRE" | grep -Eq -- "$1"; }
+
+pre_has '/Cellar/brightfield/' \
+  || fail "${CASK}'s preflight_steps does not test whether bin/brightfield resolves into the
+  formula's Cellar (*/Cellar/brightfield/*), so nothing detects the old formula"
+pre_has 'brew uninstall --formula brightfield' \
   || fail "${CASK}'s preflight_steps does not refuse an install over the old formula by
   naming 'brew uninstall --formula brightfield'"
+pre_has '^[[:space:]]*write_file[[:space:]]+"brightfield\.wrapper\.sh"' \
+  || fail "${CASK}'s preflight_steps does not write_file the shim brightfield.wrapper.sh"
+pre_has '^[[:space:]]*set_permissions[[:space:]]+"brightfield\.wrapper\.sh",[[:space:]]*"0755"' \
+  || fail "${CASK}'s preflight_steps does not set_permissions the shim to 0755, so bin/brightfield
+  fails with 'permission denied'"
 
+has '^[[:space:]]*url[[:space:]].*v#\{version\}' \
+  || fail "${CASK}'s url does not contain v#{version}, so the release tag is not what is fetched"
 has '^[[:space:]]*url[[:space:]].*#\{arch\}' \
   || fail "${CASK}'s url does not contain #{arch}, so both architectures fetch the same disk image"
 

@@ -670,7 +670,7 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
 }
 
 /// The paths whose change `brew-install-branch.yml` checks: what decides the
-/// package Homebrew installs and the formula it installs it by. That workflow
+/// package Homebrew installs and the cask it installs it by. That workflow
 /// runs only by hand, so the gate names it when a pull request touches one.
 pub const BREW_INSTALL_BRANCH_PATHS: &[&str] = &[
     "scripts/package.sh",
