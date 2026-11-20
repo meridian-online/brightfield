@@ -53,11 +53,11 @@
 # timestamp, beside its DuckDB metadata trailer as a data file that needs no
 # signature. The DuckDB CLI keeps its upstream Developer ID signature, and the
 # app and the tarball's bare binary carry the entitlement that lets the
-# in-process engine load extensions DuckDB's own team signed. Apple's notary service accepted a
-# bundle of this shape, so a tag built with these secrets now notarises it,
-# staples the ticket and publishes. signing-rehearsal.yml asserts the nested
-# code and the entitlement on every run; only the notary's answer itself needs
-# the real key.
+# in-process engine load the extensions it downloads at run time, which other
+# teams signed or which are ad-hoc. Apple's notary service accepted a bundle of
+# this shape, so a tag built with these secrets now notarises it, staples the
+# ticket and publishes. signing-rehearsal.yml asserts the nested code and the
+# entitlement on every run; only the notary's answer itself needs the real key.
 #
 # `cleanup` takes the keychain off the search list, deletes it and the key file,
 # and checks both are gone. It is safe to run when `setup` signed ad-hoc or

@@ -21,9 +21,8 @@
 # `setup` prints only the export lines, on stdout. Progress goes to stderr, so
 # the eval above sees nothing else. The two-step form matters: `eval "$(...)"`
 # would swallow a failed setup, and package.sh would then sign ad-hoc without
-# saying so. No secret is ever printed: the values move
-# from `op read` into environment variables of one child process and nowhere
-# else.
+# saying so. No secret is ever printed: the values move from `op read` into
+# environment variables of one child process and nowhere else.
 #
 # 1Password items are found by title prefix in the vault, then read by id,
 # because a title with parentheses or a colon is awkward inside an op://
@@ -115,6 +114,10 @@ setup() {
   issuer_id="$(op_read "$key" "Issuer ID")"
 
   umask 077
+  # From the first thing created until the exports are printed, an interrupt
+  # takes everything down again, so a keychain holding the certificate is
+  # never left behind by a setup that did not finish.
+  trap 'echo "local-signing.sh: setup interrupted; cleaning up." >&2; cleanup >&2 || true; exit 130' INT TERM
   mkdir -p "$SCRATCH/runner"
   : > "$SCRATCH/github_env"
 
@@ -140,6 +143,9 @@ setup() {
       BRIGHTFIELD_*=*) printf 'export %s=%q\n' "${line%%=*}" "${line#*=}" ;;
     esac
   done < "$SCRATCH/github_env"
+  trap - INT TERM
+  echo "== local signing: ready. Run \`scripts/local-signing.sh cleanup\` when the build is done;" >&2
+  echo "   until then a keychain holding the Developer ID certificate stays on this Mac." >&2
 }
 
 cleanup() {

@@ -470,7 +470,7 @@ is_png "$TMP/parquet.png" 20000
 FT_CACHE="$TMP/home/Library/Caches/online.meridian.brightfield/finetype"
 if [ -n "$(find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null)" ]; then
   echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
-  find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print | sed 's/^/     /'
+  find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null | sed 's/^/     /'
   exit 1
 fi
 if [ -d "$FT_CACHE" ]; then

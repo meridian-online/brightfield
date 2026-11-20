@@ -109,8 +109,9 @@
 # sqlite and others), which Meridian's team did not sign. DuckDB's own CLI
 # carries the same entitlement for the same reason. The ad-hoc app carries it
 # too, so ad-hoc and signed apps run under the same rules apart from the runtime
-# flag. FineType does not need it in a signed app, whose FineType library is
-# signed by the same team.
+# flag. FineType itself loads without it when its library and the host share a
+# team: measured on 2026-11-20 with a DuckDB host signed by the same Developer
+# ID, not yet with Brightfield as the host.
 #
 # The chain runs in this order: sign the bare Mach-O → sign the bundle → zip the
 # bundle for submission → one `notarytool submit` → one `stapler staple` on the

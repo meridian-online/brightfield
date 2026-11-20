@@ -209,10 +209,10 @@ jobs:
       # library signed with the identity, the runtime flag and a timestamp, and
       # leaves the DuckDB CLI with DuckDB Foundation's own Developer ID
       # signature, which already passes. The app also carries the one
-      # entitlement that lets its in-process engine load extensions DuckDB's
-      # own team signed. These
-      # assertions are what the rehearsal can know about notarisation without
-      # Apple's answer.
+      # entitlement, set to true, that lets its in-process engine load the
+      # extensions it downloads at run time, which other teams signed or which
+      # are ad-hoc. These assertions are what the rehearsal can know about
+      # notarisation without Apple's answer.
       - name: The nested code and the entitlement are what notarisation needs
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -233,9 +233,14 @@ jobs:
           grep -Fxq 'Authority=Developer ID Application: Stichting DuckDB Foundation (7NCTQWA3HA)' <<<"$info"
           grep -q '^Timestamp=' <<<"$info"
           echo "== entitlements on ${APP}"
-          ents=$(codesign -d --entitlements - "$APP" 2>&1)
-          echo "$ents"
-          grep -q 'com.apple.security.cs.disable-library-validation' <<<"$ents"
+          ents="${RUNNER_TEMP}/entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$ents"
+          cat "$ents"; echo
+          # PlistBuddy, because its key paths split on ':' and this key is full
+          # of dots. The value must be true: a key present as false grants
+          # nothing.
+          value=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.disable-library-validation' "$ents")
+          test "$value" = true
 
       # A table for the run summary: what each Mach-O nested in the bundle
       # carries, so a reader sees the whole bundle at a glance. The step above
