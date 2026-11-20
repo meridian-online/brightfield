@@ -249,11 +249,11 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/package-finetype-selftest.sh", &[]),
     },
     Step {
-        name: "formula-layout-selftest",
-        runs: "./scripts/check-formula-layout-selftest.sh",
+        name: "cask-layout-selftest",
+        runs: "./scripts/check-cask-layout-selftest.sh",
         only_in_ci: None,
         only_at_night: None,
-        run: |c| c.script("scripts/check-formula-layout-selftest.sh", &[]),
+        run: |c| c.script("scripts/check-cask-layout-selftest.sh", &[]),
     },
     Step {
         name: "formula-asset-selftest",
