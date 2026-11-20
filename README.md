@@ -8,7 +8,7 @@ The goal is a tool that can interactively visualise and explore datasets from th
 
 ## Quick Start
 
-Install the released app on macOS with Homebrew:
+Install the released app on macOS with Homebrew. This puts the notarised `Brightfield.app` in `/Applications`, which Gatekeeper accepts as notarised, and a `brightfield` command on your path:
 
 ```sh
 brew install meridian-online/tap/brightfield
@@ -304,7 +304,7 @@ both packaged artifacts with `scripts/check-artifact-engine.sh`, and fails the
 job when it is missing, is not the pinned bytes, or is not the DuckDB the
 binary links. On the native leg the packaged binary's `--check-engine` runs it.
 
-Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window. The release workflow's `update-homebrew` job moves the tap to the new release: it rewrites `Formula/brightfield.rb` in [meridian-online/homebrew-tap](https://github.com/meridian-online/homebrew-tap) to address that tag's assets and checksums, and checks each address before it pushes, so the formula never points at a release that is not there. A release's notes are its section in [CHANGELOG.md](CHANGELOG.md), and a tag with no section there, or whose number is not the shell crate's version, fails before anything is published.
+Each tagged release is installed with `brew install meridian-online/tap/brightfield` (the same as `brew install --cask`), and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window. Brightfield is a cask, not a formula, so the installed app is the notarised one, unmodified; an older formula install moves to the cask on `brew update` once you trust it with `brew trust --cask meridian-online/tap/brightfield`, or by hand with `brew uninstall --formula brightfield` and then `brew install --cask meridian-online/tap/brightfield`. The release workflow's `update-homebrew` job moves the tap to the new release: it writes `Casks/brightfield.rb` in [meridian-online/homebrew-tap](https://github.com/meridian-online/homebrew-tap) with `scripts/write-brightfield-cask.sh` to address that tag's disk images and checksums, only when the build was notarised, and checks each address before it pushes, so the cask never points at a release that is not there. Edit the cask in that script, not in the tap. A release's notes are its section in [CHANGELOG.md](CHANGELOG.md), and a tag with no section there, or whose number is not the shell crate's version, fails before anything is published.
 
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →

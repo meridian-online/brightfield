@@ -20,7 +20,7 @@
 #
 # TWO ARTIFACTS PER DARWIN TARGET, FROM ONE BUILD, and the split is the point.
 #
-# The tarball is what `curl … | bash`, the Homebrew formula and
+# The tarball is what `curl … | bash` and
 # scripts/verify-airgapped.sh consume, and its interior does not change. It
 # contains:
 #   brightfield     the binary (built from the brightfield-shell crate)
@@ -359,10 +359,11 @@ fi
 # signature: it lives in the directory it describes.
 #
 # The extension's install name is changed to `@rpath/…` BEFORE the manifest is
-# written, so the manifest records the renamed file. Homebrew rewrites any other
-# install name when it installs the tarball, which left a Homebrew install
-# refusing its own extension; scripts/set-extension-rpath-id.sh says why and
-# how, and scripts/write-brightfield-formula.sh carries the other half.
+# written, so the manifest records the renamed file and whatever installs the
+# bundle finds the bytes it was told to expect. The name was first chosen for a
+# Homebrew formula that unpacked the tarball and had its dylibs rewritten;
+# the cask installs the app untouched, but the name stays so the manifest does
+# not change shape. scripts/set-extension-rpath-id.sh says why and how.
 #
 # The split runs after the rename, so the library carries the `@rpath/` name,
 # and before the manifest, so the manifest records the two parts that ship and

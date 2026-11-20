@@ -6,27 +6,27 @@
 # that rots: nothing exercises it between releases, and a release is the worst
 # moment to find it stopped reddening. So this file runs the real script against
 # a stand-in `brew`, a real throwaway git repository standing in for the tap
-# (its formulae written by the real generator, scripts/write-brightfield-formula.sh)
-# and a stand-in installed binary whose answers the test chooses — on a pull
-# request, where a regression is cheap.
+# (its casks written by the real generator, scripts/write-brightfield-cask.sh)
+# and a stand-in `spctl` and installed binary whose answers the test chooses —
+# on a pull request, where a regression is cheap.
 #
 # Both directions are covered, like the other gate self-tests in this directory:
 #
-#   1. a healthy install passes, and the log carries the exit code of
-#      `brew test` and the output and exit code of the installed copy's
-#      `--check-type-source`, so a check that examined nothing cannot look green;
-#   2. the fault the check exists for — `brew test` red and the installed copy
-#      refusing its type source — fails, and the log names both;
-#   3. either run red alone fails, and the failure names the run that was red:
-#      the two are read separately, so neither can hide behind the other;
-#   4. the formula installed is the one the tap wrote for the tag, even when the
+#   1. a healthy install passes, and the log carries the spctl verdict, both
+#      installed-copy exit codes and the link's target, so a check that examined
+#      nothing cannot look green;
+#   2. each check red alone fails, and the failure names the one that was red:
+#      Gatekeeper not saying Notarized Developer ID, either flag exiting
+#      non-zero, a link to the app's own binary instead of the shim. They are
+#      read separately, so none can hide behind another;
+#   3. the cask installed is the one the tap wrote for the tag, even when the
 #      tap has since moved on or was cloned shallow, and a tag the tap holds no
-#      formula for is a hard failure that installs nothing;
-#   5. an install that fails, or that puts a different version on the machine,
-#      fails before `brew test` runs, so the two runs never read some other copy;
-#   6. usage errors, a missing brew, a tap that will not tap, and a run outside
+#      cask for is a hard failure that installs nothing;
+#   4. an install that fails, or that puts a different version on the machine,
+#      fails before any check runs, so the checks never read some other copy;
+#   5. usage errors, a missing brew, a tap that will not tap, and a run outside
 #      CI are hard failures rather than passes;
-#   7. release.yml runs the check after the formula is pushed and passes it the
+#   6. release.yml runs the check after the cask is pushed and passes it the
 #      release's tag, and brew-install.yml can be both called and dispatched —
 #      the wiring that puts the check's failure in the release run.
 #
@@ -37,7 +37,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 CHECK="$HERE/check-brew-install.sh"
-GENERATOR="$HERE/write-brightfield-formula.sh"
+GENERATOR="$HERE/write-brightfield-cask.sh"
 RELEASE_YML="$ROOT/.github/workflows/release.yml"
 BREW_YML="$ROOT/.github/workflows/brew-install.yml"
 
@@ -73,8 +73,8 @@ mkdir -p "$SHIM"
 # The stand-in tap: a git repository with the history the update-homebrew job
 # leaves behind — one commit per release titled "Update brightfield to <tag>",
 # an unrelated formula's commit between them, and at the tip a commit that
-# claims v0.1.7 while carrying v0.1.6's formula. The tip is not the newest
-# honest release on purpose: every case below has to reach its formula through
+# claims v0.1.7 while carrying v0.1.6's cask. The tip is not the newest
+# honest release on purpose: every case below has to reach its cask through
 # the tag, not through wherever the checkout happens to be.
 # ---------------------------------------------------------------------------
 SHA_A="$(printf '%064d' 1)"
@@ -82,29 +82,29 @@ SHA_B="$(printf '%064d' 2)"
 
 gitq() { git -C "$TAPDIR" -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"; }
 
-write_formula() {
+write_cask() {
 	"$GENERATOR" "$1" "https://example.invalid/releases/download/$1" "$SHA_A" "$SHA_B" \
-		>"$TAPDIR/Formula/brightfield.rb" || {
-		echo "selftest: the formula generator failed for $1" >&2
+		>"$TAPDIR/Casks/brightfield.rb" || {
+		echo "selftest: the cask generator failed for $1" >&2
 		exit 1
 	}
 }
 
-mkdir -p "$TAPDIR/Formula"
+mkdir -p "$TAPDIR/Casks" "$TAPDIR/Formula"
 git -C "$TAPDIR" init -q
 git -C "$TAPDIR" checkout -q -b main
 
-write_formula v0.1.4
-gitq add Formula && gitq commit -q -m "Update brightfield to v0.1.4"
-write_formula v0.1.5
-gitq add Formula && gitq commit -q -m "Update brightfield to v0.1.5"
+write_cask v0.1.4
+gitq add Casks && gitq commit -q -m "Update brightfield to v0.1.4"
+write_cask v0.1.5
+gitq add Casks && gitq commit -q -m "Update brightfield to v0.1.5"
 printf 'class Finetype < Formula\nend\n' >"$TAPDIR/Formula/finetype.rb"
 gitq add Formula && gitq commit -q -m "Update finetype to v9.9.9"
-write_formula v0.1.6
-gitq add Formula && gitq commit -q -m "Update brightfield to v0.1.6"
-write_formula v0.1.6
-printf '# touched\n' >>"$TAPDIR/Formula/brightfield.rb"
-gitq add Formula && gitq commit -q -m "Update brightfield to v0.1.7"
+write_cask v0.1.6
+gitq add Casks && gitq commit -q -m "Update brightfield to v0.1.6"
+write_cask v0.1.6
+printf '# touched\n' >>"$TAPDIR/Casks/brightfield.rb"
+gitq add Casks && gitq commit -q -m "Update brightfield to v0.1.7"
 
 # ---------------------------------------------------------------------------
 # The stand-in `brew` and the stand-in installed binary. What `brew install`
@@ -124,32 +124,62 @@ install)
 		echo "Error: fixture install failure"
 		exit "$FAKE_INSTALL_RC"
 	fi
-	v="$(grep -o 'brightfield-v[0-9][0-9.]*-aarch64' "$FAKE_TAPDIR/Formula/brightfield.rb" | head -1)"
-	v="${v#brightfield-v}"
-	v="${v%-aarch64}"
-	mkdir -p "$FAKE_PREFIX/bin"
+	[[ "$2" == "--cask" ]] || { echo "fixture brew: install without --cask: $*" >&2; exit 98; }
+	appdir="$FAKE_DEFAULT_APPDIR"
+	for ((i = 1; i < $#; i++)); do
+		[[ "${!i}" == "--appdir" ]] && { j=$((i + 1)); appdir="${!j}"; }
+	done
+	v="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$FAKE_TAPDIR/Casks/brightfield.rb" | head -1)"
+	mkdir -p "$FAKE_PREFIX/bin" "$FAKE_PREFIX/Caskroom/brightfield/$v" "$appdir/Brightfield.app/Contents/MacOS"
 	printf '%s\n' "${FAKE_INSTALLED_VERSION:-$v}" >"$FAKE_PREFIX/installed-version"
-	cp "$FAKE_BIN_TEMPLATE" "$FAKE_PREFIX/bin/brightfield"
-	chmod +x "$FAKE_PREFIX/bin/brightfield"
+	cp "$FAKE_BIN_TEMPLATE" "$appdir/Brightfield.app/Contents/MacOS/brightfield"
+	cp "$FAKE_BIN_TEMPLATE" "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh"
+	chmod +x "$appdir/Brightfield.app/Contents/MacOS/brightfield" "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh"
+	if [[ -n "${FAKE_LINK_STALE:-}" ]]; then
+		mkdir -p "$FAKE_PREFIX/Caskroom/brightfield/0.0.1"
+		cp "$FAKE_BIN_TEMPLATE" "$FAKE_PREFIX/Caskroom/brightfield/0.0.1/brightfield.wrapper.sh"
+		ln -s "$FAKE_PREFIX/Caskroom/brightfield/0.0.1/brightfield.wrapper.sh" "$FAKE_PREFIX/bin/brightfield"
+	elif [[ -n "${FAKE_LINK_TO_APP:-}" ]]; then
+		ln -s "$appdir/Brightfield.app/Contents/MacOS/brightfield" "$FAKE_PREFIX/bin/brightfield"
+	else
+		ln -s "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh" "$FAKE_PREFIX/bin/brightfield"
+	fi
 	echo "fixture: installed brightfield $(cat "$FAKE_PREFIX/installed-version")"
 	;;
-test)
-	echo "fixture-brew-test: ran"
-	[[ "${FAKE_TEST_RC:-0}" == 0 ]] || echo "Error: brightfield: failed"
-	exit "${FAKE_TEST_RC:-0}"
+list)
+	[[ "$2 $3" == "--cask --versions" ]] || { echo "fixture brew: list without --cask --versions: $*" >&2; exit 98; }
+	echo "brightfield $(cat "$FAKE_PREFIX/installed-version")"
 	;;
-list) echo "brightfield $(cat "$FAKE_PREFIX/installed-version")" ;;
 *) echo "fixture brew: unexpected: $*" >&2; exit 99 ;;
 esac
 BREW
 chmod +x "$SHIM/brew"
 
+# `spctl` answers on stderr, as the real one does. The source line is the one
+# the check reads.
+cat >"$SHIM/spctl" <<'SPCTL'
+#!/usr/bin/env bash
+printf 'spctl %s\n' "$*" >>"$FAKE_CALLS"
+{
+	echo "${!#}: accepted"
+	echo "source=${FAKE_SPCTL_SOURCE-Notarized Developer ID}"
+	echo "origin=Developer ID Application: Fixture (ABCDE12345)"
+} >&2
+exit "${FAKE_SPCTL_RC:-0}"
+SPCTL
+chmod +x "$SHIM/spctl"
+
 cat >"$TMP/installed-brightfield" <<'BIN'
 #!/usr/bin/env bash
 case "$1" in
 --check-type-source)
+	[[ -n "${FAKE_LAUNCH_SLEEP:-}" ]] && sleep "$FAKE_LAUNCH_SLEEP"
 	echo "fixture-installed-check: ${FAKE_CHECK_MSG:-came up}"
 	exit "${FAKE_CHECK_RC:-0}"
+	;;
+--check-engine)
+	echo "fixture-installed-engine: ${FAKE_ENGINE_MSG:-came up}"
+	exit "${FAKE_ENGINE_RC:-0}"
 	;;
 esac
 exit 64
@@ -172,12 +202,12 @@ run() {
 	done
 	shift
 	git -C "$TAPDIR" checkout -q main
-	rm -rf "$PREFIX"
+	rm -rf "$PREFIX" "$TMP/default-apps" "$TMP/apps"
 	mkdir -p "$PREFIX"
 	: >"$CALLS"
 	env CI=true PATH="$SHIM:$PATH" \
 		FAKE_CALLS="$CALLS" FAKE_TAPDIR="$TAPDIR" FAKE_PREFIX="$PREFIX" \
-		FAKE_BIN_TEMPLATE="$TMP/installed-brightfield" \
+		FAKE_BIN_TEMPLATE="$TMP/installed-brightfield" FAKE_DEFAULT_APPDIR="$TMP/default-apps" \
 		${envs[@]+"${envs[@]}"} \
 		"$BASH" "$CHECK" "$@" >"$OUT" 2>&1
 	local got=$?
@@ -221,40 +251,83 @@ REFUSAL="finetype.duckdb_extension is not the file that was packaged"
 # 1. A healthy install.
 # ---------------------------------------------------------------------------
 echo "a healthy install"
-run 0 "installs the tag and both runs pass" -- --tag v0.1.6
-has "the log carries brew test's exit code" "brew test brightfield exit=0"
+run 0 "installs the tag and every check passes" -- --tag v0.1.6
+has "the install is a cask install" "brew install --cask meridian-online/tap/brightfield"
+has "the log carries Gatekeeper's verdict" "source=Notarized Developer ID"
 has "the log carries the installed copy's check output" "fixture-installed-check: came up"
 has "the log carries that check's exit code" "brightfield --check-type-source exit=0"
+has "the log carries the engine check's exit code" "brightfield --check-engine exit=0"
+has "the log carries the link's target" "brightfield.wrapper.sh"
 has "the log names the version that was installed" "installed: brightfield 0.1.6"
+has "spctl read the app in the default application directory" "spctl -a -vv -t exec /Applications/Brightfield.app"
+lacks "no brew test is run: casks have none" "brew test"
+
+run 0 "--appdir reaches the install and the Gatekeeper check" -- --tag v0.1.6 --appdir "$TMP/apps"
+has "brew installs into that directory" "--appdir $TMP/apps"
+has "spctl reads the app there" "spctl -a -vv -t exec $TMP/apps/Brightfield.app"
+
+# From inside $TMP, so the stand-in install lands there and not in the checkout.
+cd "$TMP" || exit 1
+run 0 "a relative --appdir is made absolute" -- --tag v0.1.6 --appdir rel-apps
+cd "$ROOT" || exit 1
+has "brew installs into the absolute path" "--appdir $TMP/rel-apps"
+has "spctl reads the app there" "spctl -a -vv -t exec $TMP/rel-apps/Brightfield.app"
 
 # ---------------------------------------------------------------------------
-# 2 and 3. The fault, and each run red on its own.
+# 2. The fault, and each check red on its own.
 # ---------------------------------------------------------------------------
 echo
 echo "the installed copy fails"
-run 1 "brew test red and the installed check refusing its type source" \
-	FAKE_TEST_RC=1 FAKE_CHECK_RC=1 "FAKE_CHECK_MSG=$REFUSAL" -- --tag v0.1.6
-has "the log carries brew test's exit code" "brew test brightfield exit=1"
+run 1 "every check red at once" FAKE_SPCTL_SOURCE="Unnotarized Developer ID" FAKE_CHECK_RC=1 \
+	"FAKE_CHECK_MSG=$REFUSAL" FAKE_ENGINE_RC=1 FAKE_LINK_TO_APP=1 -- --tag v0.1.6
 has "the log carries the refusal from the installed copy" "fixture-installed-check: $REFUSAL"
-has "the log carries the installed check's exit code" "brightfield --check-type-source exit=1"
+has "the log names Gatekeeper" "Gatekeeper does not accept"
+has "the log names the type-source check" "--check-type-source\` exited 1"
+has "the log names the engine check" "--check-engine\` exited 1"
+has "the log names the link" "not the cask's exec shim"
 
-run 1 "brew test green, the installed copy's own check red" \
-	FAKE_CHECK_RC=1 "FAKE_CHECK_MSG=$REFUSAL" -- --tag v0.1.6
-has "the failure names the installed check" "--check-type-source\` exited 1"
-lacks "and does not blame brew test" "brew test brightfield\` exited"
+run 1 "Gatekeeper not saying Notarized Developer ID, the rest green" FAKE_SPCTL_SOURCE="Developer ID" -- --tag v0.1.6
+has "the failure names Gatekeeper" "Gatekeeper does not accept"
+lacks "and does not blame the type-source check" "--check-type-source\` exited"
+lacks "and does not blame the engine check" "--check-engine\` exited"
+lacks "and does not blame the link" "exec shim"
 
-run 1 "brew test red, the installed copy's own check green" FAKE_TEST_RC=1 -- --tag v0.1.6
-has "the failure names brew test" "brew test brightfield\` exited 1"
-lacks "and does not blame the installed check" "--check-type-source\` exited"
+run 1 "an ad hoc app: spctl says nothing of a source" FAKE_SPCTL_SOURCE= FAKE_SPCTL_RC=3 -- --tag v0.1.6
+has "the failure names Gatekeeper" "Gatekeeper does not accept"
+
+run 1 "the installed type-source check red alone" FAKE_CHECK_RC=2 "FAKE_CHECK_MSG=$REFUSAL" -- --tag v0.1.6
+has "the failure names the type-source check" "--check-type-source\` exited 2"
+lacks "and does not blame Gatekeeper" "Gatekeeper does not accept"
+lacks "and does not blame the engine check" "--check-engine\` exited"
+
+run 1 "the engine check red alone" FAKE_ENGINE_RC=1 -- --tag v0.1.6
+has "the failure names the engine check" "--check-engine\` exited 1"
+lacks "and does not blame the type-source check" "--check-type-source\` exited"
+
+run 1 "a launch that never returns is cut off and named" FAKE_LAUNCH_SLEEP=30 BRIGHTFIELD_LAUNCH_LIMIT_SECONDS=1 -- --tag v0.1.6
+has "the failure names the launch as blocked" "the launch is blocked, most likely waiting on Gatekeeper"
+has "and names the launch" "brightfield --check-type-source\` was still running after 1 s"
+
+run 1 "a link to the app's own binary, the rest green" FAKE_LINK_TO_APP=1 -- --tag v0.1.6
+has "the failure names the link" "not the cask's exec shim"
+lacks "and does not blame Gatekeeper" "Gatekeeper does not accept"
+
+run 1 "a link to another version's shim, the rest green" FAKE_LINK_STALE=1 -- --tag v0.1.6
+has "the failure names the link" "not the cask's exec shim"
+lacks "and does not blame Gatekeeper" "Gatekeeper does not accept"
+
+run 1 "spctl names the source but exits non-zero" FAKE_SPCTL_RC=3 -- --tag v0.1.6
+has "the failure names Gatekeeper" "Gatekeeper does not accept"
+has "the exit code is in the failure" "spctl exit 3"
 
 # ---------------------------------------------------------------------------
-# 4. Which formula is installed.
+# 3. Which cask is installed.
 # ---------------------------------------------------------------------------
 echo
-echo "which formula is installed"
-run 0 "an older tag installs the formula the tap wrote for it, not the tap's tip" -- --tag v0.1.5
+echo "which cask is installed"
+run 0 "an older tag installs the cask the tap wrote for it, not the tap's tip" -- --tag v0.1.5
 has "the version installed is the older tag's" "installed: brightfield 0.1.5"
-has "the log names the tap commit the formula came from" "formula from meridian-online/tap commit"
+has "the log names the tap commit the cask came from" "cask from meridian-online/tap commit"
 
 # A shallow clone holds the tip and nothing older, so an older tag's commit is
 # there only after the script deepens it.
@@ -263,15 +336,15 @@ has "the log names the tap commit the formula came from" "formula from meridian-
 rm -rf "$TMP/shallow"
 git -C "$TAPDIR" checkout -q main
 git clone -q --depth 1 "file://$TAPDIR" "$TMP/shallow"
-run 0 "a shallow tap checkout is deepened to find an older tag's formula" "FAKE_TAPDIR=$TMP/shallow" -- --tag v0.1.5
+run 0 "a shallow tap checkout is deepened to find an older tag's cask" "FAKE_TAPDIR=$TMP/shallow" -- --tag v0.1.5
 has "the version installed is the older tag's" "installed: brightfield 0.1.5"
 
-run 2 "a tag the tap holds no formula for" -- --tag v0.2.0
-has "the message says the tap holds none" "holds no formula written for v0.2.0"
+run 2 "a tag the tap holds no cask for" -- --tag v0.2.0
+has "the message says the tap holds none" "holds no cask written for v0.2.0"
 not_called "and nothing was installed" "install"
 
 run 2 "a prefix of a released tag is not that release" -- --tag v0.1
-has "the message says the tap holds none" "holds no formula written for v0.1 "
+has "the message says the tap holds none" "holds no cask written for v0.1 "
 not_called "and nothing was installed" "install"
 
 run 2 "a commit titled for the tag whose file addresses another release" -- --tag v0.1.7
@@ -279,25 +352,26 @@ has "the message says the file does not address the tag" "does not address v0.1.
 not_called "and nothing was installed" "install"
 
 # ---------------------------------------------------------------------------
-# 5. The install itself.
+# 4. The install itself.
 # ---------------------------------------------------------------------------
 echo
 echo "the install itself"
 run 1 "an install that fails" FAKE_INSTALL_RC=1 -- --tag v0.1.6
-has "the message says the formula did not install" "did not install"
-not_called "brew test did not run" "test"
+has "the message says the cask did not install" "did not install"
+not_called "no check ran" "list"
+if grep -Fq "spctl" "$CALLS"; then bad "spctl ran after a failed install"; else ok "spctl did not run"; fi
 
 run 1 "an install that puts a different version on the machine" FAKE_INSTALLED_VERSION=0.0.9 -- --tag v0.1.6
 has "the message names the version found" "brightfield 0.0.9"
-not_called "brew test did not run" "test"
+if grep -Fq "spctl" "$CALLS"; then bad "spctl ran against a different version"; else ok "spctl did not run"; fi
 
 # ---------------------------------------------------------------------------
-# 6. The check that cannot run.
+# 5. The check that cannot run.
 # ---------------------------------------------------------------------------
 echo
 echo "the check cannot run"
 # Each refusal is pinned by its message as well as its exit code: exit 2 is also
-# what a tag the tap has no formula for returns, so a refusal that stopped firing
+# what a tag the tap has no cask for returns, so a refusal that stopped firing
 # could still exit 2 further down and look the same.
 run 2 "no --tag" -- --allow-local
 has "the refusal names the tag" "--tag must look like v1.2.3"
@@ -324,12 +398,12 @@ not_called "and brew was not touched" "--version"
 run 0 "outside CI, when asked for" CI=false -- --tag v0.1.6 --allow-local
 
 # ---------------------------------------------------------------------------
-# 7. The wiring that puts the check's failure in the release run.
+# 6. The wiring that puts the check's failure in the release run.
 #
 # Read from the workflow files, because there is no runner here to run them and
 # a tag is the only thing that runs release.yml. What is pinned is what makes the
 # check part of the release: a job that calls brew-install.yml, after the job
-# that pushes the formula, with the release's own tag.
+# that pushes the cask, with the release's own tag.
 # ---------------------------------------------------------------------------
 echo
 echo "the workflow wiring"

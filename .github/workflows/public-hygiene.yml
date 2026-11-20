@@ -186,18 +186,18 @@ jobs:
       - name: packaging refuses a bundle that would not load — self-test
         run: cargo xtask ci --step package-finetype-selftest
 
-      # The tap formula's install block, on the generator that writes it. The
-      # release workflow rewrites Formula/brightfield.rb wholesale on every tag
-      # and the tap has no CI, so a correct formula written into the tap by hand
+      # The tap cask's install shape, on the generator that writes it. The
+      # release workflow rewrites Casks/brightfield.rb wholesale on every tag
+      # and the tap has no CI, so a correct cask written into the tap by hand
       # is reverted by the next release with nothing to notice. This runs the
       # generator, requires the check to accept what it wrote, and requires it
-      # to refuse both of the ways the install block can be wrong.
-      - name: the tap formula installs the tarball's tree — self-test
-        run: cargo xtask ci --step formula-layout-selftest
+      # to refuse each of the ways the cask can be wrong.
+      - name: the tap cask installs the app and execs it — self-test
+        run: cargo xtask ci --step cask-layout-selftest
 
-      # The formula-asset check is the odd one here: only its self-test can run
+      # The cask-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
-      # release through the tap formula and there is no release on a branch. So
+      # release through the tap cask and there is no release on a branch. So
       # the check lives in release.yml and its credibility lives here.
       #
       # That split is the whole point. A check that runs on a tag and nowhere
@@ -206,8 +206,16 @@ jobs:
       # in front of throwaway assets and proves — on every pull request, with no
       # network beyond localhost and no toolchain — that a wrong checksum and an
       # unresolvable url each still turn it red.
-      - name: formula-asset check self-test
-        run: cargo xtask ci --step formula-asset-selftest
+      - name: cask-asset check self-test
+        run: cargo xtask ci --step cask-asset-selftest
+
+      # The release refuses to write the cask from a build that was not
+      # notarised, and a refusal nothing calls is no refusal. This runs the
+      # check on each value it must turn away and reads release.yml to require
+      # that the update-homebrew job runs it ahead of everything that touches
+      # the tap, unskippable.
+      - name: the release refuses an unnotarised build — self-test
+        run: cargo xtask ci --step require-notarised-selftest
 
       # The installed-copy check is the same shape as the one above: it needs a
       # published release and a real Homebrew, so it runs from release.yml on a

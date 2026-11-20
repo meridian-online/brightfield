@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Regression test for scripts/check-formula-asset.sh — the check's credibility.
+# Regression test for scripts/check-cask-asset.sh — the check's credibility.
 #
 # The check itself can only run on a tag: it needs a published release and a
-# rewritten tap formula to address. That is exactly the shape that rots, because
+# rewritten tap cask to address. That is exactly the shape that rots, because
 # nothing exercises it between releases and a release is the worst moment to
 # discover the check stopped reddening. So this file stands a throwaway HTTP
-# server in front of throwaway assets, writes formulae against it, and asserts
+# server in front of throwaway assets, writes casks against it, and asserts
 # on exit codes and on what the messages say — on a pull request, where a
 # regression is cheap.
 #
@@ -19,16 +19,21 @@
 #      at the first pair, and it does not skip to the last;
 #   4. a url that 404s fails, and the message says 404;
 #   5. a checksum that is not a sha256 fails;
-#   6. a formula with no pairs, a url with no checksum beside it, and a checksum
-#      with no url above it are each hard failures rather than vacuous passes;
-#   7. --min-pairs refuses a formula that lost a platform block.
+#   6. a cask with no pairs, a version or url that is missing, and an
+#      architecture with a name but no checksum are each hard failures rather
+#      than vacuous passes;
+#   7. --min-pairs refuses a cask that lost an architecture;
+#   8. a url template that lost `#{arch}` expands to one url for both
+#      architectures and is refused, since it would fetch the arm image twice
+#      and call the Intel one checked;
+#   9. the url inside `livecheck do ... end` is not mistaken for the download.
 #
-# Usage:  ./scripts/check-formula-asset-selftest.sh
+# Usage:  ./scripts/check-cask-asset-selftest.sh
 # Exit:   0 all assertions passed, 1 otherwise.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECK="$HERE/check-formula-asset.sh"
+CHECK="$HERE/check-cask-asset.sh"
 
 [[ -x "$CHECK" ]] || {
 	echo "selftest: $CHECK is missing or not executable" >&2
@@ -71,9 +76,15 @@ trap cleanup EXIT
 # files rather than pasted — a pasted digest would make case 1 pass for the
 # wrong reason the moment the fixture changed.
 # ---------------------------------------------------------------------------
-mkdir -p "$TMP/assets"
-printf 'fixture asset, arm leg\n' >"$TMP/assets/tool-arm.tar.gz"
-printf 'fixture asset, intel leg, a different size on purpose\n' >"$TMP/assets/tool-intel.tar.gz"
+# Laid out the way the release lays them out: a directory per tag, and the
+# architecture in the file name. v0.0.2 holds the arm image only, which is the
+# "intel never got published" case.
+mkdir -p "$TMP/assets/v0.0.1" "$TMP/assets/v0.0.2"
+ARM_FILE="$TMP/assets/v0.0.1/brightfield-v0.0.1-aarch64-apple-darwin.dmg"
+INTEL_FILE="$TMP/assets/v0.0.1/brightfield-v0.0.1-x86_64-apple-darwin.dmg"
+printf 'fixture asset, arm leg\n' >"$ARM_FILE"
+printf 'fixture asset, intel leg, a different size on purpose\n' >"$INTEL_FILE"
+cp "$ARM_FILE" "$TMP/assets/v0.0.2/brightfield-v0.0.2-aarch64-apple-darwin.dmg"
 
 digest_of() {
 	local out
@@ -85,11 +96,11 @@ digest_of() {
 	printf '%s' "${out%% *}"
 }
 
-ARM_SHA="$(digest_of "$TMP/assets/tool-arm.tar.gz")" || {
+ARM_SHA="$(digest_of "$ARM_FILE")" || {
 	echo "selftest: could not hash the fixture asset" >&2
 	exit 1
 }
-INTEL_SHA="$(digest_of "$TMP/assets/tool-intel.tar.gz")" || {
+INTEL_SHA="$(digest_of "$INTEL_FILE")" || {
 	echo "selftest: could not hash the fixture asset" >&2
 	exit 1
 }
@@ -151,9 +162,9 @@ if [[ -z "$PORT" ]]; then
 fi
 
 BASE="http://127.0.0.1:$PORT"
-ARM_URL="$BASE/tool-arm.tar.gz"
-INTEL_URL="$BASE/tool-intel.tar.gz"
-MISSING_URL="$BASE/tool-intel-never-published.tar.gz"
+ARM_URL="$BASE/v0.0.1/brightfield-v0.0.1-aarch64-apple-darwin.dmg"
+INTEL_URL="$BASE/v0.0.1/brightfield-v0.0.1-x86_64-apple-darwin.dmg"
+MISSING_URL="$BASE/v0.0.2/brightfield-v0.0.2-x86_64-apple-darwin.dmg"
 
 # Prove the server is really answering before any assertion depends on it —
 # otherwise every "goes red" case below would pass for the wrong reason.
@@ -164,31 +175,36 @@ if ! curl -sSfL -o /dev/null "$ARM_URL"; then
 fi
 
 # ---------------------------------------------------------------------------
-# Formula fixtures. The shape is the one the release workflow generates: two
-# platform blocks, each a url with its checksum on the next line.
+# Cask fixtures. The shape is the one scripts/write-brightfield-cask.sh writes:
+# an arch pair, a two-line sha256, one templated url, and a livecheck block
+# carrying a url of its own that must not be read as the download.
 # ---------------------------------------------------------------------------
-formula() { # formula <path> <arm-url> <arm-sha> <intel-url> <intel-sha>
+cask() { # cask <path> <version> <arm-sha> <intel-sha> [url-template]
+	# The default sits in a variable because a `}` inside ${5:-...} would end
+	# the expansion at the first `#{...}` the template contains.
+	local default="$BASE/v#{version}/brightfield-v#{version}-#{arch}-apple-darwin.dmg"
+	local tmpl="${5:-$default}"
 	cat >"$1" <<RB
-class Brightfield < Formula
-  desc "Fixture"
+cask "brightfield" do
+  arch arm: "aarch64", intel: "x86_64"
+
+  version "$2"
+  sha256 arm:   "$3",
+         intel: "$4"
+
+  url "$tmpl"
+  name "Brightfield"
   homepage "https://example.invalid/"
-  license "MIT"
+
+  livecheck do
+    url "https://example.invalid/releases.atom"
+    strategy :page_match
+    regex(%r{/releases/tag/v?(\d+(?:\.\d+)+)["<]}i)
+  end
 
   depends_on :macos
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "$2"
-      sha256 "$3"
-    else
-      url "$4"
-      sha256 "$5"
-    end
-  end
-
-  def install
-    bin.install "brightfield"
-  end
+  app "Brightfield.app"
 end
 RB
 }
@@ -219,28 +235,43 @@ says() { # says <description> <needle>
 }
 
 echo "the real pairs pass, and say what they fetched:"
-formula "$TMP/good.rb" "$ARM_URL" "$ARM_SHA" "$INTEL_URL" "$INTEL_SHA"
-if run 0 "both platform blocks fetch and match" -- --min-pairs 2 "$TMP/good.rb"; then
+# The passing and wrong-digest fixtures come from the real generator, so a
+# change to how it writes the stanzas this check reads turns these red instead
+# of leaving a hand-written copy green. The hand-written helper above is for
+# the malformed shapes the generator refuses to write.
+real_cask() { # real_cask <path> <tag> <arm-sha> <intel-sha>
+	"$HERE/write-brightfield-cask.sh" "$2" "$BASE/$2" "$3" "$4" >"$1" || {
+		echo "selftest: the generator refused to write $1" >&2
+		exit 1
+	}
+}
+real_cask "$TMP/good.rb" v0.0.1 "$ARM_SHA" "$INTEL_SHA"
+if run 0 "both architectures fetch and match" -- --min-pairs 2 "$TMP/good.rb"; then
 	says "the output names the arm url" "$ARM_URL"
 	says "the output names the intel url" "$INTEL_URL"
 	says "the output names the arm digest" "$ARM_SHA"
 	says "the output names the intel digest" "$INTEL_SHA"
+	if printf '%s' "$OUT" | grep -Fq "releases.atom"; then
+		bad "the livecheck url was fetched as if it were the download"
+	else
+		ok "the livecheck url is not the download"
+	fi
 fi
 
 echo
 echo "a wrong checksum goes red, and the message is usable:"
-formula "$TMP/wrong-intel.rb" "$ARM_URL" "$ARM_SHA" "$INTEL_URL" "$WRONG_INTEL_SHA"
-if run 1 "the intel block's checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-intel.rb"; then
+real_cask "$TMP/wrong-intel.rb" v0.0.1 "$ARM_SHA" "$WRONG_INTEL_SHA"
+if run 1 "the intel checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-intel.rb"; then
 	says "the message names the url" "$INTEL_URL"
 	says "the message names the declared digest" "$WRONG_INTEL_SHA"
 	says "the message names the actual digest" "$INTEL_SHA"
 fi
 
-# The first block, not the second: a check that stopped at the first pair would
-# pass the case above and fail this one, and a check that only ever looked at
-# the last pair would do the reverse.
-formula "$TMP/wrong-arm.rb" "$ARM_URL" "$WRONG_ARM_SHA" "$INTEL_URL" "$INTEL_SHA"
-if run 1 "the arm block's checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-arm.rb"; then
+# The arm digest, not the intel one: a check that stopped at the first pair
+# would pass the case above and fail this one, and a check that only ever
+# looked at the last pair would do the reverse.
+real_cask "$TMP/wrong-arm.rb" v0.0.1 "$WRONG_ARM_SHA" "$INTEL_SHA"
+if run 1 "the arm checksum disagrees with the asset" -- --min-pairs 2 "$TMP/wrong-arm.rb"; then
 	says "the message names the arm url" "$ARM_URL"
 	says "the message names the declared digest" "$WRONG_ARM_SHA"
 	says "the message names the actual digest" "$ARM_SHA"
@@ -248,61 +279,83 @@ fi
 
 echo
 echo "a url nobody can download goes red:"
-formula "$TMP/missing.rb" "$ARM_URL" "$ARM_SHA" "$MISSING_URL" "$INTEL_SHA"
-if run 1 "the intel url resolves to nothing" -- --min-pairs 2 "$TMP/missing.rb"; then
+real_cask "$TMP/missing.rb" v0.0.2 "$ARM_SHA" "$INTEL_SHA"
+if run 1 "the intel image was never published" -- --min-pairs 2 "$TMP/missing.rb"; then
 	says "the message names the url" "$MISSING_URL"
 	says "the message names the status" "HTTP 404"
 fi
 
 echo
 echo "a checksum that is not a sha256 goes red:"
-formula "$TMP/notasha.rb" "$ARM_URL" "$ARM_SHA" "$INTEL_URL" "deadbeef"
+cask "$TMP/notasha.rb" 0.0.1 "$ARM_SHA" "deadbeef"
 run 1 "a truncated checksum is refused" -- --min-pairs 2 "$TMP/notasha.rb"
+
+echo
+echo "a url that lost #{arch} is refused, not checked twice:"
+cask "$TMP/noarch.rb" 0.0.1 "$ARM_SHA" "$INTEL_SHA" \
+	"$BASE/v#{version}/brightfield-v#{version}-aarch64-apple-darwin.dmg"
+if run 2 "both architectures expand to the arm image" -- --min-pairs 2 "$TMP/noarch.rb"; then
+	says "the message says the url is the same" "expand to the same url"
+fi
+run 2 "the same refusal with no --min-pairs" -- "$TMP/noarch.rb"
 
 echo
 echo "nothing to check is a hard failure, never a pass:"
 cat >"$TMP/empty.rb" <<'RB'
-class Brightfield < Formula
-  desc "A formula with no downloads at all"
-  homepage "https://example.invalid/"
+cask "brightfield" do
+  version "0.0.1"
+  url "https://example.invalid/brightfield.dmg"
 end
 RB
-run 2 "a formula with no url/sha256 pairs" -- "$TMP/empty.rb"
+run 2 "a cask with no architectures and no checksums" -- "$TMP/empty.rb"
 
-cat >"$TMP/nosha.rb" <<RB
-class Brightfield < Formula
-  on_macos do
-    url "$ARM_URL"
-  end
+cat >"$TMP/noversion.rb" <<RB
+cask "brightfield" do
+  arch arm: "aarch64", intel: "x86_64"
+  sha256 arm: "$ARM_SHA", intel: "$INTEL_SHA"
+  url "$BASE/v#{version}/brightfield-v#{version}-#{arch}-apple-darwin.dmg"
 end
 RB
-run 2 "a url with no checksum beside it" -- "$TMP/nosha.rb"
+run 2 "a cask with no version to expand" -- --min-pairs 2 "$TMP/noversion.rb"
 
 cat >"$TMP/nourl.rb" <<RB
-class Brightfield < Formula
-  on_macos do
-    sha256 "$ARM_SHA"
+cask "brightfield" do
+  arch arm: "aarch64", intel: "x86_64"
+  version "0.0.1"
+  sha256 arm: "$ARM_SHA", intel: "$INTEL_SHA"
+  livecheck do
+    url "https://example.invalid/releases.atom"
   end
 end
 RB
-run 2 "a checksum with no url above it" -- "$TMP/nourl.rb"
+run 2 "a cask whose only url is the livecheck one" -- --min-pairs 2 "$TMP/nourl.rb"
+
+cat >"$TMP/nointelsha.rb" <<RB
+cask "brightfield" do
+  arch arm: "aarch64", intel: "x86_64"
+  version "0.0.1"
+  sha256 arm: "$ARM_SHA"
+  url "$BASE/v#{version}/brightfield-v#{version}-#{arch}-apple-darwin.dmg"
+end
+RB
+run 2 "an architecture named with no checksum" -- --min-pairs 2 "$TMP/nointelsha.rb"
 
 cat >"$TMP/onepair.rb" <<RB
-class Brightfield < Formula
-  on_macos do
-    url "$ARM_URL"
-    sha256 "$ARM_SHA"
-  end
+cask "brightfield" do
+  arch arm: "aarch64"
+  version "0.0.1"
+  sha256 arm: "$ARM_SHA"
+  url "$BASE/v#{version}/brightfield-v#{version}-#{arch}-apple-darwin.dmg"
 end
 RB
-run 2 "one platform block where two were required" -- --min-pairs 2 "$TMP/onepair.rb"
-run 0 "the same one block, when one is all that was required" -- "$TMP/onepair.rb"
+run 2 "one architecture where two were required" -- --min-pairs 2 "$TMP/onepair.rb"
+run 0 "the same one architecture, when one is all that was required" -- "$TMP/onepair.rb"
 
-run 2 "a formula path that does not exist" -- "$TMP/definitely-not-here.rb"
+run 2 "a cask path that does not exist" -- "$TMP/definitely-not-here.rb"
 
 echo
 if [[ $failures -ne 0 ]]; then
-	echo "check-formula-asset self-test: $failures assertion(s) FAILED" >&2
+	echo "check-cask-asset self-test: $failures assertion(s) FAILED" >&2
 	exit 1
 fi
-echo "check-formula-asset self-test: ok"
+echo "check-cask-asset self-test: ok"
