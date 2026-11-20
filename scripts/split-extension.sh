@@ -17,8 +17,9 @@
 # `semantic::SPLIT_TRAILER_FILE`.
 #
 # This does not sign the library; the caller does, with whichever identity it
-# has. EXT is left in place. Exit 0 done, 1 refused (not a dylib, no trailer,
-# the two parts do not rejoin to EXT).
+# has. EXT is left in place. Exit 0 done, 1 refused (not a thin dylib, no
+# trailer, a cut that does not leave DuckDB's trailer at the end of the second
+# part).
 set -euo pipefail
 
 EXT="${1:?usage: scripts/split-extension.sh EXTENSION DEST_DIR}"
@@ -27,11 +28,17 @@ fail() { echo "split-extension: $*" >&2; exit 1; }
 
 [ -f "$EXT" ] || fail "no file at ${EXT}"
 [ -d "$DEST" ] || fail "no directory at ${DEST}"
-command -v otool >/dev/null 2>&1 || fail "otool is not on PATH (it is a macOS developer tool)"
+for tool in otool lipo; do
+  command -v "$tool" >/dev/null 2>&1 || fail "$tool is not on PATH (it is a macOS developer tool)"
+done
 
 # `otool -D` prints the file name, then the install name; a file that is not a
 # dylib prints the file name alone.
 [ -n "$(otool -D "$EXT" | sed -n 2p)" ] || fail "${EXT} has no install name — it is not a Mach-O dylib"
+# A universal file is refused: otool reports each slice's __LINKEDIT offset
+# from the start of that slice, not of the file, so the cut would land inside it.
+lipo -info "$EXT" 2>/dev/null | grep -q '^Non-fat file' \
+  || fail "${EXT} is not a single-architecture Mach-O, and the cut is read from one"
 
 # shellcheck source=scripts/lib/extension-macho-end.sh
 . "$(dirname "$0")/lib/extension-macho-end.sh"
@@ -49,8 +56,14 @@ TRAILER="$DEST/finetype.duckdb_extension.trailer"
 head -c "$macho_end" "$EXT" > "$LIB"
 tail -c "$trailer_len" "$EXT" > "$TRAILER"
 
-# The engine loads `cat library trailer`, so that has to be the file packaging
-# was handed, or the manifest would vouch for a pair that is not the extension.
+# The cut is in the right place when the trailer part ends in DuckDB's metadata
+# fields: the magic "4" sits at offset 224 of the last 512 bytes, as
+# scripts/check-bundled-extension.sh reads it.
+magic=$(tail -c 512 "$TRAILER" | dd bs=1 skip=224 count=32 2>/dev/null | tr -d '\0')
+[ "$magic" = "4" ] || fail "${TRAILER} does not end in DuckDB's metadata trailer (magic '${magic}')"
+
+# A copy check: the engine loads `cat library trailer`, so a short write here
+# would leave a pair the manifest vouches for that is not the extension.
 cat "$LIB" "$TRAILER" | cmp -s - "$EXT" \
   || fail "${LIB} and ${TRAILER} do not rejoin to ${EXT}"
 

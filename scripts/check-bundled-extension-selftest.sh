@@ -211,9 +211,10 @@ for missing in finetype.dylib finetype.duckdb_extension.trailer; do
 done
 
 # codesign is a macOS tool and the hygiene job that runs this file is Linux, so
-# the two cases that need it run only where it is; test.yml runs this file on
-# macOS for them. Without codesign the check refuses a split bundle rather than
-# passing one it could not verify, and that refusal is asserted instead.
+# the two cases that need it run only where it is: the local gate and the
+# nightly, both on macOS. Without codesign the check refuses a split bundle
+# rather than passing one it could not verify, and that refusal is asserted
+# instead.
 if command -v codesign >/dev/null 2>&1; then
   make_split_bundle "$TMP/split"
   expect_pass "a split bundle whose library verifies" "$TMP/split" osx_arm64 0.6.56
