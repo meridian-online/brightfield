@@ -56,3 +56,20 @@ FineType itself loads without the entitlement when its library and the host proc
 ## Signing
 
 `scripts/package.sh` signs the bundle ad-hoc unless `BRIGHTFIELD_SIGN_IDENTITY` names a certificate, and the header of that script documents the chain that runs when one does: sign the tarball's binary, the FineType library and the bundle with the hardened runtime, notarise the bundle, staple it, and check it with `syspolicy_check distribution`. In a release, `scripts/release-signing.sh` sets it up from five repository secrets its header names: the release job imports the Developer ID certificate into a keychain of its own and hands `package.sh` the identity and a notarisation profile. With none of the secrets entered it builds ad-hoc. For a local signed build, `scripts/local-signing.sh` does the same from 1Password. `signing-rehearsal.yml` runs the signed path with a throwaway self-signed identity. It runs only by hand (`gh workflow run signing-rehearsal.yml --ref <branch>`), and `cargo xtask gate` prints that command when a pull request touches the signing paths.
+
+## The Homebrew cask
+
+Homebrew carries one Brightfield install: a cask built from the notarised `.dmg`, which puts `Brightfield.app` in the Applications folder and links a `brightfield` command. The command is an exec shim and not a symlink to the app's binary, because the binary finds its bundled type source from its own path, and a symlink loses it.
+
+The formula was retired in the release that ships the cask. The operator ruled on 2026-11-20 that the cask replaces the formula rather than sitting beside it, and gave his reason: "having both could be confusing."
+
+The release writes the cask only from a notarised build (`scripts/require-notarised.sh`), and commits the cask, the formula's removal and `tap_migrations.json` together, so the tap never holds a cask from an ad-hoc build or a formula beside its replacement. Gatekeeper accepts the notarised app; `scripts/check-brew-install.sh` reads its verdict with `spctl` on every release.
+
+Migration: on `brew update`, a trusted cask migrates a formula install; otherwise Homebrew prints the commands to run. The cask refuses to install over a linked formula, naming `brew uninstall --formula brightfield`, so an install that would collide with the formula's link stops before it changes anything.
+
+The checks that guard the cask:
+
+- `scripts/write-brightfield-cask.sh` generates it, and `scripts/check-cask-layout.sh` requires the app stanza, the shim linked as `bin/brightfield`, and the formula refusal inside `preflight_steps`.
+- `scripts/check-cask-asset.sh` proves the cask's urls resolve and its checksums match the release's disk images.
+- `scripts/check-brew-install.sh` installs the published cask on a clean Mac, in `release.yml`'s `brew-install` job.
+- `scripts/check-brew-install-branch.sh` does the same for a branch build, by hand (`gh workflow run brew-install-branch.yml --ref <branch>`).
