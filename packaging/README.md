@@ -23,7 +23,7 @@ The mark is not redrawn, recoloured or re-proportioned: the path data is the mas
 
 The trailer is split off because `codesign` cannot sign a file with bytes after its signature, and DuckDB appends its trailer after the Mach-O. Notarisation refuses nested code that fails strict validation, so the joined file could not ship in a notarised app, whoever signed it. `scripts/split-extension.sh` makes the cut, and `scripts/package.sh` signs the library part with the app's identity, or ad-hoc in an unsigned build, so an ad-hoc app exercises the same layout a signed one ships.
 
-The tarball keeps the single joined `finetype.duckdb_extension`. No notarisation ticket can be stapled to a tarball, so nothing is gained by splitting it, and the tarball and the Homebrew formula are unchanged.
+The tarball keeps the single joined `finetype.duckdb_extension`. No notarisation ticket can be stapled to a tarball, so nothing is gained by splitting it, and the tarball is unchanged. The Homebrew cask installs the disk image, not the tarball.
 
 DuckDB needs the extension as one file named `finetype.duckdb_extension`, so the engine joins the parts before it loads them, into `~/Library/Caches/online.meridian.brightfield/finetype/<sha256 of the joined bytes>/finetype.duckdb_extension` (`crates/brightfield-engine/src/semantic/split.rs`). A signed app may not write into its own bundle, which is why the copy lives outside it.
 

@@ -23,9 +23,10 @@
 # without the release's signing secrets is signed ad hoc. Here the spctl
 # verdict is printed for every install and required of none. The installed
 # app's quarantine attribute is then cleared before its command runs, and the
-# log says so: launching a quarantined app raises a Gatekeeper dialog, even a
-# notarised one on its first launch, and on an unattended runner nobody
-# answers it. An app whose signature does not verify is never launched, for
+# log says so: this check tests install layout, not Gatekeeper, and launching
+# a quarantined or ad-hoc binary from an unattended session can block on
+# Gatekeeper's assessment. The release's install check is where Gatekeeper's
+# verdict on the notarised app is read (spctl). An app whose signature does not verify is never launched, for
 # the same reason. That script's other
 # checks — `--check-type-source`, `--check-engine` and the link — are made
 # here, with the expectation each install below sets.
@@ -305,10 +306,10 @@ brew_install() {
 }
 
 # gatekeeper NAME — print spctl's verdict on the installed app, then clear its
-# quarantine before anything in it runs. Launching a quarantined app raises a
-# Gatekeeper dialog — "damaged" for one Gatekeeper rejects, and a first-launch
-# confirmation even for a notarised one — and the launch waits on it, with
-# nobody there to answer. spctl has already given its verdict, so clearing the
+# quarantine before anything in it runs. This check tests install layout, not
+# Gatekeeper, and launching a quarantined or ad-hoc binary from an unattended
+# session, such as an agent's sandboxed shell or a locked screen, can block on
+# Gatekeeper's assessment with nobody to answer. spctl has already given its verdict, so clearing the
 # attribute changes nothing this check reads. Returns non-zero, so the caller
 # runs nothing, when the app's signature does not verify or its quarantine
 # could not be cleared; either would raise that dialog.
