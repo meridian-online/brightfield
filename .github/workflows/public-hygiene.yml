@@ -195,9 +195,9 @@ jobs:
       - name: the tap cask installs the app and execs it — self-test
         run: cargo xtask ci --step cask-layout-selftest
 
-      # The formula-asset check is the odd one here: only its self-test can run
+      # The cask-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
-      # release through the tap formula and there is no release on a branch. So
+      # release through the tap cask and there is no release on a branch. So
       # the check lives in release.yml and its credibility lives here.
       #
       # That split is the whole point. A check that runs on a tag and nowhere
@@ -206,8 +206,8 @@ jobs:
       # in front of throwaway assets and proves — on every pull request, with no
       # network beyond localhost and no toolchain — that a wrong checksum and an
       # unresolvable url each still turn it red.
-      - name: formula-asset check self-test
-        run: cargo xtask ci --step formula-asset-selftest
+      - name: cask-asset check self-test
+        run: cargo xtask ci --step cask-asset-selftest
 
       # The installed-copy check is the same shape as the one above: it needs a
       # published release and a real Homebrew, so it runs from release.yml on a

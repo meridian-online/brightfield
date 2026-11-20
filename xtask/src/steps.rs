@@ -256,11 +256,11 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-cask-layout-selftest.sh", &[]),
     },
     Step {
-        name: "formula-asset-selftest",
-        runs: "./scripts/check-formula-asset-selftest.sh",
+        name: "cask-asset-selftest",
+        runs: "./scripts/check-cask-asset-selftest.sh",
         only_in_ci: None,
         only_at_night: None,
-        run: |c| c.script("scripts/check-formula-asset-selftest.sh", &[]),
+        run: |c| c.script("scripts/check-cask-asset-selftest.sh", &[]),
     },
     Step {
         name: "brew-install-selftest",

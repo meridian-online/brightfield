@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS. The release's other checks read the package BEFORE Homebrew
 # has touched it: package.sh builds the tarball, the type-source check reads the
-# binary inside it, and scripts/check-formula-asset.sh hashes the asset the
+# binary inside it, and scripts/check-cask-asset.sh hashes the asset the
 # formula addresses. `brew install` then unpacks that tarball into the Cellar,
 # and the Cellar copy is the one a person runs. No check read that copy, so a
 # fault that exists after Homebrew's install reached a person's machine before it

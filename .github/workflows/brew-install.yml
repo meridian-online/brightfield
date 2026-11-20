@@ -15,7 +15,7 @@
 #
 # macos-15 is the hosted arm64 image, the one release.yml builds the aarch64
 # artifact on. There is no Intel macOS runner in this repository, so the Intel
-# formula block is asset-verified by check-formula-asset.sh and not run here; the
+# formula block is asset-verified by check-cask-asset.sh and not run here; the
 # comment above `update-homebrew` in release.yml says where that stands.
 #
 # No secret is passed in or read: the tap is public.
