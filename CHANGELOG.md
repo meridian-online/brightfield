@@ -8,8 +8,11 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-21
+
 ### Added
 
+- The macOS download is signed with Meridian's Developer ID and notarised by Apple, for Apple silicon and Intel. `Brightfield.app` opens from Finder with no Gatekeeper block, and the release page no longer asks anyone to clear the quarantine mark.
 - Every open makes a Protocol. A data file, folder, workbook or database becomes a Protocol in the Protocols folder, `~/Documents/Protocols` by default, named after its first source (`earthquakes_2024`, then `earthquakes_2024-2`). The folder is a setting in Preferences (`⌘,`), which offers to move the old folder's Protocols when it changes.
 - Open files the Mac's ways: double-click or Open With in Finder, drop onto the Dock icon or the front door, or `⌘O`, one panel for a file, a folder or a Protocol.
 - Opening a file that already has a Protocol reopens it when that Protocol reads only that file and no other Protocol reads it; otherwise a sheet asks which.
@@ -29,6 +32,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 ### Changed
 
+- Homebrew installs Brightfield as a cask in place of the formula: `brew install meridian-online/tap/brightfield` puts `Brightfield.app` in the Applications folder and links a `brightfield` command into it, so the Dock and the terminal run the same install. `brew update` moves an existing formula install to the cask; where Homebrew does not move it, installing the cask stops and names the command to run first, `brew uninstall --formula brightfield`.
 - A single CSV no longer opens as a bare file with its Protocol written beside it on Save. It opens as a Protocol made in the Protocols folder, and Save and Run write there.
 - The front door lists a Protocol from the moment it is made, saved or not.
 - The failed-values step and its table show on the spine only when they hold rows.
