@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "brightfield-shell"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arcform",
  "arrow",
