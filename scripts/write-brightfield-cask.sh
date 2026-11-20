@@ -118,13 +118,17 @@ cat <<'CASK'
 
   preflight_steps do
     run "/bin/sh", args: ["-c", <<~SH]
-      link="${HOMEBREW_PREFIX:-/opt/homebrew}/bin/brightfield"
-      case "$(readlink "$link" 2>/dev/null)" in
-        */Cellar/brightfield/*)
-          echo "The brightfield formula is still installed, and it owns $link." >&2
-          echo "Remove it first:  brew uninstall --formula brightfield" >&2
-          exit 1 ;;
-      esac
+      prefixes="/opt/homebrew /usr/local"
+      [ -n "${HOMEBREW_PREFIX:-}" ] && prefixes="$HOMEBREW_PREFIX $prefixes"
+      for prefix in $prefixes; do
+        link="$prefix/bin/brightfield"
+        case "$(readlink "$link" 2>/dev/null)" in
+          */Cellar/brightfield/*)
+            echo "The brightfield formula is still installed, and it owns $link." >&2
+            echo "Remove it first:  brew uninstall --formula brightfield" >&2
+            exit 1 ;;
+        esac
+      done
     SH
     write_file "brightfield.wrapper.sh", <<~SH
       #!/bin/sh

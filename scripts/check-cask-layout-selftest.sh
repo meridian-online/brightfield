@@ -93,7 +93,8 @@ want "the version is the tag without its v" 'version "0.1.8"'
 want "the url drops the tag from the base and keeps Ruby's interpolation" \
 	'url "https://example.invalid/download/v#{version}/brightfield-v#{version}-#{arch}-apple-darwin.dmg"'
 want "the shell's \$@ is literal in the shim" 'Contents/MacOS/brightfield'"'"' "$@"'
-want "the shell's \$link is literal in the preflight" 'link="${HOMEBREW_PREFIX:-/opt/homebrew}/bin/brightfield"'
+want "the shell's \$prefix is literal in the preflight" 'link="$prefix/bin/brightfield"'
+want "the preflight reads the configured prefix when there is one" '[ -n "${HOMEBREW_PREFIX:-}" ] && prefixes="$HOMEBREW_PREFIX $prefixes"'
 want "{{appdir}} is literal in the shim" "exec '{{appdir}}/Brightfield.app"
 
 # Ruby accepts it, when there is a Ruby to ask.
@@ -164,6 +165,20 @@ sed '/brew uninstall --formula brightfield/d' "$TMP/generated.rb" >"$TMP/outside
 { cat "$TMP/outside.rb"; echo '# brew uninstall --formula brightfield'; echo 'brew uninstall --formula brightfield'; } >"$TMP/outside2.rb"
 expect_fail "the uninstall text outside the preflight_steps block" \
 	"does not refuse an install over the old formula" "$TMP/outside2.rb"
+
+sed 's|^      prefixes="/opt/homebrew /usr/local"|      prefixes="/opt/homebrew"|' "$TMP/generated.rb" >"$TMP/oneprefix.rb"
+expect_fail "a preflight that checks only one prefix" "does not check each prefix" "$TMP/oneprefix.rb"
+
+sed 's|^            exit 1 ;;|            true ;;|' "$TMP/generated.rb" >"$TMP/noexit.rb"
+expect_fail "a preflight that finds the formula and goes on" "does not exit 1" "$TMP/noexit.rb"
+
+# The block reindented by two spaces, with the uninstall text after it: the
+# block's end is the `end` at its own indent, so the text is outside it.
+awk '/^  preflight_steps do/ { inb = 1 } inb { print "  " $0; if ($0 ~ /^  end$/) inb = 0; next } { print }' \
+	"$TMP/generated.rb" | sed '/brew uninstall --formula brightfield/d' >"$TMP/reindented.rb"
+echo 'brew uninstall --formula brightfield' >>"$TMP/reindented.rb"
+expect_fail "a reindented preflight block with the uninstall text after it" \
+	"does not refuse an install over the old formula" "$TMP/reindented.rb"
 
 sed '/\*\/Cellar\/brightfield\//d' "$TMP/generated.rb" >"$TMP/nocellar.rb"
 expect_fail "a preflight that never tests the Cellar" "does not test whether" "$TMP/nocellar.rb"

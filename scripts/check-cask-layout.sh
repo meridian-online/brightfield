@@ -94,9 +94,11 @@ printf '%s\n' "$EXECS" \
 # at the first `end` indented as `preflight_steps` is, so heredoc text inside it
 # cannot close it early.
 PRE=$(printf '%s\n' "$BODY" | awk '
-  /^[[:space:]]*preflight_steps[[:space:]]+do[[:space:]]*$/ { inside = 1; next }
-  inside && /^  end[[:space:]]*$/                          { inside = 0 }
-  inside                                                   { print }')
+  !inside && /^[[:space:]]*preflight_steps[[:space:]]+do[[:space:]]*$/ {
+    match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH); inside = 1; next }
+  inside { line = $0; sub(/[[:space:]]+$/, "", line) }
+  inside && line == indent "end" { inside = 0 }
+  inside { print }')
 [ -n "$PRE" ] \
   || fail "${CASK} has no preflight_steps block, so nothing refuses an install over the old formula"
 pre_has() { printf '%s\n' "$PRE" | grep -Eq -- "$1"; }
@@ -104,6 +106,12 @@ pre_has() { printf '%s\n' "$PRE" | grep -Eq -- "$1"; }
 pre_has '/Cellar/brightfield/' \
   || fail "${CASK}'s preflight_steps does not test whether bin/brightfield resolves into the
   formula's Cellar (*/Cellar/brightfield/*), so nothing detects the old formula"
+pre_has '/opt/homebrew' && pre_has '/usr/local' \
+  || fail "${CASK}'s preflight_steps does not check each prefix a Homebrew link can sit in
+  (/opt/homebrew on Apple silicon, /usr/local on Intel), so a formula's link in the other
+  one is not found"
+pre_has 'exit 1' \
+  || fail "${CASK}'s preflight_steps finds the old formula and does not exit 1, so the install goes on over it"
 pre_has 'brew uninstall --formula brightfield' \
   || fail "${CASK}'s preflight_steps does not refuse an install over the old formula by
   naming 'brew uninstall --formula brightfield'"
