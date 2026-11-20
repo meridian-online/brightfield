@@ -562,8 +562,8 @@ impl FinetypeBundle {
 
     /// [`Self::open`] with the cache folder a split bundle is joined under
     /// passed in, so a test can drive the join and the `LOAD` after it without
-    /// writing under the real `HOME`. A joined bundle never calls `cache_root`,
-    /// and a split one calls it after its checks have passed.
+    /// writing under the real `HOME`. A split bundle calls `cache_root` after
+    /// its checks have passed, to place the joined copy.
     fn open_with_cache_root(
         dir: &Path,
         conn: &Connection,
