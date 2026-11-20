@@ -209,6 +209,14 @@ jobs:
       - name: cask-asset check self-test
         run: cargo xtask ci --step cask-asset-selftest
 
+      # The release refuses to write the cask from a build that was not
+      # notarised, and a refusal nothing calls is no refusal. This runs the
+      # check on each value it must turn away and reads release.yml to require
+      # that the update-homebrew job runs it ahead of everything that touches
+      # the tap, unskippable.
+      - name: the release refuses an unnotarised build — self-test
+        run: cargo xtask ci --step require-notarised-selftest
+
       # The installed-copy check is the same shape as the one above: it needs a
       # published release and a real Homebrew, so it runs from release.yml on a
       # tag (or by dispatch, .github/workflows/brew-install.yml) and this

@@ -256,6 +256,13 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-cask-layout-selftest.sh", &[]),
     },
     Step {
+        name: "require-notarised-selftest",
+        runs: "./scripts/require-notarised-selftest.sh",
+        only_in_ci: None,
+        only_at_night: None,
+        run: |c| c.script("scripts/require-notarised-selftest.sh", &[]),
+    },
+    Step {
         name: "cask-asset-selftest",
         runs: "./scripts/check-cask-asset-selftest.sh",
         only_in_ci: None,

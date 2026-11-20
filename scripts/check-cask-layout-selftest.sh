@@ -18,6 +18,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$HERE/check-cask-layout.sh"
 WRITE="$HERE/write-brightfield-cask.sh"
+MOVE="$HERE/move-tap-to-cask.sh"
 
 failures=0
 TMP="$(mktemp -d)" || exit 1
@@ -175,6 +176,79 @@ expect_fail "a preflight that does not set the shim executable" "does not set_pe
 
 sed 's|/v#{version}/brightfield-v#{version}|/latest/brightfield|' "$TMP/generated.rb" >"$TMP/noversion.rb"
 expect_fail "a url without v#{version}" "does not contain v#{version}" "$TMP/noversion.rb"
+
+# ---------------------------------------------------------------------------
+# The tap side of the move: the formula goes and the migration entry arrives,
+# whatever the tap held before. A tap with no CI cannot catch this going wrong.
+# ---------------------------------------------------------------------------
+echo "== moving the tap from the formula to the cask"
+
+tap="$TMP/tap-empty"
+mkdir -p "$tap"
+if "$MOVE" "$tap" >"$out" 2>&1 && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])))' "$tap/tap_migrations.json")" == "{'brightfield': 'meridian-online/tap/brightfield'}" ]]; then
+	echo "  ok   no tap_migrations.json is created with the one key"
+else
+	echo "  FAIL no tap_migrations.json: expected a file holding only the brightfield key"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+tap="$TMP/tap-other"
+mkdir -p "$tap"
+printf '{"other": "x/y/z"}\n' >"$tap/tap_migrations.json"
+if "$MOVE" "$tap" >"$out" 2>&1 \
+	&& python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {"other": "x/y/z", "brightfield": "meridian-online/tap/brightfield"} else 1)' "$tap/tap_migrations.json" \
+	&& [[ "$(grep -n '"' "$tap/tap_migrations.json" | head -1)" == '2:  "brightfield": "meridian-online/tap/brightfield",' ]]; then
+	echo "  ok   another key is kept, and the keys are sorted with two-space indent"
+else
+	echo "  FAIL another key: expected both keys, sorted, 2-space indent"
+	sed 's/^/       /' "$out"; cat "$tap/tap_migrations.json"
+	failures=$((failures + 1))
+fi
+
+tap="$TMP/tap-formula"
+mkdir -p "$tap/Formula"
+echo 'class Brightfield < Formula; end' >"$tap/Formula/brightfield.rb"
+echo 'class Other < Formula; end' >"$tap/Formula/other.rb"
+if "$MOVE" "$tap" >"$out" 2>&1 && [[ ! -e "$tap/Formula/brightfield.rb" && -e "$tap/Formula/other.rb" ]]; then
+	echo "  ok   the formula is removed and another formula is left alone"
+else
+	echo "  FAIL the formula: expected Formula/brightfield.rb gone and Formula/other.rb kept"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+# Idempotent: the release runs this on every tag, and most find it done.
+cp "$tap/tap_migrations.json" "$TMP/first.json"
+if "$MOVE" "$tap" >"$out" 2>&1 && cmp -s "$TMP/first.json" "$tap/tap_migrations.json"; then
+	echo "  ok   a second run changes nothing"
+else
+	echo "  FAIL a second run changed the tap"
+	failures=$((failures + 1))
+fi
+
+tap="$TMP/tap-bad"
+mkdir -p "$tap/Formula"
+echo 'class Brightfield < Formula; end' >"$tap/Formula/brightfield.rb"
+printf '{not json' >"$tap/tap_migrations.json"
+"$MOVE" "$tap" >"$out" 2>&1
+rc=$?
+if [[ "$rc" -eq 2 && "$(cat "$tap/tap_migrations.json")" == '{not json' ]]; then
+	echo "  ok   invalid json exits 2 and the file is untouched"
+else
+	echo "  FAIL invalid json: expected exit 2 and an untouched file, got ${rc}"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+"$MOVE" "$TMP/no-such-dir" >"$out" 2>&1
+rc=$?
+if [[ "$rc" -eq 2 ]]; then
+	echo "  ok   a tap that is not a directory exits 2"
+else
+	echo "  FAIL a tap that is not a directory: expected exit 2, got ${rc}"
+	failures=$((failures + 1))
+fi
 
 echo "== a cask that is not there"
 "$CHECK" "$TMP/absent.rb" >"$out" 2>&1

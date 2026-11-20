@@ -627,7 +627,7 @@ def self_test() -> int:
             ("generated notes switched on", (RELEASE_WORKFLOW, "          prerelease: true\n", "          prerelease: true\n          generate_release_notes: true\n")),
             ("the body read from a file instead", (RELEASE_WORKFLOW, "          prerelease: true\n", "          prerelease: true\n          body_path: notes.md\n")),
             ("the release job stops needing the guard", (RELEASE_WORKFLOW, f"    needs: [{GUARD_JOB}, build]", "    needs: build")),
-            ("update-homebrew made to run after a refusal", (RELEASE_WORKFLOW, "    needs: release\n", "    needs: release\n    if: ${{ always() }}\n")),
+            ("update-homebrew made to run after a refusal", (RELEASE_WORKFLOW, "    needs: [build, release]\n", "    needs: [build, release]\n    if: ${{ always() }}\n")),
             ("build made to run unless cancelled, in capitals", (RELEASE_WORKFLOW, f"    needs: {GUARD_JOB}\n    runs-on: macos-15", f"    needs: {GUARD_JOB}\n    if: ${{{{ !Cancelled() }}}}\n    runs-on: macos-15")),
             ("the guard's job output renamed", (RELEASE_WORKFLOW, f"      {NOTES_OUTPUT}: {NOTES_JOB_OUTPUT}", f"      body: {NOTES_JOB_OUTPUT}")),
         )
