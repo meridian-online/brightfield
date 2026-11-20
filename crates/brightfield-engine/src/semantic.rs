@@ -56,7 +56,7 @@ use duckdb::arrow::array::{Array, Float64Array, StringArray, StructArray};
 use duckdb::Connection;
 
 mod split;
-pub use split::{cache_root, materialise_split, PartHashes};
+pub(crate) use split::{materialise_split, PartHashes};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // THE ANSWER
@@ -537,7 +537,9 @@ impl FinetypeBundle {
     /// The extension is either [`EXTENSION_FILE`] or, when that is absent,
     /// [`SPLIT_LIBRARY_FILE`] and [`SPLIT_TRAILER_FILE`]. A split bundle's
     /// parts go through the checks a joined file does, and after them are
-    /// joined into a copy under [`cache_root`], which is what is loaded.
+    /// joined into a copy under the user's cache folder,
+    /// `~/Library/Caches/online.meridian.brightfield/finetype/`, which is what
+    /// is loaded.
     ///
     /// The last step is not ceremony. With no model reachable, the extension's
     /// classifier panics inside its own `catch_unwind` and `ft_profile` returns
@@ -550,9 +552,23 @@ impl FinetypeBundle {
     /// # Errors
     ///
     /// A missing file, an ABI the running DuckDB cannot take, a `LOAD` DuckDB
-    /// refuses, or a canary that comes back wrong. Every one names the bundle
-    /// directory.
+    /// refuses, or a canary that comes back wrong. A split bundle can also
+    /// fail for want of its cache copy: `HOME` unset, empty or relative, or a
+    /// cache folder that cannot be written, which the error names. Every one
+    /// names the bundle directory.
     pub fn open(dir: &Path, conn: &Connection) -> Result<Self, String> {
+        Self::open_with_cache_root(dir, conn, split::cache_root)
+    }
+
+    /// [`Self::open`] with the cache folder a split bundle is joined under
+    /// passed in, so a test can drive the join and the `LOAD` after it without
+    /// writing under the real `HOME`. `cache_root` is called only for a split
+    /// bundle, once its checks have passed.
+    fn open_with_cache_root(
+        dir: &Path,
+        conn: &Connection,
+        cache_root: impl FnOnce() -> Result<PathBuf, String>,
+    ) -> Result<Self, String> {
         let at = |what: &str, e: String| format!("finetype bundle {}: {what}: {e}", dir.display());
 
         // The joined file wins when both layouts are present. Either split part
@@ -1785,5 +1801,70 @@ mod tests {
             .err()
             .expect("the library is unrecorded");
         assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
+    }
+
+    /// A split bundle that passes every check is joined into a copy under the
+    /// cache folder `open` is given, keyed by the joined bytes' hash, and that
+    /// copy is what reaches `LOAD`. The parts here are not a real extension,
+    /// so the `LOAD` fails, and its error names the copy.
+    #[test]
+    fn a_split_bundle_is_loaded_from_its_joined_copy_in_the_cache() {
+        use sha2::{Digest, Sha256};
+
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = split_bundle(&conn, None);
+        let model = dir.path().join(MODEL_DIR);
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(model.join("model.safetensors"), b"weights").unwrap();
+        std::fs::write(
+            model.join(LABEL_MAP_FILE),
+            r#"["identity.person.email", "representation.text.plain_text"]"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(SCHEMA_CATALOGUE), CATALOGUE).unwrap();
+
+        // A manifest over both parts, so the join runs against recorded hashes
+        // as it does in a packaged app.
+        let hash = |name: &str| -> String {
+            conn.query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![dir.path().join(name).to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            format!(
+                "{}  {SPLIT_LIBRARY_FILE}\n{}  {SPLIT_TRAILER_FILE}\n",
+                hash(SPLIT_LIBRARY_FILE),
+                hash(SPLIT_TRAILER_FILE)
+            ),
+        )
+        .unwrap();
+
+        let mut joined = std::fs::read(dir.path().join(SPLIT_LIBRARY_FILE)).unwrap();
+        joined.extend_from_slice(&std::fs::read(dir.path().join(SPLIT_TRAILER_FILE)).unwrap());
+        let key: String = Sha256::digest(&joined)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path().join("finetype");
+        let err = FinetypeBundle::open_with_cache_root(dir.path(), &conn, || Ok(root.clone()))
+            .err()
+            .expect("synthesised parts are not an extension DuckDB can load");
+
+        let copy = root.join(&key).join(EXTENSION_FILE);
+        assert_eq!(
+            std::fs::read(&copy).expect("the joined copy is written under the given root"),
+            joined
+        );
+        assert!(err.contains(": LOAD: "), "it failed before loading: {err}");
+        assert!(
+            err.contains(copy.to_string_lossy().as_ref()),
+            "the LOAD was not of the cache copy: {err}"
+        );
     }
 }
