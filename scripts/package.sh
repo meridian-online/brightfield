@@ -81,6 +81,9 @@
 #                               runner, whose default notarytool crashes; its
 #                               header says why.
 #
+# For a local signed build, scripts/local-signing.sh sets all four up from
+# 1Password after `op signin`, and takes them away again.
+#
 # WHAT IS SIGNED. Three things. An ad-hoc build signs the last two the same way
 # with no identity, so an ad-hoc app and a signed one differ only in identity,
 # timestamp and the runtime flag:
