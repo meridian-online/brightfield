@@ -26,9 +26,9 @@
 # log says so: this check tests install layout, not Gatekeeper, and launching
 # a quarantined or ad-hoc binary from an unattended session can block on
 # Gatekeeper's assessment. The release's install check is where Gatekeeper's
-# verdict on the notarised app is read (spctl). An app whose signature does not verify is never launched, for
-# the same reason. That script's other
-# checks — `--check-type-source`, `--check-engine` and the link — are made
+# verdict on the notarised app is read (spctl). An app whose signature does
+# not verify is never launched, because Gatekeeper would block that launch.
+# That script's other checks — `--check-type-source`, `--check-engine` and the link — are made
 # here, with the expectation each install below sets.
 #
 # THE FOUR INSTALLS, each required to end the way it names:
@@ -309,10 +309,11 @@ brew_install() {
 # quarantine before anything in it runs. This check tests install layout, not
 # Gatekeeper, and launching a quarantined or ad-hoc binary from an unattended
 # session, such as an agent's sandboxed shell or a locked screen, can block on
-# Gatekeeper's assessment with nobody to answer. spctl has already given its verdict, so clearing the
-# attribute changes nothing this check reads. Returns non-zero, so the caller
-# runs nothing, when the app's signature does not verify or its quarantine
-# could not be cleared; either would raise that dialog.
+# Gatekeeper's assessment with nobody to answer. spctl has already given its
+# verdict, so clearing the attribute changes nothing this check reads. Returns
+# non-zero, so the caller runs nothing, when the app's signature does not
+# verify or its quarantine could not be cleared; either would leave the launch
+# blocked on Gatekeeper's assessment.
 gatekeeper() {
 	local verdict rc sig
 	verdict="$(spctl -a -vv -t exec "$APP" 2>&1)"
