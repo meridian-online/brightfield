@@ -698,14 +698,15 @@ jobs:
   # The copy Homebrew installs, run, in the release it belongs to.
   #
   # The steps above read the package before Homebrew has touched it. This is the
-  # first that reads what `brew install` leaves in the Cellar: it installs
-  # the formula `update-homebrew` just pushed and runs `brew test brightfield`
-  # and `brightfield --check-type-source` on the installed copy, on a hosted
-  # arm64 runner (.github/workflows/brew-install.yml, scripts/check-brew-install.sh).
+  # first that reads what `brew install --cask` leaves on the machine: it
+  # installs the cask `update-homebrew` just pushed, asks Gatekeeper about the
+  # installed app, and runs `brightfield --check-type-source` and
+  # `--check-engine` through the linked command, on a hosted arm64 runner
+  # (.github/workflows/brew-install.yml, scripts/check-brew-install.sh).
   #
-  # `needs: update-homebrew` because the formula it installs is the one that job
+  # `needs: update-homebrew` because the cask it installs is the one that job
   # pushes. A failure here turns this run red; it cannot unpublish the release,
-  # whose assets and formula are already out, so it reports the state a person
+  # whose assets and cask are already out, so it reports the state a person
   # who runs `brew install` is in. Run it against an existing release without a
   # tag push with `gh workflow run brew-install.yml -f tag=<published tag>`.
   #
@@ -713,10 +714,10 @@ jobs:
   # anyone would, which is the point of running it.
   #
   # This job reads the install after publication. A pull request that changes
-  # packaging or the formula installs its own package through Homebrew before
+  # packaging or the cask installs its own package through Homebrew before
   # that, in .github/workflows/brew-install-branch.yml.
   brew-install:
-    name: Install the published formula
+    name: Install the published cask
     needs: update-homebrew
     uses: ./.github/workflows/brew-install.yml
     with:
