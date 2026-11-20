@@ -10,7 +10,7 @@
 # consumes (`<tool>-<version>-<target>.tar.gz` + `.sha256` per asset); when this
 # repo onboards there, the script that site serves resolves exactly these names
 # by `uname`. Its interior is unchanged by the disk image's arrival, so the
-# install script, the Homebrew formula and every pinned older tag keep resolving
+# install script and every pinned older tag keep resolving
 # with no shape detection anywhere.
 #
 # The disk image carries `Brightfield.app` and an `/Applications` alias. It

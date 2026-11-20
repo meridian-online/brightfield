@@ -3,7 +3,7 @@
 
 WHAT IT REFUSES
     release.yml publishes whatever tag starts it: two darwin artifacts per
-    target, a GitHub release and a Homebrew formula. Its first job,
+    target, a GitHub release and a Homebrew cask. Its first job,
     `tag-guard`, runs this script, and every other job waits on that one, so a
     refusal here stops the run before anything is built or published.
 

@@ -2,18 +2,15 @@
 # set-extension-rpath-id.sh EXT — give a DuckDB loadable extension an `@rpath/`
 # install name, in place, keeping its metadata trailer byte for byte.
 #
-# WHY: Homebrew rewrites the install name of every dylib it installs to an
-# absolute path under its own prefix, and re-signs the file. The finetype
-# extension is a dylib, so a Homebrew install of brightfield used to leave a
-# different file in the Cellar from the one scripts/package.sh recorded in
-# `bundle-manifest.sha256`, and the application refused it as "not the file that
-# was packaged". Homebrew leaves an install name alone when it starts with
-# `@rpath` and the formula declares `preserve_rpath`
-# (Library/Homebrew/extend/os/mac/keg_relocate.rb, `dylib_id_for`), so the
-# extension is given that name here, before the manifest is written, and
-# scripts/write-brightfield-formula.sh declares `preserve_rpath`. Both halves are
-# needed; .github/workflows/brew-install-branch.yml installs this branch's
-# package through Homebrew with and without the second one.
+# WHY: the install name is fixed before the manifest is written, so the manifest
+# in `bundle-manifest.sha256` records the file that ships and the application
+# does not refuse it as "not the file that was packaged". It was chosen when a
+# Homebrew formula unpacked the tarball into a Cellar: Homebrew rewrites the
+# install name of every dylib it installs to an absolute path under its own
+# prefix and re-signs the file, unless the name starts with `@rpath` and the
+# formula declares `preserve_rpath`. The cask installs the app as built, so
+# nothing rewrites the name now. It stays `@rpath/…` so the manifest matches
+# whatever installs the bundle, a relocating installer included.
 #
 # The install name is never read when the extension loads: DuckDB opens it by
 # path. Only a program linking against the dylib would use it, and none does.
