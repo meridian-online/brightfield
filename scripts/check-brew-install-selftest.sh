@@ -269,8 +269,8 @@ has "spctl reads the app there" "spctl -a -vv -t exec $TMP/apps/Brightfield.app"
 cd "$TMP" || exit 1
 run 0 "a relative --appdir is made absolute" -- --tag v0.1.6 --appdir rel-apps
 cd "$ROOT" || exit 1
-has "brew installs into the absolute path" "--appdir $PWD/rel-apps"
-has "spctl reads the app there" "spctl -a -vv -t exec $PWD/rel-apps/Brightfield.app"
+has "brew installs into the absolute path" "--appdir $TMP/rel-apps"
+has "spctl reads the app there" "spctl -a -vv -t exec $TMP/rel-apps/Brightfield.app"
 
 # ---------------------------------------------------------------------------
 # 2. The fault, and each check red on its own.
