@@ -42,7 +42,7 @@
 # `brew install --cask meridian-online/tap/brightfield` serves the release this
 # workflow just published. It writes a cask for the notarised disk image and
 # removes the formula this tap used to carry, with a `tap_migrations.json`
-# entry that moves an existing formula install to the cask. It refuses a build
+# entry that points an existing formula install at the cask. It refuses a build
 # that was not notarised, since an ad-hoc app installs and then will not open.
 # Its shape is ported from the finetype release workflow's job of the same
 # name; the comment above it records what that buys. Before it pushes, it
@@ -674,8 +674,10 @@ jobs:
         run: scripts/check-cask-asset.sh --min-pairs 2 homebrew-tap/Casks/brightfield.rb
 
       # A formula and a cask of one name cannot share a tap, so the formula
-      # goes in the same commit the cask arrives in, with the migration entry
-      # that moves an existing formula install across.
+      # goes in the same commit the cask arrives in, with the migration entry.
+      # On `brew update` that entry moves a formula install to the cask when
+      # the user has trusted the cask, and otherwise makes Homebrew print the
+      # commands to do it by hand; it does nothing on `brew upgrade`.
       - name: Retire the formula
         run: scripts/move-tap-to-cask.sh homebrew-tap
 
@@ -684,7 +686,11 @@ jobs:
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A Casks Formula tap_migrations.json
+          # Not `git add -A Formula`: that pathspec exits 128 when the tap has
+          # no Formula/ at all. The formula's deletion is staged by name, and
+          # --ignore-unmatch keeps a tap that never had it from failing.
+          git add -A -- Casks tap_migrations.json
+          git rm -q --cached --ignore-unmatch Formula/brightfield.rb
           git diff --staged --quiet && echo "No changes" && exit 0
           git commit -m "Update brightfield to ${GITHUB_REF_NAME}"
           git push

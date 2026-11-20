@@ -10,9 +10,11 @@
 # nothing and the release's no-op guard still sees "no changes".
 #
 # Why the migration entry: a formula and a cask of one name cannot both live in
-# a tap, and a person with the formula installed has `brightfield` linked from
-# the Cellar. The entry is what makes `brew upgrade` move them to the cask
-# instead of leaving them on a formula the tap no longer carries.
+# a tap. Measured on Homebrew 7.0.14 in a scratch tap, the entry acts on
+# `brew update`, not `brew upgrade`: a formula install from this tap is unlinked
+# and the cask installed automatically only when the user has trusted the cask
+# (`brew trust --cask meridian-online/tap/brightfield`); otherwise Homebrew
+# prints the commands to uninstall the formula and install the cask.
 #
 # Exit codes: 0 done; 2 TAPDIR is not a directory or its tap_migrations.json is
 # not a JSON object. Nothing is changed in either case.
