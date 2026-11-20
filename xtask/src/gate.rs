@@ -670,12 +670,16 @@ pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String 
 }
 
 /// The paths whose change `brew-install-branch.yml` checks: what decides the
-/// package Homebrew installs and the cask it installs it by. That workflow
-/// runs only by hand, so the gate names it when a pull request touches one.
+/// disk image Homebrew installs, the app inside it, and the cask it installs
+/// it by. That workflow runs only by hand, so the gate names it when a pull
+/// request touches one.
 pub const BREW_INSTALL_BRANCH_PATHS: &[&str] = &[
     "scripts/package.sh",
     "scripts/set-extension-rpath-id.sh",
+    "scripts/split-extension.sh",
     "scripts/lib/extension-macho-end.sh",
+    "packaging/Info.plist",
+    "packaging/Brightfield.entitlements",
     "scripts/write-brightfield-cask.sh",
     "scripts/check-cask-layout.sh",
     "scripts/check-brew-install.sh",
@@ -1078,6 +1082,22 @@ mod tests {
             ["this pull request touches scripts/release-signing.sh; run gh workflow run signing-rehearsal.yml --ref b for its macOS check"]
         );
         assert!(packaging_hints(&["crates/a/src/lib.rs"], "b").is_empty());
+    }
+
+    #[test]
+    fn a_change_to_the_cask_or_the_app_it_installs_names_the_branch_install_workflow() {
+        for file in [
+            "scripts/write-brightfield-cask.sh",
+            "scripts/check-cask-layout.sh",
+            "scripts/check-brew-install-branch.sh",
+            "packaging/Info.plist",
+        ] {
+            assert_eq!(
+                packaging_hints(&[file], "b"),
+                [format!("this pull request touches {file}; run gh workflow run brew-install-branch.yml --ref b for its macOS check")]
+            );
+        }
+        assert!(packaging_hints(&["scripts/write-brightfield-formula.sh"], "b").is_empty());
     }
 
     #[test]

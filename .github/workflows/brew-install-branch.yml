@@ -1,19 +1,24 @@
-# Package this branch the way the release does, and install the package through
-# Homebrew, before anything is published. The check is
+# Package this branch the way the release does, and install its disk image
+# through Homebrew's cask, before anything is published. The check is
 # scripts/check-brew-install-branch.sh; this file is the runner it needs and the
-# package it installs.
+# image it installs.
 #
 # release.yml's `brew-install` job reads the copy Homebrew installs, but only
 # after a tag is pushed and the release is out. Brightfield 0.1.5 was published
 # with a finetype extension Homebrew rewrote on install, so the installed copy
 # refused its own type source, and nothing read the installed copy until a person
 # had run `brew install`. This job reads it on a branch that changes packaging
-# or the formula: the same aarch64 package release.yml builds (same
-# FineType pin, same DuckDB CLI, same scripts/package.sh), the same formula
-# generator, the same installed-copy check, and a local tap in place of the
-# published one. It also installs the package without the formula's
-# `preserve_rpath` line and with one byte of the extension changed, and requires
-# both to be refused; the script's header says why each is there.
+# or the cask: the same aarch64 disk image release.yml builds (same FineType
+# pin, same DuckDB CLI, same scripts/package.sh), the same cask generator, and a
+# local tap in place of the published one. It also installs the image with the
+# cask's exec shim swapped for a link to the app's binary, with one byte of the
+# FineType library changed, and over a link the old formula would have left,
+# and requires each to end as the script's header says.
+#
+# No signing secrets reach this job, so package.sh signs the app ad hoc and
+# Gatekeeper does not accept it as notarised. The script prints spctl's verdict
+# and clears the installed app's quarantine so the command can run; the
+# notarised copy is read by release.yml's `brew-install` job.
 #
 # By hand only: `gh workflow run brew-install-branch.yml --ref <branch>`, once
 # this file is on the default branch. It installs through Homebrew, which on the
@@ -23,8 +28,8 @@
 # decide what Homebrew installs, `cargo xtask gate` prints this command for its
 # branch; those paths are `BREW_INSTALL_BRANCH_PATHS` in xtask/src/gate.rs.
 #
-# macos-15 is the hosted arm64 image release.yml builds the aarch64 package on.
-# The Intel package is not installed here, for the reason brew-install.yml gives.
+# macos-15 is the hosted arm64 image release.yml builds the aarch64 image on.
+# The Intel image is not installed here, for the reason brew-install.yml gives.
 
 name: brew-install-branch
 
@@ -39,7 +44,7 @@ env:
 
 jobs:
   brew-install-branch:
-    name: Homebrew installs this branch's package with its type source intact
+    name: Homebrew installs this branch's disk image with its type source intact
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -52,7 +57,7 @@ jobs:
           key: brew-install-branch-aarch64-apple-darwin
 
       # The tag is the crate's version, which is what scripts/package.sh names
-      # the package after and what the formula's url makes the installed version.
+      # the image after and what the cask's url makes the installed version.
       - name: Read the version this branch packages
         id: version
         run: |
@@ -73,7 +78,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: scripts/package.sh "$TAG" aarch64-apple-darwin
 
-      - name: Install the package through Homebrew three ways
+      - name: Install the disk image through Homebrew's cask four ways
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: scripts/check-brew-install-branch.sh dist "$TAG"
