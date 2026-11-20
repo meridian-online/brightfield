@@ -48,15 +48,16 @@
 # a release validates it, so wrong credentials fail here, before the build,
 # rather than forty minutes later at `notarytool submit`.
 #
-# WHAT THIS DOES NOT YET MAKE PASS. package.sh signs the bare Mach-O and the
-# outer bundle, and leaves the code nested in the bundle as it was staged: the
-# DuckDB CLI with its upstream signature, and the FineType extension ad-hoc.
-# Apple's notary service refuses a bundle with ad-hoc nested code, so until the
-# FineType extension is signed too, a tag built with these secrets stops at
-# notarisation (`notarytool submit`, or `stapler staple` when there is no
-# ticket to staple) and publishes nothing. That fails closed: no build goes
-# out half-signed, and removing the secrets restores the ad-hoc release.
-# signing-rehearsal.yml records what each nested Mach-O carries on every run.
+# WHAT THE SPLIT LAYOUT MAKES PASS. package.sh ships FineType in the app as a
+# library, signed on its own with the identity, the hardened runtime and a
+# timestamp, beside its DuckDB metadata trailer as a data file that needs no
+# signature. The DuckDB CLI keeps its upstream Developer ID signature, and the
+# app and the tarball's bare binary carry the entitlement that lets the CLI
+# load the library under library validation. Apple's notary service accepted a
+# bundle of this shape, so a tag built with these secrets now notarises it,
+# staples the ticket and publishes. signing-rehearsal.yml asserts the nested
+# code and the entitlement on every run; only the notary's answer itself needs
+# the real key.
 #
 # `cleanup` takes the keychain off the search list, deletes it and the key file,
 # and checks both are gone. It is safe to run when `setup` signed ad-hoc or
