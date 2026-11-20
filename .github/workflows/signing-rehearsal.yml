@@ -209,7 +209,8 @@ jobs:
       # library signed with the identity, the runtime flag and a timestamp, and
       # leaves the DuckDB CLI with DuckDB Foundation's own Developer ID
       # signature, which already passes. The app also carries the one
-      # entitlement that lets the DuckDB CLI load that library. These
+      # entitlement that lets its in-process engine load extensions DuckDB's
+      # own team signed. These
       # assertions are what the rehearsal can know about notarisation without
       # Apple's answer.
       - name: The nested code and the entitlement are what notarisation needs
