@@ -102,6 +102,10 @@ jobs:
     needs: tag-guard
     runs-on: macos-15
     timeout-minutes: 90
+    # How this build was signed, for the release page's wording. Both legs read
+    # the same secrets, so whichever leg's value GitHub keeps is the other's.
+    outputs:
+      signing: ${{ steps.signing.outputs.mode }}
     strategy:
       fail-fast: false
       matrix:
@@ -172,9 +176,9 @@ jobs:
       # BRIGHTFIELD_NOTARY_KEYCHAIN and BRIGHTFIELD_NOTARY_DEVELOPER_DIR, which
       # package.sh reads to sign with the hardened runtime, notarise and
       # staple. The last names an Xcode whose notarytool is 1.1 or later,
-      # because the runner's default notarytool crashes; the script says why. A partial set fails here, as
-      # does an identity that is not Developer ID. The script's header names
-      # each secret and what goes in it.
+      # because the runner's default notarytool crashes; the script says why.
+      # A partial set fails here, as does an identity that is not Developer ID.
+      # The script's header names each secret and what goes in it.
       #
       # Notarisation also judges the code nested in the bundle. package.sh
       # signs the FineType library with the identity, and the DuckDB CLI keeps
@@ -201,6 +205,19 @@ jobs:
           BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
           BRIGHTFIELD_DUCKDB_CLI: ${{ runner.temp }}/duckdb-cli
         run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
+
+      # package.sh notarises and staples whenever the signing step exported an
+      # identity and a notary profile, and fails rather than ship a signed app
+      # it could not notarise, so reaching this step with a profile set means
+      # the app is notarised and stapled.
+      - name: Record how the build was signed
+        id: signing
+        run: |
+          if [ -n "${BRIGHTFIELD_SIGN_IDENTITY:-}" ] && [ -n "${BRIGHTFIELD_NOTARY_PROFILE:-}" ]; then
+            echo "mode=notarised" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+          fi
 
       # Per-target, per-path, and NOT a glob. `if-no-files-found: error` below
       # and `fail_on_unmatched_files: true` in the release job both fire on an
@@ -360,6 +377,48 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The three passages of the install guide that depend on how the build
+      # was signed, chosen from the build job's record of it. An empty or
+      # unknown record fails here rather than publish a page that guesses.
+      - name: Word the install guide for how the build was signed
+        id: guide
+        env:
+          SIGNING: ${{ needs.build.outputs.signing }}
+        run: |
+          put() { { echo "$1<<GUIDE_EOF"; cat; echo "GUIDE_EOF"; } >> "$GITHUB_OUTPUT"; }
+          case "$SIGNING" in
+            notarised)
+              put preview <<'EOF'
+          **This is an early preview**, macOS only. `Brightfield.app` in the disk image is signed with Meridian's Developer ID and notarized by Apple, so it opens as any other downloaded application does. The tarball's binary is signed with the same Developer ID, but a tarball cannot be notarized, so how you unpack it matters; its section below says how.
+          EOF
+              put dmg <<'EOF'
+          The app is notarized and its ticket is stapled to it. The first time you open it, macOS asks once whether to open an application downloaded from the internet; choose Open, and it opens from then on.
+          EOF
+              put tarball <<'EOF'
+          The binary is signed with Meridian's Developer ID, but Apple cannot notarize a tarball. macOS marks anything the Finder's Archive Utility extracts from a download, and assesses a marked program the first time it runs; this one is not notarized, so macOS is likely to refuse it, saying Apple could not verify it, or with nothing in the terminal but `zsh: killed`. The `tar` command below does not set that mark:
+          EOF
+              ;;
+            adhoc)
+              put preview <<'EOF'
+          **This is an early preview**, macOS only, and it is not signed or notarized by Apple. That is the one thing to read before you open either download, because macOS treats an unsigned application downloaded through a browser as suspect and says so in language that sounds like the file is broken. It is not broken; each section below says what to do.
+          EOF
+              put dmg <<'EOF'
+          Because this preview is unsigned, macOS will refuse to open the copy you just installed. Clear the download mark once, and it opens from then on:
+
+          ```
+          xattr -dr com.apple.quarantine /Applications/Brightfield.app
+          ```
+          EOF
+              put tarball <<'EOF'
+          This build is unsigned, so macOS quarantines anything the Finder's Archive Utility extracts and then kills it the moment you run it — usually with nothing in the terminal but `zsh: killed`, and sometimes a notification saying Apple could not verify it. The `tar` command below does not set that mark:
+          EOF
+              ;;
+            *)
+              echo "::error::the build job recorded no signing mode (got '${SIGNING}')"
+              exit 1
+              ;;
+          esac
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -372,14 +431,16 @@ jobs:
           # scripts/check-release-tag.py --wiring refuses either switched on,
           # and a body whose first line is not the notes.
           #
-          # A release page is a browser-download surface, and this build is
-          # unsigned: unpacked by the Finder's Archive Utility the tarball's
-          # binary inherits the quarantine attribute and macOS kills it on
-          # launch with no explanation. Unpacked by `tar` in a terminal it does
-          # not. That is why the tarball instructions lead with the command and
-          # say why, and the disk image is added beside them rather than in
-          # front of them — a browser download quarantines it too, and it stays
-          # that way until the bundle inside is notarized.
+          # A release page is a browser-download surface. With the Developer ID
+          # secrets set, the app in the disk image is notarised and stapled and
+          # opens from a browser download. The tarball's binary is signed but
+          # cannot be notarised, so unpacked by the Finder's Archive Utility it
+          # inherits the quarantine attribute and Gatekeeper refuses it at
+          # first run; unpacked by `tar` in a terminal it carries no mark. That
+          # is why the tarball instructions lead with the command and say why.
+          # A build with no secrets is ad-hoc throughout, and the passages that
+          # differ come from the `guide` step above, which words them for how
+          # the build job says it signed.
           prerelease: true
           fail_on_unmatched_files: true
           # Prose paragraphs are each ONE physical line on purpose. GitHub
@@ -395,7 +456,7 @@ jobs:
 
             One native application for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Nothing here reports anywhere; it reaches out only when a spec names a remote source, a DuckLake catalog or a spatial source. Everything under `examples/` is local and self-contained except `examples/remote/`, which is where the specs that fetch are kept — with no connection one of those does not open, it exits non-zero having named the network and the URL, and nothing else is affected.
 
-            **This is an early preview**, macOS only, and it is not signed or notarized by Apple. That is the one thing to read before you open either download, because macOS treats an unsigned application downloaded through a browser as suspect and says so in language that sounds like the file is broken. It is not broken; each section below says what to do.
+            ${{ steps.guide.outputs.preview }}
 
             Two downloads, same build. On an Intel Mac, swap `aarch64` for `x86_64` throughout.
 
@@ -416,11 +477,7 @@ jobs:
 
             Open it, drag `Brightfield.app` onto the `Applications` alias in the window, and eject the image.
 
-            Because this preview is unsigned, macOS will refuse to open the copy you just installed. Clear the download mark once, and it opens from then on:
-
-            ```
-            xattr -dr com.apple.quarantine /Applications/Brightfield.app
-            ```
+            ${{ steps.guide.outputs.dmg }}
 
             The examples ship inside the bundle, at `Brightfield.app/Contents/Resources/examples`.
 
@@ -428,7 +485,7 @@ jobs:
 
             ### Unpack it in Terminal, not in Finder
 
-            This build is unsigned, so macOS quarantines anything the Finder's Archive Utility extracts and then kills it the moment you run it — usually with nothing in the terminal but `zsh: killed`, and sometimes a notification saying Apple could not verify it. The `tar` command below does not set that mark:
+            ${{ steps.guide.outputs.tarball }}
 
             ```
             tar -xzf brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
