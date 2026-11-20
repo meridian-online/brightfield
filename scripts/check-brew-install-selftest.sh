@@ -135,7 +135,11 @@ install)
 	cp "$FAKE_BIN_TEMPLATE" "$appdir/Brightfield.app/Contents/MacOS/brightfield"
 	cp "$FAKE_BIN_TEMPLATE" "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh"
 	chmod +x "$appdir/Brightfield.app/Contents/MacOS/brightfield" "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh"
-	if [[ -n "${FAKE_LINK_TO_APP:-}" ]]; then
+	if [[ -n "${FAKE_LINK_STALE:-}" ]]; then
+		mkdir -p "$FAKE_PREFIX/Caskroom/brightfield/0.0.1"
+		cp "$FAKE_BIN_TEMPLATE" "$FAKE_PREFIX/Caskroom/brightfield/0.0.1/brightfield.wrapper.sh"
+		ln -s "$FAKE_PREFIX/Caskroom/brightfield/0.0.1/brightfield.wrapper.sh" "$FAKE_PREFIX/bin/brightfield"
+	elif [[ -n "${FAKE_LINK_TO_APP:-}" ]]; then
 		ln -s "$appdir/Brightfield.app/Contents/MacOS/brightfield" "$FAKE_PREFIX/bin/brightfield"
 	else
 		ln -s "$FAKE_PREFIX/Caskroom/brightfield/$v/brightfield.wrapper.sh" "$FAKE_PREFIX/bin/brightfield"
@@ -261,6 +265,13 @@ run 0 "--appdir reaches the install and the Gatekeeper check" -- --tag v0.1.6 --
 has "brew installs into that directory" "--appdir $TMP/apps"
 has "spctl reads the app there" "spctl -a -vv -t exec $TMP/apps/Brightfield.app"
 
+# From inside $TMP, so the stand-in install lands there and not in the checkout.
+cd "$TMP" || exit 1
+run 0 "a relative --appdir is made absolute" -- --tag v0.1.6 --appdir rel-apps
+cd "$ROOT" || exit 1
+has "brew installs into the absolute path" "--appdir $PWD/rel-apps"
+has "spctl reads the app there" "spctl -a -vv -t exec $PWD/rel-apps/Brightfield.app"
+
 # ---------------------------------------------------------------------------
 # 2. The fault, and each check red on its own.
 # ---------------------------------------------------------------------------
@@ -295,6 +306,14 @@ lacks "and does not blame the type-source check" "--check-type-source\` exited"
 run 1 "a link to the app's own binary, the rest green" FAKE_LINK_TO_APP=1 -- --tag v0.1.6
 has "the failure names the link" "not the cask's exec shim"
 lacks "and does not blame Gatekeeper" "Gatekeeper does not accept"
+
+run 1 "a link to another version's shim, the rest green" FAKE_LINK_STALE=1 -- --tag v0.1.6
+has "the failure names the link" "not the cask's exec shim"
+lacks "and does not blame Gatekeeper" "Gatekeeper does not accept"
+
+run 1 "spctl names the source but exits non-zero" FAKE_SPCTL_RC=3 -- --tag v0.1.6
+has "the failure names Gatekeeper" "Gatekeeper does not accept"
+has "the exit code is in the failure" "spctl exit 3"
 
 # ---------------------------------------------------------------------------
 # 3. Which cask is installed.

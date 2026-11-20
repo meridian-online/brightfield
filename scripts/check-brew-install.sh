@@ -237,6 +237,13 @@ fi
 # ---------------------------------------------------------------------------
 install_args=(install --cask)
 if [[ -n "$APPDIR" ]]; then
+	# brew and spctl may run from another directory than this script was
+	# started in, so a relative or ~-prefixed value is made absolute here.
+	case "$APPDIR" in
+	"~") APPDIR="$HOME" ;;
+	"~/"*) APPDIR="$HOME/${APPDIR#\~/}" ;;
+	esac
+	[[ "$APPDIR" == /* ]] || APPDIR="$PWD/$APPDIR"
 	install_args+=(--appdir "$APPDIR")
 else
 	APPDIR="/Applications"
@@ -311,8 +318,11 @@ if [[ $engine_rc -ne 0 ]]; then
 	echo "FAIL  \`$CASK_NAME --check-engine\` exited $engine_rc from the copy Homebrew installed for $TAG" >&2
 	failures=$((failures + 1))
 fi
-if [[ "$(basename "${link_target:-}")" != "brightfield.wrapper.sh" || "$link_target" == *"/Contents/MacOS/"* ]]; then
-	echo "FAIL  $BIN links to '${link_target:-nothing}', not the cask's exec shim brightfield.wrapper.sh" >&2
+# The exact shim of the version just installed: a link left pointing at an
+# older version's shim, or at the app's binary, is not what this install made.
+want_link="$(brew --prefix)/Caskroom/$CASK_NAME/$VERSION/brightfield.wrapper.sh"
+if [[ "${link_target:-}" != "$want_link" ]]; then
+	echo "FAIL  $BIN links to '${link_target:-nothing}', not the cask's exec shim $want_link" >&2
 	failures=$((failures + 1))
 fi
 if [[ $failures -ne 0 ]]; then
