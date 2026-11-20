@@ -682,7 +682,6 @@ pub const BREW_INSTALL_BRANCH_PATHS: &[&str] = &[
     "packaging/Brightfield.entitlements",
     "scripts/write-brightfield-cask.sh",
     "scripts/check-cask-layout.sh",
-    "scripts/check-brew-install.sh",
     "scripts/check-brew-install-branch.sh",
     "scripts/fetch-finetype-bundle.sh",
     "scripts/finetype-pin.sh",
@@ -1097,7 +1096,14 @@ mod tests {
                 [format!("this pull request touches {file}; run gh workflow run brew-install-branch.yml --ref b for its macOS check")]
             );
         }
-        assert!(packaging_hints(&["scripts/write-brightfield-formula.sh"], "b").is_empty());
+        // The release's installed-copy check, which the branch check no
+        // longer runs, and the formula generator the cask replaced.
+        for file in [
+            "scripts/check-brew-install.sh",
+            "scripts/write-brightfield-formula.sh",
+        ] {
+            assert!(packaging_hints(&[file], "b").is_empty(), "{file}");
+        }
     }
 
     #[test]

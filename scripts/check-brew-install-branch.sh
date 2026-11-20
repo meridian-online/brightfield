@@ -116,7 +116,12 @@ IMAGE="$(cd "$DIST" 2>/dev/null && pwd)/${NAME}.dmg"
 }
 
 # brew, spctl and the shim may run from another directory than this script was
-# started in, so a relative or ~-prefixed --appdir is made absolute here.
+# started in, so a relative or ~-prefixed --appdir is made absolute here. It is
+# then normalised the way Homebrew writes it, so the paths compared below match
+# the ones it links: `.`, `..` and a trailing slash resolved, symlinks kept.
+# Homebrew 7 expands the appdir without resolving links (`./x/` becomes
+# `$PWD/x`, and `/tmp/x` stays `/tmp/x`, not `/private/tmp/x`), which is what
+# bash's logical `pwd` gives.
 if [[ -n "$APPDIR" ]]; then
 	case "$APPDIR" in
 	"~") APPDIR="$HOME" ;;
@@ -124,6 +129,7 @@ if [[ -n "$APPDIR" ]]; then
 	esac
 	[[ "$APPDIR" == /* ]] || APPDIR="$PWD/$APPDIR"
 	mkdir -p "$APPDIR" || exit 2
+	APPDIR="$(cd "$APPDIR" && pwd -L)" || exit 2
 	APPDIR_ARGS=(--appdir "$APPDIR")
 else
 	APPDIR="/Applications"
@@ -432,11 +438,15 @@ else
 	else
 		fail "formula-linked: $BIN changed to '$(readlink "$BIN" 2>/dev/null)'"
 	fi
-	# A refused install leaves its staging directory behind and names it.
+	# A refused install leaves its staging directory behind and names it. The
+	# path comes from brew's output, so it is removed only when it is plainly
+	# that directory: under /tmp, named for this cask, and with no `..` in it.
 	retained="$(grep -A1 '^Warning: Temporary files retained at:' "$WORK/formula-linked.log" | sed -n 2p)"
-	case "$retained" in
-	/private/tmp/cask-brightfield-* | /tmp/cask-brightfield-*) rm -rf "$retained" ;;
-	esac
+	if [[ "$retained" != *..* ]]; then
+		case "$retained" in
+		/private/tmp/cask-brightfield-* | /tmp/cask-brightfield-*) rm -rf "$retained" ;;
+		esac
+	fi
 	brew uninstall --cask --force "$CASK" >/dev/null 2>&1 || true
 	if [[ "$(readlink "$BIN" 2>/dev/null)" == "$FIXTURE_TARGET" ]]; then
 		rm -f "$BIN"
