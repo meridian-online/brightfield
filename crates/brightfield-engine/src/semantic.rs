@@ -562,8 +562,8 @@ impl FinetypeBundle {
 
     /// [`Self::open`] with the cache folder a split bundle is joined under
     /// passed in, so a test can drive the join and the `LOAD` after it without
-    /// writing under the real `HOME`. `cache_root` is called only for a split
-    /// bundle, once its checks have passed.
+    /// writing under the real `HOME`. A joined bundle never calls `cache_root`,
+    /// and a split one calls it after its checks have passed.
     fn open_with_cache_root(
         dir: &Path,
         conn: &Connection,
@@ -1803,8 +1803,8 @@ mod tests {
         assert!(err.contains(SPLIT_LIBRARY_FILE), "{err}");
     }
 
-    /// A split bundle that passes every check is joined into a copy under the
-    /// cache folder `open` is given, keyed by the joined bytes' hash, and that
+    /// A split bundle that passes the checks before the join is joined into a
+    /// copy under the cache folder it is given, keyed by the joined bytes' hash, and that
     /// copy is what reaches `LOAD`. The parts here are not a real extension,
     /// so the `LOAD` fails, and its error names the copy.
     #[test]
