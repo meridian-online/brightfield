@@ -57,6 +57,8 @@ MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 git worktree add -b release-X.Y.Z "$MAIN/.claude/worktrees/release-X.Y.Z" origin/main && cd "$MAIN/.claude/worktrees/release-X.Y.Z"
 ```
 
+Every edit from here to the pull request is to a file in that worktree, and each block below enters it first, since the shell's directory may not carry from one call to the next.
+
 **Reconcile the changelog.** Each pull request with a change a user would notice adds its entry under `## [Unreleased]` as it lands. Read the log above against `[Unreleased]` and add any entry that is missing.
 
 Write each entry in the voice of the existing ones: what a person using the app notices, under `### Added`, `### Changed` or `### Fixed`, with no commit mechanics. Add an entry for anything the release itself ships for the first time, such as a new way of signing or a new install channel, since no pull request adds that line. The section becomes the GitHub release's notes, and this repository is public, so it carries no private planning identifiers.
@@ -66,6 +68,7 @@ Write each entry in the voice of the existing ones: what a person using the app 
 **Bump the version** in `crates/brightfield-shell/Cargo.toml`, the one crate version a release changes, then have Cargo rewrite its line in `Cargo.lock`:
 
 ```bash
+cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/worktrees/release-X.Y.Z" || exit 1
 cargo metadata --format-version 1 > /dev/null
 git diff --stat      # CHANGELOG.md, the shell crate's Cargo.toml, and one line of Cargo.lock
 ```
@@ -75,6 +78,7 @@ Other copies of the old version string in the tree, such as cask self-test fixtu
 **Check the tree accepts the tag:**
 
 ```bash
+cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/worktrees/release-X.Y.Z" || exit 1
 PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' origin/main)
 python3 scripts/check-release-tag.py --tag vX.Y.Z     # exit 0: "... agree; release notes are that section."
 python3 scripts/check-release-tag.py --tag "$PREV"    # exit 4: the old tag no longer names this tree
@@ -84,13 +88,16 @@ cargo xtask ci --step fmt
 cargo xtask ci --step clippy
 ```
 
-Commit the three files by name, run `cargo xtask ci --step comment-citations`, push, and open the pull request:
+Commit the three files by name, run `comment-citations`, push, and open the pull request:
 
 ```bash
+set -e
+cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/worktrees/release-X.Y.Z"
 git add CHANGELOG.md crates/brightfield-shell/Cargo.toml Cargo.lock
 git commit -m "Version Brightfield X.Y.Z"
+cargo xtask ci --step comment-citations
 git push -u origin release-X.Y.Z
-gh pr create --title "Version Brightfield X.Y.Z" --body "<what the section adds, how it was checked, and: merging this and pushing vX.Y.Z publishes the release>"
+gh pr create --repo meridian-online/brightfield --head release-X.Y.Z --title "Version Brightfield X.Y.Z" --body "<what the section adds, how it was checked, and: merging this and pushing vX.Y.Z publishes the release>"
 ```
 
 Then take it to ready as `CLAUDE.md`'s "The gate" says for any pull request: `cargo xtask gate <pr>`, the closed roborev branch review, and the Forge link. Tell Hugh it is ready, with its link, and stop. What he runs next is his, not yours:
@@ -105,14 +112,14 @@ git tag -a vX.Y.Z -m "Brightfield X.Y.Z" && git push origin vX.Y.Z
 Once Hugh says the tag is pushed:
 
 ```bash
-gh run list --workflow release.yml --limit 3
-gh run watch <run-id> --exit-status
+gh run list --repo meridian-online/brightfield --workflow release.yml --limit 3
+gh run watch <run-id> --repo meridian-online/brightfield --exit-status
 ```
 
 v0.1.9's run took 35 minutes. When it is green, check what it published:
 
 ```bash
-gh release view vX.Y.Z --json assets,isPrerelease,publishedAt \
+gh release view vX.Y.Z --repo meridian-online/brightfield --json assets,isPrerelease,publishedAt \
   --jq '{assets: [.assets[].name], isPrerelease, publishedAt}'
 gh api repos/meridian-online/homebrew-tap/contents/Casks/brightfield.rb --jq .content \
   | base64 -d | grep -m1 -E '^\s*version'
@@ -120,9 +127,9 @@ gh api repos/meridian-online/homebrew-tap/contents/Casks/brightfield.rb --jq .co
 
 The release has eight assets: the `.tar.gz` and the `.dmg` for each of the two targets, each with its `.sha256`. The cask reads `version "X.Y.Z"`. Keep `publishedAt` for stage 3.
 
-When `isPrerelease` is `true` for a build `update-homebrew` accepted, tell Hugh: promoting it to the latest full release (`gh release edit vX.Y.Z --prerelease=false --latest`) is his step.
+When `isPrerelease` is `true` for a build `update-homebrew` accepted, tell Hugh: promoting it to the latest full release (`gh release edit vX.Y.Z --repo meridian-online/brightfield --prerelease=false --latest`) is his step.
 
-When a job fails, report it to Hugh with `gh run view <run-id> --log-failed`, and say which jobs had already run: a failure after `release` leaves the GitHub release published. Re-running the workflow, moving or deleting the tag and editing the tap by hand are his calls.
+When a job fails, report it to Hugh with `gh run view <run-id> --repo meridian-online/brightfield --log-failed`, and say which jobs had already run: a failure after `release` leaves the GitHub release published. Re-running the workflow, moving or deleting the tag and editing the tap by hand are his calls.
 
 ## 3. The meridian.online pull request
 
@@ -151,7 +158,7 @@ GH_TOKEN=$(gh auth token) node scripts/check-release-coverage.mjs --gate --base 
 git add src/data/releases.json content/changelog/brightfield-vX-Y-Z.mdx   # and any docs page changed
 git commit -m "Brightfield vX.Y.Z's changelog entry and release row"
 git push -u origin brightfield-vX.Y.Z
-gh pr create --title "Brightfield vX.Y.Z's changelog entry" --body "<what the entry says, the row's date and why, and whether merging it puts up the Download button>"
+gh pr create --repo meridian-online/web --head brightfield-vX.Y.Z --title "Brightfield vX.Y.Z's changelog entry" --body "<what the entry says, the row's date and why, and whether merging it puts up the Download button>"
 ```
 
 Then close its roborev branch review (`roborev review --branch --wait`), wait for `gh pr checks <pr> --watch` to finish, link it in Forge as for the release pull request, and tell Hugh it is ready, with its link. web deploys from `main`, so Hugh's merge publishes it.
