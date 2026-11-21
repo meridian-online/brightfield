@@ -143,6 +143,9 @@ cd .claude/worktrees/brightfield-vX.Y.Z && npm ci
 Check, commit and open the pull request:
 
 ```bash
+set -e
+WEB="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web"
+cd "$WEB/.claude/worktrees/brightfield-vX.Y.Z"
 npm test
 GH_TOKEN=$(gh auth token) node scripts/check-release-coverage.mjs --gate --base origin/main
 git add src/data/releases.json content/changelog/brightfield-vX-Y-Z.mdx   # and any docs page changed
