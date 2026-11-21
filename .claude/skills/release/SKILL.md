@@ -50,11 +50,11 @@ git -C "$WEB" show origin/main:src/data/releases.json | grep -q "\"brightfield\"
 
 `WEB` is the web checkout beside Brightfield's main checkout; the block stops when it is not there. When nothing merged since the previous release, there is nothing to release: say so and stop. When web has no row for the previous release, do stage 3 for it first, then come back.
 
-Then work in a worktree of an up-to-date `main`:
+Then work in a worktree of an up-to-date `main`, beside the other worktrees of Brightfield's main checkout rather than inside the one the session started in:
 
 ```bash
-git worktree add -b release-X.Y.Z .claude/worktrees/release-X.Y.Z origin/main
-cd .claude/worktrees/release-X.Y.Z
+MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+git worktree add -b release-X.Y.Z "$MAIN/.claude/worktrees/release-X.Y.Z" origin/main && cd "$MAIN/.claude/worktrees/release-X.Y.Z"
 ```
 
 **Reconcile the changelog.** Each pull request with a change a user would notice adds its entry under `## [Unreleased]` as it lands. Read the log above against `[Unreleased]` and add any entry that is missing.
