@@ -35,16 +35,20 @@ Use the version the argument gives. Without one, take the next patch (`0.1.9` â†
 
 **Check there is a release to cut, and that the last one is finished:**
 
+Run this block whole, from Brightfield's checkout or any worktree of it. Shell variables do not outlive one Bash call, so each block below that needs `WEB` or `PREV` sets it again.
+
 ```bash
 WEB="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web"
-git -C "$WEB" rev-parse --show-toplevel      # must print web's checkout; stop and find it if not
-git fetch origin && git -C "$WEB" fetch origin
+git -C "$WEB" remote get-url origin | grep -q 'meridian-online/web' || { echo "no web checkout at $WEB" >&2; exit 1; }
+git fetch origin && git -C "$WEB" fetch origin || exit 1
 PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' origin/main)
+echo "previous release: $PREV"; echo "merged since:"
 git log "$PREV"..origin/main --oneline --no-merges
-git -C "$WEB" show origin/main:src/data/releases.json | grep "\"brightfield\", \"version\": \"${PREV#v}\""
+git -C "$WEB" show origin/main:src/data/releases.json | grep -q "\"brightfield\", \"version\": \"${PREV#v}\"" \
+  && echo "web lists $PREV" || echo "web has no row for $PREV"
 ```
 
-`WEB` is the web checkout beside Brightfield's main checkout, found the same way from a worktree. When the log is empty, there is nothing to release: say so and stop. When the last command prints nothing, web has no row for the previous release: do stage 3 for `$PREV` first, then come back.
+`WEB` is the web checkout beside Brightfield's main checkout; the block stops when it is not there. When nothing merged since the previous release, there is nothing to release: say so and stop. When web has no row for the previous release, do stage 3 for it first, then come back.
 
 Then work in a worktree of an up-to-date `main`:
 
@@ -71,6 +75,7 @@ Other copies of the old version string in the tree, such as cask self-test fixtu
 **Check the tree accepts the tag:**
 
 ```bash
+PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' origin/main)
 python3 scripts/check-release-tag.py --tag vX.Y.Z     # exit 0: "... agree; release notes are that section."
 python3 scripts/check-release-tag.py --tag "$PREV"    # exit 4: the old tag no longer names this tree
 cargo xtask ci --step release-tag-rehearsal
@@ -121,13 +126,13 @@ When a job fails, report it to Hugh with `gh run view <run-id> --log-failed`, an
 
 ## 3. The meridian.online pull request
 
-In web's checkout (`WEB` as stage 1's first line sets it), on a new branch in a worktree:
+Start from Brightfield's checkout or a worktree of it, and make a worktree of web on a new branch. The block stops before it makes anything when web's checkout is not where it looks:
 
 ```bash
-cd "$WEB" && git fetch origin
-git worktree add -b brightfield-vX.Y.Z .claude/worktrees/brightfield-vX.Y.Z origin/main
-cd .claude/worktrees/brightfield-vX.Y.Z
-npm ci
+WEB="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web"
+cd "$WEB" && git remote get-url origin | grep -q 'meridian-online/web' || { echo "no web checkout at $WEB" >&2; exit 1; }
+git fetch origin && git worktree add -b brightfield-vX.Y.Z .claude/worktrees/brightfield-vX.Y.Z origin/main || exit 1
+cd .claude/worktrees/brightfield-vX.Y.Z && npm ci
 ```
 
 1. **`src/data/releases.json`**: add `{ "package": "brightfield", "version": "X.Y.Z", "date": "YYYY-MM-DD" }` after the last `brightfield` row. The date is the first ten characters of `publishedAt`, the UTC day, which web's release-coverage gate checks. It is not the changelog heading's date: a tag pushed in the morning in a timezone ahead of UTC is published on the previous UTC day, as v0.1.9 was (heading 2026-11-21, published 2026-11-20T23:16:51Z).
