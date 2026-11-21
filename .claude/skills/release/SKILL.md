@@ -38,6 +38,7 @@ Use the version the argument gives. Without one, take the next patch (`0.1.9` â†
 Run this block whole, from Brightfield's checkout or any worktree of it. Shell variables do not outlive one Bash call, so each block below that needs `WEB` or `PREV` sets it again.
 
 ```bash
+git remote get-url origin | grep -q 'meridian-online/brightfield' || { echo "not in a Brightfield checkout" >&2; exit 1; }
 WEB="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web"
 git -C "$WEB" remote get-url origin | grep -q 'meridian-online/web' || { echo "no web checkout at $WEB" >&2; exit 1; }
 git fetch origin && git -C "$WEB" fetch origin || exit 1
@@ -53,6 +54,7 @@ git -C "$WEB" show origin/main:src/data/releases.json | grep -q "\"brightfield\"
 Then work in a worktree of an up-to-date `main`, beside the other worktrees of Brightfield's main checkout rather than inside the one the session started in:
 
 ```bash
+git remote get-url origin | grep -q 'meridian-online/brightfield' || { echo "not in a Brightfield checkout" >&2; exit 1; }
 MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 git worktree add -b release-X.Y.Z "$MAIN/.claude/worktrees/release-X.Y.Z" origin/main && cd "$MAIN/.claude/worktrees/release-X.Y.Z"
 ```
@@ -100,7 +102,14 @@ git push -u origin release-X.Y.Z
 gh pr create --repo meridian-online/brightfield --head release-X.Y.Z --title "Version Brightfield X.Y.Z" --body "<what the section adds, how it was checked, and: merging this and pushing vX.Y.Z publishes the release>"
 ```
 
-Then take it to ready as `CLAUDE.md`'s "The gate" says for any pull request: `cargo xtask gate <pr>`, the closed roborev branch review, and the Forge link. Tell Hugh it is ready, with its link, and stop. What he runs next is his, not yours:
+Then take it to ready as `CLAUDE.md`'s "The gate" says for any pull request: the gate, the closed roborev branch review, and the Forge link. The branch review reads the branch it runs in, so run it from the release worktree:
+
+```bash
+cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/worktrees/release-X.Y.Z" || exit 1
+roborev review --branch --wait
+```
+
+Tell Hugh it is ready, with its link, and stop. What he runs next is his, not yours:
 
 ```bash
 git switch main && git pull --ff-only
@@ -161,7 +170,15 @@ git push -u origin brightfield-vX.Y.Z
 gh pr create --repo meridian-online/web --head brightfield-vX.Y.Z --title "Brightfield vX.Y.Z's changelog entry" --body "<what the entry says, the row's date and why, and whether merging it puts up the Download button>"
 ```
 
-Then close its roborev branch review (`roborev review --branch --wait`), wait for `gh pr checks <pr> --watch` to finish, link it in Forge as for the release pull request, and tell Hugh it is ready, with its link. web deploys from `main`, so Hugh's merge publishes it.
+Then review the branch and wait for the checks, from web's worktree:
+
+```bash
+cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web/.claude/worktrees/brightfield-vX.Y.Z" || exit 1
+roborev review --branch --wait
+gh pr checks <pr> --repo meridian-online/web --watch
+```
+
+Close the review once its findings are fixed or answered, link the pull request in Forge as for the release pull request, and tell Hugh it is ready, with its link. web deploys from `main`, so Hugh's merge publishes it.
 
 ## Report
 
