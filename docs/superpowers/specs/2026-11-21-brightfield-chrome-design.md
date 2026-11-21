@@ -70,7 +70,7 @@ Commands are hard to find:
 
 ## Non-goals
 
-- **The contents of the canvas:** the grid, chart design, dashboards, Panels and their actions. A Panel appears here only as an activity that is greyed until an action exists.
+- **The contents of the canvas:** the grid, chart design, dashboards, Panels and their actions. The one piece of content work in scope is a form for each of arcform's operations (see The operation forms), because the ribbon's commands open them.
 - **Defining the components.** This design names the components it needs; the design system defines them (see Sequencing).
 - **Colour, type, density and icons.** The design system settles these: square chrome, dense at 12px with no density modes, Tabler icons, the token set.
 - **A platform shell around the app**, Foundry's sidebar of apps and files. Brightfield is one application, and the outer level would have nothing to switch between. The owner may reopen this later; nothing here depends on it.
@@ -111,9 +111,9 @@ The arrangement, open and collapsed:
 
 ```
 open
-┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 28 days old    ▶ Run ⌘↩ ┐  title band
+┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐  title band
 │ [Filter rows W] [Sort O] [Columns K] │ [Derive =] [Retype ⇧T] [Summarise ⇧S]                       hold ⌥ for key tips │  command row
-├ open places ───────┬ rank › ranking   [Grid G] Chart C  Dashboard D  Panel N  ┬ inspector ───────────────┤
+├ open places ───────┬ rank › ranking   [Grid G] Chart C                         ┬ inspector ───────────────┤
 │ ranking · Grid     │                                                          │ column installs_30d      │
 │ measures · Chart   │            one activity, full attention                  │ count · INTEGER          │
 ├ spine ─────────────┤                                                          │ distribution             │
@@ -125,7 +125,7 @@ open
 └ ranking · Grid · column installs_30d    Filter rows · next time, press W         19,028 rows · idle ────────┘  status band
 
 collapsed
-┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 28 days old    ▶ Run ⌘↩ ┐
+┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐
 ```
 
 ### 1. The menu bar
@@ -144,7 +144,7 @@ One band, in the macOS unified style, holding from left to right:
 2. **The mark,** which leads home to the front door.
 3. **The Protocol's name and where it is kept.**
 4. **The ribbon's stage tabs, then the contextual tab.** The stage tabs are Bring in, Shape, Model and Publish. They read arcform's operation stages (acquire, shape, model, publish) as the reasons an analyst reaches for an operator: bring data in, work it out, act on it. The contextual tab, set apart by a divider and a tint, is named for the focused activity and node, such as `Grid · ranking`.
-5. **The activity area, in the centre.** While a run is in progress it shows the step running, how many steps are done and a progress bar. Otherwise it shows when the Protocol last ran and how old its data is, with a state mark: fresh, stale or failed.
+5. **The activity area, in the centre.** While a run is in progress it shows the step running, how many steps are done and a progress bar. Otherwise it shows when the Protocol last ran and how long ago that was, with a state mark: fresh, stale or failed. Stale keeps today's meaning: a step's definition, or one upstream of it, changed since it ran. This design adds no detection of age or of changed sources.
 6. **Run, with its key ⌘↩.**
 
 The stage tabs, the activity switcher and the open places must each look unlike the other two.
@@ -156,13 +156,15 @@ One row, under the title band, for the selected tab.
 - **Each command is an icon, a label and its key,** gathered into groups separated by a rule.
 - **A greyed command keeps its place and its key.** Pointing at it opens a popover naming what it needs, for example:
   - "Relate needs two sources."
-  - "Join: pick a second table to join ranking to."
-  - "Forecast needs a date or time column. ranking has none."
-  - "Schedule needs Meridian Pro."
+  - "Join tables: pick a second table to join ranking to."
+  - "Map needs a latitude and longitude pair."
+  - "Append rows needs a second table with matching columns."
 
   Pressing its key shows the same sentence.
-- **Key tips.** While ⌥ is held, a letter sits on each tab and each command. Releasing ⌥ removes them.
-- **Collapse.** Double-clicking the selected tab hides the command row; so does a key bound in the registry. The header is then one row. The tabs still open their commands as a dropdown row, and key tips still work. The collapsed state is remembered per user.
+- **Key tips.** While ⌥ is held, each tab and command shows its registry key, the same key that fires it. This matters when the ribbon is collapsed or a command shows as an icon only. Key tips are not a second layer of bindings: tabs have registry keys like any command. ⌥ is not intercepted while a text field has the keys, since ⌥ types characters there on macOS.
+- **Collapse.** Double-clicking the selected tab hides the command row; so does a key bound in the registry. The header is then one row. The tabs still open their commands as a dropdown row, and key tips still show the keys. The collapsed state is remembered per user.
+- **The ribbon lists commands that exist.** A command joins it when the feature behind it is built. Greyed means a missing input, never a missing feature.
+- **Brightfield holds the mapping of commands to stages,** since arcform's operations don't carry a stage. Joining sits under Model. A later arcform change may declare stages; the ribbon would then read them.
 - **Availability is declared by the command.** Each command states the inputs it needs: a count of sources, a column of some type, a selected node of some kind, a plan. The ribbon, the menus and the palette all read that declaration, so a command is greyed with the same sentence everywhere.
 
 ### 4. The spine and the open places, in the left rail
@@ -178,9 +180,12 @@ One row, under the title band, for the selected tab.
 ### 5. The canvas and its pane header
 
 - **One pane by default, with the analyst's full attention.**
-- **The pane header names the node and the step that made it,** for example `rank › ranking`, followed by the activity switcher: Grid, Chart, Dashboard and Panel, each with its key.
+- **The pane header names the node and the step that made it,** for example `rank › ranking`, followed by the activity switcher, each activity with its key.
+  - **Grid and Chart are the activities.** On a table or view, Grid shows its rows and Chart designs a chart that reads it. Chart opens the chart that reads the node, asks which when there are several, and starts a new draft when there are none. The draft is kept only on ⌘S, as other edits are. On a chart, Grid shows the rows it reads.
+  - **The model step's activity is the model view,** the diagram, list and Ossie file of the sources and their joins. Relate, in the Model tab, focuses it.
+  - **Dashboards and Panels are nodes, not activities.** They sit later in the graph and open from the spine as places of their own. The charts an agent writes under `panels/` are chart nodes in this chrome, and their tile grid opens as a dashboard. What the word "panel" names is left to the owner's ruling on Panels.
   - The switcher belongs to the node. Switching keeps the node and the selection, so going from a chart to the grid to find a field and back loses neither.
-  - An activity the node can't take is greyed with its reason. Panel stays greyed until an action has been defined.
+  - An activity the node can't take is greyed with its reason.
 - **On request, the canvas splits into two panes.** The activity keys act on whichever pane has focus, and each pane keeps its own header.
 - **The header's right end** carries the node's kind and size, for example "table · 19,028 rows".
 
@@ -222,6 +227,7 @@ Space still opens every command, grouped by stage, with keys and greyed reasons,
 - the ribbon is a taxonomy of commands in a current look, with Tabler icons
 - the keyboard is learnable from visual indicators
 - approach A
+- the ribbon's commands are backed by a form for each of arcform's operations, built in stages
 
 **The assistant's, not yet tested by the owner beyond agreeing they looked right:**
 - the ribbon collapses to its tabs
@@ -230,18 +236,35 @@ Space still opens every command, grouped by stage, with keys and greyed reasons,
 - the status band teaches a command's key after mouse use
 - the menu bar's menu names
 - the availability declaration on each command
+- from the builder check: Grid and Chart as the activities, with dashboards and Panels as nodes; the model view as the model step's activity; key tips that show registry keys rather than a second layer; stale keeping today's meaning; Brightfield holding the stage mapping; the keymap file left to its own work
 
 **Left to the builder:**
-- each key (the mockups' keys are placeholders, and every key must be a registry default)
+- each key (the mockups' keys are placeholders, and every key must be a registry default; the analyst's keymap file is separate work, so this design only keeps every key in the registry)
 - the extents within the region rules
 - the order of commands within a group
 - how the native menu is built on macOS
 - how the in-window menu works on Linux and Windows
 - how a command's availability is expressed in the registry
 
+## The operation forms
+
+Each of arcform's operations gets an input form in the window, which its ribbon command opens, aimed at the focused node. The operations, from `arc operation list`:
+
+| Stage tab | Operations |
+|---|---|
+| Bring in | `read-file` |
+| Shape | `filter-rows`, `sort-rows`, `hide-column`, `rename-column`, `derive-column`, `cast-column`, `fill-nulls`, `dedupe-rows`, `limit-rows`, `summarise-rows` |
+| Model | `join-tables`, `append-rows` |
+
+- **A form is built from the operation's own description.** It shows what the operation will do, previews the result on the focused node, and records the step on ⌘S. The two built today, `filter-rows` and `sort-rows` from the grid's foot row, are the pattern.
+- **The forms are built in stages,** each operation its own piece of work, so they can run side by side. Shape's are the first.
+- **Publish's commands are exports today:** a chart's picture, and the data and report exports the command line already has, brought into the window. Publishing to the lake joins Publish when the window can run it.
+
 ## Sequencing
 
 The design system already has the tokens this chrome needs. What it lacks are the components that compose them. The owner's point is that building those components first will make this work easier.
+
+There are three tracks once the design is approved, and the second and third can run side by side:
 
 1. **This design is approved.**
 2. **The design system defines the components it names,** in its `meridian-egui` crate, as part of a design review raising its component detail to Foundry's level:
@@ -256,7 +279,8 @@ The design system already has the tokens this chrome needs. What it lacks are th
    - inspector sections with a title and a count, and a distribution bar
    - a menu row with its key
    - the status band's teaching message
-3. **Brightfield assembles the chrome from those components,** in slices that each leave the app working:
+3. **The operation forms,** one piece of work per operation, starting with Shape. They need no new components beyond the design system's existing fields, so they can start straight after approval.
+4. **Brightfield assembles the chrome from those components,** in slices that each leave the app working. Slice 1 needs no new components and can start straight after approval; the others wait for the design system's, with no stand-ins drawn in Brightfield, since a stand-in tends to stay:
    1. the command list's availability declarations, and the native menu bar built from it
    2. the unified title band and the ribbon, with key tips, collapse and greyed reasons
    3. the spine's three widths, with the open places and quick open
