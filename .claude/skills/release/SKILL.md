@@ -36,13 +36,15 @@ Use the version the argument gives. Without one, take the next patch (`0.1.9` â†
 **Check there is a release to cut, and that the last one is finished:**
 
 ```bash
-git fetch origin && git -C ../web fetch origin
+WEB="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/../web"
+git -C "$WEB" rev-parse --show-toplevel      # must print web's checkout; stop and find it if not
+git fetch origin && git -C "$WEB" fetch origin
 PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' origin/main)
 git log "$PREV"..origin/main --oneline --no-merges
-git -C ../web show origin/main:src/data/releases.json | grep "\"brightfield\", \"version\": \"${PREV#v}\""
+git -C "$WEB" show origin/main:src/data/releases.json | grep "\"brightfield\", \"version\": \"${PREV#v}\""
 ```
 
-When the log is empty, there is nothing to release: say so and stop. When the last command prints nothing, web has no row for the previous release: do stage 3 for `$PREV` first, then come back. `../web` assumes web's checkout sits beside this one; find it there or clone `meridian-online/web`.
+`WEB` is the web checkout beside Brightfield's main checkout, found the same way from a worktree. When the log is empty, there is nothing to release: say so and stop. When the last command prints nothing, web has no row for the previous release: do stage 3 for `$PREV` first, then come back.
 
 Then work in a worktree of an up-to-date `main`:
 
@@ -119,10 +121,10 @@ When a job fails, report it to Hugh with `gh run view <run-id> --log-failed`, an
 
 ## 3. The meridian.online pull request
 
-In web's checkout, on a new branch in a worktree:
+In web's checkout (`WEB` as stage 1's first line sets it), on a new branch in a worktree:
 
 ```bash
-git fetch origin
+cd "$WEB" && git fetch origin
 git worktree add -b brightfield-vX.Y.Z .claude/worktrees/brightfield-vX.Y.Z origin/main
 cd .claude/worktrees/brightfield-vX.Y.Z
 npm ci
