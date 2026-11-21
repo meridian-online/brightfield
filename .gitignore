@@ -1,5 +1,7 @@
 /target
-/.claude
+# Claude Code's local state and worktrees stay out; its project skills are tracked.
+/.claude/*
+!/.claude/skills/
 
 # Finder metadata; written anywhere a directory is opened on macOS.
 .DS_Store
