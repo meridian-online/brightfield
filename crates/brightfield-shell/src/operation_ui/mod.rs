@@ -241,7 +241,8 @@ impl Draft {
 
     /// The first thing `description` requires that the draft lacks, as
     /// `"<long name> needs <key>"`: a required table, then a required value,
-    /// then a value arc takes only beside one the draft gives. `None` for a
+    /// then a value that one the draft gives needs beside it
+    /// (`a_draft_says_the_first_thing_arc_requires_that_it_lacks`). `None` for a
     /// draft that holds each of them.
     #[must_use]
     pub fn missing(&self, description: &OperationDescription) -> Option<String> {
@@ -348,8 +349,9 @@ impl NameRule {
     /// The last part of the name for `draft`: the first comma-separated item
     /// of the value [`By::Value`] names, without a surrounding `"` pair and
     /// without a trailing `asc` or `desc`. `None` when the rule is [`By::Nothing`],
-    /// when the draft lacks the value, and when what is left holds a character other
-    /// than a letter, a digit, `_` or a space, since an expression is no name.
+    /// when the draft lacks the value, when it is empty, and when what is left holds a
+    /// character other than a letter, a digit or `_`, or a space outside quotes,
+    /// since an expression is no name.
     #[must_use]
     pub fn last_part(&self, draft: &Draft) -> Option<String> {
         let By::Value(key) = self.from else {
@@ -363,15 +365,17 @@ impl NameRule {
             .map_or(first, |direction| {
                 first[..first.len() - direction.len()].trim_end()
             });
-        let first = first
+        // A space is part of a name inside quotes, and SQL outside them, as
+        // in `house_age desc nulls last`.
+        let quoted = first
             .strip_prefix('"')
-            .and_then(|rest| rest.strip_suffix('"'))
-            .unwrap_or(first);
-        let plain = !first.is_empty()
-            && first
+            .and_then(|rest| rest.strip_suffix('"'));
+        let name = quoted.unwrap_or(first);
+        let plain = !name.is_empty()
+            && name
                 .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == ' ');
-        plain.then(|| first.to_string())
+                .all(|c| c.is_alphanumeric() || c == '_' || (c == ' ' && quoted.is_some()));
+        plain.then(|| name.to_string())
     }
 }
 
@@ -458,6 +462,60 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_says_the_first_thing_arc_requires_that_it_lacks() {
+        use crate::operation::{Parameter, Role, ValueShape};
+        let role = |name: &str, kind: &str, required: bool| Role {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            required,
+            description: String::new(),
+            list: false,
+            min_items: 0,
+        };
+        let parameter = |key: &str, required: bool| Parameter {
+            key: key.to_string(),
+            description: String::new(),
+            offered: Vec::new(),
+            shape: ValueShape::Text,
+            required,
+        };
+        let description = OperationDescription {
+            long_name: "limit-rows".to_string(),
+            summary: String::new(),
+            reads: vec![
+                role("table", "table", true),
+                role("column", "column", false),
+                role("other", "table", true),
+            ],
+            parameters: vec![
+                parameter("count", true),
+                parameter("key", false),
+                parameter("order_by", false),
+            ],
+            needed_together: vec![("key".to_string(), vec!["order_by".to_string()])],
+        };
+        let needs = |what: &str| Some(format!("limit-rows needs {what}"));
+        // The table first, then the other table, then a required value.
+        let mut made = draft(&[]);
+        assert_eq!(made.missing(&description), needs("table"));
+        made.on = Some("housing".to_string());
+        assert_eq!(made.missing(&description), needs("other"));
+        made.reads.push(("other".to_string(), "by_age".to_string()));
+        assert_eq!(made.missing(&description), needs("count"));
+        // Spaces are no value.
+        made.set("count", "  ".to_string());
+        assert_eq!(made.missing(&description), needs("count"));
+        made.set("count", "10".to_string());
+        assert_eq!(made.missing(&description), None);
+        // `key` needs `order_by` beside it, and `order_by` alone needs no `key`.
+        made.set("order_by", "house_age".to_string());
+        assert_eq!(made.missing(&description), None);
+        made.set("order_by", String::new());
+        made.set("key", "house_age".to_string());
+        assert_eq!(made.missing(&description), needs("order_by"));
+    }
+
+    #[test]
     fn a_step_is_named_by_a_plain_column_and_by_no_expression() {
         let rule = NameRule {
             word: "first",
@@ -472,6 +530,9 @@ mod tests {
             Some("median income".to_string())
         );
         assert_eq!(part("lower(note)"), None);
+        assert_eq!(part("house_age desc nulls last"), None);
+        assert_eq!(part("note collate nocase"), None);
+        assert_eq!(part(",rooms"), None);
         assert_eq!(part(""), None);
         assert_eq!(rule.last_part(&Draft::empty("limit-rows")), None);
         let nothing = NameRule {

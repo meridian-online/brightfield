@@ -345,7 +345,15 @@ pub fn describe(runner: &Runner, long_name: &str) -> Result<OperationDescription
         .map(|needs| {
             needs
                 .iter()
-                .map(|(key, _)| (key.clone(), strings(&schema["dependentRequired"], key)))
+                .map(|(key, beside)| {
+                    let beside = beside.as_array().into_iter().flatten();
+                    (
+                        key.clone(),
+                        beside
+                            .filter_map(|b| b.as_str().map(str::to_string))
+                            .collect(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
