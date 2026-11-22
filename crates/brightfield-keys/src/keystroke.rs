@@ -3,13 +3,14 @@
 //!
 //! The registry writes a binding as space-separated strokes, each a key with
 //! its modifiers in front: `"cmd-shift-p"`, `"shift-tab"`, `"d d"`. This module
-//! reads that form into [`Keystroke`]s and labels each one per platform, so
-//! every surface that shows a key shows the registry's own.
+//! reads that form into [`Keystroke`]s and labels each one per platform, so a
+//! menu or a help row shows the registry's own key.
 
 /// One stroke of a binding: a key and the modifiers held with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keystroke {
-    /// The key's name, one of [`KEY_NAMES`] for every registry binding.
+    /// The key's name, with its modifiers taken off. A registry binding's is
+    /// one of [`KEY_NAMES`] (`every_registry_binding_parses_to_a_known_key`).
     pub key: &'static str,
     /// The platform's command modifier: ⌘ on the Mac and Ctrl elsewhere.
     pub command: bool,
