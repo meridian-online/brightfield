@@ -35,9 +35,10 @@ use super::{CanvasHolds, MeridianApp, NodeView};
 use crate::app::Making;
 use crate::grid_foot::FootField;
 use crate::operation::{DescriptionState, Descriptions, OperationDescription};
+use crate::operation_ui::header::HeaderHit;
 use crate::operation_ui::open::{availability, Availability, InFront, OperationContext};
 use crate::operation_ui::reads::DraftReads;
-use crate::operation_ui::{self, Begin, Draft, Keeps, OperationUi, Start};
+use crate::operation_ui::{self, BegunWith, Draft, HeaderPart, Keeps, OperationUi, Start};
 
 /// The stable id of the status band's line for an operation: the handle a
 /// test reads the line by.
@@ -333,6 +334,16 @@ impl MeridianApp {
                     .is_some_and(|request| request.long_name == spec.long_name)
             })
             .cloned();
+        let with = BegunWith {
+            start,
+            table: Some(front.table.clone()).filter(|t| !t.is_empty()),
+            column: column.clone(),
+            spelled: self.quoted_columns(&front.columns),
+            columns: front.columns.clone(),
+            facts: front.facts.clone(),
+            description,
+            taken: Vec::new(),
+        };
         let draft = match &corrects {
             Some(step) => {
                 let request = step.operation.as_ref().expect("filtered on it");
@@ -348,29 +359,7 @@ impl MeridianApp {
                     focus: spec.field.as_ref().and_then(|f| f.keys.last().copied()),
                 })
             }
-            None => {
-                let spelled = self.quoted_columns(&front.columns);
-                let quote = |name: &str| {
-                    spelled
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| format!("\"{}\"", name.replace('"', "\"\"")))
-                };
-                let transforms = brightfield_protocol::silver::FinetypeTransforms::vendored();
-                let begin = Begin {
-                    start,
-                    table: Some(front.table.as_str()).filter(|t| !t.is_empty()),
-                    column: column.as_deref(),
-                    columns: &front.columns,
-                    facts: &front.facts,
-                    description: &description,
-                    taken: &[],
-                    model: None,
-                    transforms: &transforms,
-                    quote: &quote,
-                };
-                (spec.begin)(&begin)
-            }
+            None => with.with_begin(|begin| (spec.begin)(begin)),
         };
         let draft = match draft {
             Ok(draft) => draft,
@@ -405,9 +394,14 @@ impl MeridianApp {
             start,
             column,
             corrects: corrects.map(|step| step.name),
+            with,
+            suggestions: Vec::new(),
+            suggestion: None,
+            answer: None,
+            form_event: operation_ui::FormEvent::None,
         });
         if spec.form.is_some() {
-            self.open_rail_on_operation();
+            self.open_rail_on_form();
         }
         self.send_draft();
         ctx.request_repaint();
@@ -494,8 +488,12 @@ impl MeridianApp {
             self.say_operation(ctx, why);
             return false;
         };
+        // A step the window refuses to keep, as over a join's rows, leaves the draft open
+        // with what was typed; the banner says why.
+        if !self.keep_draft(ctx, answer.name, answer.request, answer.model.model) {
+            return false;
+        }
         self.drop_making(ctx);
-        self.keep_draft(ctx, answer.name, answer.request, answer.model.model);
         true
     }
 
@@ -533,6 +531,21 @@ impl MeridianApp {
             return;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            // A suggestion the arrow keys are on is taken first, and Enter then keeps as it
+            // would have.
+            if let Some(making) = self.charts.doc.making_mut() {
+                let taken = making
+                    .suggestion
+                    .take()
+                    .and_then(|at| making.suggestions.get(at).cloned());
+                let focus = making
+                    .draft
+                    .focus
+                    .or_else(|| making.spec.field.and_then(|f| f.keys.first().copied()));
+                if let (Some(taken), Some(focus)) = (taken, focus) {
+                    making.draft.set(focus, taken);
+                }
+            }
             self.keep_making(ctx);
             return;
         }
@@ -549,22 +562,58 @@ impl MeridianApp {
         let Some(focus) = making.draft.focus.or_else(|| field.keys.first().copied()) else {
             return;
         };
+        // egui reads Tab at the head of a pass as a request to move focus to the next widget
+        // that takes it, which would then hold the keyboard and take the typing from the
+        // field in place. The request is withdrawn ahead of the pass's widgets.
+        if ctx.input(|i| i.events.iter().any(super::is_bare_tab)) {
+            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        }
         let mut text = making.draft.value(focus).unwrap_or_default().to_string();
         let before = text.clone();
         let mut next = None;
+        let offered = making.suggestions.len();
         ctx.input_mut(|i| {
+            // Down and Up move through what the field offers; Tab takes the one they are on,
+            // or moves to the next value the field edits.
+            if offered > 0 && i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                making.suggestion = Some(making.suggestion.map_or(0, |at| (at + 1) % offered));
+            }
+            if offered > 0 && i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                making.suggestion = Some(
+                    making
+                        .suggestion
+                        .map_or(offered - 1, |at| (at + offered - 1) % offered),
+                );
+            }
             if i.consume_key(Modifiers::NONE, Key::Tab) {
-                let at = field.keys.iter().position(|k| *k == focus).unwrap_or(0);
-                next = field.keys.get((at + 1) % field.keys.len()).copied();
+                match making
+                    .suggestion
+                    .take()
+                    .and_then(|at| making.suggestions.get(at))
+                {
+                    Some(taken) => text.clone_from(taken),
+                    None => {
+                        let at = field.keys.iter().position(|k| *k == focus).unwrap_or(0);
+                        next = field.keys.get((at + 1) % field.keys.len()).copied();
+                    }
+                }
             }
             if i.consume_key(Modifiers::NONE, Key::Backspace) {
                 text.pop();
             }
+            // A keystroke that makes text is the field's and no other handler's: its text
+            // goes into the value, and its key press goes with it, so `o` typed into a name
+            // does not also sort the rows. A key held with Cmd, Ctrl or Alt is the window's.
             i.events.retain(|e| match e {
                 egui::Event::Text(typed) => {
                     text.push_str(typed);
                     false
                 }
+                egui::Event::Key {
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd,
                 _ => true,
             });
         });
@@ -591,6 +640,42 @@ impl MeridianApp {
                 let _ = descriptions.get(&runner, spec.long_name);
             }
         }
+        // A header's menu greys a row by what the window holds, told to it each frame an
+        // operation starts from a header.
+        let context = self
+            .charts
+            .doc
+            .header_has_operations()
+            .then(|| self.operation_context());
+        self.charts.doc.set_header_context(context);
+        // A gesture on a part of a header, or a choice from its menu, starts its operation.
+        if let Some(hit) = self.charts.doc.take_header_hit() {
+            self.header_hit(ctx, &hit);
+        }
+        // What a form asked for on the frame it was last drawn.
+        let asked =
+            self.charts.doc.making_mut().map(|making| {
+                std::mem::replace(&mut making.form_event, operation_ui::FormEvent::None)
+            });
+        match asked {
+            Some(operation_ui::FormEvent::Keep) => {
+                self.keep_making(ctx);
+            }
+            Some(operation_ui::FormEvent::Cancel) => self.drop_making(ctx),
+            _ => {}
+        }
+        if let Some(making) = self.charts.doc.making_mut() {
+            // What the field in place offers for the draft as it stands.
+            if let Some(field) = making.spec.field {
+                let offered = making
+                    .with
+                    .with_begin(|begin| (field.suggestions)(begin, &making.draft));
+                if offered != making.suggestions {
+                    making.suggestions = offered;
+                    making.suggestion = None;
+                }
+            }
+        }
         let Some(making) = self.charts.doc.making().cloned() else {
             self.operation.reads = None;
             return;
@@ -601,6 +686,10 @@ impl MeridianApp {
         };
         if reads.poll() {
             self.operation.answers += 1;
+            let answer = reads.current().cloned();
+            if let Some(making) = self.charts.doc.making_mut() {
+                making.answer = answer;
+            }
             ctx.request_repaint();
         }
         let (refusal, current) = (
@@ -622,6 +711,8 @@ impl MeridianApp {
                 {
                     self.say_operation(ctx, NO_DUPLICATE_ROWS.to_string());
                 } else {
+                    // A refusal to keep is on a banner; the action asked for no value, so
+                    // there is no draft to leave open.
                     self.keep_draft(ctx, answer.name, answer.request, answer.model.model);
                 }
             }
@@ -647,6 +738,44 @@ impl MeridianApp {
             self.operation.in_grid = Some(stamp);
             ctx.request_repaint();
         }
+    }
+
+    /// **Start the operation a header's gesture names**: the one built operation that starts
+    /// from the part, on the header's column, or the one chosen from the header's menu. A
+    /// secondary click starts no operation: it opened the menu.
+    fn header_hit(&mut self, ctx: &egui::Context, hit: &HeaderHit) {
+        let ops = self.charts.doc.header_operations();
+        let spec = match hit.verb {
+            Some(verb) => ops.iter().copied().find(|op| op.verb == verb),
+            None if hit.part == HeaderPart::Menu => None,
+            None => operation_ui::header::the_one_from(&ops, hit.part),
+        };
+        let Some(spec) = spec else {
+            return;
+        };
+        // An operation chosen from the menu starts from the part it names, when it names one.
+        let start = spec
+            .starts
+            .iter()
+            .copied()
+            .find(|s| matches!(s, Start::Header(part) if *part == hit.part || hit.verb.is_some()))
+            .unwrap_or(Start::Header(hit.part));
+        self.start_operation(ctx, spec, start, hit.column.clone());
+    }
+
+    /// Open the Inspector rail on the operation panel for a form, remembering how the rail
+    /// stood so that keeping or dropping the operation puts it back.
+    fn open_rail_on_form(&mut self) {
+        let Some(at) = Self::operation_pane_index() else {
+            return;
+        };
+        self.rail_before_ask = Some(super::RailBeforeAsk {
+            collapsed: self
+                .collapsed
+                .remove(&brightfield_workbench::arrangement::INSPECTOR_RAIL),
+            panel: self.inspector_panel,
+        });
+        self.inspector_panel = at;
     }
 
     /// The step the grid shows a draft's page under, while it shows one.

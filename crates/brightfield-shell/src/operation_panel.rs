@@ -203,6 +203,13 @@ impl Item<ChartDoc> for OperationPane {
     /// Empty while no operation is in hand: it names the keys that put one
     /// there.
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        // An operation being made with a form of its own is in hand too.
+        if doc
+            .making()
+            .is_some_and(|making| making.spec.form.is_some())
+        {
+            return None;
+        }
         doc.operation_in_hand().is_none().then(|| {
             EmptyState::new(
                 ICON_OPERATION,
@@ -218,6 +225,37 @@ impl Item<ChartDoc> for OperationPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        // **The form of the operation being made**, when it has one: the
+        // operation draws it, over its own draft, and says what it asked for.
+        // The section adds the operation's name above it and draws no control
+        // of its own, so how an operation asks stays that operation's.
+        if let Some(making) = doc.making_mut() {
+            if let Some(form) = making.spec.form {
+                let sem = semantic(cx.mode.is_dark());
+                ui.label(
+                    egui::RichText::new(crate::operation_ui::label(making.spec.long_name))
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.primary)),
+                );
+                let (with, answer) = (making.with.clone(), making.answer.clone());
+                let event = with.with_begin(|begin| {
+                    form(
+                        &mut making.draft,
+                        ui,
+                        &crate::operation_ui::FormCx {
+                            begin,
+                            answer: answer.as_ref(),
+                            mode: cx.mode,
+                        },
+                    )
+                });
+                if event != crate::operation_ui::FormEvent::None {
+                    making.form_event = event;
+                    cx.request_repaint();
+                }
+                return;
+            }
+        }
         let Some(hand) = doc.operation_in_hand() else {
             return;
         };

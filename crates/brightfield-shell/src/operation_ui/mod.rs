@@ -41,6 +41,7 @@ pub mod derive_column;
 pub mod draft;
 pub mod fill_nulls;
 pub mod filter_rows;
+pub mod header;
 pub mod hide_column;
 pub mod join_tables;
 pub mod limit_rows;
@@ -301,6 +302,65 @@ pub struct Begin<'a> {
     pub transforms: &'a FinetypeTransforms,
     /// A column's name as SQL spells it: bare when plain, quoted otherwise.
     pub quote: &'a dyn Fn(&str) -> String,
+}
+
+/// **What a draft was begun from, kept for as long as it is being made**: the
+/// same facts as [`Begin`], owned, so the operation's suggestions and its form
+/// can be asked again on a later frame.
+#[derive(Clone, Debug)]
+pub struct BegunWith {
+    /// The place the operation started from.
+    pub start: Start,
+    /// The table in front, when there was one.
+    pub table: Option<String>,
+    /// The column the operation started on, when it started on one.
+    pub column: Option<String>,
+    /// The table's columns, in order.
+    pub columns: Vec<String>,
+    /// What Brightfield knows of each column.
+    pub facts: Vec<ColumnFacts>,
+    /// arc's description of the operation.
+    pub description: OperationDescription,
+    /// The tables the spine took for the operation, each with its columns.
+    pub taken: Vec<(String, Vec<String>)>,
+    /// Each column as SQL spells it, where the session could say.
+    pub spelled: std::collections::BTreeMap<String, String>,
+}
+
+/// FineType's vendored transforms, read once for the process.
+fn transforms() -> &'static FinetypeTransforms {
+    static VENDORED: std::sync::OnceLock<FinetypeTransforms> = std::sync::OnceLock::new();
+    VENDORED.get_or_init(FinetypeTransforms::vendored)
+}
+
+impl BegunWith {
+    /// A column as SQL spells it: as the session spelled it, and quoted for a
+    /// column the session was not asked about, which costs looks and reads the
+    /// right column.
+    #[must_use]
+    pub fn quote(&self, name: &str) -> String {
+        self.spelled
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| format!("\"{}\"", name.replace('"', "\"\"")))
+    }
+
+    /// Hand `f` these facts as a [`Begin`].
+    pub fn with_begin<T>(&self, f: impl FnOnce(&Begin<'_>) -> T) -> T {
+        let quote = |name: &str| self.quote(name);
+        f(&Begin {
+            start: self.start,
+            table: self.table.as_deref(),
+            column: self.column.as_deref(),
+            columns: &self.columns,
+            facts: &self.facts,
+            description: &self.description,
+            taken: &self.taken,
+            model: None,
+            transforms: transforms(),
+            quote: &quote,
+        })
+    }
 }
 
 /// What an operation's form is drawn with.

@@ -2984,6 +2984,12 @@ impl DataGridItem {
                 cx.take_focus();
                 cx.request_repaint();
             }
+            // A preview's plain header offers its names, and the field in place.
+            let names: Vec<String> = preview
+                .page()
+                .map(|page| page.columns.iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default();
+            crate::operation_ui::header::header_pass(ui, doc, drawn, &names, mode);
         }
         doc.file_table_drawn(drawn);
     }
@@ -3279,6 +3285,8 @@ impl Item<ChartDoc> for DataGridItem {
                 self.widths_over.clone_from(&names);
             }
             drag_column_edges(ui, drawn, &names, &mut self.set_widths, mode);
+            // The parts of a header an operation starts from, its menu, and a field in place.
+            crate::operation_ui::header::header_pass(ui, doc, drawn, &names, mode);
             // The cells a press can take, into the window's list of the
             // controls this frame drew.
             doc.controls.extend(drawn.controls.iter().cloned());

@@ -158,8 +158,12 @@ fn each_built_operations_needs_agree_with_what_arc_says_it_reads() {
     for ui in operation_ui::built() {
         let description = described(ui.long_name);
         let has = |need: Need| ui.needs.contains(&need);
+        // An operation that asks in the foot row applies a view, which a
+        // window with no Protocol of its own shows too. Any other is recorded,
+        // and needs a Protocol to record into.
+        let in_the_foot_row = ui.starts.iter().any(|s| matches!(s, Start::FootField(_)));
         assert!(
-            has(Need::ProtocolSource) || has(Need::TakesSources),
+            in_the_foot_row || has(Need::ProtocolSource) || has(Need::TakesSources),
             "{} records into a Protocol",
             ui.long_name
         );

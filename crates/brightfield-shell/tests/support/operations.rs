@@ -58,9 +58,12 @@ fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+fn collect_text(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
     match shape {
-        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Text(text) => out.push((
+            text.galley.text().to_owned(),
+            text.galley.rect.translate(text.pos.to_vec2()),
+        )),
         egui::Shape::Vec(shapes) => {
             for shape in shapes {
                 collect_text(shape, out);
@@ -76,6 +79,8 @@ pub struct OpWindow {
     pub ctx: egui::Context,
     /// The texts the last frame drew.
     pub texts: Vec<String>,
+    /// Where each of them was drawn.
+    pub text_rects: Vec<(String, egui::Rect)>,
     fixture: String,
     time: f64,
     tmp: std::rc::Rc<TempDir>,
@@ -110,6 +115,7 @@ impl OpWindow {
                 .running_with(Some(runner())),
             ctx: egui::Context::default(),
             texts: Vec::new(),
+            text_rects: Vec::new(),
             fixture: fixture.to_string(),
             time: 0.0,
             tmp,
@@ -156,7 +162,8 @@ impl OpWindow {
         for clipped in &out.shapes {
             collect_text(&clipped.shape, &mut texts);
         }
-        self.texts = texts;
+        self.texts = texts.iter().map(|(text, _)| text.clone()).collect();
+        self.text_rects = texts;
     }
 
     pub fn settle(&mut self) {
@@ -181,6 +188,17 @@ impl OpWindow {
             egui::Event::Text(text.to_owned()),
         ]);
         self.settle();
+    }
+
+    /// Type `text` as a keyboard does, a key press and its text for each
+    /// letter, so a handler of a bare key sees what a person's typing sends.
+    pub fn type_keys(&mut self, text: &str) {
+        for c in text.chars() {
+            match egui::Key::from_name(&c.to_ascii_uppercase().to_string()) {
+                Some(key) => self.letter(key, &c.to_string()),
+                None => self.type_text(&c.to_string()),
+            }
+        }
     }
 
     pub fn type_text(&mut self, text: &str) {
@@ -396,6 +414,110 @@ impl OpWindow {
     /// The text the Editor shows.
     pub fn editor_text(&mut self) -> String {
         self.editor().text
+    }
+
+    /// Click the middle of the text drawn that holds `text`.
+    pub fn click_text(&mut self, text: &str) {
+        let at = self
+            .text_rects
+            .iter()
+            .find(|(drawn, _)| drawn.contains(text))
+            .unwrap_or_else(|| panic!("no text holding {text:?} was drawn: {:?}", self.texts))
+            .1
+            .center();
+        self.click(at);
+    }
+
+    /// Make `gesture` on the `part` of `column`'s header.
+    pub fn header(
+        &mut self,
+        column: &str,
+        part: brightfield_shell::operation_ui::HeaderPart,
+        gesture: brightfield_shell::operation_ui::header::Gesture,
+    ) {
+        use brightfield_shell::operation_ui::header::Gesture;
+        use brightfield_shell::operation_ui::HeaderPart;
+        let drawn = self.app.chart_doc().header_drawn().clone();
+        let at = if part == HeaderPart::Menu {
+            drawn
+                .cells
+                .iter()
+                .find(|(name, _)| name == column)
+                .map(|(_, rect)| rect.center())
+        } else {
+            drawn
+                .parts
+                .iter()
+                .find(|(name, p, _)| name == column && *p == part)
+                .map(|(_, _, rect)| rect.center())
+        }
+        .unwrap_or_else(|| panic!("the header drew no {part:?} of {column}: {drawn:?}"));
+        let button = |button, pressed| egui::Event::PointerButton {
+            pos: at,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let primary = egui::PointerButton::Primary;
+        let events = match gesture {
+            Gesture::Click => vec![button(primary, true), button(primary, false)],
+            Gesture::DoubleClick => vec![
+                button(primary, true),
+                button(primary, false),
+                button(primary, true),
+                button(primary, false),
+            ],
+            Gesture::Secondary => vec![
+                button(egui::PointerButton::Secondary, true),
+                button(egui::PointerButton::Secondary, false),
+            ],
+        };
+        self.run(vec![egui::Event::PointerMoved(at)]);
+        self.run(events);
+        self.settle();
+    }
+
+    /// Click the new-column cell after the last header.
+    pub fn header_new_column(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .header_drawn()
+            .new_column
+            .expect("the header drew its new-column cell")
+            .center();
+        self.click(at);
+    }
+
+    /// Open `column`'s header menu and choose the row holding `words`.
+    pub fn header_menu(&mut self, column: &str, words: &str) {
+        self.header(
+            column,
+            brightfield_shell::operation_ui::HeaderPart::Menu,
+            brightfield_shell::operation_ui::header::Gesture::Secondary,
+        );
+        self.click_text(words);
+    }
+
+    /// The text in the field an operation asks with in place.
+    pub fn field_text(&self) -> Option<String> {
+        self.app
+            .chart_doc()
+            .header_drawn()
+            .field
+            .as_ref()
+            .map(|field| field.text.clone())
+    }
+
+    /// What that field offers under it.
+    pub fn suggestions(&self) -> Vec<String> {
+        self.app
+            .chart_doc()
+            .header_drawn()
+            .field
+            .as_ref()
+            .map(|field| field.suggestions.clone())
+            .unwrap_or_default()
     }
 
     /// Put the loaded table's grid in front, focus it, and put the cursor on

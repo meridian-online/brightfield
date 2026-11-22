@@ -798,6 +798,16 @@ pub struct Making {
     /// The kept step it corrects, when it was started over the grid of a kept
     /// step of the same operation: keeping it replaces that step in place.
     pub corrects: Option<String>,
+    /// What the draft was begun from, for its suggestions and its form.
+    pub with: crate::operation_ui::BegunWith,
+    /// What its in-place field offers for the value being typed.
+    pub suggestions: Vec<String>,
+    /// The suggestion the arrow keys are on.
+    pub suggestion: Option<usize>,
+    /// The answer to the draft as it stands, once it has come, for its form.
+    pub answer: Option<crate::operation_ui::DraftAnswer>,
+    /// What its form asked for on the last frame it was drawn.
+    pub form_event: crate::operation_ui::FormEvent,
 }
 
 /// What the Editor drew on a frame: its title, its text, and whether the text
@@ -1016,6 +1026,9 @@ pub struct ChartDoc {
     /// The operation being made, from its start until it is kept or dropped
     /// ([`Self::making`]).
     making: Option<Making>,
+    /// What a column header's parts and the operations' in-place field did
+    /// and drew ([`crate::operation_ui::header`]).
+    pub(crate) header: crate::operation_ui::header::HeaderState,
     /// Whether the next `save-spec` the editor performs is the window's, made
     /// away from the editor, and what that save did once it has run: the
     /// window cannot reach the editor's report any other way.
@@ -1564,6 +1577,7 @@ impl ChartDoc {
             step_sql: None,
             editor_drawn: None,
             making: None,
+            header: crate::operation_ui::header::HeaderState::default(),
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
@@ -1647,6 +1661,7 @@ impl ChartDoc {
             step_sql: None,
             editor_drawn: None,
             making: None,
+            header: crate::operation_ui::header::HeaderState::default(),
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,

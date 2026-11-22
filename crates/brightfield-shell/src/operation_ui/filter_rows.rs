@@ -20,7 +20,9 @@ static UI: OperationUi = OperationUi {
     icon: "filter",
     starts: &[Start::FootField(FootField::Where)],
     menu_words: "Filter rows",
-    needs: &[Need::ProtocolSource, Need::GridCell, Need::LoadedTable],
+    // No Protocol is asked for: the field applies a view, which a window with no Protocol
+    // of its own shows too, and a click on the field opens it there.
+    needs: &[Need::GridCell, Need::LoadedTable],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

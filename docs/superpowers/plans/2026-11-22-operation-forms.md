@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Phase 1 is built** (Tasks 1 to 7). What was built, the decisions made on the owner's behalf while building it, and how to add an operation are in `docs/operation-forms.md`, which is the reference for Tasks 8 to 20 where it differs from the interfaces written below. The differences that matter to an operation task: a draft's begin facts are kept on the operation being made (`Making::with`, a `BegunWith`), so `suggestions` and a form are handed a `Begin` on any frame; a header's gesture reaches the window as a `HeaderHit` from `operation_ui/header.rs`; a test offers its own operations from a header with `ChartDoc::set_header_operations`; a preview states its missing values in a line above its rows; and `filter-rows` and `sort-rows` need no Protocol.
+
 **Goal:** Each of arcform's 13 operations reachable in Brightfield's window through the interaction that suits it. For some that is a form; for others it is a direct action on what is on screen. Each previews the result at each keystroke, each records its step through arc on ⌘S, and each shows the step's SQL in the Editor tab.
 
 **Architecture:** Every operation has a slot in Brightfield's operation registry (`crates/brightfield-shell/src/operation_ui/`) and in the key registry (`crates/brightfield-keys/src/operations.rs`). Its own task fills that slot in its own files, so the per-operation tasks run side by side. The shared part is only what every operation needs:

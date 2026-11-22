@@ -417,7 +417,21 @@ fn enter_keeps_and_esc_keeps_nothing() {
         "{:?}",
         win.said()
     );
-    win.type_text("income");
+    // Typed as a keyboard types it: `o` is the grid's sort key, `w` its
+    // filter's, and here each is a letter of the name.
+    win.type_keys("income");
+    assert_eq!(
+        win.making().expect("the draft is still open").value("to"),
+        Some("income")
+    );
+    assert_eq!(win.app.chart_doc().foot_asking(), None);
+    assert_eq!(win.app.open_overlay(), None);
+    win.type_keys("w");
+    assert_eq!(
+        win.making().expect("still open").value("to"),
+        Some("incomew")
+    );
+    win.key(egui::Key::Backspace);
     win.settle_reads();
     assert!(win.grid_columns().contains(&"income".to_string()));
     assert!(!win.grid_faded());

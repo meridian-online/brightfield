@@ -22,6 +22,8 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 | The reads of a draft | `operation_ui/reads.rs` | One worker per draft. An edit is read at once with no pause; the worker takes the newest request waiting, so one arc child runs at a time and the last edit of a burst is always read; an answer for text since changed is dropped. |
 | Keeping a draft | `crates/brightfield-shell/src/typed_sql.rs`, `window.rs` | A kept draft is an unsaved step carrying the request arc will be asked to record. It is laid out at the spine's foot and previewed by running arc's model. Save records it through arc; `remove-step` on the spine takes it back. |
 | The window's side | `crates/brightfield-shell/src/window/operation_host.rs` | One entry point for a key, a palette row, a header gesture and a menu item; the keys while an operation is being made; the status band's line. |
+| A header as a place to act | `operation_ui/header.rs` | The parts of a column's header an operation starts from (a double-click on the name, a click on the type or the missing count), the menu a secondary click opens, the new-column cell, and the field an operation asks with in place, with what it suggests listed under it. |
+| A form in the Operation section | `crates/brightfield-shell/src/operation_panel.rs` | An operation with a form of its own draws it in the inspector's Operation section, over its own draft. The section adds the operation's name and no control of its own. |
 | Availability | `operation_ui/open.rs` | What the window must hold for an operation to start, checked in the order the operation lists its needs, with one sentence per need. |
 | Reading a generated step back | `crates/brightfield-shell/src/generated.rs` | A folder holding a step arc generated for any operation opens, lays out and previews. A filter or a sort is read back into its clause; any other step is read by its header and the table it makes, and its preview runs the model as arc wrote it. |
 
@@ -52,7 +54,10 @@ Each of these is reversible, and each is the owner's to overturn.
 10. **`remove-step` on a kept step takes it back at once**, a kept statement included, since no file holds it. A step kept after it that reads its table refuses that, named in a banner.
 11. **A statement typed over a draft's grid is a step of its own.** The draft's text is arc's model, which is corrected from the operation and not typed over.
 12. **A `read-file` step previews when it reads a local CSV or Parquet file**, loaded beside the data file before the preview's connection is shut. A URL, a glob, another format, or a path from the home folder is left to a run, and the preview says so.
-13. **The foot row's fields open without waiting on arc.** They write their own text and a Save records it, so `w` and `o` open their fields in a window with no arc, as they always have.
+13. **The foot row's fields open without waiting on arc, and without a Protocol.** They write their own text and apply it as a view, so `w` and `o` open their fields in a window with no arc, and in one with no Protocol of its own, where a click on the field opens it too. The palette lists the two only where a Protocol is saved.
+14. **A keystroke typed into a field in place is that field's alone.** While an operation asks on a header, a letter goes into its value and reaches no other handler, so `o` typed into a name does not sort the rows. A key held with Cmd, Ctrl or Alt is still the window's.
+15. **The new-column cell stays in reach.** It stands after the table's last column where that leaves it inside the pane, and at the pane's trailing edge otherwise.
+16. **A header's type is one place, not a region.** The type part is the leaf and storage row at the full density, the title beside the name at the compact one, and the glyph where neither is drawn.
 
 ## What arc lacks
 
@@ -75,4 +80,4 @@ An operation is three files, so operations can be built side by side.
 
 The tests in `tests/operation_registry.rs` then bite: the slot holds its own operation, its verb is in the key registry, its draft names only what arc describes, its needs agree with what arc says it reads, and it is filed under its stage.
 
-Three things the shared code does not do yet. The palette and a header's menu list an unavailable operation without greying it; choosing it says its sentence. The spine does not pick a table for an operation, so `Begin::taken` is empty. And `Begin::model`, the Protocol's model of its tables' relationships, is `None`.
+Three things the shared code does not do yet. The palette lists an unavailable operation without greying it, and choosing it says its sentence; a header's menu does grey it, with the sentence under it. The spine does not pick a table for an operation, so `Begin::taken` is empty. And `Begin::model`, the Protocol's model of its tables' relationships, is `None`.

@@ -6402,8 +6402,17 @@ impl MeridianApp {
         use crate::operation_panel::Described;
         let Some(hand) = self.charts.doc.operation_in_hand() else {
             // Nothing is asked, however the asking ended, so a later Esc from
-            // a field opened some other way moves no rail.
-            self.rail_before_ask = None;
+            // a field opened some other way moves no rail. An operation being
+            // made with a form holds the rail it opened until it is kept or
+            // dropped.
+            if self
+                .charts
+                .doc
+                .making()
+                .is_none_or(|making| making.spec.form.is_none())
+            {
+                self.rail_before_ask = None;
+            }
             self.charts.doc.set_described(Described::Nothing);
             return;
         };
@@ -9301,10 +9310,10 @@ impl MeridianApp {
             // An operation's key starts it, or says what it needs to start.
             if crate::operation_ui::by_verb(longname).is_some() {
                 if consume_token(ctx, token) {
-                    // The text the same keystroke made is the key's, not a field's.
+                    // The text the same keystroke made is the key's, not a field's: a shifted
+                    // key makes its upper-case letter, so the frame's text goes whole.
                     ctx.input_mut(|i| {
-                        i.events
-                            .retain(|e| !matches!(e, egui::Event::Text(t) if t == token));
+                        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
                     });
                     self.start_operation_verb(ctx, longname);
                     ctx.request_repaint();
@@ -10339,14 +10348,16 @@ impl MeridianApp {
     /// brought to the front in the grid, as a kept statement's is. No file is
     /// written.
     ///
-    /// Over a join's rows no step is kept, as for a statement.
+    /// Whether the step was kept. Over a join's rows no step is kept, as for a statement;
+    /// nor under a name the Protocol holds, nor one that reads what a removed step makes.
+    /// Each of those raises a banner saying so.
     pub fn keep_draft(
         &mut self,
         ctx: &egui::Context,
         name: String,
         request: crate::operation::StepRequest,
         model: String,
-    ) {
+    ) -> bool {
         if !self.charts.doc.views_are_steps() {
             self.notifications.raise(
                 Notification::new(
@@ -10357,7 +10368,7 @@ impl MeridianApp {
                 .body(NOT_KEPT_ON_A_JOIN_BODY),
             );
             ctx.request_repaint();
-            return;
+            return false;
         }
         let kept = self
             .charts
@@ -10389,7 +10400,7 @@ impl MeridianApp {
                 .body(format!("The Protocol already has a table named {name}.")),
             );
             ctx.request_repaint();
-            return;
+            return false;
         }
         // A step that reads what a step removed and not yet saved makes would read a table the
         // Save takes out, so it is refused, naming the step, as a statement is.
@@ -10416,7 +10427,7 @@ impl MeridianApp {
                 .body(reads_removed_sentence(&reads_removed)),
             );
             ctx.request_repaint();
-            return;
+            return false;
         }
         if kept {
             self.charts.doc.replace_draft(&name, request, model);
@@ -10430,6 +10441,7 @@ impl MeridianApp {
             });
         }
         self.bring_kept_to_front(ctx, &name);
+        true
     }
 
     /// Lay the Protocol out again with the kept steps, bring the table of the
