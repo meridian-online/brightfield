@@ -6869,10 +6869,12 @@ impl MeridianApp {
         // its list holds them, they are not the frame verbs' or an overlay
         // opener's.
         self.shelf_keys(&ctx, graph_on_canvas);
+        self.take_pane_keys_answered();
         // The Outline's `z` and a channel, on the shelf's side of every other
         // bare key: `x` and `c` after a `z` are the chord's, not the axis
         // lock's or the colour scheme's.
         self.outline_keys(&ctx, graph_on_canvas);
+        self.take_pane_keys_answered();
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, graph_on_canvas);
@@ -6962,6 +6964,7 @@ impl MeridianApp {
                     .doc
                     .model
                     .feed_events(&events, canvas_node.as_ref());
+                self.take_pane_keys_answered();
             }
             if let Some(addr) = self.protocol.doc.model.take_yank_request() {
                 ctx.copy_text(addr);
@@ -8269,6 +8272,8 @@ impl MeridianApp {
         // the keyboard, saves its buffer and raises the window's Save, applied just above, so
         // what reaches here is a press from anywhere else.
         self.save_key(&ctx);
+        // What the panes' own keys performed as they drew: the editor's Save.
+        self.take_pane_keys_answered();
         self.quit_key(&ctx);
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
@@ -8489,6 +8494,30 @@ impl MeridianApp {
     /// the key.
     fn answered(&mut self, verb: &'static str) {
         self.keys_answered.push(verb);
+    }
+
+    /// [`Self::answered`], answering `true`, for a chain of conditions.
+    fn note(&mut self, verb: &'static str) -> bool {
+        self.answered(verb);
+        true
+    }
+
+    /// Consume `token`'s key if it is down this frame, noting `verb` as the one
+    /// it performed. Answers whether the key was down.
+    fn took(&mut self, ctx: &egui::Context, token: &str, verb: &'static str) -> bool {
+        consume_token(ctx, token) && self.note(verb)
+    }
+
+    /// Take what the panes' own key paths noted (the Protocol model with its
+    /// column list, the shelf band and the chart document) into the frame's
+    /// record.
+    fn take_pane_keys_answered(&mut self) {
+        let mut taken = self.protocol.doc.model.take_keys_answered();
+        if let Some(band) = self.charts.shelf.band.as_mut() {
+            taken.append(&mut band.take_keys_answered());
+        }
+        taken.append(&mut self.charts.doc.take_keys_answered());
+        self.keys_answered.append(&mut taken);
     }
 
     /// The verbs a key performed on the last frame drawn, in the order their
@@ -8835,6 +8864,7 @@ impl MeridianApp {
             // level, with a cell open or none.
             if self.charts.shelf.holds && crate::shelf::undoes(*key, *modifiers) {
                 owned = true;
+                self.answered(crate::shelf::UNDO);
                 self.shelf_undo();
                 continue;
             }
@@ -8921,6 +8951,7 @@ impl MeridianApp {
         };
         if key == egui::Key::Escape && band.active().is_none() {
             self.charts.shelf.holds = false;
+            self.answered("back-out-of-shelf");
             return;
         }
         band.press(key, modifiers);
@@ -9363,16 +9394,20 @@ impl MeridianApp {
         for (token, longname) in self.grid_bindings.clone() {
             let asked = match longname {
                 "filter-rows-at-cursor" => {
-                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_where_at_cursor()
+                    self.took(ctx, token, longname)
+                        && band_drawn
+                        && self.charts.doc.ask_where_at_cursor()
                 }
                 "sort-rows-at-cursor" => {
-                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_order_at_cursor()
+                    self.took(ctx, token, longname)
+                        && band_drawn
+                        && self.charts.doc.ask_order_at_cursor()
                 }
                 _ => {
                     let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
                         continue;
                     };
-                    if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+                    if self.took(ctx, token, longname) && self.charts.doc.move_grid_cursor(step) {
                         ctx.request_repaint();
                     }
                     continue;
@@ -9490,7 +9525,7 @@ impl MeridianApp {
             let on_row = self.charts.doc.versions().cursor().is_some();
             let acted = match longname {
                 "move-version-cursor-down" | "move-version-cursor-up" => {
-                    consume_token(ctx, token)
+                    self.took(ctx, token, longname)
                         && self
                             .charts
                             .doc
@@ -9499,10 +9534,14 @@ impl MeridianApp {
                 "step-back-to-version" => {
                     on_row
                         && consume_versions_token(ctx, token)
+                        && self.note(longname)
                         && self.charts.doc.step_back_to_cursor()
                 }
                 "return-to-now" => {
-                    on_row && consume_versions_token(ctx, token) && self.charts.doc.return_to_now()
+                    on_row
+                        && consume_versions_token(ctx, token)
+                        && self.note(longname)
+                        && self.charts.doc.return_to_now()
                 }
                 _ => false,
             };
@@ -10054,6 +10093,8 @@ impl MeridianApp {
                         crate::sources_browser::Effect::Add(..)
                             | crate::sources_browser::Effect::Close
                     );
+                self.keys_answered
+                    .append(&mut open.sheet.browser.take_keys_answered());
                 browser_effect = Some((shown.inner, open.made_of.clone()));
                 if open.sheet.reading() {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));

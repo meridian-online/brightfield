@@ -1266,11 +1266,11 @@ impl Item<ChartDoc> for EditorPane {
         // route in from a toolbar or a test. A buffer this save did not write
         // stops there, with the editor's own warning saying why and what the
         // next press does: the window's Save would only say it again.
-        if out.focused
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
-            && self.save_and_note(doc, true).wrote()
-        {
-            cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
+        if out.focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+            doc.note_key_answered("save-spec");
+            if self.save_and_note(doc, true).wrote() {
+                cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
+            }
         }
         self.publish_buffer(doc);
 

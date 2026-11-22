@@ -12,7 +12,7 @@ fn sweep(context: BindingContext) {
     for verb in registry().iter().filter(|v| !v.is_reserved()) {
         for binding in verb.binding_specs.iter().filter(|b| b.context == context) {
             swept += 1;
-            let mut win = scenes::scene_for(verb.longname);
+            let mut win = scenes::scene_for(verb.longname, context);
             scenes::hold_keys(&mut win, context, verb.longname);
             win.press(binding.keystrokes);
             assert!(
@@ -36,4 +36,61 @@ fn every_global_key_is_answered() {
 #[test]
 fn every_workspace_key_is_answered() {
     sweep(BindingContext::Workspace);
+}
+
+#[test]
+fn every_protocol_key_is_answered() {
+    sweep(BindingContext::Protocol);
+}
+
+#[test]
+fn every_shelf_key_is_answered() {
+    sweep(BindingContext::Shelf);
+}
+
+#[test]
+fn every_grid_key_is_answered() {
+    sweep(BindingContext::Grid);
+}
+
+#[test]
+fn every_versions_key_is_answered() {
+    sweep(BindingContext::Versions);
+}
+
+#[test]
+fn every_browser_key_is_answered() {
+    sweep(BindingContext::Browser);
+}
+
+#[test]
+fn every_editor_key_is_answered() {
+    sweep(BindingContext::Editor);
+}
+
+/// The contexts the sweeps above cover, one a test.
+const SWEPT: [BindingContext; 8] = [
+    BindingContext::Global,
+    BindingContext::Workspace,
+    BindingContext::Protocol,
+    BindingContext::Shelf,
+    BindingContext::Grid,
+    BindingContext::Versions,
+    BindingContext::Browser,
+    BindingContext::Editor,
+];
+
+#[test]
+fn every_context_a_binding_uses_is_swept() {
+    for verb in registry().iter().filter(|v| !v.is_reserved()) {
+        for binding in &verb.binding_specs {
+            assert!(
+                SWEPT.contains(&binding.context),
+                "{} binds {} in {:?}, a context no sweep presses",
+                verb.longname,
+                binding.keystrokes,
+                binding.context
+            );
+        }
+    }
 }

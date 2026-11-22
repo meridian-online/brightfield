@@ -332,6 +332,8 @@ pub enum Effect {
 /// when it is typed (`a_glob_reads_the_disk_when_typed_not_on_each_key`).
 #[derive(Debug, Clone)]
 pub struct Browser {
+    /// The verbs a keystroke performed since the window last took them.
+    keys_answered: Vec<&'static str>,
     /// The places column.
     pub places: Vec<Place>,
     /// The place under the places column's cursor.
@@ -405,6 +407,7 @@ impl Browser {
         };
         let place = place_for(&places, &dir).unwrap_or(0);
         let mut browser = Self {
+            keys_answered: Vec::new(),
             places,
             place,
             dir,
@@ -587,10 +590,12 @@ impl Browser {
     pub fn press(&mut self, keystroke: &str, fs: &dyn Listing) -> Effect {
         if let Some(first) = self.pending.take() {
             if let Some(verb) = browser_verb(&format!("{first} {keystroke}")) {
+                self.keys_answered.push(verb);
                 return self.key(verb, fs);
             }
         }
         if let Some(verb) = browser_verb(keystroke) {
+            self.keys_answered.push(verb);
             return self.key(verb, fs);
         }
         let opens_a_chord = browser_keys().iter().any(|b| {
@@ -602,6 +607,11 @@ impl Browser {
             self.pending = Some(keystroke.to_string());
         }
         Effect::None
+    }
+
+    /// The verbs a keystroke performed since this was last called.
+    pub fn take_keys_answered(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.keys_answered)
     }
 
     /// Answer the registry verb `verb` in the focused column. A verb the browser does not answer

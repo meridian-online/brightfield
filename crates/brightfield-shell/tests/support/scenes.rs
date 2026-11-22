@@ -22,10 +22,12 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::pipeline::live_spec;
+use brightfield_shell::protocol::{SpineRole, OUTLINE};
 use brightfield_shell::run::Runner;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::arrangement::LEDGER_RAIL;
 use brightfield_workbench::PaneKey;
 
 /// The test binary's scratch folder, with the directories a window reads
@@ -93,6 +95,8 @@ pub struct Window {
     /// The verbs a key performed since the last [`Window::press`] began, in
     /// the order their handlers took them.
     pub answered: Vec<&'static str>,
+    /// The table of the data file the scene opened, when it opened one.
+    pub table: Option<String>,
     /// The frame clock, at sixty frames a second, so a toast a test reads does
     /// not age out within it.
     time: f64,
@@ -104,11 +108,15 @@ impl Window {
         scratch();
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
-                .running_with(Some(runner())),
+                .running_with(Some(runner()))
+                .keeping_history(Some(brightfield_protocol::HistoryStore::At(
+                    scratch().join("versions"),
+                ))),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             commands: Vec::new(),
             answered: Vec::new(),
+            table: None,
             time: 0.0,
         };
         win.settle();
@@ -165,6 +173,33 @@ impl Window {
     /// Type `text`, then a frame for what it did.
     pub fn type_text(&mut self, text: &str) {
         self.run(vec![vec![egui::Event::Text(text.to_owned())], Vec::new()]);
+    }
+
+    /// A click at `at`: the pointer moved there, pressed and released, and the
+    /// frames after it settled.
+    pub fn click(&mut self, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![vec![egui::Event::PointerMoved(at)]]);
+        self.run(vec![vec![button(true)], vec![button(false)]]);
+        self.settle();
+    }
+
+    /// Put the graph on the canvas by the chip in the spine's head, if it is
+    /// not there. Answers whether the graph holds the canvas.
+    pub fn graph_to_canvas(&mut self) -> bool {
+        if self.app.graph_on_canvas() {
+            return true;
+        }
+        let Some(chip) = self.app.spine_rows().iter().find_map(|r| r.chip) else {
+            return false;
+        };
+        self.click(chip.rect.center());
+        self.app.graph_on_canvas()
     }
 
     /// Ask the window's queue to open `path`, run the frames that take it, and
@@ -262,7 +297,8 @@ pub fn events_for(keystrokes: &'static str) -> Vec<(egui::Modifiers, Vec<egui::E
 /// whether the window now meets the need, as far as this arranged it.
 pub fn arrange(win: &mut Window, need: Need) -> bool {
     match need {
-        Need::Sources(_) | Need::Column(_) | Need::Grant(_) => true,
+        Need::Sources(_) | Need::Grant(_) => true,
+        Need::Column(_) => select_a_column(win),
         Need::Selected(selected) => match selected {
             Selected::ModelTable => {
                 let Some(pane) = win.app.model_pane_mut() else {
@@ -286,13 +322,13 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
                 pane.focus.selected = Some(Selection::Relationship(relationship));
                 true
             }
+            Selected::GridCell => click_a_grid_cell(win),
+            Selected::Asset => select_an_asset(win),
+            Selected::Step => select_a_removable_step(win),
             Selected::Protocol
             | Selected::Graph
             | Selected::Chart
             | Selected::Rows
-            | Selected::GridCell
-            | Selected::Asset
-            | Selected::Step
             | Selected::Model => true,
         },
         Need::Condition(condition) => match condition {
@@ -307,6 +343,108 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Condition::ShelfDrawn => true,
         },
     }
+}
+
+/// Click the first column row the Outline drew under a table, which puts the
+/// Outline's cursor on it and gives the Outline the keys.
+fn select_a_column(win: &mut Window) -> bool {
+    if win.app.protocol_model().outline_column().is_some() {
+        return true;
+    }
+    let row = win
+        .app
+        .spine_rows()
+        .iter()
+        .find(|r| r.role == SpineRole::Column && r.depth == 1)
+        .cloned();
+    let Some(row) = row else {
+        return false;
+    };
+    win.click(row.name_rect.center());
+    win.app.protocol_model().outline_column().is_some()
+}
+
+/// Click a cell of the grid's first drawn row, which puts the cursor on it and
+/// gives the grid the keys.
+fn click_a_grid_cell(win: &mut Window) -> bool {
+    if win.app.front_door_is_live() {
+        return false;
+    }
+    let Some(drawn) = win.app.chart_doc().grid_drawn().cloned() else {
+        return false;
+    };
+    let (Some((_, head, head_clip)), Some((_, line, line_clip))) =
+        (drawn.header_cells.first(), drawn.row_cells.first())
+    else {
+        return false;
+    };
+    let at = egui::pos2(
+        head.intersect(*head_clip).center().x,
+        line.intersect(*line_clip).center().y,
+    );
+    win.click(at);
+    win.app.chart_doc().grid_cursor_on_cell()
+}
+
+/// Select an asset on the spine by a click on its row.
+fn select_an_asset(win: &mut Window) -> bool {
+    let row = win
+        .app
+        .spine_rows()
+        .iter()
+        .find(|r| r.role == SpineRole::Asset)
+        .cloned();
+    let Some(row) = row else {
+        return false;
+    };
+    win.click(row.rect.center());
+    true
+}
+
+/// Keep a statement as a step, save it, and select what it makes on the spine
+/// with the graph on the canvas: a step `d d` can remove.
+fn select_a_removable_step(win: &mut Window) -> bool {
+    if win.app.protocol_model().removable_step().is_some() {
+        return true;
+    }
+    let Some(table) = win.table.clone() else {
+        return false;
+    };
+    win.press("space");
+    win.type_text(&format!(
+        "select house_age, count(*) as n from {table} group by house_age"
+    ));
+    if !win
+        .app
+        .finish_typed_reads(std::time::Duration::from_secs(60))
+    {
+        return false;
+    }
+    win.press("cmd-enter");
+    let Some(step) = win
+        .app
+        .chart_doc()
+        .typed_steps()
+        .last()
+        .map(|s| s.name.clone())
+    else {
+        return false;
+    };
+    win.press("cmd-s");
+    if !win.graph_to_canvas() {
+        return false;
+    }
+    let rows = win.app.spine_rows().to_vec();
+    let made = rows
+        .iter()
+        .position(|r| r.role == SpineRole::Step && r.label == step)
+        .and_then(|at| rows[at + 1..].iter().find(|r| r.role == SpineRole::Asset));
+    let Some(made) = made else {
+        return false;
+    };
+    win.click(made.rect.center());
+    win.graph_to_canvas();
+    win.app.protocol_model().removable_step().is_some()
 }
 
 /// Apply a selection to the first plot of a chart with a live session.
@@ -376,7 +514,7 @@ fn keep_a_column(win: &mut Window) -> bool {
 /// **A window in which `longname` can act**: the first of the scenes in which,
 /// once each of the command's needs is arranged, the window reads it available.
 /// Panics naming the command when no scene does.
-pub fn scene_for(longname: &'static str) -> Window {
+pub fn scene_for(longname: &'static str, context: BindingContext) -> Window {
     let reg = brightfield_keys::registry();
     let verb = reg
         .iter()
@@ -393,6 +531,17 @@ pub fn scene_for(longname: &'static str) -> Window {
         Need::Selected(Selected::Model | Selected::ModelTable | Selected::ModelJoin) => Some(3),
         Need::Condition(Condition::SelectionHeld) => Some(4),
         _ => None,
+    });
+    // A pane's own keys are read in a window that draws the pane: the graph
+    // for the Protocol's, a data file's dashboard for the rest.
+    let first = first.or(match context {
+        BindingContext::Global | BindingContext::Workspace => None,
+        BindingContext::Protocol => Some(2),
+        BindingContext::Shelf
+        | BindingContext::Grid
+        | BindingContext::Versions
+        | BindingContext::Browser
+        | BindingContext::Editor => Some(1),
     });
     if let Some(first) = first {
         scenes.swap(0, first);
@@ -413,24 +562,91 @@ pub fn scene_for(longname: &'static str) -> Window {
 }
 
 /// **Give the keys to where `context`'s bindings are read**, in a window
-/// [`scene_for`] chose for `longname`. Global keys are read wherever the keys
-/// are; the Workspace's are the canvas's, so the hero's pane takes focus when a
-/// chart holds the canvas.
-pub fn hold_keys(win: &mut Window, context: BindingContext, _longname: &'static str) {
+/// [`scene_for`] chose for `longname`. Answers nothing: a window that could
+/// not be brought there fails the sweep's own assertion, which names the key.
+pub fn hold_keys(win: &mut Window, context: BindingContext, longname: &'static str) {
+    let chart = !win.app.front_door_is_live()
+        && !win.app.graph_on_canvas()
+        && win.app.model_pane().is_none();
     match context {
+        // Global keys are read wherever the keys are.
         BindingContext::Global => {}
+        // The Workspace's are the canvas's: the hero's pane takes focus when a
+        // chart holds the canvas.
         BindingContext::Workspace => {
-            let chart = !win.app.front_door_is_live()
-                && !win.app.graph_on_canvas()
-                && win.app.model_pane().is_none();
             if chart {
                 win.app.focus_pane(PaneKey::new(CHART));
                 win.settle();
             }
         }
-        other => panic!("{other:?} is not a context this support holds the keys for"),
+        // The Protocol's are the graph's while it holds the canvas, and the
+        // Outline's otherwise. The three that put a column on a channel act
+        // from the Outline, over a chart.
+        BindingContext::Protocol => {
+            let from_outline = longname.starts_with("put-column-on-");
+            if !from_outline {
+                win.graph_to_canvas();
+            }
+            if !win.app.graph_on_canvas() {
+                win.app.focus_pane(PaneKey::new(OUTLINE));
+                win.settle();
+            }
+        }
+        // The Shelf's: the hero focused, `e` for the band, `x` for the list of
+        // x's columns, and the list turned to its settings for the verb that
+        // acts on a settings row.
+        BindingContext::Shelf => {
+            win.app.focus_pane(PaneKey::new(CHART));
+            win.settle();
+            win.press("e");
+            win.press("x");
+            if longname == "set-shelf-setting-to-auto" {
+                win.press("tab");
+            }
+        }
+        // The Grid's: a cell clicked.
+        BindingContext::Grid => {
+            click_a_grid_cell(win);
+        }
+        // The Versions panel's: a version saved, the ledger turned to the
+        // panel, a press inside it, and its cursor on a row.
+        BindingContext::Versions => {
+            keep_a_column(win);
+            win.press("cmd-s");
+            if let Some(name) = win.app.rail_name_rect(LEDGER_RAIL, VERSIONS_AT) {
+                win.click(name.center());
+            }
+            if let Some(rail) = win.app.region_rect(LEDGER_RAIL) {
+                win.click(rail.center());
+            }
+            win.press("j");
+        }
+        // The Browser's: the sources browser open, from the Outline's `A`.
+        BindingContext::Browser => {
+            win.app.focus_pane(PaneKey::new(OUTLINE));
+            win.settle();
+            win.press("shift-a");
+        }
+        // The Editor's: the ledger turned to the editor and a click in its text.
+        BindingContext::Editor => {
+            if let Some(name) = win.app.rail_name_rect(LEDGER_RAIL, EDITOR_AT) {
+                win.click(name.center());
+            }
+            win.app
+                .focus_pane(PaneKey::new(brightfield_shell::editor::EDITOR));
+            win.settle();
+            if let Some(rail) = win.app.region_rect(LEDGER_RAIL) {
+                let body_top = rail.top() + brightfield_workbench::chrome::rail_selector_height();
+                // Past the gutter's line numbers, which pass no click to a widget.
+                win.click(egui::pos2(rail.left() + 150.0, body_top + 32.0));
+            }
+        }
     }
 }
+
+/// Where the ledger strip names the editor and the Versions panel.
+const EDITOR_AT: usize = 3;
+const VERSIONS_AT: usize = 4;
 
 /// The front door: nothing open.
 pub fn door() -> Window {
@@ -452,6 +668,7 @@ pub fn data_file() -> Window {
     .expect("the housing sample copies");
     let mut win = Window::open(Boot::empty());
     win.open_path(&csv);
+    win.table = Some(name);
     assert!(
         win.app.chart_doc().is_live(),
         "the data file's dashboard is drawn: {}",

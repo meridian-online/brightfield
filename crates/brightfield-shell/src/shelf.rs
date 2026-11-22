@@ -263,6 +263,8 @@ pub struct BandDrawn {
 /// column is being previewed.
 #[derive(Clone, Debug)]
 pub struct ShelfBand {
+    /// The verbs a key performed since the window last took them.
+    keys_answered: Vec<&'static str>,
     channels: ShelfChannels,
     active: Option<ShelfChannel>,
     preview: Option<(ShelfChannel, String)>,
@@ -277,6 +279,7 @@ impl ShelfBand {
     #[must_use]
     pub fn new(channels: ShelfChannels) -> Self {
         Self {
+            keys_answered: Vec::new(),
             channels,
             active: None,
             preview: None,
@@ -391,10 +394,17 @@ impl ShelfBand {
         let Some(token) = key_token(key) else {
             return false;
         };
-        shelf_keys()
+        let answered = shelf_keys()
             .resolves(token, DispatchContext::ShelfFocused)
             .into_iter()
-            .any(|verb| self.dispatch(verb))
+            .find(|verb| self.dispatch(verb));
+        self.keys_answered.extend(answered);
+        answered.is_some()
+    }
+
+    /// The verbs a key performed on the band since this was last called.
+    pub fn take_keys_answered(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.keys_answered)
     }
 
     /// [`ShelfBand::press`] for each key press among `events`, in order, and
@@ -2712,6 +2722,8 @@ pub struct EndFields {
 /// The rows hold no query: leaving the query clears it.
 #[derive(Clone, Debug)]
 pub struct ColumnList {
+    /// The verbs a key performed since the model last took them.
+    keys_answered: Vec<&'static str>,
     tile: String,
     channel: ShelfChannel,
     channels: ShelfChannels,
@@ -2739,6 +2751,7 @@ impl ColumnList {
     #[must_use]
     pub fn new(request: ColumnListRequest) -> Self {
         let mut list = Self {
+            keys_answered: Vec::new(),
             tile: request.tile,
             channel: request.channel,
             channels: request.channels,
@@ -3535,9 +3548,15 @@ impl ColumnList {
     fn resolve_token(&mut self, token: &str, out: &mut Vec<ListReport>) {
         for verb in shelf_keys().resolves(token, DispatchContext::ShelfFocused) {
             if self.dispatch(verb, out) {
+                self.keys_answered.push(verb);
                 return;
             }
         }
+    }
+
+    /// The verbs a key performed on the list since this was last called.
+    pub fn take_keys_answered(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.keys_answered)
     }
 
     /// A key press. With the command held it is a chord the registry binds

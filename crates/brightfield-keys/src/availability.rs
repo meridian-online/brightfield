@@ -87,8 +87,8 @@ pub enum Condition {
     /// The window holds something Save the spec writes: a Protocol made from a
     /// data file or a folder, or a panel open from its tile.
     ProtocolToSave,
-    /// The Protocol is a folder on disk, as one opened or made is. A shipped
-    /// start and a chart spec have no folder.
+    /// The Protocol is a folder on disk, as one opened or made is. A chart
+    /// spec, and a start that ships as a graph alone, have no folder.
     ProtocolFolder,
     /// The Protocol is trusted.
     Trusted,
