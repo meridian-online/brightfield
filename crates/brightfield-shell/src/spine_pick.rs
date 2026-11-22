@@ -383,57 +383,49 @@ pub(crate) fn read_columns(
     ColumnReads { told, over }
 }
 
-/// The names of the columns of the first batch of `read`, and none when the
-/// read failed or gave no batch.
-fn columns_of(
-    read: Result<Vec<brightfield_engine::RecordBatch>, brightfield_engine::PreviewRefusal>,
-) -> Vec<String> {
-    read.ok()
-        .and_then(|batches| {
-            batches.first().map(|batch| {
-                batch
-                    .schema()
-                    .fields()
-                    .iter()
-                    .map(|field| field.name().clone())
-                    .collect()
-            })
-        })
-        .unwrap_or_default()
-}
-
 /// The columns of the step `table` of `source`, without the columns the casts
 /// keep each cast column's text under, which the grid hides.
+///
+/// They are read as rows: the last step of the chain describes the table, one
+/// row a column, so a step that makes no rows still answers with its columns.
 fn step_columns(source: &TypedSource, table: &str, stop: &PreviewStop) -> Vec<String> {
     let (root, mut chain) = source.read_over(source.chain_reading(&[table.to_string()]));
-    // The loaded table itself is made by no step: a statement over it reads it.
-    if !chain
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case(table))
-    {
-        chain.push((
-            format!("{table}__columns"),
-            brightfield_engine::PreviewOp::Statement(format!(
-                "SELECT * FROM \"{}\"",
-                table.replace('"', "\"\"")
-            )),
-        ));
-    }
+    chain.push((
+        format!("{table}__columns"),
+        brightfield_engine::PreviewOp::Statement(format!(
+            "SELECT column_name FROM (DESCRIBE SELECT * FROM \"{}\")",
+            table.replace('"', "\"\"")
+        )),
+    ));
     let hidden = source.raw_columns();
-    columns_of(brightfield_engine::preview_first_page_stoppable(
+    let Ok(batches) = brightfield_engine::preview_first_page_stoppable(
         &source.data,
         source.reader,
         &root,
         &chain,
-        1,
+        MOST_COLUMNS,
         brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
         brightfield_engine::PREVIEW_DEADLINE,
         stop,
-    ))
-    .into_iter()
-    .filter(|column| !hidden.contains(column))
-    .collect()
+    ) else {
+        return Vec::new();
+    };
+    let mut columns = Vec::new();
+    for batch in &batches {
+        let names = batch.column(0);
+        for row in 0..batch.num_rows() {
+            if let Ok(name) = arrow::util::display::array_value_to_string(names, row) {
+                if !hidden.contains(&name) {
+                    columns.push(name);
+                }
+            }
+        }
+    }
+    columns
 }
+
+/// The most columns of a step the pick reads: more than a table holds.
+const MOST_COLUMNS: u64 = 10_000;
 
 #[cfg(test)]
 mod tests {

@@ -292,6 +292,24 @@ fn each_table_says_whether_it_shares_the_cursors_column() {
 }
 
 #[test]
+fn a_step_that_makes_no_rows_still_says_what_it_shares() {
+    // `none` keeps no row of the table, and holds each of its columns.
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, |dir| {
+        two_steps(dir);
+        record(dir, "none", "filter-rows", &[("where", "house_age > 1000")]);
+    });
+    assert!(start(&mut win, &JOIN_LIKE, "latitude"), "{:?}", win.said());
+    assert_eq!(table_row(&win, "none").kind, "shares latitude");
+    let columns = win
+        .app
+        .spine_pick()
+        .and_then(|pick| pick.columns_of("none").map(<[String]>::to_vec))
+        .expect("the columns of none are read");
+    assert_eq!(columns.len(), 9, "{columns:?}");
+    assert_eq!(columns[0], "median_income");
+}
+
+#[test]
 fn a_table_the_model_relates_comes_first_and_says_so() {
     // A model in the Protocol's folder that joins the loaded table to `top`.
     let model = format!(

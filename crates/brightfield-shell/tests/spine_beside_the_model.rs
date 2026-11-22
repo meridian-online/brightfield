@@ -667,6 +667,32 @@ mod pick {
         Ok(draft)
     }
 
+    fn begin_append(b: &Begin<'_>) -> Result<Draft, String> {
+        let mut draft = Draft::empty("append-rows");
+        draft.on = b.table.map(str::to_string);
+        Ok(draft)
+    }
+
+    /// An operation that reads a list of other tables, as appending rows does.
+    pub static APPEND_LIKE: OperationUi = OperationUi {
+        long_name: "append-rows",
+        verb: "append-rows",
+        stage: Stage::Model,
+        icon: "row-insert-bottom",
+        starts: &[Start::Spine { role: "other" }],
+        menu_words: "Append rows",
+        needs: &[Need::AnotherTable],
+        begin: begin_append,
+        keeps: Keeps::OnEnter,
+        field: None,
+        form: None,
+        name: NameRule {
+            word: "appended",
+            from: By::Nothing,
+            with_by: false,
+        },
+    };
+
     /// An operation that reads one other table, as joining two tables does.
     pub static JOIN_LIKE: OperationUi = OperationUi {
         long_name: "join-tables",
@@ -855,6 +881,100 @@ fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
         .and_then(|p| p.page())
         .unwrap_or_else(|| panic!("the kept step's grid shows no page"));
     assert!(!page.rows.is_empty(), "the kept step's grid shows no rows");
+
+    // Another operation started over the kept step's grid: the pick offers the tables the rail lists there,
+    // the model's, and no other: each candidate has a row of its own, named in the primary ink,
+    // and the cursor's is the one drawn selected. The kept step has no row on that rail and is
+    // no candidate.
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::APPEND_LIKE, from, None)
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the append"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    win.frame(Vec::new());
+    win.frame(Vec::new());
+    let again = win.app.spine_pick().expect("the pick opened again").clone();
+    let offered: Vec<&str> = again
+        .candidates()
+        .iter()
+        .map(|c| c.table.as_str())
+        .collect();
+    assert!(!offered.contains(&name.as_str()), "{offered:?}");
+    // The grid's own table is one of them now that a step of it is in front, and it is read
+    // as the loaded table is, with no copy to write.
+    let own = again.candidate("customers").expect("customers is offered");
+    assert_eq!(
+        own.source,
+        brightfield_shell::spine_pick::CandidateSource::Step
+    );
+    let selected = again.under_cursor().expect("a candidate").table.clone();
+    for candidate in again.candidates() {
+        let row = win.drawn_row(&candidate.table);
+        assert!(
+            !row.muted && row.control,
+            "{} has no row to pick",
+            candidate.table
+        );
+        assert_eq!(
+            row.washed,
+            candidate.table == selected,
+            "{}",
+            candidate.table
+        );
+    }
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+    assert_eq!(win.app.chart_doc().typed_steps().len(), 1);
+
+    // Save records the step through arc. Which tables its preview loads is read from the
+    // step, not from what this window picked: with the taken table's copy gone, as in a folder
+    // another session left, the saved step's grid writes the copy again and shows the join's rows.
+    let copy = grid.join(format!("{}.parquet", under.table));
+    std::fs::remove_file(&copy).expect("the copy written at the take is there");
+    win.app
+        .save_protocol(&ctx)
+        .expect("a Protocol to save")
+        .unwrap_or_else(|e| panic!("the Save records {name}: {e}"));
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty(),
+        "{name} is recorded"
+    );
+    win.frame(Vec::new());
+    while previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read again"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert!(copy.is_file(), "the copy was not written again");
+    let page = win
+        .app
+        .chart_doc()
+        .grid_preview()
+        .and_then(|p| p.page())
+        .unwrap_or_else(|| panic!("the saved step's grid shows no page"));
+    assert!(!page.rows.is_empty(), "the saved step's grid shows no rows");
 }
 
 /// Over a join's rows the rail does not draw the model's spine, so an operation that reads a

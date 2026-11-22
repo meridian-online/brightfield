@@ -165,10 +165,10 @@ pub(super) struct OperationHost {
     began_over: Option<CanvasHolds>,
     /// The spine's ask for the operation's table, while one is open.
     picking: Option<Picking>,
-    /// The model's tables the spine has handed an operation, each with the
-    /// grid copy its rows are read from, which the operation's preview loads
-    /// and so does the preview of a step kept from it.
-    model_tables: Vec<(String, std::path::PathBuf)>,
+    /// The grid copies of the model's tables that could not be written for a
+    /// step's preview, so a preview asked for on each frame does not try the
+    /// same copy on each.
+    copies_refused: std::cell::RefCell<BTreeSet<std::path::PathBuf>>,
 }
 
 impl OperationHost {
@@ -181,7 +181,7 @@ impl OperationHost {
             answers: 0,
             began_over: None,
             picking: None,
-            model_tables: Vec::new(),
+            copies_refused: std::cell::RefCell::new(BTreeSet::new()),
         }
     }
 }
@@ -263,15 +263,21 @@ impl MeridianApp {
         for step in model.generated().into_iter().flat_map(|g| &g.steps) {
             tables.push((step.name.clone(), None));
         }
-        // While the grid holds a table of a model, the model's other tables are the
-        // Protocol's too: the ones the spine offers an operation that reads a second.
-        for table in self.model_tables_beside_the_grid() {
-            if !tables
-                .iter()
-                .any(|(held, _)| held.eq_ignore_ascii_case(&table))
-            {
-                tables.push((table, None));
-            }
+        // While the grid holds a table of a model, the Protocol's tables are the model's:
+        // the ones the rail lists there, and so the ones the spine can offer an operation
+        // that reads a second. A step kept on the grid's table has no row on that rail.
+        let of_model = self.model_tables_beside_the_grid();
+        if !of_model.is_empty() {
+            tables = of_model
+                .into_iter()
+                .map(|table| {
+                    let columns = tables
+                        .iter()
+                        .find(|(held, _)| held.eq_ignore_ascii_case(&table))
+                        .and_then(|(_, columns)| columns.clone());
+                    (table, columns)
+                })
+                .collect();
         }
         OperationContext {
             runner: self.runner.is_some(),
@@ -1030,17 +1036,16 @@ impl MeridianApp {
     /// columns where they are known and where its rows are read from: the
     /// tables `cx` holds, which are the ones the operation's needs were checked
     /// against (`availability`). A table of the model the grid's table belongs
-    /// to is read from its grid copy; any other is the loaded table or a step
-    /// after it.
+    /// to is read from its grid copy. The grid's own table is loaded already,
+    /// and is read as the loaded table and the steps after it are.
     fn pick_tables(&self, cx: &OperationContext) -> Vec<crate::spine_pick::Listed> {
-        let of_model = self.model_tables_beside_the_grid();
-        let protocol = self.model_protocol_beside_the_grid();
+        let of_model = self.model_file_roots();
         cx.tables
             .iter()
             .map(|(table, columns)| {
-                let source = match protocol.filter(|_| of_model.contains(table)) {
-                    Some(protocol) => CandidateSource::ModelTable {
-                        grid_copy: crate::own_files::grid_copy_path(protocol, table),
+                let source = match of_model.iter().find(|(name, _)| name == table) {
+                    Some((_, grid_copy)) => CandidateSource::ModelTable {
+                        grid_copy: grid_copy.clone(),
                     },
                     None => CandidateSource::Step,
                 };
@@ -1049,28 +1054,72 @@ impl MeridianApp {
             .collect()
     }
 
-    /// The model's tables the spine has handed an operation, each with the
-    /// grid copy it is read from: those picked in the Protocol whose table the
-    /// grid holds, and never the table the grid itself holds.
-    pub(super) fn picked_model_tables(&self) -> Vec<(String, std::path::PathBuf)> {
-        let Some(model) = self.model.as_ref().filter(|m| m.grid_table.is_some()) else {
+    /// **The model's tables a preview over the grid's table can read**, each
+    /// with the grid copy it is loaded from: every table of the model that has
+    /// rows, other than the one the grid holds, which is the preview's root.
+    /// None unless the grid holds a table of a model.
+    ///
+    /// A preview loads the ones it reads and no other
+    /// ([`crate::generated::with_file_roots`]). Which tables a step reads is
+    /// the step's own record, so a step saved in an earlier session loads the
+    /// same tables as one kept in this one.
+    pub(super) fn model_file_roots(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(protocol) = self.model_protocol_beside_the_grid() else {
             return Vec::new();
         };
-        let in_grid = model.grid_table.clone().unwrap_or_default();
-        let folder = model
-            .doc
-            .protocol
-            .dir
-            .join(crate::model_inspector::GRID_DIR);
-        self.operation
-            .model_tables
-            .iter()
-            // A table picked in another Protocol is that Protocol's, whatever its name.
-            .filter(|(table, path)| {
-                path.starts_with(&folder) && !table.eq_ignore_ascii_case(&in_grid)
+        let in_grid = self
+            .model
+            .as_ref()
+            .and_then(|m| m.grid_table.clone())
+            .unwrap_or_default();
+        self.model_tables_beside_the_grid()
+            .into_iter()
+            .filter(|table| !table.eq_ignore_ascii_case(&in_grid))
+            .map(|table| {
+                let path = crate::own_files::grid_copy_path(protocol, &table);
+                (table, path)
             })
-            .cloned()
             .collect()
+    }
+
+    /// **`chain`, with the model's tables its steps read loaded ahead of it**,
+    /// each from its grid copy, which is written now when the folder holds
+    /// none: a step that reads a model's table may have been kept in an
+    /// earlier session, or from another table's grid. A copy that cannot be
+    /// written is not tried again, and the preview says what DuckDB says of
+    /// the missing file.
+    pub(super) fn chain_over_model_tables(
+        &self,
+        root_table: &str,
+        steps: &[crate::generated::GeneratedStep],
+        chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    ) -> Vec<(String, brightfield_engine::PreviewOp)> {
+        let roots = self.model_file_roots();
+        if roots.is_empty() {
+            return chain;
+        }
+        let chain = crate::generated::with_file_roots(root_table, steps, chain, &[], &roots);
+        let Some(protocol) = self.model_protocol_beside_the_grid() else {
+            return chain;
+        };
+        for (table, op) in &chain {
+            let brightfield_engine::PreviewOp::ReadFile { path, .. } = op else {
+                continue;
+            };
+            let ours = roots
+                .iter()
+                .any(|(name, copy)| name == table && copy == path);
+            if !ours || path.is_file() || self.operation.copies_refused.borrow().contains(path) {
+                continue;
+            }
+            if crate::own_files::grid_copy(protocol, table).is_err() {
+                self.operation
+                    .copies_refused
+                    .borrow_mut()
+                    .insert(path.clone());
+            }
+        }
+        chain
     }
 
     /// **Open the spine's pick for `spec`**: the rail takes the keys, with its
@@ -1215,8 +1264,8 @@ impl MeridianApp {
             })
             .collect();
         let (spec, start, column) = (picking.spec, picking.start, picking.column.clone());
-        // A model's table is read from a copy of its rows, written now for the tables
-        // taken and no other, as opening a table's grid writes its own.
+        // A model's table is read from a copy of its rows, written afresh now for the
+        // tables taken and no other, as opening a table's grid writes its own.
         if let Some(protocol) = self.model_protocol_beside_the_grid().cloned() {
             for (table, _) in &from_model {
                 if let Err(why) = crate::own_files::grid_copy(&protocol, table) {
@@ -1224,12 +1273,6 @@ impl MeridianApp {
                     return;
                 }
             }
-        }
-        for (table, path) in from_model {
-            self.operation
-                .model_tables
-                .retain(|(held, _)| *held != table);
-            self.operation.model_tables.push((table, path));
         }
         self.end_pick(ctx);
         self.start_operation_taking(ctx, spec, start, column, Some(taken));
