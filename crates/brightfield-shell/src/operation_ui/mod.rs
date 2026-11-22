@@ -241,8 +241,8 @@ impl Draft {
 
     /// The first thing `description` requires that the draft lacks, as
     /// `"<long name> needs <key>"`: a required table, then a required value,
-    /// then a value arc takes only beside one the draft gives. `None` when
-    /// the draft lacks none of them.
+    /// then a value arc takes only beside one the draft gives. `None` for a
+    /// draft that holds each of them.
     #[must_use]
     pub fn missing(&self, description: &OperationDescription) -> Option<String> {
         let given = |key: &str| self.value(key).is_some_and(|v| !v.trim().is_empty());
@@ -348,8 +348,8 @@ impl NameRule {
     /// The last part of the name for `draft`: the first comma-separated item
     /// of the value [`By::Value`] names, without a surrounding `"` pair and
     /// without a trailing `asc` or `desc`. `None` when the rule is [`By::Nothing`],
-    /// when the draft lacks the value, and when what is left holds anything but
-    /// letters, digits, `_` and spaces, since an expression is no name.
+    /// when the draft lacks the value, and when what is left holds a character other
+    /// than a letter, a digit, `_` or a space, since an expression is no name.
     #[must_use]
     pub fn last_part(&self, draft: &Draft) -> Option<String> {
         let By::Value(key) = self.from else {

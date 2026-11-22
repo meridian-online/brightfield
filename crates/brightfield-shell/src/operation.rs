@@ -73,7 +73,7 @@ pub struct OperationDescription {
     /// unless the build enables its `preserve_order` feature, which this crate
     /// does not ask for.
     pub parameters: Vec<Parameter>,
-    /// The values arc takes only together: each key with the keys it needs
+    /// The values arc takes together: each key with the keys it needs
     /// beside it, in key order, from the schema's `dependentRequired`.
     pub needed_together: Vec<(String, Vec<String>)>,
 }
