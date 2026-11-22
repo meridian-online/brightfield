@@ -337,7 +337,7 @@ fn o_over_one_table_opens_nothing_and_says_why() {
 }
 
 /// Over one source the command is missing the two sources it declares it
-/// needs, and says so in that sentence; `o` there opens nothing and toasts.
+/// needs, and says so in that sentence; `o` there toasts and leaves the card shut.
 /// The toast layer does not give its text back, so that the toast's words are
 /// the declared ones is held by `the_refusals_the_window_says_are_declared`.
 #[test]

@@ -337,7 +337,7 @@ fn confirm_chart_verb(win: &mut Window, longname: &str) {
 ///
 /// `signals-dashboard` is one of the four shipped starts that open a chart
 /// spec, and a chart spec has no Protocol behind it — so `save_protocol`
-/// returns before it writes anything. A live row there is the defect this
+/// returns with no file written. A live row there is the defect this
 /// test exists to keep out: a palette row that confirms, closes the palette,
 /// and does nothing.
 ///
