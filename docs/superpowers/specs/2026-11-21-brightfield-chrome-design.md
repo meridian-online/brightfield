@@ -256,7 +256,9 @@ Each of arcform's operations gets an input form in the window, which its ribbon 
 | Shape | `filter-rows`, `sort-rows`, `hide-column`, `rename-column`, `derive-column`, `cast-column`, `fill-nulls`, `dedupe-rows`, `limit-rows`, `summarise-rows` |
 | Model | `join-tables`, `append-rows` |
 
-- **A form is built from the operation's own description.** It shows what the operation will do, previews the result on the focused node, and records the step on ⌘S. The two built today, `filter-rows` and `sort-rows` from the grid's foot row, are the pattern.
+- **Each operation gets the interaction that suits it, and some need no form at all.** The owner ruled this on 2026-11-22, after a draft plan had made the grid's foot row the pattern for every operation. The foot row is a convenience borrowed from DataGrip for simple `WHERE` and `ORDER BY` clauses, and there are hundreds of operations beyond those two. Some operations act directly on what is on screen, such as a column header. Others ask for what they need where the analyst already is.
+- **Operations are transparent, with sensible configurations, and feel like magic.** What an operation does is visible: its step's SQL is in the Editor tab. Its inputs start from sensible defaults, taken from arc's description, the columns' FineType types and dovetail's proposals. Its result previews as the analyst acts, at each keystroke, the way Instant SQL does. The owner's warning against "a sea of dials and dropdowns" is about the settings pages of cloud consoles. Brightfield's measure is the one this design opened with: how far the window recognises and responds to what the analyst does.
+- **arc writes every step's SQL.** Brightfield keeps no second copy: the preview runs the model arc writes for the draft, and ⌘S records the same step.
 - **The forms are built in stages,** each operation its own piece of work, so they can run side by side. Shape's are the first.
 - **Publish's commands are exports today:** a chart's picture, and the data and report exports the command line already has, brought into the window. Publishing to the lake joins Publish when the window can run it.
 

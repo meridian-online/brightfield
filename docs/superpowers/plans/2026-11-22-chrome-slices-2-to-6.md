@@ -594,7 +594,7 @@ The reason: the spec says the inspector "describes the selection", and a stack o
 | Log | Run log | Same content. During a run it also takes each step's line as the step finishes (Task 27). |
 | Quality | Problems | Quality draws only a run header today. Problems lists the last run's failed steps, each with its message, and the quality output when arc reports one. |
 | Rows | Retired (Task 20) | Grid is now an activity, and the split shows the grid beside its chart. `move-grid` and its ⌘J go with it. |
-| Editor | Source, a fourth tab | The spec names three tabs. Leaving the spec's YAML editor out removes the only way to edit a chart spec by hand. **Flagged for the owner below.** |
+| Editor | Editor, a fourth tab, keeping its name | The spec names three tabs. Leaving the spec's YAML editor out removes the only way to edit a chart spec by hand. **The owner accepted this on 2026-11-22.** |
 | Versions | Versions | Same content. |
 
 **Other calls, left to the builder by the spec:**
@@ -658,14 +658,14 @@ The mockup's bare G and C would collide with the chart grammar's `c`. Tasks 15 a
 
 ## Flagged for the owner
 
-These change what the analyst sees enough for the owner to rule on them.
+These change what the analyst sees enough for the owner to rule on them. **The owner ruled on the first three on 2026-11-22, accepting each:** the console holds Run log, Problems, Versions and Editor; the grid has two instances, one beside a chart in the split and one as the Grid activity on a table or view an operation produced; and the graph's key hints move to the status band. Number 4 is with arcform as a request for per-step timing in the run record, and number 5 is with the design review.
 
 1. **Rows leaves the bottom band, and ⌘J changes job** (Tasks 20 and 26).
    - The grid under a chart becomes the split, ⌘\ (Task 19).
    - ⌘J stops moving the grid and opens and closes the console.
-2. **The chart spec's YAML editor becomes a fourth console tab, "Source"** (Task 26).
+2. **The chart spec's YAML editor becomes a fourth console tab, keeping its name "Editor"** (Task 26).
    - The spec lists three tabs.
-   - The alternative is a Source activity on chart nodes, which would reopen "Grid and Chart are the activities".
+   - The alternative is an Editor activity on chart nodes, which would reopen "Grid and Chart are the activities".
 3. **The hint band is retired** (Task 28).
    - The graph's key grammar, today a band of its own under the canvas, becomes the status band's centre while the graph holds the canvas, except while a teaching message shows.
    - The spec's chrome does not mention the band.
@@ -1576,7 +1576,7 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
 ## Slice 6: the console and the status band that teaches keys
 
 The slice is finished when:
-- the bottom rail is the console, with Run log, Problems, Versions and Source;
+- the bottom rail is the console, with Run log, Problems, Versions and Editor;
 - collapsed, the console is one line holding the latest entry, and ⌘J opens and closes it;
 - during a run, each step's line arrives as the step finishes;
 - the status band always names the node, the activity and the selection, with the counts and the engine's state;
@@ -1588,7 +1588,7 @@ The slice is finished when:
 
 **Files:**
 - Modify:
-  - `crates/brightfield-workbench/src/arrangement.rs`: `LEDGER_PANES` becomes Run log, Problems, Versions, Source; the doc names it the console; the ids are unchanged.
+  - `crates/brightfield-workbench/src/arrangement.rs`: `LEDGER_PANES` becomes Run log, Problems, Versions, Editor; the doc names it the console; the ids are unchanged.
   - `crates/brightfield-workbench/src/chrome.rs`: `Trailing` gains `keycap: Option<&str>`, drawn with `key_chip`.
   - `crates/brightfield-shell/src/protocol.rs`: `LogPane` and `QualityPane`'s titles, and `QualityPane`'s Problems content.
   - `crates/brightfield-shell/src/window.rs`: `ledger_summary` becomes `latest_log_entry`.
