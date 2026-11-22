@@ -76,9 +76,6 @@ const COPY_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 pub const PICK_AFTER_THE_RUN: &str =
     "The Protocol is being run: pick a table once the run has ended.";
 
-/// The stable id of the status band's line while the spine picks a table.
-pub const SPINE_PICK_STATUS_ID: &str = "spine-pick";
-
 /// **The spine's ask for an operation's table, while it is open**: the
 /// operation waiting on it, the pick itself, and how the window stood before
 /// the rail took the keys, so backing out puts it back.
@@ -986,10 +983,8 @@ impl MeridianApp {
             return Some(entry(said.clone(), Tone::Warning));
         }
         if let Some(picking) = self.spine_pick_status() {
-            return Some(StatusEntry {
-                id: SPINE_PICK_STATUS_ID,
-                ..entry(picking, Tone::Neutral)
-            });
+            // The operation's own line: the pick is the first thing the operation asks.
+            return Some(entry(picking, Tone::Neutral));
         }
         let making = self.charts.doc.making()?;
         let reads = self.operation.reads.as_ref()?;
