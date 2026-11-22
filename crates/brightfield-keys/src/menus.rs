@@ -3,9 +3,10 @@
 //!
 //! A menu item names a command by its longname and says whether choosing it
 //! asks for something more before it acts, which is what puts "…" after its
-//! title. The title itself is the command's label, so a menu, the palette and
-//! the help sheet name a command the same way. A motion (a cursor step, a pan)
-//! is not a menu item: it is in the help sheet and the palette.
+//! title. The title itself is the command's label from the registry, the name
+//! its availability sentences use; the palette and the help sheet still write
+//! its longname. A motion (a cursor step, a pan) is not a menu item: it is in
+//! the help sheet and the palette.
 
 use crate::registry::registry;
 
@@ -170,6 +171,32 @@ pub fn menu_bar() -> Vec<Menu> {
     ]
 }
 
+/// A menu's items on a host that draws no native window items: the
+/// [`MenuItem::Native`] rows dropped, and with them any separator left leading,
+/// trailing or doubled.
+#[must_use]
+pub fn items_without_native(menu: &Menu) -> Vec<MenuItem> {
+    let mut items: Vec<MenuItem> = Vec::new();
+    for item in &menu.items {
+        match item {
+            MenuItem::Native(_) => {}
+            MenuItem::Separator => {
+                if items
+                    .last()
+                    .is_some_and(|last| *last != MenuItem::Separator)
+                {
+                    items.push(*item);
+                }
+            }
+            MenuItem::Command { .. } => items.push(*item),
+        }
+    }
+    if items.last() == Some(&MenuItem::Separator) {
+        items.pop();
+    }
+    items
+}
+
 /// A menu item's title: the command's label, with "…" when choosing it asks
 /// for something more. A longname the registry lacks is written as itself.
 #[must_use]
@@ -255,29 +282,50 @@ mod tests {
         }
     }
 
+    fn assert_rules_sit_between_items(title: &str, items: &[MenuItem]) {
+        let is_rule = |item: &MenuItem| *item == MenuItem::Separator;
+        assert!(
+            !items.first().is_some_and(is_rule),
+            "{title} leads with a separator"
+        );
+        assert!(
+            !items.last().is_some_and(is_rule),
+            "{title} trails with a separator"
+        );
+        assert!(
+            !items
+                .windows(2)
+                .any(|pair| is_rule(&pair[0]) && is_rule(&pair[1])),
+            "{title} doubles a separator"
+        );
+    }
+
     #[test]
     fn no_separator_leads_trails_or_doubles() {
         for menu in menu_bar() {
-            let is_rule = |item: &MenuItem| *item == MenuItem::Separator;
-            assert!(
-                !menu.items.first().is_some_and(is_rule),
-                "{} leads with a separator",
-                menu.title
-            );
-            assert!(
-                !menu.items.last().is_some_and(is_rule),
-                "{} trails with a separator",
-                menu.title
-            );
-            assert!(
-                !menu
-                    .items
-                    .windows(2)
-                    .any(|pair| is_rule(&pair[0]) && is_rule(&pair[1])),
-                "{} doubles a separator",
-                menu.title
-            );
+            assert_rules_sit_between_items(menu.title, &menu.items);
         }
+    }
+
+    #[test]
+    fn no_separator_leads_trails_or_doubles_without_the_native_items() {
+        for menu in menu_bar() {
+            let items = items_without_native(&menu);
+            assert!(
+                !items.iter().any(|i| matches!(i, MenuItem::Native(_))),
+                "{} keeps a native item",
+                menu.title
+            );
+            assert_rules_sit_between_items(menu.title, &items);
+        }
+        let window = menu_bar()
+            .into_iter()
+            .find(|m| m.title == "Window")
+            .expect("a Window menu");
+        assert_eq!(
+            items_without_native(&window),
+            [acts("toggle-outline-rail"), acts("move-grid")]
+        );
     }
 
     #[test]
