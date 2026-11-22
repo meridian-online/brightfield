@@ -174,6 +174,9 @@ pub(super) struct OperationHost {
     /// a step's preview: a preview is asked for on each frame, and a copy that
     /// cannot be written waits [`COPY_AGAIN_AFTER`] before it is tried again.
     copies_tried: std::cell::RefCell<BTreeMap<std::path::PathBuf, std::time::Instant>>,
+    /// When a copy that is not current may next be tried: the frame after asks
+    /// to be drawn again then, since a window nobody touches draws no frame.
+    copy_due: std::cell::Cell<Option<std::time::Instant>>,
 }
 
 impl OperationHost {
@@ -187,6 +190,7 @@ impl OperationHost {
             began_over: None,
             picking: None,
             copies_tried: std::cell::RefCell::new(BTreeMap::new()),
+            copy_due: std::cell::Cell::new(None),
         }
     }
 }
@@ -778,6 +782,11 @@ impl MeridianApp {
     /// keep an operation that asks for no value on its first answer.
     pub(super) fn operation_frame(&mut self, ctx: &egui::Context) {
         self.spine_pick_frame(ctx);
+        // A grid copy that could not be written is tried again by a later frame, which is
+        // asked for here: a window nobody touches draws none.
+        if let Some(due) = self.operation.copy_due.take() {
+            ctx.request_repaint_after(due.saturating_duration_since(std::time::Instant::now()));
+        }
         if let Some(runner) = self.runner.clone() {
             let wake = ctx.clone();
             let descriptions = self
@@ -1132,16 +1141,22 @@ impl MeridianApp {
                 continue;
             }
             let mut tried = self.operation.copies_tried.borrow_mut();
-            if tried
+            let waiting = tried
                 .get(path)
-                .is_some_and(|at| at.elapsed() < COPY_AGAIN_AFTER)
-            {
+                .map(|at| *at + COPY_AGAIN_AFTER)
+                .filter(|due| *due > std::time::Instant::now());
+            if let Some(due) = waiting {
+                self.operation.copy_due.set(Some(due));
                 continue;
             }
-            tried.insert(path.clone(), std::time::Instant::now());
+            let now = std::time::Instant::now();
+            tried.insert(path.clone(), now);
             drop(tried);
-            // A refusal leaves the copy as it was, and the preview says what it finds.
-            let _ = crate::own_files::grid_copy(protocol, table);
+            // A refusal leaves the copy as it was, and the preview says what it finds
+            // until the copy is tried again.
+            if crate::own_files::grid_copy(protocol, table).is_err() {
+                self.operation.copy_due.set(Some(now + COPY_AGAIN_AFTER));
+            }
         }
         chain
     }

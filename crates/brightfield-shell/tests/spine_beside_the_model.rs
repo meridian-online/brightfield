@@ -968,26 +968,40 @@ fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
         win.frame(Vec::new());
     }
     assert!(copy.is_file(), "the copy was not written again");
-    // A copy from before the Protocol's database last changed is not current either, and is
-    // written again as a missing one is.
+    // A copy from before the Protocol's database last changed is not current either. The next
+    // frame writes it again, and the grid reads the step again from the new copy.
     let protocol = win.pane().protocol.clone();
-    assert!(brightfield_shell::own_files::grid_copy_is_current(
-        &protocol,
-        &under.table
-    ));
+    let current =
+        |table: &str| brightfield_shell::own_files::grid_copy_is_current(&protocol, table);
+    assert!(current(&under.table));
+    assert!(!current("no_such_table"));
+    // The copy was written within the last two seconds, so the next write of it waits them out.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
     std::fs::File::options()
         .write(true)
         .open(&copy)
         .and_then(|file| file.set_modified(std::time::SystemTime::UNIX_EPOCH))
         .expect("the copy's time is set back");
-    assert!(!brightfield_shell::own_files::grid_copy_is_current(
-        &protocol,
-        &under.table
-    ));
-    assert!(!brightfield_shell::own_files::grid_copy_is_current(
-        &protocol,
-        "no_such_table"
-    ));
+    assert!(!current(&under.table));
+    let reads_before = win.app.chart_doc().preview_reads_started();
+    win.frame(Vec::new());
+    assert!(
+        current(&under.table),
+        "the frame did not write the copy again"
+    );
+    win.frame(Vec::new());
+    while previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read from the new copy"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert!(
+        win.app.chart_doc().preview_reads_started() > reads_before,
+        "the grid did not read the step again"
+    );
     let page = win
         .app
         .chart_doc()
