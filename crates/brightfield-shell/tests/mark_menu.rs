@@ -150,3 +150,45 @@ fn on_a_host_with_a_menu_bar_the_mark_still_goes_home() {
     assert!(win.app.front_door_is_live(), "the mark did not go home");
     assert!(win.app.mark_menu_drawn().is_empty());
 }
+
+/// The open menus stand over the window as an overlay does: a key pressed
+/// while they are open is theirs, so Esc closes them and the chart keeps its
+/// selection, and a bare key the chart reads does nothing beneath them.
+#[test]
+fn keys_pressed_over_the_open_menus_are_not_the_windows() {
+    use brightfield_keys::{Condition, Need};
+
+    let mut win = on_a_host_with_no_menu_bar(scenes::live_chart("crossfilter.yaml"));
+    assert!(
+        scenes::arrange(&mut win, Need::Condition(Condition::SelectionHeld)),
+        "the fixture took a selection"
+    );
+    open_the_mark(&mut win);
+    assert!(!win.app.mark_menu_drawn().is_empty(), "the menus are open");
+
+    win.press("=");
+    assert_eq!(
+        win.answered,
+        Vec::<&str>::new(),
+        "a key zoomed under the menus"
+    );
+    assert!(
+        !win.app.mark_menu_drawn().is_empty(),
+        "`=` closed the menus"
+    );
+
+    win.press("escape");
+    assert_eq!(win.answered, Vec::<&str>::new());
+    assert!(
+        win.app.chart_doc().selection_active(),
+        "Esc over the open menus let go of the selection"
+    );
+    assert!(
+        win.app.mark_menu_drawn().is_empty(),
+        "Esc left the menus open"
+    );
+
+    // With the menus closed the key is the window's again.
+    win.press("escape");
+    assert_eq!(win.answered, ["clear-selection"]);
+}

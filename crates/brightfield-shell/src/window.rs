@@ -4465,7 +4465,10 @@ impl MeridianApp {
             verbs_applied: Vec::new(),
             menu_state: crate::menu_bar::MenuState::default(),
             menu_said: None,
-            menu_host: crate::menu_bar::MenuHost::of_this_build(),
+            // The host's own menus until the host says otherwise
+            // (`set_menu_host`), so a headless window draws the same band on
+            // each platform the suite is built for.
+            menu_host: crate::menu_bar::MenuHost::Native,
             mark_rect: None,
             mark_menu_drawn: Vec::new(),
             untrust_binding: brightfield_keys::registry()
@@ -6904,8 +6907,24 @@ impl MeridianApp {
 
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
-        if self.overlay.is_none() {
+        //
+        // The menus the mark opens stand over the window as an overlay does:
+        // while they are open the plot recorded stays the one under the
+        // pointer before they opened, and the frame's keys are theirs, held
+        // back from the window's handlers until the title band draws them.
+        let menus_open = !self.mark_menu_drawn.is_empty();
+        if self.overlay.is_none() && !menus_open {
             self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| self.plot_under(at));
+        }
+        let mut menu_keys = Vec::new();
+        if menus_open {
+            ctx.input_mut(|i| {
+                let (keys, rest) = std::mem::take(&mut i.events)
+                    .into_iter()
+                    .partition(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                menu_keys = keys;
+                i.events = rest;
+            });
         }
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
@@ -7052,11 +7071,23 @@ impl MeridianApp {
 
         let mut bar = TopBar::default();
         let title = plan.expect_region(arrangement::TITLE_BAND);
+        // The keys held back for the mark's open menus, given to the frame
+        // again as the band that draws them is drawn.
+        if !menu_keys.is_empty() {
+            ctx.input_mut(|i| i.events.append(&mut menu_keys));
+        }
         let drawn = Panel::top(panel_id(title, false))
             .resizable(false)
             .exact_size(band_extent(title))
             .frame(chrome::region_frame(title.frame, ui, mode))
             .show(ui, |ui| bar = self.title_band(ui));
+        // What the menus left of them is not the window's either.
+        if menus_open {
+            ctx.input_mut(|i| {
+                i.events
+                    .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+            });
+        }
         self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
         self.mark_rect = bar.mark_rect;
@@ -8582,7 +8613,9 @@ impl MeridianApp {
     }
 
     /// Which menus this window's host draws: the native bar's, or the ones
-    /// the mark opens.
+    /// the mark opens. A window draws for a host with a menu bar until
+    /// [`Self::set_menu_host`] says otherwise, as `main` does for the build's
+    /// host.
     #[must_use]
     pub fn menu_host(&self) -> crate::menu_bar::MenuHost {
         self.menu_host
@@ -8591,6 +8624,13 @@ impl MeridianApp {
     /// Say which menus this window's host draws.
     pub fn set_menu_host(&mut self, host: crate::menu_bar::MenuHost) {
         self.menu_host = host;
+    }
+
+    /// [`Self::set_menu_host`], as a window is built.
+    #[must_use]
+    pub fn on_menu_host(mut self, host: crate::menu_bar::MenuHost) -> Self {
+        self.menu_host = host;
+        self
     }
 
     /// Where the title band drew the mark on the last frame, when it drew it.
@@ -11751,11 +11791,10 @@ impl MeridianApp {
         // On a host with no menu bar the mark opens the menus, on the front
         // door too, and Home is the File menu's item and its key.
         let opens_menus = self.menu_host == crate::menu_bar::MenuHost::Mark;
-        let menu_rows = if opens_menus {
-            self.menu_rows()
-        } else {
-            Vec::new()
-        };
+        // The menus read the rows the last frame published, while they are
+        // open; a command chosen from a row a frame old is judged again as it
+        // is taken off the queue.
+        let menu_state = self.menu_state.clone();
         ui.horizontal_centered(|ui| {
             // The mark is the route home, and off the door it is the whole of
             // what stands left of the title. The word *Meridian* used to lead
@@ -11789,7 +11828,7 @@ impl MeridianApp {
                     *menu_choice = crate::menu_bar::show_menus(
                         ui,
                         &brightfield_keys::menu_bar(),
-                        &menu_rows,
+                        &menu_state.rows(),
                         brightfield_keys::KeyPlatform::Other,
                         menu_drawn,
                     );

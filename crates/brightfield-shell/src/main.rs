@@ -1368,6 +1368,7 @@ fn main() -> Result<(), String> {
                 // person in front of it, so it is the one that may raise a file
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
+                    .on_menu_host(brightfield_shell::menu_bar::MenuHost::of_this_build())
                     .allowing_dialogs()
                     .opening_from(open_queue)
                     .recording_older_protocols_once()
