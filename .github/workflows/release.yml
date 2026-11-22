@@ -444,7 +444,15 @@ jobs:
           # A build with no secrets is ad-hoc throughout, and the passages that
           # differ come from the `guide` step above, which words them for how
           # the build job says it signed.
-          prerelease: true
+          #
+          # A notarised build is published as a full release, which GitHub
+          # then shows as the latest one. An ad-hoc build is published as a
+          # pre-release, since its app does not open on a stranger's Mac
+          # until they clear the download mark by hand. `build` is in this
+          # job's `needs:`, so its `signing` output is readable here, and the
+          # `guide` step above has already failed the job when it is empty.
+          # scripts/check-release-tag.py --wiring refuses any other value.
+          prerelease: ${{ needs.build.outputs.signing != 'notarised' }}
           fail_on_unmatched_files: true
           # Prose paragraphs are each ONE physical line on purpose. GitHub
           # renders release bodies as GFM, whose hard-line-break extension
