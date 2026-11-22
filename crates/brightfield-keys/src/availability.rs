@@ -92,7 +92,8 @@ pub enum Condition {
     ProtocolFolder,
     /// The Protocol is trusted.
     Trusted,
-    /// The Protocol is one Brightfield made, which sources can be added to.
+    /// The Protocol is one Brightfield made, which sources can be added to
+    /// and which can be renamed.
     TakesSources,
     /// A data file is open and can be read again.
     FileToReload,

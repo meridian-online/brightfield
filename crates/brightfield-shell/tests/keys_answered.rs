@@ -94,3 +94,20 @@ fn every_context_a_binding_uses_is_swept() {
         }
     }
 }
+
+/// The palette's chord opens it while a text field holds the keys, where
+/// Space is typed into the field.
+#[test]
+fn the_palette_chord_opens_it_from_a_text_field() {
+    let mut win = scenes::data_file();
+    scenes::hold_keys(&mut win, BindingContext::Editor, "save-spec");
+    assert!(
+        win.ctx.memory(|m| m.focused()).is_some(),
+        "the editor's text holds the keyboard"
+    );
+    win.press("space");
+    assert_eq!(win.app.open_overlay(), None, "Space opened the palette");
+    win.press("cmd-shift-p");
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    assert_eq!(win.answered, ["open-palette"]);
+}

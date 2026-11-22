@@ -8530,15 +8530,22 @@ impl MeridianApp {
     /// graph — it has no chart equivalent yet — and the help sheet is
     /// read-only and opens anywhere.
     fn overlay_open_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
-        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+        if self.overlay.is_some() {
             return;
         }
-        let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
+        // A bare key is a text field's while one holds the keyboard: a space
+        // or a `?` typed there is text. The palette's chord is no field's, so
+        // it opens the palette from a field too, as ⌘O and ⌘S act there.
+        let typing = ctx.egui_wants_keyboard_input();
+        let pressed =
+            |token: Option<&'static str>| !typing && token.is_some_and(|t| consume_token(ctx, t));
         // Each of `open-palette`'s keys is read, so a frame carrying two of
         // them leaves neither for a later handler.
         let mut palette = false;
         for token in &self.overlay_keys.palette {
-            palette |= consume_token(ctx, token);
+            if !typing || token.starts_with("cmd-") {
+                palette |= consume_token(ctx, token);
+            }
         }
         if palette {
             self.open_palette_for_canvas(graph_on_canvas);
@@ -8646,7 +8653,7 @@ impl MeridianApp {
         &self.mark_menu_drawn
     }
 
-    /// The verbs [`Self::apply`] performed on the last frame drawn.
+    /// The verbs the window applied from a request on the last frame drawn.
     #[must_use]
     pub fn verbs_applied(&self) -> &[&'static str] {
         &self.verbs_applied
@@ -12278,6 +12285,7 @@ impl MeridianApp {
                 }
                 Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
                     self.open_place_field(PlaceField::Name);
+                    taken = self.place_edit.is_some();
                     ctx.request_repaint();
                 }
                 // untrust-protocol is the window's as Trust on the restricted band is: the trust

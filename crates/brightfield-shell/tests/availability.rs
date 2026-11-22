@@ -105,6 +105,18 @@ fn the_crosswalk_puts_its_graph_on_the_canvas() {
         win.app.availability_of("focus-jump"),
         Some(Availability::Available)
     );
+    // A shipped start keeps the name it came with.
+    assert_eq!(
+        win.app.availability_of("rename-protocol"),
+        Some(Availability::Missing(
+            "Rename needs a Protocol Brightfield made: this one keeps the name it came with."
+                .to_owned()
+        ))
+    );
+    assert_eq!(
+        scenes::data_file().app.availability_of("rename-protocol"),
+        Some(Availability::Available)
+    );
     // A shipped start has no folder to stop trusting.
     assert_eq!(
         win.app.availability_of("untrust-protocol"),

@@ -262,7 +262,6 @@ const NEEDS_HOME: &[Requirement] = &[Requirement::new(
     Need::Selected(Selected::Protocol),
     "You are on the front door already.",
 )];
-const NEEDS_PROTOCOL: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_UNSAVED_WORK: &[Requirement] =
     &[Requirement::of(Need::Condition(Condition::UnsavedWork))];
 const NEEDS_PROTOCOL_TO_SAVE: &[Requirement] =
@@ -270,6 +269,13 @@ const NEEDS_PROTOCOL_TO_SAVE: &[Requirement] =
 const NEEDS_RUN: &[Requirement] = &[
     Requirement::of(Need::Condition(Condition::ProtocolToRun)),
     Requirement::of(Need::Condition(Condition::Trusted)),
+];
+const NEEDS_RENAME: &[Requirement] = &[
+    A_PROTOCOL,
+    Requirement::new(
+        Need::Condition(Condition::TakesSources),
+        "Rename needs a Protocol Brightfield made: this one keeps the name it came with.",
+    ),
 ];
 const NEEDS_UNTRUST: &[Requirement] = &[
     A_PROTOCOL,
@@ -743,7 +749,7 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "rename-protocol",
             label: "Rename",
-            needs: NEEDS_PROTOCOL,
+            needs: NEEDS_RENAME,
             tier: CommandTier::View,
             binding_specs: vec![global("f2")],
             scope_applicability: vec![Dashboard, View, Protocol],
