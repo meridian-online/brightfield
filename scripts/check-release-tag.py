@@ -34,7 +34,8 @@ WHAT ONLY A PUSHED TAG RUNS, AND WHAT STANDS IN FOR IT
     GitHub's tag matching cannot be run anywhere but GitHub. `--wiring` reads
     release.yml instead: its tag filter is exactly the pattern above, the guard
     step is unconditional and refuses rather than warns, every other job needs
-    it, and the release body opens with the notes. That is a reading of the
+    it, the release body opens with the notes, and the release is a full
+    release exactly when the build was notarised. That is a reading of the
     workflow text, and it is the honest limit of what a pull request can check
     about a trigger.
 
@@ -88,6 +89,10 @@ GUARD_ARGS = '--tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"'
 NOTES_OUTPUT = "notes"
 NOTES_JOB_OUTPUT = f"${{{{ steps.{GUARD_STEP_ID}.outputs.{NOTES_OUTPUT} }}}}"
 NOTES_BODY = f"${{{{ needs.{GUARD_JOB}.outputs.{NOTES_OUTPUT} }}}}"
+# A notarised build is a full release and any other build a pre-release, so the
+# publishing step's `prerelease:` is this expression and nothing fixed.
+PRERELEASE = "${{ needs.build.outputs.signing != 'notarised' }}"
+PRERELEASE_LINE = f"          prerelease: {PRERELEASE}\n"
 
 # Status functions that let a job run after a job it needs has failed.
 # GitHub reads function names case-insensitively, so this does too.
@@ -448,6 +453,17 @@ def check_wiring(root: Path) -> None:
             )
         if "body_path" in with_keys:
             findings.append(f"{RELEASE_WORKFLOW} > {job_id}: `body_path:` overrides `body:`")
+        if with_keys.get("prerelease") != PRERELEASE:
+            findings.append(
+                f"{RELEASE_WORKFLOW} > {job_id}: `prerelease:` is "
+                f"{with_keys.get('prerelease')!r}, not `{PRERELEASE}`, so a notarised build "
+                "is not published as a full release, or an ad-hoc one is"
+            )
+        if "build" not in jobs[job_id].needs:
+            findings.append(
+                f"{RELEASE_WORKFLOW}: job `{job_id}` does not list `build` in `needs:`, "
+                "so it cannot read how the build was signed"
+            )
 
     if findings:
         raise Refused(EXIT_WIRING, "\n".join(findings))
@@ -624,8 +640,12 @@ def self_test() -> int:
             ("the guard step made advisory", (RELEASE_WORKFLOW, f"        run: {guard_call}", f"        continue-on-error: true\n        run: {guard_call}")),
             ("the guard call commented out", (RELEASE_WORKFLOW, f"        run: {guard_call}", f"        run: echo skipped # {guard_call}")),
             ("the notes dropped from the release body", (RELEASE_WORKFLOW, f"            {NOTES_BODY}\n", "")),
-            ("generated notes switched on", (RELEASE_WORKFLOW, "          prerelease: true\n", "          prerelease: true\n          generate_release_notes: true\n")),
-            ("the body read from a file instead", (RELEASE_WORKFLOW, "          prerelease: true\n", "          prerelease: true\n          body_path: notes.md\n")),
+            ("generated notes switched on", (RELEASE_WORKFLOW, PRERELEASE_LINE, PRERELEASE_LINE + "          generate_release_notes: true\n")),
+            ("the body read from a file instead", (RELEASE_WORKFLOW, PRERELEASE_LINE, PRERELEASE_LINE + "          body_path: notes.md\n")),
+            ("every release published as a pre-release", (RELEASE_WORKFLOW, PRERELEASE_LINE, "          prerelease: true\n")),
+            ("every release published as a full release", (RELEASE_WORKFLOW, PRERELEASE_LINE, "          prerelease: false\n")),
+            ("the pre-release setting dropped", (RELEASE_WORKFLOW, PRERELEASE_LINE, "")),
+            ("the release job stops needing the build", (RELEASE_WORKFLOW, f"    needs: [{GUARD_JOB}, build]", f"    needs: [{GUARD_JOB}]")),
             ("the release job stops needing the guard", (RELEASE_WORKFLOW, f"    needs: [{GUARD_JOB}, build]", "    needs: build")),
             ("update-homebrew made to run after a refusal", (RELEASE_WORKFLOW, "    needs: [build, release]\n", "    needs: [build, release]\n    if: ${{ always() }}\n")),
             ("build made to run unless cancelled, in capitals", (RELEASE_WORKFLOW, f"    needs: {GUARD_JOB}\n    runs-on: macos-15", f"    needs: {GUARD_JOB}\n    if: ${{{{ !Cancelled() }}}}\n    runs-on: macos-15")),

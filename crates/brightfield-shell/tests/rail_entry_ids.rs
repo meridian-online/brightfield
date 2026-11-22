@@ -262,6 +262,13 @@ const RAIL_IDS: &[(&str, Owner, Reach)] = &[
         ),
     ),
     (
+        "operation",
+        Owner::One("<window>"),
+        Reach::Declared(
+            "needs an operation started that cannot start, or one being made; `tests/operation_start.rs` reads it",
+        ),
+    ),
+    (
         "version-shown",
         Owner::One("<window>"),
         Reach::Declared(

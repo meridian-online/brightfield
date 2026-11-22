@@ -1832,8 +1832,10 @@ enum PreviewShown {
 }
 
 /// What a read is kept under: the rows asked for, the data file as it stood
-/// when it was read (so a file changed on disk is read again), and the size
-/// limit it was read under.
+/// when it was read (so a file changed on disk is read again), each further
+/// file a step of the chain loads as it stood then, for the same reason
+/// (`a_second_file_changed_on_disk_is_read_again`), and the size limit it was
+/// read under.
 #[derive(Clone, Debug, PartialEq)]
 struct PreviewKey {
     step: String,
@@ -1842,6 +1844,10 @@ struct PreviewKey {
     chain: Vec<(String, brightfield_engine::PreviewOp)>,
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
+    /// The modified time and length of each file a
+    /// [`brightfield_engine::PreviewOp::ReadFile`] of the chain loads, in the
+    /// chain's order; `None` for one that is not there.
+    further: Vec<Option<(Option<std::time::SystemTime>, u64)>>,
     limit: u64,
     shown: Shown,
 }
@@ -1849,6 +1855,18 @@ struct PreviewKey {
 impl PreviewKey {
     fn of(request: &PreviewRequest, limit: u64) -> Self {
         let meta = std::fs::metadata(&request.data).ok();
+        let further = request
+            .chain
+            .iter()
+            .filter_map(|(_, op)| match op {
+                brightfield_engine::PreviewOp::ReadFile { path, .. } => Some(
+                    std::fs::metadata(path)
+                        .ok()
+                        .map(|m| (m.modified().ok(), m.len())),
+                ),
+                _ => None,
+            })
+            .collect();
         Self {
             step: request.step.clone(),
             data: request.data.clone(),
@@ -1856,6 +1874,7 @@ impl PreviewKey {
             chain: request.chain.clone(),
             modified: meta.as_ref().and_then(|m| m.modified().ok()),
             len: meta.map(|m| m.len()),
+            further,
             limit,
             shown: request.shown.clone(),
         }
@@ -2108,7 +2127,30 @@ pub struct GridPreview {
     /// Whether these are a typed statement's rows ([`Self::of_typed`]) rather
     /// than a generated step's.
     typed: bool,
+    /// **What an operation being made adds to its preview**
+    /// ([`Self::of_draft`]): `None` for a step's or a statement's preview.
+    draft: Option<DraftShown>,
 }
+
+/// What the preview of an operation being made carries beside its page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DraftShown {
+    /// Each column of the page with its count of missing values.
+    missing: Vec<(String, u64)>,
+    /// Whether the rows are an earlier edit's, kept on screen while the edit
+    /// as it stands is refused.
+    faded: bool,
+}
+
+/// The opacity an operation's preview is drawn at while its rows are an
+/// earlier edit's: present, and plainly not the answer to what is typed.
+pub const FADED_PREVIEW_OPACITY: f32 = 0.45;
+
+/// The words before the missing counts of an operation's preview.
+pub const PREVIEW_MISSING: &str = "Missing values";
+
+/// What an operation's preview says when no column of it has a missing value.
+pub const PREVIEW_NONE_MISSING: &str = "No missing values";
 
 impl GridPreview {
     /// **The grid's view of a statement typed on the palette's query line**:
@@ -2135,6 +2177,7 @@ impl GridPreview {
             chain: Vec::new(),
             modified: None,
             len: None,
+            further: Vec::new(),
             limit: 0,
             shown: Shown::new(),
         };
@@ -2144,7 +2187,62 @@ impl GridPreview {
             shown: PreviewShown::Read(std::sync::Arc::new(Ok(page))),
             said: false,
             typed: true,
+            draft: None,
         }
+    }
+
+    /// **The grid's view of an operation being made**: `page`, shown under
+    /// the name `step` the operation would be kept as, as a statement's rows
+    /// are ([`Self::of_typed`]), with each column's count of missing values,
+    /// which are the preview's own and not the loaded table's, and `faded`
+    /// while the rows are an earlier edit's.
+    pub(crate) fn of_draft(
+        step: String,
+        page: GridPage,
+        missing: Vec<(String, u64)>,
+        faded: bool,
+    ) -> Self {
+        let mut preview = Self::of_typed(step, page);
+        preview.draft = Some(DraftShown { missing, faded });
+        preview
+    }
+
+    /// Whether the rows are drawn faded: an operation's preview whose rows
+    /// are an earlier edit's.
+    #[must_use]
+    pub fn is_faded(&self) -> bool {
+        self.draft.as_ref().is_some_and(|draft| draft.faded)
+    }
+
+    /// How many values of `column` are missing in an operation's preview:
+    /// `None` for another preview, or a column the preview lacks.
+    #[must_use]
+    pub fn missing_of(&self, column: &str) -> Option<u64> {
+        self.draft
+            .as_ref()?
+            .missing
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, count)| *count)
+    }
+
+    /// The line an operation's preview states its missing values in: each
+    /// column that has some with its count, or that no column has one. `None`
+    /// for another preview.
+    #[must_use]
+    pub fn missing_line(&self) -> Option<String> {
+        let draft = self.draft.as_ref()?;
+        let with_some: Vec<String> = draft
+            .missing
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(column, count)| format!("{column} {count}"))
+            .collect();
+        Some(if with_some.is_empty() {
+            PREVIEW_NONE_MISSING.to_string()
+        } else {
+            format!("{PREVIEW_MISSING} \u{b7} {}", with_some.join(" \u{b7} "))
+        })
     }
 
     /// The previewed step's name.
@@ -2366,6 +2464,7 @@ impl ChartDoc {
             shown,
             said,
             typed: false,
+            draft: None,
         });
     }
 
@@ -2787,6 +2886,17 @@ impl DataGridItem {
                     .color(chrome::colour(sem.text.muted)),
             );
         }
+        // An operation being made states its own missing values: the header
+        // band's counts are the loaded table's, and the operation may have
+        // changed them.
+        if let Some(line) = preview.missing_line() {
+            ui.label(
+                egui::RichText::new(line)
+                    .font(cell_font())
+                    .color(chrome::colour(sem.text.muted)),
+            );
+        }
+        let faded = preview.is_faded();
         let room = ui.available_rect_before_wrap();
         let foot_rect = egui::Rect::from_min_max(
             egui::pos2(
@@ -2812,6 +2922,9 @@ impl DataGridItem {
                             .id(grid_state_id())
                             .max_rect(table_rect),
                         |ui| {
+                            if faded {
+                                ui.multiply_opacity(FADED_PREVIEW_OPACITY);
+                            }
                             show_table_sized(
                                 ui,
                                 DATA.as_str(),
@@ -2871,6 +2984,12 @@ impl DataGridItem {
                 cx.take_focus();
                 cx.request_repaint();
             }
+            // A preview's plain header offers its names, and the field in place.
+            let names: Vec<String> = preview
+                .page()
+                .map(|page| page.columns.iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default();
+            crate::operation_ui::header::header_pass(ui, doc, drawn, &names, mode);
         }
         doc.file_table_drawn(drawn);
     }
@@ -2974,6 +3093,9 @@ impl Item<ChartDoc> for DataGridItem {
 
         // A generated step's preview is not the session's rows, so it is drawn
         // apart from them and before anything asks the session.
+        // What the header pass drew is this frame's: a frame that draws no
+        // table leaves no field or menu on record from the frame before.
+        doc.header.clear_drawn();
         if let Some(preview) = doc.grid_preview.take() {
             self.preview_ui(doc, &preview, ui, cx);
             doc.grid_preview = Some(preview);
@@ -3166,6 +3288,8 @@ impl Item<ChartDoc> for DataGridItem {
                 self.widths_over.clone_from(&names);
             }
             drag_column_edges(ui, drawn, &names, &mut self.set_widths, mode);
+            // The parts of a header an operation starts from, its menu, and a field in place.
+            crate::operation_ui::header::header_pass(ui, doc, drawn, &names, mode);
             // The cells a press can take, into the window's list of the
             // controls this frame drew.
             doc.controls.extend(drawn.controls.iter().cloned());

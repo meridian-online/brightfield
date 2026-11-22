@@ -426,7 +426,7 @@ impl FootState {
 /// identifier DuckDB does not know as a word, so `house_age` reads as itself,
 /// and quoted otherwise, so a column named `order` or `median income` still
 /// parses (`a_null_cell_asks_is_null` in `tests/grid_foot.rs`).
-fn column_sql(session: &Session, name: &str) -> String {
+pub(crate) fn column_sql(session: &Session, name: &str) -> String {
     let plain = name
         .chars()
         .next()

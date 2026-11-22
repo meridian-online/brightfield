@@ -39,8 +39,32 @@
 //! no more: it is there to prompt the next question, and must not pass for the
 //! step's rows or their range. Counting the last step's rows is a read of its
 //! own, [`preview_row_count_stoppable`], on the same terms.
+//!
+//! **A generated step runs as arc wrote it.** For the operations Brightfield
+//! does not rebuild as a condition or an order, the step's model is run whole
+//! ([`PreviewOp::Model`]): several statements for some operations, which make
+//! the step's table and then alter it inside a transaction. A model is not held
+//! to one read-only query as a typed statement is, and it does not need to be.
+//! It runs once the connection is shut and locked, so whatever it makes, alters
+//! or drops is in the preview's own in-memory database and goes with it, and a
+//! statement that reaches for a file is refused
+//! (`a_model_cannot_reach_outside_the_preview` in `tests/preview_model.rs`).
+//! The read then asks that a table of the step's name exists, and refuses a
+//! model that left no such table. A model's page is read in the order its rows were
+//! made, as a statement's is.
+//!
+//! **A step being made is read on a connection kept open** ([`WarmPreview`]).
+//! A cold read loads the file and runs the chain again for each page it reads,
+//! which is right for a page read once and too slow for a read at each
+//! keystroke. The warm connection is opened once for a draft, on the same
+//! terms, and each edit then runs the draft alone. It holds the table whole, as
+//! a cache of sampled rows would not, so a preview of an aggregate is exact.
+//!
+//! **A second file is a further root** ([`PreviewOp::ReadFile`]): a step that
+//! reads a local file is loaded with the data file, before the connection is
+//! shut, and held to the same size limit.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -106,6 +130,24 @@ pub enum PreviewOp {
     /// (`a_statement_that_is_not_one_read_only_query_is_refused_before_anything_runs`
     /// in `tests/preview_read.rs`).
     Statement(String),
+    /// arc's model for a generated step, run as written once the preview's
+    /// access is shut; it makes the step's table.
+    Model(String),
+    /// A further file loaded as the step's table, by `reader`. It is read
+    /// while the connection may still reach outside itself, with the data
+    /// file and before any other step runs, wherever it stands in the chain,
+    /// and is held to the same size limit as the data file.
+    ReadFile {
+        /// The file to load.
+        path: PathBuf,
+        /// The reader it loads with.
+        reader: FileReader,
+    },
+    /// A step the preview does not make, with the sentence saying why. A read
+    /// through it is refused in those words
+    /// (`a_step_that_is_not_previewed_refuses_in_its_own_words` in
+    /// `tests/preview_model.rs`).
+    NotPreviewed(String),
 }
 
 /// **A switch that stops a stoppable preview read**, shared between the read
@@ -302,7 +344,9 @@ pub fn preview_first_page_stoppable(
                     crate::ordered_window_sql(&rows_sql, order, width, 0, limit)
                 }
                 // The table keeps the order the statement made its rows in.
-                Some((_, PreviewOp::Statement(_))) => format!("{rows_sql} LIMIT {limit}"),
+                Some((_, PreviewOp::Statement(_) | PreviewOp::Model(_))) => {
+                    format!("{rows_sql} LIMIT {limit}")
+                }
                 _ => crate::unordered_window_sql(&rows_sql, 0, limit),
             };
             let mut statement = conn.prepare(&sql).map_err(refused)?;
@@ -368,12 +412,7 @@ fn with_chain<T>(
         &dyn Fn(duckdb::Error) -> PreviewRefusal,
     ) -> Result<T, PreviewRefusal>,
 ) -> Result<T, PreviewRefusal> {
-    let bytes = std::fs::metadata(data)
-        .map_err(|e| PreviewRefusal::Engine(format!("{}: {e}", data.display())))?
-        .len();
-    if bytes > file_limit_bytes {
-        return Err(PreviewRefusal::TooLarge { bytes });
-    }
+    let bytes = size_within(data, file_limit_bytes)?;
     let conn = Connection::open_in_memory().map_err(|e| refusal(&e.to_string(), bytes))?;
     // Taken before any SQL runs, and dropped (stopping the watch) on every
     // way out of this function.
@@ -383,51 +422,19 @@ fn with_chain<T>(
             .refusal(deadline)
             .unwrap_or_else(|| refusal(&e.to_string(), bytes))
     };
-    // The limit and the spill before the load, so the load is held to them.
-    conn.execute_batch(&format!(
-        "SET memory_limit='{PREVIEW_MEMORY_LIMIT}'; SET max_temp_directory_size='0B';"
-    ))
-    .map_err(refused)?;
-    let path = data.to_string_lossy().replace('\'', "''");
-    conn.execute_batch(&format!(
-        "CREATE TABLE {} AS SELECT * FROM {}('{path}');",
-        quote(root_table),
-        reader.function()
-    ))
-    .map_err(refused)?;
-    // Shut, and locked shut, before any step's text runs.
-    conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")
-        .map_err(refused)?;
+    load_and_shut(
+        &conn,
+        data,
+        reader,
+        root_table,
+        chain,
+        file_limit_bytes,
+        &refused,
+    )?;
 
     let mut previous = root_table;
     for (name, op) in chain {
-        let create = match op {
-            PreviewOp::Where(condition) => {
-                one_statement(crate::condition_statement_count(&format!(
-                    "(\n{condition}\n)"
-                )))?;
-                format!(
-                    "CREATE TABLE {} AS SELECT * FROM {} WHERE (\n{condition}\n);",
-                    quote(name),
-                    quote(previous)
-                )
-            }
-            PreviewOp::OrderBy(order) => {
-                one_statement(crate::order_statement_count(&format!("{order}\n, 1")))?;
-                format!(
-                    "CREATE TABLE {} AS SELECT * FROM {} ORDER BY \n{order}\n;",
-                    quote(name),
-                    quote(previous)
-                )
-            }
-            PreviewOp::Statement(sql) => {
-                crate::read_only_statement(sql).map_err(PreviewRefusal::Engine)?;
-                // No `;` after the text: it may end in one, or in a `--`
-                // comment that would swallow it.
-                format!("CREATE TABLE {} AS\n{sql}", quote(name))
-            }
-        };
-        conn.execute_batch(&create).map_err(refused)?;
+        make_step(&conn, previous, name, op, &refused)?;
         previous = name;
     }
 
@@ -438,6 +445,379 @@ fn with_chain<T>(
         return Err(why);
     }
     Ok(out)
+}
+
+/// The size of `file` on disk, when it is within `limit` bytes.
+fn size_within(file: &Path, limit: u64) -> Result<u64, PreviewRefusal> {
+    let bytes = std::fs::metadata(file)
+        .map_err(|e| PreviewRefusal::Engine(format!("{}: {e}", file.display())))?
+        .len();
+    if bytes > limit {
+        return Err(PreviewRefusal::TooLarge { bytes });
+    }
+    Ok(bytes)
+}
+
+/// Sets the connection's limits, loads `data` as `root_table` and each
+/// [`PreviewOp::ReadFile`] of `steps` as its step's table, then shuts the
+/// connection to what is outside it and locks it shut. No step's text has
+/// run when this returns.
+fn load_and_shut(
+    conn: &Connection,
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    steps: &[(String, PreviewOp)],
+    file_limit_bytes: u64,
+    refused: &dyn Fn(duckdb::Error) -> PreviewRefusal,
+) -> Result<(), PreviewRefusal> {
+    // The limit and the spill before the load, so the load is held to them.
+    conn.execute_batch(&format!(
+        "SET memory_limit='{PREVIEW_MEMORY_LIMIT}'; SET max_temp_directory_size='0B';"
+    ))
+    .map_err(refused)?;
+    let load = |table: &str, file: &Path, reader: FileReader| {
+        let path = file.to_string_lossy().replace('\'', "''");
+        conn.execute_batch(&format!(
+            "CREATE TABLE {} AS SELECT * FROM {}('{path}');",
+            quote(table),
+            reader.function()
+        ))
+        .map_err(refused)
+    };
+    load(root_table, data, reader)?;
+    for (name, op) in steps {
+        if let PreviewOp::ReadFile { path, reader } = op {
+            size_within(path, file_limit_bytes)?;
+            load(name, path, *reader)?;
+        }
+    }
+    // Shut, and locked shut, before any step's text runs.
+    conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")
+        .map_err(refused)
+}
+
+/// Makes the step `name` as a table: `op` over `previous`, the table made just
+/// before it. A [`PreviewOp::ReadFile`] was loaded by [`load_and_shut`] and is
+/// left as it is.
+fn make_step(
+    conn: &Connection,
+    previous: &str,
+    name: &str,
+    op: &PreviewOp,
+    refused: &dyn Fn(duckdb::Error) -> PreviewRefusal,
+) -> Result<(), PreviewRefusal> {
+    let create = match op {
+        PreviewOp::Where(condition) => {
+            one_statement(crate::condition_statement_count(&format!(
+                "(\n{condition}\n)"
+            )))?;
+            format!(
+                "CREATE TABLE {} AS SELECT * FROM {} WHERE (\n{condition}\n);",
+                quote(name),
+                quote(previous)
+            )
+        }
+        PreviewOp::OrderBy(order) => {
+            one_statement(crate::order_statement_count(&format!("{order}\n, 1")))?;
+            format!(
+                "CREATE TABLE {} AS SELECT * FROM {} ORDER BY \n{order}\n;",
+                quote(name),
+                quote(previous)
+            )
+        }
+        PreviewOp::Statement(sql) => {
+            crate::read_only_statement(sql).map_err(PreviewRefusal::Engine)?;
+            // No `;` after the text: it may end in one, or in a `--`
+            // comment that would swallow it.
+            format!("CREATE TABLE {} AS\n{sql}", quote(name))
+        }
+        // arc's model names the table it makes and the tables it reads.
+        PreviewOp::Model(model) => model.clone(),
+        PreviewOp::ReadFile { .. } => return Ok(()),
+        PreviewOp::NotPreviewed(why) => return Err(PreviewRefusal::Engine(why.clone())),
+    };
+    conn.execute_batch(&create).map_err(refused)?;
+    if matches!(op, PreviewOp::Model(_)) {
+        made_its_table(conn, name).map_err(|e| match e {
+            Some(e) => refused(e),
+            None => PreviewRefusal::Engine(no_table_of_its_name(name)),
+        })?;
+    }
+    Ok(())
+}
+
+/// What one read of a [`WarmPreview`] found.
+#[derive(Debug)]
+pub struct WarmPage {
+    /// The step's first rows, in the order they were made.
+    pub batches: Vec<RecordBatch>,
+    /// How many rows the step's table holds.
+    pub rows: u64,
+    /// How many rows the table the step is on holds; 0 for a step on no table.
+    pub rows_in: u64,
+    /// Each column of the step's table with how many of its values are
+    /// missing, in the table's order.
+    pub missing: Vec<(String, u64)>,
+}
+
+/// **A preview connection kept open while one step is being made**, so each
+/// edit of that step runs the step alone.
+///
+/// [`WarmPreview::open`] loads the data file and makes the steps the draft
+/// reads once, on the terms the cold reads hold to: a connection of its own,
+/// the files held to the size limit, the memory limit with spilling off, and
+/// external access shut and locked before a step's text runs. Each
+/// [`WarmPreview::read`] then makes the draft's table from what is there and
+/// reads it, under the deadline and a [`PreviewStop`] of its own.
+///
+/// The connection holds the table whole, so a draft that aggregates is
+/// computed over its rows and not over a sample of them: the counts a preview
+/// shows are the ones a run would give for the file as it was when the draft
+/// was started. A change to the file after that is not seen
+/// (`the_table_is_loaded_once_and_each_read_runs_only_the_draft` in
+/// `tests/warm_preview.rs`).
+pub struct WarmPreview {
+    conn: Connection,
+    root_table: String,
+    /// The tables the open made, case folded: the root and each step of the
+    /// upstream chain. A draft may read them and may not be named for one.
+    made: Vec<String>,
+    bytes: u64,
+    /// The table the last read made, dropped before the next.
+    drafted: Option<String>,
+}
+
+impl std::fmt::Debug for WarmPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmPreview")
+            .field("root_table", &self.root_table)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WarmPreview {
+    /// Load `data` as `root_table`, and each [`PreviewOp::ReadFile`] of
+    /// `upstream`; shut the connection and lock it; then make each other step
+    /// of `upstream`, in order, each over the one before it.
+    ///
+    /// # Errors
+    ///
+    /// As [`preview_first_page`], for a file over `file_limit` bytes, a load or
+    /// a step DuckDB refuses, or an open still running at [`PREVIEW_DEADLINE`].
+    pub fn open(
+        data: &Path,
+        reader: FileReader,
+        root_table: &str,
+        upstream: &[(String, PreviewOp)],
+        file_limit: u64,
+    ) -> Result<Self, PreviewRefusal> {
+        Self::open_stoppable(
+            data,
+            reader,
+            root_table,
+            upstream,
+            file_limit,
+            &PreviewStop::default(),
+        )
+    }
+
+    /// [`WarmPreview::open`] that also ends when `stop` is stopped, as
+    /// [`PreviewRefusal::Superseded`]: a draft dropped while its table is
+    /// still loading lets go of the load
+    /// (`an_open_that_is_stopped_ends_as_superseded` in
+    /// `tests/warm_preview.rs`).
+    ///
+    /// # Errors
+    ///
+    /// As [`WarmPreview::open`], and [`PreviewRefusal::Superseded`] for an open
+    /// stopped through `stop`.
+    pub fn open_stoppable(
+        data: &Path,
+        reader: FileReader,
+        root_table: &str,
+        upstream: &[(String, PreviewOp)],
+        file_limit: u64,
+        stop: &PreviewStop,
+    ) -> Result<Self, PreviewRefusal> {
+        let bytes = size_within(data, file_limit)?;
+        let conn = Connection::open_in_memory().map_err(|e| refusal(&e.to_string(), bytes))?;
+        {
+            let watch = Watchdog::start(&conn, PREVIEW_DEADLINE, stop.clone());
+            let refused = |e: duckdb::Error| {
+                watch
+                    .refusal(PREVIEW_DEADLINE)
+                    .unwrap_or_else(|| refusal(&e.to_string(), bytes))
+            };
+            load_and_shut(
+                &conn, data, reader, root_table, upstream, file_limit, &refused,
+            )?;
+            let mut previous = root_table;
+            for (name, op) in upstream {
+                make_step(&conn, previous, name, op, &refused)?;
+                previous = name;
+            }
+            if let Some(why) = watch.refusal(PREVIEW_DEADLINE) {
+                return Err(why);
+            }
+        }
+        let made = std::iter::once(root_table)
+            .chain(upstream.iter().map(|(name, _)| name.as_str()))
+            .map(str::to_lowercase)
+            .collect();
+        Ok(Self {
+            conn,
+            root_table: root_table.to_owned(),
+            made,
+            bytes,
+            drafted: None,
+        })
+    }
+
+    /// Make the step `name` by running `op` over what [`WarmPreview::open`]
+    /// made, with the table the last read made dropped first, and read its
+    /// first `limit` rows, its row count, the row count of `on`, the table it
+    /// is on, and each column's count of missing values.
+    ///
+    /// An `op` that reads the table before it, a condition or an order, reads
+    /// `on`, or the root table when `on` is `None`. A read that fails inside a
+    /// transaction arc's model opened has that transaction rolled back, so the
+    /// next read starts clean.
+    ///
+    /// A step named for a table the open made, in any case, is refused before
+    /// a table is dropped: making it would replace a table the draft's later
+    /// reads stand on.
+    ///
+    /// # Errors
+    ///
+    /// As [`preview_first_page_stoppable`], against [`PREVIEW_DEADLINE`].
+    pub fn read(
+        &mut self,
+        name: &str,
+        on: Option<&str>,
+        op: &PreviewOp,
+        limit: u64,
+        stop: &PreviewStop,
+    ) -> Result<WarmPage, PreviewRefusal> {
+        let bytes = self.bytes;
+        let (page, fired) = {
+            let watch = Watchdog::start(&self.conn, PREVIEW_DEADLINE, stop.clone());
+            let refused = |e: duckdb::Error| {
+                watch
+                    .refusal(PREVIEW_DEADLINE)
+                    .unwrap_or_else(|| refusal(&e.to_string(), bytes))
+            };
+            let page = self.read_watched(name, on, op, limit, &refused);
+            (page, watch.refusal(PREVIEW_DEADLINE))
+        };
+        // The watch is over before the rollback: a watch that fired goes on
+        // interrupting the connection until it is dropped, and a rollback it
+        // interrupted would leave the next read inside this one's transaction.
+        if page.is_err() || fired.is_some() {
+            // Not in a transaction is the usual case, and DuckDB's refusal of
+            // the rollback then is of no interest.
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+        let page = page?;
+        match fired {
+            Some(why) => Err(why),
+            None => Ok(page),
+        }
+    }
+
+    fn read_watched(
+        &mut self,
+        name: &str,
+        on: Option<&str>,
+        op: &PreviewOp,
+        limit: u64,
+        refused: &dyn Fn(duckdb::Error) -> PreviewRefusal,
+    ) -> Result<WarmPage, PreviewRefusal> {
+        if matches!(op, PreviewOp::ReadFile { .. }) {
+            return Err(PreviewRefusal::Engine(
+                "a file is read when the preview opens, and not after".to_owned(),
+            ));
+        }
+        if self.made.contains(&name.to_lowercase()) {
+            return Err(PreviewRefusal::Engine(format!(
+                "{name} is a table this step reads from, so the step cannot be previewed under that name"
+            )));
+        }
+        if let Some(last) = self.drafted.take() {
+            self.conn
+                .execute_batch(&format!("DROP TABLE IF EXISTS {};", quote(&last)))
+                .map_err(refused)?;
+        }
+        // Noted before the step runs, so a table a failed read left is
+        // dropped by the next.
+        self.drafted = Some(name.to_owned());
+        self.conn
+            .execute_batch(&format!("DROP TABLE IF EXISTS {};", quote(name)))
+            .map_err(refused)?;
+        let previous = on.unwrap_or(&self.root_table).to_owned();
+        make_step(&self.conn, &previous, name, op, refused)?;
+
+        let count = |table: &str| -> Result<u64, PreviewRefusal> {
+            let rows: i64 = self
+                .conn
+                .query_row(&format!("SELECT count(*) FROM {}", quote(table)), [], |r| {
+                    r.get(0)
+                })
+                .map_err(refused)?;
+            Ok(u64::try_from(rows).unwrap_or(0))
+        };
+        let rows = count(name)?;
+        let rows_in = match on {
+            Some(on) => count(on)?,
+            None => 0,
+        };
+        let columns: Vec<String> = {
+            let mut described = self
+                .conn
+                .prepare(&format!(
+                    "SELECT column_name FROM (DESCRIBE SELECT * FROM {})",
+                    quote(name)
+                ))
+                .map_err(refused)?;
+            let names = described
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(refused)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(refused)?;
+            names
+        };
+        let mut missing = Vec::with_capacity(columns.len());
+        if !columns.is_empty() {
+            let counts: Vec<String> = columns
+                .iter()
+                .map(|c| format!("count(*) FILTER (WHERE {} IS NULL)", quote(c)))
+                .collect();
+            let sql = format!("SELECT {} FROM {}", counts.join(", "), quote(name));
+            let nulls: Vec<i64> = self
+                .conn
+                .query_row(&sql, [], |r| {
+                    (0..columns.len()).map(|i| r.get::<_, i64>(i)).collect()
+                })
+                .map_err(refused)?;
+            for (column, nulls) in columns.into_iter().zip(nulls) {
+                missing.push((column, u64::try_from(nulls).unwrap_or(0)));
+            }
+        }
+        let mut statement = self
+            .conn
+            .prepare(&format!("SELECT * FROM {} LIMIT {limit}", quote(name)))
+            .map_err(refused)?;
+        let batches = statement
+            .query_arrow(duckdb::params![])
+            .map_err(refused)?
+            .collect();
+        Ok(WarmPage {
+            batches,
+            rows,
+            rows_in,
+            missing,
+        })
+    }
 }
 
 /// The longest the watch waits before looking at its stop again, so a stop is
@@ -523,6 +903,28 @@ impl Drop for Watchdog {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// What a read says of a model that ran and left no table named for its step.
+fn no_table_of_its_name(step: &str) -> String {
+    format!("{step}: arc's model made no table of its name")
+}
+
+/// Whether the connection holds a table named `step`: `Err(None)` when it
+/// holds no such table, and `Err(Some(_))` when DuckDB could not be asked.
+fn made_its_table(conn: &Connection, step: &str) -> Result<(), Option<duckdb::Error>> {
+    let held: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND table_name = ?",
+            [step],
+            |r| r.get(0),
+        )
+        .map_err(Some)?;
+    if held > 0 {
+        Ok(())
+    } else {
+        Err(None)
     }
 }
 

@@ -633,8 +633,24 @@ pub struct ArcOutput {
 /// says so.
 #[must_use]
 pub fn arc_with_args(runner: &Runner, dir: &Path, args: &[&str]) -> ArcOutput {
+    arc_with_args_and_env(runner, dir, args, &[])
+}
+
+/// [`arc_with_args`], with each of `env` set for the child as a variable and
+/// its value.
+#[must_use]
+pub(crate) fn arc_with_args_and_env(
+    runner: &Runner,
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &Path)],
+) -> ArcOutput {
     let _hold = hold_for(dir);
-    match arc_command(runner.program(), dir, args).output() {
+    let mut command = arc_command(runner.program(), dir, args);
+    for (variable, value) in env {
+        command.env(variable, value);
+    }
+    match command.output() {
         Ok(output) => ArcOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: without_colour_codes(&String::from_utf8_lossy(&output.stderr)),

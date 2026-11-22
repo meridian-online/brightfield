@@ -128,9 +128,11 @@ pub fn is_statement(text: &str) -> bool {
 /// restricted palette is built from.
 #[must_use]
 pub fn chart_palette_verbs() -> Vec<&'static str> {
+    let operations: Vec<&'static str> = crate::operation_ui::built().map(|ui| ui.verb).collect();
     CHART_PALETTE_VERBS
         .iter()
         .chain(PROTOCOL_CHART_VERBS)
+        .chain(&operations)
         .copied()
         .collect()
 }

@@ -670,6 +670,37 @@ fn every_chart_palette_candidate_actually_dispatches() {
                 assert!(picture.width() > 0 && picture.height() > 0);
                 let _ = std::fs::remove_dir_all(&dir);
             }
+            // An operation's verb, over a data file in a directory this test
+            // owns, with the grid's cursor on a cell. What is read back is that
+            // the operation started, or said on the status band what it needs:
+            // a verb that reached no handler does neither.
+            verb if brightfield_shell::operation_ui::by_verb(verb).is_some() => {
+                let dir = save_fixture_dir();
+                let csv = dir.join("harbour.csv");
+                std::fs::write(
+                    &csv,
+                    "station,reading\nnorth,12\nsouth,31\neast,7\nwest,52\n",
+                )
+                .expect("the fixture writes");
+                let mut win = Window::open(
+                    Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens"),
+                );
+                win.settle();
+                win.app.chart_doc_mut().grid_cursor =
+                    Some(brightfield_shell::data_grid::GridCursor { row: 0, col: 0 });
+                win.settle();
+                confirm_chart_verb(&mut win, verb);
+                win.settle();
+                let doc = win.app.chart_doc();
+                assert!(
+                    doc.foot_asking().is_some()
+                        || doc.making().is_some()
+                        || doc.typed_steps().iter().any(|s| s.operation.is_some())
+                        || win.app.operation_said().is_some(),
+                    "{verb} started no operation and said nothing"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             other => panic!(
                 "{other} is listed on the chart palette with no dispatch proof in \
                  this sweep — add a case above before adding it to CHART_PALETTE_VERBS"

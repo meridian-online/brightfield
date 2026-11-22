@@ -23,6 +23,7 @@ pub mod focus;
 pub mod fuzzy;
 pub mod keystroke;
 pub mod menus;
+pub mod operations;
 pub mod palette;
 pub mod registry;
 pub mod scope;

@@ -397,9 +397,11 @@ impl OneStepProtocol {
         let (mut manifest, mut sources, mut generated, folder_refused) = self.declared()?;
         // A SQL step arc recorded stands on what it reads, as a typed one's
         // does below, whatever DuckDB syntax its statement is in: the graph is
-        // handed its lineage model rather than the model on disk.
+        // handed its lineage model rather than the model on disk. So does a
+        // step arc generated for an operation whose model is several
+        // statements, which reads the tables its header lists.
         for step in generated.iter().flat_map(|g| &g.steps) {
-            if step.effect == StepEffect::Sql {
+            if matches!(step.effect, StepEffect::Sql | StepEffect::Generated(_)) {
                 sources.insert(
                     step.name.clone(),
                     Ok(crate::typed_sql::lineage_model_of(&step.name, &step.reads)),

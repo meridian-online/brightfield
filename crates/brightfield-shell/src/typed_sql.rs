@@ -59,6 +59,15 @@
 //! table has the same name. A name is fixed when its statement is kept, and
 //! Save does not change it.
 //!
+//! **An operation's draft is kept the same way.** A step an operation made is
+//! a [`TypedStep`] too, carrying what arc is asked to record
+//! ([`TypedStep::operation`]) with arc's model for it as its statement. It is
+//! laid out, previewed and counted as a kept statement is, by running that
+//! model, and Save records it through `arc operation record`
+//! ([`crate::operation::record_step`]), so the file arc writes is the one any
+//! other way of recording the operation writes. The spine's `remove-step` on a
+//! kept step takes it back, since no file holds it.
+//!
 //! **Unsaved steps are in the Protocol graph.** A kept statement is a
 //! [`TypedStep`]. The window lays the Protocol out again from its folder with
 //! the kept steps after the folder's own
@@ -137,21 +146,47 @@ pub struct TypedStep {
     pub reads: Vec<String>,
     /// The rows of its table, once a count has come back.
     pub rows: Option<u64>,
+    /// What arc is asked to record, for a step an operation made;
+    /// [`Self::statement`] is then the model arc writes for it, and Save
+    /// records the request and not the text.
+    pub operation: Option<crate::operation::StepRequest>,
 }
 
 impl TypedStep {
-    /// The step as one of the steps after the load: a SQL step on the first
-    /// table it reads, with the statement as its argument.
+    /// The step as one of the steps after the load, on the first table it
+    /// reads: a SQL step with the statement as its argument, or, for a step an
+    /// operation made, that operation's generated step with arc's model as its
+    /// argument.
     #[must_use]
     pub fn as_generated(&self) -> GeneratedStep {
         GeneratedStep {
             name: self.name.clone(),
-            effect: StepEffect::Sql,
+            effect: match &self.operation {
+                Some(request) => StepEffect::Generated(request.long_name.clone()),
+                None => StepEffect::Sql,
+            },
             on: self.reads.first().cloned().unwrap_or_default(),
             reads: self.reads.clone(),
             argument: self.statement.clone(),
         }
     }
+}
+
+/// The tables `request` reads, each once in any case: the one it is on, then
+/// the others in the order it names them.
+#[must_use]
+pub fn tables_read(request: &crate::operation::StepRequest) -> Vec<String> {
+    let mut tables: Vec<String> = Vec::new();
+    let read = request
+        .on
+        .iter()
+        .chain(request.reads.iter().map(|(_, table)| table));
+    for table in read {
+        if !tables.iter().any(|t| t.eq_ignore_ascii_case(table)) {
+            tables.push(table.clone());
+        }
+    }
+    tables
 }
 
 /// **The model the lineage graph is handed for a SQL step**: a `CREATE` of the
@@ -212,7 +247,10 @@ impl TypedSource {
     /// file loads under a name of its own, the session's raw rows' name unless the root table or
     /// a step of `chain` already has it, and the root table is made from it, cast, as the first
     /// step.
-    fn read_over(&self, chain: Vec<(String, PreviewOp)>) -> (String, Vec<(String, PreviewOp)>) {
+    pub(crate) fn read_over(
+        &self,
+        chain: Vec<(String, PreviewOp)>,
+    ) -> (String, Vec<(String, PreviewOp)>) {
         if self.casts.is_empty() {
             return (self.root_table.clone(), chain);
         }
@@ -236,8 +274,23 @@ impl TypedSource {
         (rows, cast)
     }
 
+    /// The steps a read of `tables` is read after, in order: of [`Self::steps`], those that make
+    /// one of `tables`, and the steps those read. A `read-file` step's relative path is read
+    /// against the data file's folder, which is the Protocol's.
+    pub(crate) fn chain_reading(&self, tables: &[String]) -> Vec<(String, PreviewOp)> {
+        match self.data.parent() {
+            Some(dir) => crate::generated::preview_chain_reading_in(
+                dir,
+                &self.root_table,
+                &self.steps,
+                tables,
+            ),
+            None => crate::generated::preview_chain_reading(&self.root_table, &self.steps, tables),
+        }
+    }
+
     /// The columns the casts keep each cast column's text under, which the applied grid hides.
-    fn raw_columns(&self) -> std::collections::BTreeSet<String> {
+    pub(crate) fn raw_columns(&self) -> std::collections::BTreeSet<String> {
         self.casts
             .iter()
             .map(|(column, _)| crate::flat_cast::raw_name(column))
@@ -543,11 +596,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         return None;
     }
     let mut chain = match &parsed {
-        Ok(reading) => crate::generated::preview_chain_reading(
-            &source.root_table,
-            &source.steps,
-            &reading.tables,
-        ),
+        Ok(reading) => source.chain_reading(&reading.tables),
         Err(_) => Vec::new(),
     };
     chain.push((

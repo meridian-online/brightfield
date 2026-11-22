@@ -29,7 +29,7 @@ use duckdb::Connection;
 pub use preview::{
     preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
     preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
-    PreviewStop, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
+    PreviewStop, WarmPage, WarmPreview, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
 };
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
