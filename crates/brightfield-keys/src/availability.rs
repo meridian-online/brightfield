@@ -277,8 +277,8 @@ pub fn availability(verb: &VerbEntry, situation: &Situation) -> Availability {
 
 /// The sentence the verb named `longname` declares for `need`, with its label
 /// filled in. `None` when the registry has no such verb or the verb does not
-/// declare that need, so a handler that refuses for a reason the command never
-/// declared has no sentence to say.
+/// declare that need, so a handler refusing for an undeclared reason has no
+/// sentence to say.
 #[must_use]
 pub fn sentence(longname: &str, need: Need) -> Option<String> {
     let reg = registry();
