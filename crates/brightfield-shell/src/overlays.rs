@@ -1313,10 +1313,12 @@ mod tests {
     fn the_chart_palette_offers_save_only_where_there_is_something_to_save() {
         let without = chart_palette_candidates(false);
         let with = chart_palette_candidates(true);
-        // Save, and the Run that runs what Save writes: the two rows a window
-        // with no Protocol behind it would confirm to no effect.
-        let saveable = ["save-spec", crate::window::RUN_PROTOCOL];
-        for verb in saveable {
+        // Save, the Run that runs what Save writes, and each built operation,
+        // which is recorded into a Protocol: the rows a window with no Protocol
+        // behind it would confirm to no effect.
+        let mut saveable = vec!["save-spec", crate::window::RUN_PROTOCOL];
+        saveable.extend(crate::operation_ui::built().map(|ui| ui.verb));
+        for verb in saveable.iter().copied() {
             assert!(
                 !without.contains(&verb),
                 "a window with no Protocol behind it is offered {verb}, which \
