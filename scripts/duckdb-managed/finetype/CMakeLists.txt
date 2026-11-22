@@ -7,7 +7,8 @@
 #
 # This makes `finetype_extension`, the archive DuckDB's build links into the
 # library, from that static library, an entry point that lets FineType's
-# bindings find DuckDB's C API (finetype_static_entry.cpp), and the describe
+# bindings find DuckDB's C API and registers FineType's two table macros in
+# DuckDB's system catalog (finetype_static_entry.cpp), and the describe
 # function DuckDB 2.0 registers a statically linked extension through
 # (finetype_describe.c). It does what build_static_extension_capi in DuckDB's
 # extension/extension_build_tools.cmake does, with that entry point in place of
@@ -18,6 +19,10 @@ project(FinetypeExtension C CXX)
 if(NOT DEFINED BRIGHTFIELD_FINETYPE_STATICLIB OR NOT EXISTS "${BRIGHTFIELD_FINETYPE_STATICLIB}")
   message(FATAL_ERROR "BRIGHTFIELD_FINETYPE_STATICLIB must name FineType's built static library")
 endif()
+if(NOT DEFINED BRIGHTFIELD_FINETYPE_GENERATED_DIR
+   OR NOT EXISTS "${BRIGHTFIELD_FINETYPE_GENERATED_DIR}/finetype_table_macros.hpp")
+  message(FATAL_ERROR "BRIGHTFIELD_FINETYPE_GENERATED_DIR must hold finetype_table_macros.hpp")
+endif()
 if(NOT DEFINED BRIGHTFIELD_FINETYPE_VERSION)
   message(FATAL_ERROR "BRIGHTFIELD_FINETYPE_VERSION must name FineType's release tag")
 endif()
@@ -25,6 +30,9 @@ endif()
 add_library(finetype_extension STATIC
             ${CMAKE_CURRENT_SOURCE_DIR}/finetype_static_entry.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/finetype_describe.c)
+# finetype_table_macros.hpp, which scripts/build-duckdb.sh generates from
+# FineType's source: the two table macros the entry point registers.
+target_include_directories(finetype_extension PRIVATE "${BRIGHTFIELD_FINETYPE_GENERATED_DIR}")
 target_compile_definitions(finetype_extension PRIVATE
                            BRIGHTFIELD_FINETYPE_VERSION="${BRIGHTFIELD_FINETYPE_VERSION}")
 target_link_libraries(finetype_extension
