@@ -47,7 +47,7 @@ const NO_COMMAND: isize = -1;
 /// The key equivalent AppKit shows for one keystroke, and its modifier mask:
 /// a letter in lower case with the shift mask for ⇧, and AppKit's own
 /// characters for the named keys. `None` for a key AppKit has no character
-/// for, whose item then shows none.
+/// for, whose item then shows no key.
 fn key_equivalent(stroke: &Keystroke) -> Option<(String, usize)> {
     let key = match stroke.key {
         "enter" => "\r".to_owned(),
@@ -247,8 +247,9 @@ pub fn install(
         return false;
     };
     let delegate = MenuDelegate::new(queue, state, names);
-    // A command's tag is its place among every menu's commands, the app
-    // menu's included, which is its place in `menu_rows`.
+    // A command's tag is its place among the menus' commands, counted from
+    // the app menu's, which is its place in `menu_rows`
+    // (`the_first_menu_after_the_app_menu_starts_past_the_app_menus_commands`).
     let mut tag = 0_usize;
     for (at, menu) in menus.iter().enumerate() {
         let commands = menu
