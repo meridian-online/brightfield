@@ -103,8 +103,8 @@ cat <<'CASK'
   desc "Grammar-of-graphics renderer for Meridian data"
   homepage "https://meridian.online/brightfield"
 
-  # Every release so far is a GitHub prerelease, which the GitHub strategies
-  # skip; the releases feed lists them all.
+  # The releases feed lists every release, pre-release or full. Releases
+  # before 0.1.9 were pre-releases, which the GitHub strategies skip.
   livecheck do
     url "https://github.com/meridian-online/brightfield/releases.atom"
     strategy :page_match

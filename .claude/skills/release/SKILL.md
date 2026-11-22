@@ -136,7 +136,7 @@ gh api repos/meridian-online/homebrew-tap/contents/Casks/brightfield.rb --jq .co
 
 The release has eight assets: the `.tar.gz` and the `.dmg` for each of the two targets, each with its `.sha256`. The cask reads `version "X.Y.Z"`. Keep `publishedAt` for stage 3.
 
-When `isPrerelease` is `true` for a build `update-homebrew` accepted, tell Hugh: promoting it to the latest full release (`gh release edit vX.Y.Z --repo meridian-online/brightfield --prerelease=false --latest`) is his step.
+The workflow publishes a notarised build as a full release, so `isPrerelease` is `false` and GitHub shows it as the latest. When it is `true`, the build was ad-hoc and `update-homebrew` has refused it, or the workflow's `prerelease:` line has changed: report which to Hugh. Promoting a release by hand (`gh release edit vX.Y.Z --repo meridian-online/brightfield --prerelease=false --latest`) is his step.
 
 When a job fails, report it to Hugh with `gh run view <run-id> --repo meridian-online/brightfield --log-failed`, and say which jobs had already run: a failure after `release` leaves the GitHub release published. Re-running the workflow, moving or deleting the tag and editing the tap by hand are his calls.
 
