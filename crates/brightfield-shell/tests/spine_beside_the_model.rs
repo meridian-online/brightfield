@@ -1058,3 +1058,75 @@ fn over_a_joins_rows_the_spine_offers_no_model_table() {
         win.frame(Vec::new());
     }
 }
+
+/// While a run this window started is writing the model's database, the spine opens no pick over
+/// the model's tables, whose columns are read from that database, and says why. Once the run has
+/// landed the same start opens it.
+#[test]
+fn a_pick_over_a_models_tables_waits_for_the_run_to_end() {
+    use brightfield_shell::window::PICK_AFTER_THE_RUN;
+    use brightfield_workbench::PaneKey;
+
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    // The pick opens once arc's description has come, and Esc closes it again.
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id"))
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    assert!(win.app.spine_pick().is_some());
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+
+    // A run is under way from the moment it starts until a frame takes its landing.
+    assert!(win.app.run_protocol(&ctx), "the run started");
+    assert!(win.app.run_outstanding());
+    assert!(!win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id")));
+    assert_eq!(win.app.operation_said(), Some(PICK_AFTER_THE_RUN));
+    assert!(win.app.spine_pick().is_none());
+
+    while win.app.run_outstanding() {
+        assert!(std::time::Instant::now() < deadline, "the run never landed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    // The grid is the table's again after the run, and the same start opens the pick.
+    win.frame(Vec::new());
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    assert!(
+        win.app
+            .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id")),
+        "{:?}",
+        win.app.operation_said()
+    );
+    assert!(win.app.spine_pick().is_some());
+}

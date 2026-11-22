@@ -1104,8 +1104,10 @@ impl MeridianApp {
     /// Whether a run this window started is writing the database of the model
     /// whose table the grid holds. arc runs each step in a process of its own,
     /// so the database is free between two steps, and a read that opened it
-    /// then would hold the lock the next step needs and fail the run. Nothing
-    /// here opens the database while this is true.
+    /// then would hold the lock the next step needs and fail the run. While this
+    /// is true no grid copy is written and no pick opens
+    /// (`a_pick_over_a_models_tables_waits_for_the_run_to_end` in
+    /// `tests/spine_beside_the_model.rs`).
     fn model_database_is_being_run(&self) -> bool {
         self.model_protocol_beside_the_grid()
             .is_some_and(|protocol| self.runs_folder(&protocol.dir))
@@ -1157,8 +1159,8 @@ impl MeridianApp {
             if !ours || crate::own_files::grid_copy_is_current(protocol, table) {
                 continue;
             }
-            // The copy waits for a run under way to end: the preview shows the rows it
-            // has until then, and a frame is asked for to look again.
+            // The copy waits for a run under way to end, and a frame is asked for to
+            // look again: until then the preview reads the copy the folder has.
             if running {
                 self.operation
                     .copy_due
