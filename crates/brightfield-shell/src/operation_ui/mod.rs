@@ -17,9 +17,9 @@
 //!   inspector's Operation section, or neither;
 //! - how its step is named ([`NameRule`]).
 //!
-//! [`OPERATIONS`] lists all 13 slots, in the order arc lists its operations. A
-//! slot answers `None` until its operation is built, and
-//! `every_operation_arc_holds_has_one_slot` holds the list to arc's own. The
+//! [`OPERATIONS`] lists the slots in the order arc lists its operations, one
+//! for each operation arc holds (`every_operation_arc_holds_has_one_slot`). A
+//! slot answers `None` until its operation is built. The
 //! shared code reads a slot and decides nothing about how an operation asks.
 //!
 //! A [`Draft`] is an operation being made: the table it is on, the other tables
@@ -241,8 +241,8 @@ impl Draft {
 
     /// The first thing `description` requires that the draft lacks, as
     /// `"<long name> needs <key>"`: a required table, then a required value,
-    /// then a value arc takes only beside one the draft gives. `None` when the
-    /// draft holds all arc requires.
+    /// then a value arc takes only beside one the draft gives. `None` when
+    /// the draft lacks none of them.
     #[must_use]
     pub fn missing(&self, description: &OperationDescription) -> Option<String> {
         let given = |key: &str| self.value(key).is_some_and(|v| !v.trim().is_empty());
@@ -347,7 +347,7 @@ pub enum By {
 impl NameRule {
     /// The last part of the name for `draft`: the first comma-separated item
     /// of the value [`By::Value`] names, without a surrounding `"` pair and
-    /// without a trailing `asc` or `desc`. `None` when the rule names nothing,
+    /// without a trailing `asc` or `desc`. `None` when the rule is [`By::Nothing`],
     /// when the draft lacks the value, and when what is left holds anything but
     /// letters, digits, `_` and spaces, since an expression is no name.
     #[must_use]

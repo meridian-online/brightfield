@@ -17,8 +17,9 @@
 //! start from the registry's own `filter-rows-at-cursor` and
 //! `sort-rows-at-cursor`, and `read-file` from `open-sources-browser`.
 //!
-//! Every entry is a [`CommandTier::View`] command: starting an operation
-//! previews it and keeps a draft, and nothing is written until a Save.
+//! An entry is a [`CommandTier::View`] command
+//! (`an_operations_verb_is_its_long_name_and_writes_nothing`): starting an
+//! operation previews it and keeps a draft, and a Save does the writing.
 
 use crate::altitude::Altitude;
 use crate::registry::{

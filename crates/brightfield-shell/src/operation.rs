@@ -7,12 +7,13 @@
 //! argument list ([`arc_with_args`]), reads JSON from stdout, and treats
 //! stderr as the refusal.
 //!
-//! **A description is read whole.** [`describe`] keeps each value's shape
+//! **A description is read with its shapes.** [`describe`] keeps each value's shape
 //! ([`ValueShape`]: a kind of SQL, a column's name, a list of them, a whole
 //! number with its bounds, one word of a few, a path, or plain text), whether
-//! it is required, which values are given together or not at all, and, of each
+//! it is required, which values go together
+//! (`dedupe_rows_needs_its_key_and_order_together`), and, of each
 //! table a step reads, whether it is one table or a list of them. A form reads
-//! these and decides nothing of its own about what an operation takes.
+//! these, and what an operation takes stays arc's to say.
 //!
 //! **Save records through arc.** [`record_step`] runs `arc operation record`
 //! for a [`StepRequest`]: the operation, the table it is recorded on, each
@@ -72,8 +73,8 @@ pub struct OperationDescription {
     /// unless the build enables its `preserve_order` feature, which this crate
     /// does not ask for.
     pub parameters: Vec<Parameter>,
-    /// The values arc takes together or not at all: each key with the keys it
-    /// needs beside it, in key order (the schema's `dependentRequired`).
+    /// The values arc takes only together: each key with the keys it needs
+    /// beside it, in key order, from the schema's `dependentRequired`.
     pub needed_together: Vec<(String, Vec<String>)>,
 }
 
