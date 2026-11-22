@@ -782,6 +782,24 @@ impl ShelfUndo {
     }
 }
 
+/// **An operation being made**: which operation, its draft as it stands, and
+/// where it was started from. It lives on the document from the start to the
+/// keep or the Esc, so the grid, the inspector and the window read one state.
+#[derive(Clone, Debug)]
+pub struct Making {
+    /// The operation.
+    pub spec: &'static crate::operation_ui::OperationUi,
+    /// Its draft as it stands.
+    pub draft: crate::operation_ui::Draft,
+    /// Where it was started from.
+    pub start: crate::operation_ui::Start,
+    /// The column it was started on, when it was started on one.
+    pub column: Option<String>,
+    /// The kept step it corrects, when it was started over the grid of a kept
+    /// step of the same operation: keeping it replaces that step in place.
+    pub corrects: Option<String>,
+}
+
 /// What the Editor drew on a frame: its title, its text, and whether the text
 /// could be edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -995,6 +1013,9 @@ pub struct ChartDoc {
     /// What the Editor drew on its last frame, left here by the pane for a
     /// reader that cannot reach pane state ([`Self::editor_drawn`]).
     editor_drawn: Option<EditorDrawn>,
+    /// The operation being made, from its start until it is kept or dropped
+    /// ([`Self::making`]).
+    making: Option<Making>,
     /// Whether the next `save-spec` the editor performs is the window's, made
     /// away from the editor, and what that save did once it has run: the
     /// window cannot reach the editor's report any other way.
@@ -1542,6 +1563,7 @@ impl ChartDoc {
             editor_buffer: None,
             step_sql: None,
             editor_drawn: None,
+            making: None,
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
@@ -1624,6 +1646,7 @@ impl ChartDoc {
             editor_buffer: None,
             step_sql: None,
             editor_drawn: None,
+            making: None,
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
@@ -1871,8 +1894,29 @@ impl ChartDoc {
         changed
     }
 
-    /// What the Editor drew on the last frame it drew: `None` before it has
-    /// drawn, and while it draws its empty state.
+    /// The operation being made, while one is.
+    #[must_use]
+    pub fn making(&self) -> Option<&Making> {
+        self.making.as_ref()
+    }
+
+    /// The operation being made, to edit its draft.
+    pub fn making_mut(&mut self) -> Option<&mut Making> {
+        self.making.as_mut()
+    }
+
+    /// Begin making `making`, in place of an operation already being made.
+    pub(crate) fn set_making(&mut self, making: Making) {
+        self.making = Some(making);
+    }
+
+    /// Stop making the operation, and answer what it was.
+    pub(crate) fn take_making(&mut self) -> Option<Making> {
+        self.making.take()
+    }
+
+    /// What the Editor drew on the last frame it drew text: `None` before it
+    /// has. It is left as it was while another tab is in front of the Editor.
     #[must_use]
     pub fn editor_drawn(&self) -> Option<&EditorDrawn> {
         self.editor_drawn.as_ref()

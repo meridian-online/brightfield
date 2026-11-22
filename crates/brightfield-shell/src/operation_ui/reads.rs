@@ -63,7 +63,8 @@ pub struct DraftAnswer {
     /// Each column the model makes with its count of missing values.
     pub missing: Vec<(String, u64)>,
     /// Why the page is empty, when the rows were not read: the table is too
-    /// large to preview, or the read ran past its deadline.
+    /// large to preview, the read ran past its deadline, or the draft reads a
+    /// file, whose rows are read once it is kept.
     pub unread: Option<String>,
 }
 
@@ -139,9 +140,36 @@ impl DraftReads {
         file_limit: u64,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
+        Self::start_with(
+            source,
+            upstream_of,
+            file_limit,
+            PreviewHooks::default(),
+            wake,
+        )
+    }
+
+    /// [`Self::start`], with the worker reading behind `hooks`: the gate a
+    /// document's own previews read behind, so a draft's reads take turns with
+    /// them.
+    pub(crate) fn start_behind(
+        source: TypedSource,
+        upstream_of: Vec<String>,
+        hooks: PreviewHooks,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self::start_with(source, upstream_of, PREVIEW_FILE_LIMIT_BYTES, hooks, wake)
+    }
+
+    fn start_with(
+        source: TypedSource,
+        upstream_of: Vec<String>,
+        file_limit: u64,
+        hooks: PreviewHooks,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let (asks, asked) = channel::<Ask>();
         let (tell, told) = channel::<Told>();
-        let hooks = PreviewHooks::default();
         let over = PreviewStop::default();
         let dropped = over.clone();
         let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));

@@ -2127,7 +2127,30 @@ pub struct GridPreview {
     /// Whether these are a typed statement's rows ([`Self::of_typed`]) rather
     /// than a generated step's.
     typed: bool,
+    /// **What an operation being made adds to its preview**
+    /// ([`Self::of_draft`]): `None` for a step's or a statement's preview.
+    draft: Option<DraftShown>,
 }
+
+/// What the preview of an operation being made carries beside its page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DraftShown {
+    /// Each column of the page with its count of missing values.
+    missing: Vec<(String, u64)>,
+    /// Whether the rows are an earlier edit's, kept on screen while the edit
+    /// as it stands is refused.
+    faded: bool,
+}
+
+/// The opacity an operation's preview is drawn at while its rows are an
+/// earlier edit's: present, and plainly not the answer to what is typed.
+pub const FADED_PREVIEW_OPACITY: f32 = 0.45;
+
+/// The words before the missing counts of an operation's preview.
+pub const PREVIEW_MISSING: &str = "Missing values";
+
+/// What an operation's preview says when no column of it has a missing value.
+pub const PREVIEW_NONE_MISSING: &str = "No missing values";
 
 impl GridPreview {
     /// **The grid's view of a statement typed on the palette's query line**:
@@ -2164,7 +2187,62 @@ impl GridPreview {
             shown: PreviewShown::Read(std::sync::Arc::new(Ok(page))),
             said: false,
             typed: true,
+            draft: None,
         }
+    }
+
+    /// **The grid's view of an operation being made**: `page`, shown under
+    /// the name `step` the operation would be kept as, as a statement's rows
+    /// are ([`Self::of_typed`]), with each column's count of missing values,
+    /// which are the preview's own and not the loaded table's, and `faded`
+    /// while the rows are an earlier edit's.
+    pub(crate) fn of_draft(
+        step: String,
+        page: GridPage,
+        missing: Vec<(String, u64)>,
+        faded: bool,
+    ) -> Self {
+        let mut preview = Self::of_typed(step, page);
+        preview.draft = Some(DraftShown { missing, faded });
+        preview
+    }
+
+    /// Whether the rows are drawn faded: an operation's preview whose rows
+    /// are an earlier edit's.
+    #[must_use]
+    pub fn is_faded(&self) -> bool {
+        self.draft.as_ref().is_some_and(|draft| draft.faded)
+    }
+
+    /// How many values of `column` are missing in an operation's preview:
+    /// `None` for another preview, or a column the preview lacks.
+    #[must_use]
+    pub fn missing_of(&self, column: &str) -> Option<u64> {
+        self.draft
+            .as_ref()?
+            .missing
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, count)| *count)
+    }
+
+    /// The line an operation's preview states its missing values in: each
+    /// column that has some with its count, or that no column has one. `None`
+    /// for another preview.
+    #[must_use]
+    pub fn missing_line(&self) -> Option<String> {
+        let draft = self.draft.as_ref()?;
+        let with_some: Vec<String> = draft
+            .missing
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(column, count)| format!("{column} {count}"))
+            .collect();
+        Some(if with_some.is_empty() {
+            PREVIEW_NONE_MISSING.to_string()
+        } else {
+            format!("{PREVIEW_MISSING} \u{b7} {}", with_some.join(" \u{b7} "))
+        })
     }
 
     /// The previewed step's name.
@@ -2386,6 +2464,7 @@ impl ChartDoc {
             shown,
             said,
             typed: false,
+            draft: None,
         });
     }
 
@@ -2807,6 +2886,17 @@ impl DataGridItem {
                     .color(chrome::colour(sem.text.muted)),
             );
         }
+        // An operation being made states its own missing values: the header
+        // band's counts are the loaded table's, and the operation may have
+        // changed them.
+        if let Some(line) = preview.missing_line() {
+            ui.label(
+                egui::RichText::new(line)
+                    .font(cell_font())
+                    .color(chrome::colour(sem.text.muted)),
+            );
+        }
+        let faded = preview.is_faded();
         let room = ui.available_rect_before_wrap();
         let foot_rect = egui::Rect::from_min_max(
             egui::pos2(
@@ -2832,6 +2922,9 @@ impl DataGridItem {
                             .id(grid_state_id())
                             .max_rect(table_rect),
                         |ui| {
+                            if faded {
+                                ui.multiply_opacity(FADED_PREVIEW_OPACITY);
+                            }
                             show_table_sized(
                                 ui,
                                 DATA.as_str(),

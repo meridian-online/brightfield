@@ -830,11 +830,6 @@ pub struct EditorPane {
     last_poll: Option<Instant>,
     /// The last drawn cursor, echoed while the pane redraws.
     cursor: Option<(usize, usize)>,
-    /// **A step's SQL, shown read-only**: its title and its text, held in
-    /// memory with no file behind it ([`Self::show_sql`]). While it is set the
-    /// pane draws it in place of the spec file's buffer, which is kept as it
-    /// was.
-    sql: Option<(String, String)>,
 }
 
 impl Default for EditorPane {
@@ -855,27 +850,18 @@ impl EditorPane {
             reload_pending_since: None,
             last_poll: None,
             cursor: None,
-            sql: None,
         }
     }
 
-    /// **Show `text` read-only under the title `title`**: a step's SQL, which
-    /// has no file of the editor's behind it and is not edited here. The spec
-    /// file's buffer, if one is open, is left as it is and is drawn again once
-    /// [`Self::hide_sql`] is called.
-    pub fn show_sql(&mut self, title: &str, text: &str) {
-        let same = self
-            .sql
-            .as_ref()
-            .is_some_and(|(t, x)| t == title && x == text);
-        if !same {
-            self.sql = Some((title.to_string(), text.to_string()));
-        }
-    }
-
-    /// Stop showing a step's SQL, so the pane draws its spec file again.
-    pub fn hide_sql(&mut self) {
-        self.sql = None;
+    /// **The step's SQL this pane shows in place of its spec file**: the SQL
+    /// of the step in front, as the window left it on the document, while the
+    /// spec file's buffer holds no unsaved edit. An edited buffer stays on the
+    /// surface, so keystrokes not yet saved are not covered over. The buffer
+    /// is kept as it was either way, and is drawn again once another view is
+    /// in front.
+    fn step_sql_shown<'a>(&self, doc: &'a ChartDoc) -> Option<&'a (String, String)> {
+        doc.step_sql()
+            .filter(|_| !matches!(self.dirty(), Dirty::Edited))
     }
 
     /// Open `path`, seeding the buffer from disk.
@@ -1190,9 +1176,11 @@ impl Item<ChartDoc> for EditorPane {
         ))
     }
 
-    fn describe(&self, _doc: &ChartDoc) -> Subject {
-        // A step's SQL is titled with the step's name, and carries no breadcrumb, Save or warning of the spec file's: it is not a file here.
-        if let Some((title, _)) = &self.sql {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        // A step's SQL is titled with the step's name, read off the document so the tab is
+        // named for the step in front whether or not the pane is the one drawn. It carries no
+        // breadcrumb, Save or warning of the spec file's: it is not a file here.
+        if let Some((title, _)) = self.step_sql_shown(doc) {
             return Subject::new(title.clone(), ICON_EDITOR, BindingContext::Editor);
         }
         let title = self
@@ -1280,22 +1268,13 @@ impl Item<ChartDoc> for EditorPane {
             }
         }
         self.poll_disk();
-        // **The step in front's SQL, read-only**, while the canvas holds the
-        // grid of a step whose SQL the window has left on the document, and
-        // the spec file's buffer holds no unsaved edit. An edited buffer stays
-        // on the surface, so keystrokes not yet saved are not covered over.
-        match doc.step_sql().cloned() {
-            Some((title, text)) if !matches!(self.dirty(), Dirty::Edited) => {
-                self.show_sql(&title, &text);
-            }
-            _ => self.hide_sql(),
-        }
-        if let Some((title, text)) = &mut self.sql {
+        // **The step in front's SQL, read-only** ([`Self::step_sql_shown`]).
+        if let Some((title, text)) = self.step_sql_shown(doc).cloned() {
             // The surface edits a copy it is given and reports no change in
             // read-only, so the text shown stays the step's.
             let mut shown = text.clone();
             code_surface(ui, "step-sql", &mut shown, Access::ReadOnly, cx.mode);
-            note_drawn(doc, title, text, true);
+            note_drawn(doc, &title, &text, true);
             self.publish_buffer(doc);
             return;
         }

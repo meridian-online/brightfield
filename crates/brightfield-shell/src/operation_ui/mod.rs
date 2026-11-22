@@ -44,6 +44,7 @@ pub mod filter_rows;
 pub mod hide_column;
 pub mod join_tables;
 pub mod limit_rows;
+pub mod open;
 pub mod read_file;
 pub mod reads;
 pub mod rename_column;

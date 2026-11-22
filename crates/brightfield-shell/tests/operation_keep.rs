@@ -197,7 +197,11 @@ fn a_draft_arc_refuses_at_save_stays_kept_in_arcs_words() {
     let names: Vec<String> = win.kept().into_iter().map(|s| s.name).collect();
     assert_eq!(names, ["h"]);
     assert!(win.app.has_unsaved_work());
-    assert!(!win.banners().is_empty(), "the refusal is on a banner");
+    assert!(
+        win.banners().contains("Could not record the step:"),
+        "the banner names a step, not SQL: {}",
+        win.banners()
+    );
 }
 
 #[test]
@@ -236,4 +240,18 @@ fn the_statement_form_over_a_drafts_grid_starts_empty() {
         None,
         "the palette holds no statement: arc's model is not typed over"
     );
+    // A statement typed there and kept is a step of its own, and the draft stays.
+    let table = win.table();
+    win.type_text(&format!(
+        "select house_age, count(*) as n from {table} group by house_age"
+    ));
+    assert!(win
+        .app
+        .finish_typed_reads(std::time::Duration::from_secs(60)));
+    win.key_with(egui::Key::Enter, egui::Modifiers::COMMAND);
+    let kept = win.kept();
+    assert_eq!(kept.len(), 2, "{}", win.banners());
+    assert_eq!(kept[0].name, "h");
+    assert!(kept[0].operation.is_some(), "h is still the operation's");
+    assert!(kept[1].operation.is_none());
 }

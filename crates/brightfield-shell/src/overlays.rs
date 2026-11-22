@@ -107,6 +107,13 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
 /// `run-protocol` is here for the same reason: what it runs is the spec Save
 /// writes (`MeridianApp::run_protocol`), so a window with no spec to save has
 /// no spec to run.
+///
+/// Each built operation's verb is offered on the same terms
+/// ([`crate::operation_ui::built`]): an operation is recorded into a Protocol,
+/// so a window with no Protocol to save lists no operation
+/// (`the_chart_palette_lists_built_operations_only_where_a_protocol_is_saved`
+/// in `tests/operation_start.rs`). Chosen, it starts the operation as its key
+/// does, or says on the status band what it needs.
 const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
 
 /// **Whether a chart window in this state offers `verb`** — what the chart
@@ -127,7 +134,10 @@ const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL
 /// any window (`inspector::dispatchable`).
 #[must_use]
 pub fn chart_offers(verb: &str, saveable: bool) -> bool {
-    CHART_PALETTE_VERBS.contains(&verb) || (saveable && SAVEABLE_CHART_VERBS.contains(&verb))
+    CHART_PALETTE_VERBS.contains(&verb)
+        || (saveable
+            && (SAVEABLE_CHART_VERBS.contains(&verb)
+                || crate::operation_ui::by_verb(verb).is_some()))
 }
 
 /// **Whether `text` on the chart palette's query line is a statement** rather
@@ -152,9 +162,11 @@ pub fn is_statement(text: &str) -> bool {
 /// what the restricted palette is built from.
 #[must_use]
 pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
+    let operations: Vec<&'static str> = crate::operation_ui::built().map(|ui| ui.verb).collect();
     CHART_PALETTE_VERBS
         .iter()
         .chain(SAVEABLE_CHART_VERBS)
+        .chain(&operations)
         .filter(|v| chart_offers(v, saveable))
         .copied()
         .collect()

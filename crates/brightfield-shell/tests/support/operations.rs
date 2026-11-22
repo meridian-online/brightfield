@@ -397,4 +397,125 @@ impl OpWindow {
     pub fn editor_text(&mut self) -> String {
         self.editor().text
     }
+
+    /// Put the loaded table's grid in front, focus it, and put the cursor on
+    /// the first row of `column`.
+    pub fn cursor_on(&mut self, column: &str) {
+        let table = self.table();
+        self.show_grid_of(&table);
+        self.focus_grid();
+        let header = std::fs::read_to_string(self.dir().join(&self.fixture))
+            .expect("the fixture reads")
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let col = header
+            .split(',')
+            .position(|name| name == column)
+            .unwrap_or_else(|| panic!("no column {column} in {header}"));
+        self.app.chart_doc_mut().grid_cursor =
+            Some(brightfield_shell::data_grid::GridCursor { row: 0, col });
+        self.settle();
+    }
+
+    /// Give the grid pane the keys.
+    pub fn focus_grid(&mut self) {
+        assert!(
+            self.app.focus_pane(brightfield_workbench::PaneKey::new(
+                brightfield_shell::data_grid::DATA
+            )),
+            "the grid pane is in the window"
+        );
+        self.settle();
+    }
+
+    /// Press a registry key token: a bare letter or sign, `shift-<letter>`,
+    /// or `cmd-s`.
+    pub fn press(&mut self, token: &str) {
+        let letter = |c: char| {
+            egui::Key::from_name(&c.to_ascii_uppercase().to_string())
+                .unwrap_or_else(|| panic!("no key for {c}"))
+        };
+        match token {
+            "cmd-s" => self.key_with(egui::Key::S, egui::Modifiers::COMMAND),
+            "-" => self.letter(egui::Key::Minus, "-"),
+            "=" => self.letter(egui::Key::Equals, "="),
+            "&" => self.type_text("&"),
+            shifted if shifted.starts_with("shift-") => {
+                let c = shifted.chars().last().expect("a letter");
+                self.run(vec![
+                    press(letter(c), egui::Modifiers::SHIFT),
+                    egui::Event::Text(c.to_ascii_uppercase().to_string()),
+                ]);
+                self.settle();
+            }
+            bare => {
+                let c = bare.chars().next().expect("a key");
+                self.letter(letter(c), bare);
+            }
+        }
+    }
+
+    /// Choose `verb` from the chart palette: Space, the verb typed, Enter.
+    pub fn palette(&mut self, verb: &str) {
+        self.key(egui::Key::Space);
+        assert_eq!(self.app.open_overlay(), Some("palette"), "space opened it");
+        self.settle();
+        self.type_text(verb);
+        self.key(egui::Key::Enter);
+        self.settle();
+    }
+
+    /// Draw frames until the reads answer the draft as it stands.
+    pub fn settle_reads(&mut self) {
+        self.settle();
+        assert!(
+            self.app.finish_operation_reads(Duration::from_secs(30)),
+            "the draft was never answered"
+        );
+        self.settle();
+    }
+
+    /// What the status band says of an operation: its own sentence, or the
+    /// foot row's over a step's preview.
+    pub fn said(&self) -> Option<String> {
+        self.app
+            .operation_said()
+            .map(str::to_string)
+            .or_else(|| self.app.chart_doc().foot_said())
+    }
+
+    /// The draft being made, while one is.
+    pub fn making(&self) -> Option<brightfield_shell::operation_ui::Draft> {
+        self.app.making().map(|making| making.draft.clone())
+    }
+
+    /// Whether the grid draws its rows faded.
+    pub fn grid_faded(&self) -> bool {
+        self.app
+            .chart_doc()
+            .grid_preview()
+            .is_some_and(|p| p.is_faded())
+    }
+
+    /// How many values of `column` the preview in the grid counts missing.
+    pub fn preview_missing(&self, column: &str) -> Option<u64> {
+        self.app
+            .chart_doc()
+            .grid_preview()
+            .and_then(|p| p.missing_of(column))
+    }
+
+    /// The columns the grid shows: a preview's, while it shows one.
+    pub fn grid_columns(&self) -> Vec<String> {
+        self.preview_columns()
+    }
+
+    /// The text of the preview's cell at `row` of `column`.
+    pub fn grid_cell(&self, row: usize, column: &str) -> Option<String> {
+        let page = self.app.chart_doc().grid_preview()?.page()?;
+        let at = page.columns.iter().position(|c| c.name == column)?;
+        Some(page.rows.get(row)?.get(at)?.full().to_owned())
+    }
 }
