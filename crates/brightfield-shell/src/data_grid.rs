@@ -3093,6 +3093,9 @@ impl Item<ChartDoc> for DataGridItem {
 
         // A generated step's preview is not the session's rows, so it is drawn
         // apart from them and before anything asks the session.
+        // What the header pass drew is this frame's: a frame that draws no
+        // table leaves no field or menu on record from the frame before.
+        doc.header.clear_drawn();
         if let Some(preview) = doc.grid_preview.take() {
             self.preview_ui(doc, &preview, ui, cx);
             doc.grid_preview = Some(preview);

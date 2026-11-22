@@ -115,6 +115,11 @@ pub struct HeaderState {
 }
 
 impl HeaderState {
+    /// Forget what the last pass drew, at the head of a frame's grid.
+    pub(crate) fn clear_drawn(&mut self) {
+        self.drawn = HeaderDrawn::default();
+    }
+
     /// The operations a header offers: the built ones, or a test's own.
     fn ops(&self) -> Vec<&'static OperationUi> {
         self.ops.clone().unwrap_or_else(|| super::built().collect())
@@ -250,6 +255,10 @@ pub fn header_pass(
             making.suggestion,
         ))
     });
+    let begun_columns: Vec<String> = doc
+        .making()
+        .map(|making| making.with.columns.clone())
+        .unwrap_or_default();
     let offers = ops
         .iter()
         .any(|op| op.starts.iter().any(|s| matches!(s, Start::Header(_))));
@@ -263,8 +272,11 @@ pub fn header_pass(
     let mut hit = None;
     let id = ui.id().with("operation-header");
     // Where each part of each column was drawn: the band's own record, or the
-    // whole cell as the name of a plain header.
-    let mut parts: Vec<(String, HeaderPart, egui::Rect)> = Vec::new();
+    // whole cell as the name of a plain header. Each with the column's index,
+    // which is how a field in place finds its column again once the preview
+    // has given it another name.
+    let mut parts: Vec<(usize, String, HeaderPart, egui::Rect)> = Vec::new();
+    let mut cells: Vec<(usize, String, egui::Rect)> = Vec::new();
     for (col, rect, clip) in &drawn.header_cells {
         let Some(name) = names.get(*col) else {
             continue;
@@ -273,7 +285,7 @@ pub fn header_pass(
         if !visible.is_positive() {
             continue;
         }
-        out.cells.push((name.clone(), visible));
+        cells.push((*col, name.clone(), visible));
         match drawn.band.iter().find(|band| band.column == *col) {
             Some(band) => {
                 for (part, at) in [
@@ -283,20 +295,51 @@ pub fn header_pass(
                 ] {
                     if let Some(at) = at.map(|at| at.intersect(*clip)) {
                         if at.is_positive() {
-                            parts.push((name.clone(), part, at));
+                            parts.push((*col, name.clone(), part, at));
                         }
                     }
                 }
             }
-            None => parts.push((name.clone(), HeaderPart::Name, visible)),
+            None => parts.push((*col, name.clone(), HeaderPart::Name, visible)),
         }
     }
 
     if field.is_none() && offers {
-        // The cell first, under its parts: a secondary click on it opens the
-        // menu, wherever on the cell it lands.
-        for (name, cell) in out.cells.clone() {
-            let response = ui.interact(cell, id.with(("cell", &name)), egui::Sense::click());
+        // Each cell is sensed once, and the part is read from where the pointer
+        // was: a secondary click opens the menu wherever on the cell it lands,
+        // a double-click on the name or a click on the type or the missing
+        // count starts the operation that starts there.
+        for (col, name, cell) in &cells {
+            let response = ui.interact(*cell, id.with(("cell", *col)), egui::Sense::click());
+            let sensed: Vec<(HeaderPart, egui::Rect)> = parts
+                .iter()
+                .filter(|(c, _, part, _)| c == col && starting_from(&ops, *part).next().is_some())
+                .map(|(_, _, part, at)| (*part, *at))
+                .collect();
+            let under = response.interact_pointer_pos().and_then(|at| {
+                // The last part that holds the pointer: a part drawn inside
+                // another's rect is the nearer one.
+                sensed.iter().rev().find(|(_, rect)| rect.contains(at))
+            });
+            let gesture = match under {
+                Some((HeaderPart::Name, _)) if response.double_clicked() => {
+                    Some((HeaderPart::Name, Gesture::DoubleClick))
+                }
+                Some((part @ (HeaderPart::Type | HeaderPart::Missing), _))
+                    if response.clicked() =>
+                {
+                    Some((*part, Gesture::Click))
+                }
+                _ => None,
+            };
+            if let Some((part, gesture)) = gesture {
+                hit = Some(HeaderHit {
+                    column: Some(name.clone()),
+                    part,
+                    gesture,
+                    verb: None,
+                });
+            }
             if response.secondary_clicked() {
                 hit = Some(HeaderHit {
                     column: Some(name.clone()),
@@ -306,7 +349,7 @@ pub fn header_pass(
                 });
             }
             response.context_menu(|ui| {
-                let rows = menu_rows(&ops, context.as_ref(), &name);
+                let rows = menu_rows(&ops, context.as_ref(), name);
                 out.menu = rows.iter().map(|(_, row)| row.clone()).collect();
                 for (op, row) in rows {
                     let text = match &row.key {
@@ -330,28 +373,10 @@ pub fn header_pass(
                     }
                 }
             });
-        }
-        for (name, part, at) in &parts {
-            if starting_from(&ops, *part).next().is_none() {
-                continue;
+            out.cells.push((name.clone(), *cell));
+            for (part, at) in sensed {
+                out.parts.push((name.clone(), part, at));
             }
-            let response = ui.interact(*at, id.with((name, *part as u8)), egui::Sense::click());
-            let gesture = match part {
-                HeaderPart::Name if response.double_clicked() => Some(Gesture::DoubleClick),
-                HeaderPart::Type | HeaderPart::Missing if response.clicked() => {
-                    Some(Gesture::Click)
-                }
-                _ => None,
-            };
-            if let Some(gesture) = gesture {
-                hit = Some(HeaderHit {
-                    column: Some(name.clone()),
-                    part: *part,
-                    gesture,
-                    verb: None,
-                });
-            }
-            out.parts.push((name.clone(), *part, *at));
         }
     }
 
@@ -400,15 +425,21 @@ pub fn header_pass(
         let at = if part == HeaderPart::NewColumn {
             new_column.or(last)
         } else {
+            // By the column's place in the table the draft began over, and not by
+            // its name: a rename's preview has given the column another.
+            let index = column
+                .as_ref()
+                .and_then(|column| begun_columns.iter().position(|c| c == column));
             parts
                 .iter()
-                .find(|(name, p, _)| Some(name) == column.as_ref() && *p == part)
+                .find(|(col, _, p, _)| Some(*col) == index && *p == part)
+                .map(|(.., at)| *at)
                 .or_else(|| {
-                    parts.iter().find(|(name, p, _)| {
-                        Some(name) == column.as_ref() && *p == HeaderPart::Name
-                    })
+                    cells
+                        .iter()
+                        .find(|(col, ..)| Some(*col) == index)
+                        .map(|(.., at)| *at)
                 })
-                .map(|(_, _, at)| *at)
         };
         if let Some(at) = at {
             let painter = ui.painter();

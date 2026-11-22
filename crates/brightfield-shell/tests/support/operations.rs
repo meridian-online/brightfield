@@ -101,6 +101,37 @@ impl OpWindow {
         Self::open_in(std::rc::Rc::new(tmp), fixture)
     }
 
+    /// A window over the chart spec `examples/<fixture>`, with a live session
+    /// behind it and no Protocol of its own: its Save has no spec to write.
+    pub fn on_live_chart(fixture: &str) -> Self {
+        use_own_preview_gate_on_this_thread();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(fixture);
+        let (live, composed) =
+            brightfield_shell::pipeline::live_spec(path.to_str().expect("a utf-8 path"))
+                .unwrap_or_else(|e| panic!("{fixture} loads live: {e}"));
+        let mut boot = Boot::charts(composed);
+        boot.live = Some(live);
+        boot.spec_path = Some(path);
+        let tmp = tempfile::Builder::new()
+            .prefix("bf-operation-")
+            .tempdir()
+            .expect("a temp folder");
+        let mut win = Self {
+            app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
+                .running_with(Some(runner())),
+            ctx: egui::Context::default(),
+            texts: Vec::new(),
+            text_rects: Vec::new(),
+            fixture: fixture.to_string(),
+            time: 0.0,
+            tmp: std::rc::Rc::new(tmp),
+        };
+        win.settle();
+        win
+    }
+
     /// A second window on the same folder, as reopening the file gives.
     pub fn reopen(&self) -> Self {
         Self::open_in(self.tmp.clone(), &self.fixture)

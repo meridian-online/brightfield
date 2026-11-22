@@ -309,6 +309,22 @@ fn the_header_menu_lists_each_operation_that_starts_from_a_header_with_its_key()
         win.app.making().is_none(),
         "the secondary click starts none"
     );
+    // The menu opens from a secondary click on a part too: on the name, which
+    // a double-click renames from, and on the missing count.
+    win.key(egui::Key::Escape);
+    win.settle();
+    for part in [HeaderPart::Name, HeaderPart::Missing] {
+        win.header("house_age", part, Gesture::Secondary);
+        assert!(
+            win.texts.iter().any(|t| t.starts_with("Rename column")),
+            "a secondary click on the {part:?} opens the menu: {:?}",
+            win.texts
+        );
+        assert!(win.app.making().is_none());
+        win.key(egui::Key::Escape);
+        win.settle();
+    }
+    win.header("house_age", HeaderPart::Menu, Gesture::Secondary);
     // Choosing a row starts its operation on that column.
     win.click_text("Rename column");
     win.settle();
@@ -387,6 +403,12 @@ fn a_field_in_place_takes_typing_tab_and_its_suggestions() {
     );
     win.type_text("inc");
     assert_eq!(win.field_text().as_deref(), Some("inc"));
+    // The preview arrives with the column under its new name, and the field
+    // stays on the column it was opened on.
+    win.settle_reads();
+    assert!(win.grid_columns().contains(&"inc".to_string()));
+    assert_eq!(win.field_text().as_deref(), Some("inc"));
+    assert_eq!(win.suggestions().len(), 2);
     win.key(egui::Key::Backspace);
     assert_eq!(win.field_text().as_deref(), Some("in"));
     // Down, Down, Up is the first again; Tab takes it.

@@ -100,7 +100,11 @@ impl MeridianApp {
         let model = &self.protocol.doc.model;
         let doc = &self.charts.doc;
         let source = model.source();
-        let root = source.map(|s| s.name.clone());
+        // The table the grid lists: the Protocol's own, or, in a window with no Protocol of
+        // its own, the one the session read.
+        let root = source
+            .map(|s| s.name.clone())
+            .or_else(|| doc.operation_table().map(str::to_string));
         let preview = doc.grid_preview();
         // The table whose grid is in front: a step's, when the canvas holds
         // its grid, and otherwise the loaded table's.
@@ -139,23 +143,24 @@ impl MeridianApp {
         let drew = doc.grid_drawn().is_some();
         let rows = drew && self.drawn_grid_layout() == crate::app::GridLayout::Rows;
         let cursor_column = doc.grid_cursor.and_then(|at| columns.get(at.col)).cloned();
-        let in_front = (!table.is_empty() && !self.graph_on_canvas()).then(|| InFront {
-            table: table.clone(),
-            loaded,
-            rows,
-            cell: rows && cursor_column.is_some(),
-            view_unrecorded: loaded && doc.grid_view_unrecorded(),
-            facts: if loaded {
-                model.columns().to_vec()
-            } else {
-                Vec::new()
-            },
-            cursor_column,
-            step_offer: preview
-                .filter(|p| !p.is_typed())
-                .map(crate::data_grid::GridPreview::offer),
-            columns,
-        });
+        let in_front = ((!table.is_empty() || !columns.is_empty()) && !self.graph_on_canvas())
+            .then(|| InFront {
+                table: table.clone(),
+                loaded,
+                rows,
+                cell: rows && cursor_column.is_some(),
+                view_unrecorded: loaded && doc.grid_view_unrecorded(),
+                facts: if loaded {
+                    model.columns().to_vec()
+                } else {
+                    Vec::new()
+                },
+                cursor_column,
+                step_offer: preview
+                    .filter(|p| !p.is_typed())
+                    .map(crate::data_grid::GridPreview::offer),
+                columns,
+            });
         let mut tables: Vec<(String, Option<Vec<String>>)> = Vec::new();
         if let Some(source) = source {
             tables.push((

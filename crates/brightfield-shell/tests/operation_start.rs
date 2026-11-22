@@ -235,6 +235,29 @@ fn a_key_off_a_cell_says_why_instead_of_nothing() {
 }
 
 #[test]
+fn a_window_with_no_protocol_still_opens_the_where_field() {
+    let mut win = OpWindow::on_live_chart("scatter.yaml");
+    assert!(!win.app.has_protocol_to_save());
+    // The grid in its other spot, where this layout draws it.
+    if win.app.chart_doc().grid_drawn().is_none() {
+        win.palette("move-grid");
+    }
+    win.focus_grid();
+    win.app.chart_doc_mut().grid_cursor =
+        Some(brightfield_shell::data_grid::GridCursor { row: 0, col: 0 });
+    win.settle();
+    win.press("w");
+    let asking = win.app.chart_doc().foot_asking().map(|(field, _)| field);
+    assert_eq!(
+        asking,
+        Some(FootField::Where),
+        "{:?}",
+        win.app.operation_said()
+    );
+    assert_eq!(win.app.operation_said(), None);
+}
+
+#[test]
 fn filter_rows_on_a_steps_grid_says_the_steps_offer() {
     let mut win = OpWindow::on_copy_of(SAMPLE);
     win.app
