@@ -10,13 +10,24 @@
 //! the step's own name on the `CREATE` line, which that command does not see.
 //! `parses_a_model_arc_actually_wrote` holds the parser to what arc writes.
 //!
-//! A model that carries the header but departs from the template (a hand edit
-//! under the header, a different table in the `CREATE`) is refused with a
-//! message naming the step: brightfield will not show a step as one effect
-//! when its text says something else.
+//! A `filter-rows` or `sort-rows` model that carries the header but departs
+//! from the template (a hand edit under the header, a different table in the
+//! `CREATE`) is refused with a message naming the step: brightfield will not
+//! show a step as a condition or an order when its text says something else.
+//! Another operation's model is checked for the table it makes and for no
+//! more, since its preview runs the model as it is written.
+//!
+//! **A step of another operation is read by its header and the table it
+//! makes** ([`parse_any_generated`]). arc writes one template per operation,
+//! and some are several statements, so brightfield does not read each back
+//! into its values. It reads the operation's long name and the tables the step
+//! reads from the header, checks that the model makes the step's own table,
+//! and keeps the model as written. The preview then runs that model
+//! ([`brightfield_engine::PreviewOp::Model`]), so the rows shown are the ones
+//! arc's SQL makes and not brightfield's reading of it.
 //!
 //! **What opens this way**: a folder whose first step is a data-file load and
-//! whose other steps are each a generated `filter-rows` or `sort-rows`, or a
+//! whose other steps are each a step arc generated for an operation, or a
 //! SQL step in the shape `arc sql record` writes ([`parse_sql_step`]): a
 //! first line `CREATE OR REPLACE TABLE "<step>" AS` and then one query that
 //! reads rows. Each step reads only tables the load or an earlier step makes.
@@ -112,10 +123,13 @@ impl KnownOperation {
 
 /// What a step does to make its table: an operation arc generated, or a SQL
 /// statement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepEffect {
     /// A `filter-rows` or `sort-rows` arc generated, on the one table it reads.
     Operation(KnownOperation),
+    /// A step arc generated for another operation, by its long name. Its
+    /// argument is the model as arc wrote it.
+    Generated(String),
     /// A statement, which reads the tables it names.
     Sql,
 }
@@ -127,13 +141,14 @@ pub struct GeneratedStep {
     /// The step's name, which is also the table it makes.
     pub name: String,
     pub effect: StepEffect,
-    /// The table the step reads: an operation's one table, or the first a
-    /// statement reads (empty when it reads none).
+    /// The table the step is on: the first it reads, and empty when it reads
+    /// no table.
     pub on: String,
-    /// Every table the step reads, in the order it names them. An operation
-    /// reads its [`Self::on`] alone.
+    /// Each table the step reads, in order: a filter's or a sort's one table,
+    /// the tables another operation's header lists, or those a statement names.
     pub reads: Vec<String>,
-    /// An operation's condition or ordering, or a statement, as written.
+    /// A `filter-rows` condition or a `sort-rows` ordering, another
+    /// operation's whole model, or a statement, as written.
     pub argument: String,
 }
 
@@ -223,11 +238,28 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
             "step {step_name:?} is not a generated step: its model does not open with `{HEADER}`"
         ));
     };
-    let Some((long, on)) = said.trim_start().split_once(" on ") else {
-        return refuse("its header does not say `<operation> on <table>`");
+    let said = said.trim();
+    let (long, tables) = match said.split_once(" on ") {
+        Some((long, tables)) => (long, Some(tables)),
+        None => (said, None),
     };
+    let is_long_name = !long.is_empty()
+        && long
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !is_long_name {
+        return refuse("its header does not say `<operation> on <table>`");
+    }
     let Some(operation) = KnownOperation::from_long_name(long) else {
-        return refuse(&format!("{long:?} is not an operation brightfield reads"));
+        // arc lists the tables a step reads after ` on `, a comma and a space
+        // between them, and writes no table for an operation that reads no table.
+        let tables: Vec<String> = tables
+            .map(|t| t.split(", ").map(str::to_string).collect())
+            .unwrap_or_default();
+        return parse_any_generated(step_name, long, &tables, &model_sql);
+    };
+    let Some(on) = tables else {
+        return refuse("its header does not say `<operation> on <table>`");
     };
     let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
     if lines.next() != Some(want_create.as_str()) {
@@ -314,6 +346,48 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     })
 }
 
+/// Read the model arc generated for the step `step_name` by the operation
+/// `long_name`, which is neither `filter-rows` nor `sort-rows`, reading
+/// `tables` as its header lists them.
+///
+/// The model is kept as written and is not read back into the operation's
+/// values. What is checked is that it makes the step's own table: the line
+/// `CREATE OR REPLACE TABLE "<step_name>" AS` comes second, after the header,
+/// or third, after `BEGIN TRANSACTION;`, which is where arc's templates put it.
+/// The step reads `tables`, and is on the first of them, or on no table for an
+/// operation that reads no table.
+///
+/// # Errors
+///
+/// A message naming the step, when the model does not make its table there
+/// (`a_generated_model_edited_away_from_its_step_is_refused_naming_it` in
+/// `tests/generated_any_operation.rs`).
+pub fn parse_any_generated(
+    step_name: &str,
+    long_name: &str,
+    tables: &[String],
+    model_sql: &str,
+) -> Result<GeneratedStep, String> {
+    let model_sql = model_sql.replace("\r\n", "\n");
+    let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
+    let mut lines = model_sql.lines().skip(1);
+    let second = lines.next();
+    let makes_it = second == Some(want_create.as_str())
+        || (second == Some("BEGIN TRANSACTION;") && lines.next() == Some(want_create.as_str()));
+    if !makes_it {
+        return Err(format!(
+            "step {step_name:?} carries the generated header but its model does not make {step_name:?}"
+        ));
+    }
+    Ok(GeneratedStep {
+        name: step_name.to_string(),
+        effect: StepEffect::Generated(long_name.to_string()),
+        on: tables.first().cloned().unwrap_or_default(),
+        reads: tables.to_vec(),
+        argument: model_sql,
+    })
+}
+
 #[cfg(test)]
 thread_local! {
     /// How many times [`parse_sql_step`] ran on this thread.
@@ -376,7 +450,12 @@ pub fn preview_chain(
 ) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
     let target = index_of(&protocol.steps, step)?;
     let needed = with_what_they_read(&protocol.steps, [target]);
-    Some(chain_of(&protocol.root_table, &protocol.steps, needed))
+    Some(chain_of(
+        &protocol.root_table,
+        &protocol.steps,
+        needed,
+        Some(&protocol.dir),
+    ))
 }
 
 /// **The steps a statement reading `tables` is read after**: of `steps`,
@@ -394,7 +473,70 @@ pub fn preview_chain_reading(
     tables: &[String],
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     let read = tables.iter().filter_map(|t| index_of(steps, t));
-    chain_of(root_table, steps, with_what_they_read(steps, read))
+    chain_of(root_table, steps, with_what_they_read(steps, read), None)
+}
+
+/// [`preview_chain_reading`] for a Protocol in the folder `dir`, which a
+/// `read-file` step's relative path is read against.
+#[must_use]
+pub fn preview_chain_reading_in(
+    dir: &Path,
+    root_table: &str,
+    steps: &[GeneratedStep],
+    tables: &[String],
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    let read = tables.iter().filter_map(|t| index_of(steps, t));
+    chain_of(
+        root_table,
+        steps,
+        with_what_they_read(steps, read),
+        Some(dir),
+    )
+}
+
+/// The path a `read-file` model reads: the text between the quotes of its
+/// `FROM '<path>';` line, a doubled quote inside read as one.
+fn read_file_path(model: &str) -> Option<String> {
+    let spelled = model
+        .lines()
+        .find_map(|line| line.strip_prefix("FROM '"))?
+        .trim_end()
+        .strip_suffix("';")?;
+    Some(spelled.replace("''", "'"))
+}
+
+/// **How a `read-file` step previews**: a local CSV or Parquet file is loaded
+/// as a further root, its path read against `dir` when it is relative
+/// ([`brightfield_engine::PreviewOp::ReadFile`]). A URL, a glob or a file of
+/// another kind, or a path from the home folder (`~`), is left to a run, and
+/// the preview says so: the preview's
+/// connection is shut to the network, and the reader for another format is not
+/// one the preview loads with.
+pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engine::PreviewOp {
+    use brightfield_engine::{FileReader, PreviewOp};
+    let Some(spelled) = read_file_path(model) else {
+        return PreviewOp::NotPreviewed(
+            "Brightfield could not find the file this step reads in its model; Run reads it."
+                .to_string(),
+        );
+    };
+    // A path that opens with `~` is DuckDB's to expand at a run, and is not
+    // a path inside the Protocol's folder.
+    let local =
+        !spelled.contains("://") && !spelled.contains(['*', '?', '[']) && !spelled.starts_with('~');
+    let path = Path::new(&spelled);
+    match FileReader::for_path(path).filter(|_| local) {
+        Some(reader) => PreviewOp::ReadFile {
+            path: match dir {
+                Some(dir) if path.is_relative() => dir.join(path),
+                _ => path.to_path_buf(),
+            },
+            reader,
+        },
+        None => PreviewOp::NotPreviewed(format!(
+            "Brightfield previews a local CSV or Parquet file; Run reads {spelled}."
+        )),
+    }
 }
 
 /// The index of the step of `steps` named `name`, in any case.
@@ -430,7 +572,8 @@ fn with_what_they_read(
 }
 
 /// The steps of `steps`, which follow the load of `root_table`, at
-/// `indices`, in the order given, as a chain the engine previews.
+/// `indices`, in the order given, as a chain the engine previews. `dir` is the
+/// Protocol's folder, when it is known.
 ///
 /// The engine runs an operation on the table made just before it in the
 /// chain. An operation whose own table is another, because it branches off a
@@ -442,6 +585,7 @@ fn chain_of(
     root_table: &str,
     steps: &[GeneratedStep],
     indices: impl IntoIterator<Item = usize>,
+    dir: Option<&Path>,
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     use brightfield_engine::PreviewOp;
     let mut previous = root_table;
@@ -449,7 +593,7 @@ fn chain_of(
     for i in indices {
         let s = &steps[i];
         let in_line = s.on.to_lowercase() == previous.to_lowercase();
-        let op = match s.effect {
+        let op = match &s.effect {
             StepEffect::Operation(operation) if !in_line => PreviewOp::Statement(format!(
                 "SELECT *\nFROM {}\n{}{}\n",
                 quoted(&s.on),
@@ -463,6 +607,12 @@ fn chain_of(
                 PreviewOp::OrderBy(s.argument.clone())
             }
             StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
+            // arc's model names the tables it reads, so it stands wherever
+            // it falls in the chain.
+            StepEffect::Generated(long_name) if long_name == "read-file" => {
+                read_file_op(&s.argument, dir)
+            }
+            StepEffect::Generated(_) => PreviewOp::Model(s.argument.clone()),
         };
         chain.push((s.name.clone(), op));
         previous = &s.name;
@@ -664,11 +814,25 @@ fn read_steps<'a>(
                 step.name
             ));
         };
-        let parsed = if has_header(&model) {
+        let mut parsed = if has_header(&model) {
             parse_generated(&step.name, &model)?
         } else {
             sql.unwrap_or_else(|| parse_sql_step(&step.name, &model))?
         };
+        // arc writes a header's tables bare, a comma and a space between them,
+        // so a table whose own name holds those reads as two. The model
+        // settles it: arc spells such a name in quotes there. When the header's
+        // text read as one name is a table made, and the model spells it, the
+        // step reads that one table
+        // (`a_table_whose_name_holds_a_comma_is_read_as_one_table`). A header
+        // of three names or more, two of them one table, is not settled here.
+        if matches!(parsed.effect, StepEffect::Generated(_)) && parsed.reads.len() > 1 {
+            let whole = parsed.reads.join(", ");
+            if made.contains(&whole.to_lowercase()) && parsed.argument.contains(&quoted(&whole)) {
+                parsed.on.clone_from(&whole);
+                parsed.reads = vec![whole];
+            }
+        }
         // DuckDB resolves a table name without regard to case.
         if let Some(table) = parsed
             .reads
@@ -846,13 +1010,31 @@ pub fn sql_step_name_for(
     column: Option<&str>,
     taken: &BTreeSet<String>,
 ) -> String {
-    let table = match slug(read_table.unwrap_or("")) {
+    effect_step_name("sql", read_table, column, true, taken)
+}
+
+/// **A name for a step by what it did**: `<table>_<word>_by_<column>` when
+/// `with_by` is set, `<table>_<word>_<column>` when it is not, and
+/// `<table>_<word>` with no column, with a numeric suffix when the name is
+/// taken, in any case. A missing or empty table is `table`. The parts are
+/// slugged, so arc's step-name check admits the name
+/// (`an_operations_step_is_named_by_its_word_and_its_column`).
+#[must_use]
+pub fn effect_step_name(
+    word: &str,
+    table: Option<&str>,
+    column: Option<&str>,
+    with_by: bool,
+    taken: &BTreeSet<String>,
+) -> String {
+    let table = match slug(table.unwrap_or("")) {
         s if s.is_empty() => "table".to_string(),
         s => s,
     };
     let base = match column.map(slug) {
-        Some(col) if !col.is_empty() => format!("{table}_sql_by_{col}"),
-        _ => format!("{table}_sql"),
+        Some(col) if !col.is_empty() && with_by => format!("{table}_{word}_by_{col}"),
+        Some(col) if !col.is_empty() => format!("{table}_{word}_{col}"),
+        _ => format!("{table}_{word}"),
     };
     free_name(base, taken)
 }
@@ -977,10 +1159,98 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_operation_in_the_header_is_refused() {
+    fn another_operation_in_the_header_is_read_by_the_table_it_makes() {
         let text = FILTER.replace("filter-rows", "join-rows");
-        let err = parse_generated("x", &text).expect_err("join-rows is not read");
-        assert!(err.contains("join-rows"), "{err}");
+        let s = parse_generated("x", &text).expect("the model makes x");
+        assert_eq!(s.effect, StepEffect::Generated("join-rows".to_string()));
+        assert_eq!(s.reads, ["california_housing"]);
+        assert_eq!(s.on, "california_housing");
+        assert_eq!(s.argument, text);
+        // The same model under another step's name does not make that step.
+        let err = parse_generated("y", &text).expect_err("the model makes x, not y");
+        assert!(err.contains("does not make \"y\""), "{err}");
+    }
+
+    #[test]
+    fn an_operations_step_is_named_by_its_word_and_its_column() {
+        let none = BTreeSet::new();
+        assert_eq!(
+            effect_step_name("without", Some("housing"), Some("house_age"), false, &none),
+            "housing_without_house_age"
+        );
+        assert_eq!(
+            effect_step_name(
+                "deduped",
+                Some("housing"),
+                Some("median income"),
+                true,
+                &none
+            ),
+            "housing_deduped_by_median_income"
+        );
+        assert_eq!(
+            effect_step_name("appended", Some("housing"), None, false, &none),
+            "housing_appended"
+        );
+        assert_eq!(
+            effect_step_name("first", None, Some("--"), true, &none),
+            "table_first"
+        );
+        let taken = taken(&["housing_appended", "Housing_Appended_2"]);
+        assert_eq!(
+            effect_step_name("appended", Some("housing"), None, false, &taken),
+            "housing_appended_3"
+        );
+        assert_eq!(
+            sql_step_name_for(Some("housing"), Some("house_age"), &none),
+            "housing_sql_by_house_age"
+        );
+    }
+
+    #[test]
+    fn a_header_that_names_no_operation_is_refused() {
+        let text = FILTER.replace("filter-rows", "Join Rows");
+        let err = parse_generated("x", &text).expect_err("Join Rows is no long name");
+        assert!(
+            err.contains("does not say `<operation> on <table>`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_read_file_step_previews_a_local_csv_or_parquet_and_leaves_the_rest_to_a_run() {
+        use brightfield_engine::{FileReader, PreviewOp};
+        let model = |path: &str| {
+            format!("-- generated: read-file\nCREATE OR REPLACE TABLE \"f\" AS\nSELECT *\nFROM '{path}';\n")
+        };
+        let dir = Path::new("/protocols/p");
+        assert_eq!(
+            read_file_op(&model("data/it''s.csv"), Some(dir)),
+            PreviewOp::ReadFile {
+                path: dir.join("data/it's.csv"),
+                reader: FileReader::Csv,
+            }
+        );
+        assert_eq!(
+            read_file_op(&model("/abs/x.parquet"), Some(dir)),
+            PreviewOp::ReadFile {
+                path: PathBuf::from("/abs/x.parquet"),
+                reader: FileReader::Parquet,
+            }
+        );
+        for other in [
+            "https://example.com/x.csv",
+            "data/*.csv",
+            "x.json",
+            "~/data/x.csv",
+        ] {
+            assert_eq!(
+                read_file_op(&model(other), Some(dir)),
+                PreviewOp::NotPreviewed(format!(
+                    "Brightfield previews a local CSV or Parquet file; Run reads {other}."
+                )),
+            );
+        }
     }
 
     fn taken(names: &[&str]) -> BTreeSet<String> {

@@ -277,7 +277,7 @@ pub fn registry() -> Vec<VerbEntry> {
         context: BindingContext::Browser,
     };
 
-    vec![
+    let mut verbs = vec![
         // ---- navigation ----
         VerbEntry {
             longname: "dive-in",
@@ -1650,7 +1650,12 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Close the sources browser, adding nothing more",
             scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "esc = close the sheet (macOS sheets, the Esc ladder)" }),
         },
-    ]
+    ];
+    // Each of arc's operations that is built, after the verbs above: an
+    // operation joins when the window can perform it
+    // (`only_built_operations_join_the_registry`).
+    verbs.extend(crate::operations::operation_verbs());
+    verbs
 }
 
 /// Construct a reserved (unbound, palette-visible) verb entry.
@@ -1932,7 +1937,13 @@ mod tests {
     fn longname_snapshot_is_stable() {
         // A committed snapshot of longnames: any add/remove/rename is a deliberate
         // change that must update this list (stability guard).
-        let got: Vec<&str> = registry().iter().map(|v| v.longname).collect();
+        // The operations' verbs are left out: each joins the registry when its
+        // operation is built, and `operations.rs` is the list of them.
+        let got: Vec<&str> = registry()
+            .iter()
+            .map(|v| v.longname)
+            .filter(|name| !crate::operations::is_operation_verb(name))
+            .collect();
         let expected = [
             "dive-in",
             "pop-out",
@@ -2301,7 +2312,17 @@ mod tests {
             ("w", "filter-rows-at-cursor"),
             ("o", "sort-rows-at-cursor"),
         ];
-        for (keys, longname) in expected {
+        // Each built operation's key in the grid, read from its own entry.
+        let operations = crate::operations::operation_verbs();
+        let mut expected: Vec<(&str, &str)> = expected.to_vec();
+        for verb in &operations {
+            for spec in &verb.binding_specs {
+                if spec.context == BindingContext::Grid {
+                    expected.push((spec.keystrokes, verb.longname));
+                }
+            }
+        }
+        for (keys, longname) in expected.iter().copied() {
             assert_eq!(in_grid(keys), vec![longname], "Grid context, `{keys}`");
             let verb = reg.iter().find(|v| v.longname == longname).unwrap();
             assert_eq!(verb.tier, CommandTier::View, "{longname} writes nothing");

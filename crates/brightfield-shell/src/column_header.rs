@@ -508,6 +508,19 @@ pub struct BandStats {
     pub distinct_text: String,
 }
 
+/// **The parts of a band cell an operation can start from**, where each was
+/// drawn: see [`crate::operation_ui::header`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandParts {
+    /// The column's name.
+    pub name: egui::Rect,
+    /// The column's type: its leaf and storage type, else its title, else its
+    /// glyph. `None` for a column that drew no such thing.
+    pub kind: Option<egui::Rect>,
+    /// The validity band with its count of missing values.
+    pub missing: egui::Rect,
+}
+
 /// What one column's band cell drew.
 ///
 /// Recorded from the same expressions that paint, so a row that stopped being
@@ -516,6 +529,8 @@ pub struct BandStats {
 pub struct ColumnBandDrawn {
     /// The column's index in the table.
     pub column: usize,
+    /// Where the parts an operation can start from were drawn.
+    pub parts: BandParts,
     /// The column's name, as drawn.
     pub name: String,
     /// The finetype glyph before it — empty for a column the contract declares
@@ -858,6 +873,7 @@ pub fn draw_column_band(
     // 1. The glyph and the name.
     let glyph = glyph_for(facts);
     let mut text_left = inner.left();
+    let mut glyph_rect = None;
     if !glyph.is_empty() {
         let at = painter.text(
             egui::pos2(inner.left(), y + NAME_ROW / 2.0),
@@ -867,16 +883,16 @@ pub fn draw_column_band(
             frame.glyph,
         );
         text_left = at.right() + spacing::SPACE_3;
+        glyph_rect = Some(at);
     }
-    let name_right = painter
-        .text(
-            egui::pos2(text_left, y + NAME_ROW / 2.0),
-            egui::Align2::LEFT_CENTER,
-            facts.header_name(),
-            name_font(),
-            frame.name,
-        )
-        .right();
+    let name_rect = painter.text(
+        egui::pos2(text_left, y + NAME_ROW / 2.0),
+        egui::Align2::LEFT_CENTER,
+        facts.header_name(),
+        name_font(),
+        frame.name,
+    );
+    let name_right = name_rect.right();
 
     // The type's catalogue title at the trailing end of the name row, with the
     // catalogue's icon before it when it names one. Compact density only, and
@@ -943,6 +959,12 @@ pub fn draw_column_band(
             (inner.width() - count_width - spacing::SPACE_3).max(0.0),
             VALIDITY_BAND,
         ),
+    );
+    // The validity row whole, the band and its count: where a gesture on the
+    // column's missing values lands.
+    let missing_row = egui::Rect::from_min_max(
+        egui::pos2(inner.left(), y),
+        egui::pos2(inner.right(), y + VALIDITY_ROW),
     );
     let segments = validity_segments(validity, valid, invalid, missing);
     for (rect, ink) in segments
@@ -1150,8 +1172,21 @@ pub fn draw_column_band(
         y += DISTINCT_ROW;
     }
 
+    // The type, as a place to act: the leaf and storage row at the full
+    // density, the title beside the name at the compact one, and the glyph
+    // where neither was drawn. One of them and not their union, which would
+    // reach across the name or the validity row between them.
+    let kind = type_rects
+        .map(|(leaf, storage)| leaf.union(storage))
+        .or(title_rect)
+        .or(glyph_rect);
     ColumnBandDrawn {
         column,
+        parts: BandParts {
+            name: name_rect,
+            kind,
+            missing: missing_row,
+        },
         name: facts.column.clone(),
         glyph: glyph.to_string(),
         density: frame.density,

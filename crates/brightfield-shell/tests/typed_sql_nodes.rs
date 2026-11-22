@@ -77,6 +77,7 @@ fn typed(name: &str, statement: &str, reads: &[&str]) -> TypedStep {
         statement: statement.to_string(),
         reads: reads.iter().map(|r| (*r).to_string()).collect(),
         rows: None,
+        operation: None,
     }
 }
 

@@ -7,7 +7,21 @@
 //! argument list ([`arc_with_args`]), reads JSON from stdout, and treats
 //! stderr as the refusal.
 //!
-//! **Save records through arc.** Each view applied in the grid's foot row is
+//! **A description is read with its shapes.** [`describe`] keeps each value's shape
+//! ([`ValueShape`]: a kind of SQL, a column's name, a list of them, a whole
+//! number with its bounds, one word of a few, a path, or plain text), whether
+//! it is required, which values go together
+//! (`dedupe_rows_needs_its_key_and_order_together`), and, of each
+//! table a step reads, whether it is one table or a list of them. A form reads
+//! these, and what an operation takes stays arc's to say.
+//!
+//! **Save records through arc.** [`record_step`] runs `arc operation record`
+//! for a [`StepRequest`]: the operation, the table it is recorded on, each
+//! other table it reads under the role arc names for it (`--read
+//! <role>=<table>`, a list role once per table, in order), and its values. arc
+//! writes notes to stderr even when it records, and they are kept with what it
+//! said ([`Recorded`]). [`record`] is the same call for a step that reads one
+//! table. Each view applied in the grid's foot row is
 //! recorded by [`record`] as `filter-rows` for the condition, then `sort-rows`
 //! for the order on the condition's new table, so the same operation writes
 //! the same file however it is recorded, and the Protocol's history shows who
@@ -59,6 +73,9 @@ pub struct OperationDescription {
     /// unless the build enables its `preserve_order` feature, which this crate
     /// does not ask for.
     pub parameters: Vec<Parameter>,
+    /// The values arc takes together: each key with the keys it needs
+    /// beside it, in key order, from the schema's `dependentRequired`.
+    pub needed_together: Vec<(String, Vec<String>)>,
 }
 
 /// One thing a step reads.
@@ -72,6 +89,56 @@ pub struct Role {
     pub required: bool,
     /// arc's sentence for it.
     pub description: String,
+    /// Whether the role takes several, given in order, and not one.
+    pub list: bool,
+    /// The fewest a list role takes; 0 when arc names no floor.
+    pub min_items: usize,
+}
+
+/// The kind of SQL a value is, as arc's `x-kind` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlKind {
+    /// A condition, as after `WHERE` or `ON`.
+    Condition,
+    /// An `ORDER BY` clause.
+    Order,
+    /// One expression.
+    Expression,
+    /// A list of expressions, as after `SELECT` or `GROUP BY`.
+    SelectList,
+    /// A list of expressions with no alias, as after `PARTITION BY`.
+    Partition,
+    /// A type's name.
+    Type,
+}
+
+/// The shape of a value an operation takes, read from its JSON Schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValueShape {
+    /// SQL of one kind, recorded as written.
+    Sql(SqlKind),
+    /// One column's name: a name, not SQL, so it is given without quotes.
+    Column,
+    /// Several columns' names, which the command line joins with `,`.
+    Columns,
+    /// A whole number, with the bounds arc gives.
+    Integer {
+        /// The least it may be.
+        minimum: Option<i64>,
+        /// The most it may be.
+        maximum: Option<i64>,
+    },
+    /// One word of those arc lists.
+    Choice {
+        /// The words, in arc's order.
+        words: Vec<String>,
+        /// The word arc takes when none is given.
+        default: Option<String>,
+    },
+    /// A path or a URL to a file.
+    Path,
+    /// Text arc gives no kind.
+    Text,
 }
 
 /// One value an operation takes.
@@ -84,6 +151,10 @@ pub struct Parameter {
     /// The words arc offers for it: `x-comparisons` or `x-directions`, in
     /// arc's order. Empty when it offers none.
     pub offered: Vec<Offered>,
+    /// What the value is.
+    pub shape: ValueShape,
+    /// Whether the step needs it.
+    pub required: bool,
 }
 
 /// A word arc offers for a value, with the sign it is written as.
@@ -152,6 +223,73 @@ fn offered_in(property: &serde_json::Value) -> Vec<Offered> {
         .collect()
 }
 
+/// A whole number of `property` under `key`. arc writes `limit-rows`' ceiling as
+/// 9223372036854775807, which is `i64::MAX`; a bound past an `i64` is read as
+/// no bound.
+fn whole(property: &serde_json::Value, key: &str) -> Option<i64> {
+    property.get(key).and_then(serde_json::Value::as_i64)
+}
+
+/// The shape a property's schema gives its value: its `enum` first, then its
+/// `type` with its `x-kind`, and an array by its items' `x-kind`. A string
+/// whose `x-kind` this build does not know is [`ValueShape::Text`], so a kind
+/// a later arc adds is still typed and recorded as written.
+fn shape_of(property: &serde_json::Value) -> ValueShape {
+    if let Some(words) = property.get("enum").and_then(serde_json::Value::as_array) {
+        return ValueShape::Choice {
+            words: words
+                .iter()
+                .filter_map(|w| w.as_str().map(str::to_string))
+                .collect(),
+            default: property
+                .get("default")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        };
+    }
+    let kind = |value: &serde_json::Value| {
+        value
+            .get("x-kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    match property.get("type").and_then(serde_json::Value::as_str) {
+        Some("integer") => ValueShape::Integer {
+            minimum: whole(property, "minimum"),
+            maximum: whole(property, "maximum"),
+        },
+        Some("array") => match property.get("items").and_then(kind).as_deref() {
+            Some("column") => ValueShape::Columns,
+            _ => ValueShape::Text,
+        },
+        _ => match kind(property).as_deref() {
+            Some("condition") => ValueShape::Sql(SqlKind::Condition),
+            Some("order") => ValueShape::Sql(SqlKind::Order),
+            Some("expression") => ValueShape::Sql(SqlKind::Expression),
+            Some("select-list") => ValueShape::Sql(SqlKind::SelectList),
+            Some("partition") => ValueShape::Sql(SqlKind::Partition),
+            Some("type") => ValueShape::Sql(SqlKind::Type),
+            Some("column") => ValueShape::Column,
+            Some("path") => ValueShape::Path,
+            _ => ValueShape::Text,
+        },
+    }
+}
+
+/// The strings of the array under `key`, or none.
+fn strings(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What `long_name` reads and takes, as `arc operation describe` says.
 ///
 /// Run with the system temp directory as its working directory, since the call
@@ -186,6 +324,35 @@ pub fn describe(runner: &Runner, long_name: &str) -> Result<OperationDescription
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false),
                     description: text(r, "description"),
+                    list: r
+                        .get("list")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                    min_items: r
+                        .get("min_items")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| usize::try_from(n).ok())
+                        .unwrap_or(0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let schema = value.get("parameters").unwrap_or(&serde_json::Value::Null);
+    let required = strings(schema, "required");
+    let needed_together = schema
+        .get("dependentRequired")
+        .and_then(serde_json::Value::as_object)
+        .map(|needs| {
+            needs
+                .iter()
+                .map(|(key, beside)| {
+                    let beside = beside.as_array().into_iter().flatten();
+                    (
+                        key.clone(),
+                        beside
+                            .filter_map(|b| b.as_str().map(str::to_string))
+                            .collect(),
+                    )
                 })
                 .collect()
         })
@@ -200,6 +367,8 @@ pub fn describe(runner: &Runner, long_name: &str) -> Result<OperationDescription
                     key: key.clone(),
                     description: text(p, "description"),
                     offered: offered_in(p),
+                    shape: shape_of(p),
+                    required: required.contains(key),
                 })
                 .collect()
         })
@@ -209,6 +378,7 @@ pub fn describe(runner: &Runner, long_name: &str) -> Result<OperationDescription
         summary: text(&value, "summary"),
         reads,
         parameters,
+        needed_together,
     })
 }
 
@@ -264,8 +434,123 @@ pub fn recognise(runner: &Runner, sql: &str) -> Result<Recognised, String> {
     }
 }
 
+/// One step asked of `arc operation record`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepRequest {
+    /// The operation's long name.
+    pub long_name: String,
+    /// The table the step is recorded on (`--on`); `None` for an operation
+    /// that reads no table, as `read-file` does.
+    pub on: Option<String>,
+    /// Each other table the step reads, as `(role, table)`. A list role is
+    /// given once per table, in the order arc is to read them.
+    pub reads: Vec<(String, String)>,
+    /// The values, as `(key, value)`. A list of columns is its names joined by
+    /// `,`, arc's command-line form.
+    pub args: Vec<(String, String)>,
+}
+
+/// What arc said when it recorded a step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recorded {
+    /// arc's stdout, trimmed.
+    pub said: String,
+    /// The lines of arc's stderr that open with `note: `, without that prefix,
+    /// in arc's order.
+    pub notes: Vec<String>,
+}
+
+/// The notes in `stderr`: each line that opens with `note: `, without it.
+fn notes_in(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("note: "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Record `request` as a step named `name` in the Protocol in `dir`: `arc
+/// operation record <long name> [--on <table>] [--read <role>=<table>]… --name
+/// <name> [--arg <key>=<value>]…`. arc runs nothing.
+///
+/// # Errors
+///
+/// arc's stderr without its `error: ` prefix when it refuses, with the folder
+/// untouched (`a_refused_request_returns_arcs_words_and_writes_nothing`), or
+/// why the runner could not be started.
+pub fn record_step(
+    runner: &Runner,
+    dir: &Path,
+    name: &str,
+    request: &StepRequest,
+) -> Result<Recorded, String> {
+    record_step_with_history(runner, dir, name, request, None)
+}
+
+/// The variable arc reads the folder of its history snapshots from, in place
+/// of the one under the home folder.
+const HISTORY_DIR_ENV: &str = "ARCFORM_HISTORY_DIR";
+
+/// [`record_step`], with arc's history snapshots of the Protocol kept under
+/// `history` when one is given, in place of the folder under the home folder
+/// arc keeps them in. A recording into a folder that is thrown away gives a
+/// folder inside it, so its snapshots go with it
+/// (`a_recording_keeps_its_history_where_it_is_told` in
+/// `tests/operation_descriptions.rs`).
+///
+/// # Errors
+///
+/// As [`record_step`].
+#[doc(hidden)]
+pub fn record_step_with_history(
+    runner: &Runner,
+    dir: &Path,
+    name: &str,
+    request: &StepRequest,
+    history: Option<&Path>,
+) -> Result<Recorded, String> {
+    let reads: Vec<String> = request
+        .reads
+        .iter()
+        .map(|(role, table)| format!("{role}={table}"))
+        .collect();
+    let pairs: Vec<String> = request
+        .args
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let mut argv: Vec<&str> = vec!["operation", "record", &request.long_name];
+    if let Some(on) = &request.on {
+        argv.push("--on");
+        argv.push(on);
+    }
+    for read in &reads {
+        argv.push("--read");
+        argv.push(read);
+    }
+    argv.push("--name");
+    argv.push(name);
+    for pair in &pairs {
+        argv.push("--arg");
+        argv.push(pair);
+    }
+    // No `--dir`: the child stands in `dir`, and arc's default is its working
+    // directory. Passing `dir` too would resolve a relative one twice.
+    let env: Vec<(&str, &Path)> = history.map(|h| (HISTORY_DIR_ENV, h)).into_iter().collect();
+    let out = crate::run::arc_with_args_and_env(runner, dir, &argv, &env);
+    if out.succeeded {
+        Ok(Recorded {
+            said: out.stdout.trim().to_string(),
+            notes: notes_in(&out.stderr),
+        })
+    } else {
+        Err(refusal(&out.stderr))
+    }
+}
+
 /// Record `operation` as a step named `name` on the table `on`, in the
-/// Protocol in `dir`, with `args` as `--arg key=value`. arc runs nothing.
+/// Protocol in `dir`, with `args` as `--arg key=value`: [`record_step`] for a
+/// step that reads one table. arc runs nothing.
 ///
 /// # Errors
 ///
@@ -279,20 +564,16 @@ pub fn record(
     name: &str,
     args: &[(&str, &str)],
 ) -> Result<String, String> {
-    let pairs: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    let mut argv: Vec<&str> = vec!["operation", "record", operation, "--on", on, "--name", name];
-    for pair in &pairs {
-        argv.push("--arg");
-        argv.push(pair);
-    }
-    // No `--dir`: the child stands in `dir`, and arc's default is its working
-    // directory. Passing `dir` too would resolve a relative one twice.
-    let out = arc_with_args(runner, dir, &argv);
-    if out.succeeded {
-        Ok(out.stdout.trim().to_string())
-    } else {
-        Err(refusal(&out.stderr))
-    }
+    let request = StepRequest {
+        long_name: operation.to_string(),
+        on: Some(on.to_string()),
+        reads: Vec::new(),
+        args: args
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+    };
+    record_step(runner, dir, name, &request).map(|recorded| recorded.said)
 }
 
 /// Record the statement `sql` as the step `name` at the end of the Protocol in

@@ -20,6 +20,7 @@ pub mod dispatch;
 pub mod esc;
 pub mod focus;
 pub mod fuzzy;
+pub mod operations;
 pub mod palette;
 pub mod registry;
 pub mod scope;

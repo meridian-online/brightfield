@@ -2956,6 +2956,19 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "shift-t" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::T)),
         // Rediscover, the shifted form of the role key.
         "shift-r" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::R)),
+        // The grid's keys that start an operation.
+        "f" => ctx.input_mut(|i| consume_unshifted(i, Key::F)),
+        "shift-f" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F)),
+        "shift-u" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::U)),
+        "shift-l" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::L)),
+        // egui 0.35 has no key for `&`, so it is read from the text the keystroke makes,
+        // whichever key a layout puts it on.
+        "&" => ctx.input_mut(|i| {
+            let before = i.events.len();
+            i.events
+                .retain(|e| !matches!(e, egui::Event::Text(t) if t == "&"));
+            i.events.len() != before
+        }),
         _ => false,
     }
 }
@@ -3805,6 +3818,12 @@ pub struct MeridianApp {
     /// The text of the answer whose rows the grid shows, so the grid is handed
     /// a page only when a new one is read.
     typed_in_grid: Option<String>,
+    /// The operation being made, on the window's side: its reads and what the status band says
+    /// ([`operation_host`]).
+    operation: operation_host::OperationHost,
+    /// The recorded step whose model file was last read for the Editor, with its text, or `None`
+    /// for a file that did not read ([`Self::step_sql_in_front`]).
+    step_sql_read: Option<(String, Option<String>)>,
     /// The text of the answer whose filter the grid previews on the loaded
     /// table ([`ChartDoc::preview_typed_where`]), so a frame hands the preview
     /// over when a new answer is read rather than each time it draws.
@@ -4306,6 +4325,8 @@ impl MeridianApp {
             typed: None,
             typed_pause: TYPED_PAUSE,
             typed_in_grid: None,
+            operation: operation_host::OperationHost::new(),
+            step_sql_read: None,
             typed_where_in_grid: None,
             typed_counts: Vec::new(),
             overlay_keys: OverlayKeys::from_registry(),
@@ -6381,8 +6402,17 @@ impl MeridianApp {
         use crate::operation_panel::Described;
         let Some(hand) = self.charts.doc.operation_in_hand() else {
             // Nothing is asked, however the asking ended, so a later Esc from
-            // a field opened some other way moves no rail.
-            self.rail_before_ask = None;
+            // a field opened some other way moves no rail. An operation being
+            // made with a form holds the rail it opened until it is kept or
+            // dropped.
+            if self
+                .charts
+                .doc
+                .making()
+                .is_none_or(|making| making.spec.form.is_none())
+            {
+                self.rail_before_ask = None;
+            }
             self.charts.doc.set_described(Described::Nothing);
             return;
         };
@@ -6811,6 +6841,8 @@ impl MeridianApp {
         }
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
+        // …after an operation being made, whose Enter keeps it and whose Esc drops it.
+        self.operation_keys(&ctx);
         self.grid_foot_keys(&ctx);
         // The shelf's keys, ahead of every other bare key: while the band or
         // its list holds them, they are not the frame verbs' or an overlay
@@ -6842,6 +6874,8 @@ impl MeridianApp {
         // The grid's cursor keys, ahead of the frame verbs: with the grid
         // focused its keys are the cursor's, and the frame verbs stand down.
         self.grid_cursor_keys(&ctx, graph_on_canvas);
+        // An operation's frame: its reads taken, the grid handed the page, a direct action kept.
+        self.operation_frame(&ctx);
         // The Versions panel's keys, on the same terms: with the panel focused
         // its keys are the cursor's, the step back's and the way back to now.
         self.versions_keys(&ctx, graph_on_canvas);
@@ -8459,6 +8493,11 @@ impl MeridianApp {
     /// to write ([`Self::anything_to_save`]). With no work pending it writes no file
     /// (`cmd_s_with_nothing_pending_writes_nothing`).
     fn save_everything(&mut self, ctx: &egui::Context) {
+        // An operation being made is kept first, when Enter would keep it, and recorded with
+        // the rest. One that cannot be kept stays open, saying why, and the rest is saved.
+        if self.charts.doc.making().is_some() {
+            self.keep_making(ctx);
+        }
         if !self.anything_to_save() {
             return;
         }
@@ -9249,10 +9288,12 @@ impl MeridianApp {
     /// consumed whether or not the cursor could move, so a move off the
     /// table's edge does not fall through to a frame verb.
     ///
-    /// The two keys that ask the foot row (`filter-rows-at-cursor` and
-    /// `sort-rows-at-cursor`) ask it only while the grid draws its rows
-    /// layout, the one layout that draws the row; in the columns layout they
-    /// are consumed and ask nothing.
+    /// A key that starts an operation goes to
+    /// [`Self::start_operation_verb`], the filter's and the sort's with the
+    /// rest. One that cannot start says what it needs on the status band: in
+    /// the columns layout, where the foot row is not drawn, the filter's key
+    /// says it needs the cursor on a cell
+    /// (`a_key_off_a_cell_says_why_instead_of_nothing`).
     fn grid_cursor_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if graph_on_canvas
             || self.overlay.is_some()
@@ -9261,33 +9302,28 @@ impl MeridianApp {
         {
             return;
         }
-        let band_drawn = self.drawn_grid_layout() == crate::app::GridLayout::Rows;
-        for (token, longname) in self.grid_bindings.clone() {
-            let asked = match longname {
-                "filter-rows-at-cursor" => {
-                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_where_at_cursor()
+        // A shifted key before its bare letter: egui lets a held Shift the pattern does not name
+        // through, so a bare `l` taken first would take the `shift-l` that limits rows.
+        let mut bindings = self.grid_bindings.clone();
+        bindings.sort_by_key(|(token, _)| !token.starts_with("shift-"));
+        for (token, longname) in bindings {
+            // An operation's key starts it, or says what it needs to start.
+            if crate::operation_ui::by_verb(longname).is_some() {
+                if consume_token(ctx, token) {
+                    // The text the same keystroke made is the key's, not a field's: a shifted
+                    // key makes its upper-case letter, so the frame's text goes whole.
+                    ctx.input_mut(|i| {
+                        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+                    });
+                    self.start_operation_verb(ctx, longname);
+                    ctx.request_repaint();
                 }
-                "sort-rows-at-cursor" => {
-                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_order_at_cursor()
-                }
-                _ => {
-                    let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
-                        continue;
-                    };
-                    if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
-                        ctx.request_repaint();
-                    }
-                    continue;
-                }
+                continue;
+            }
+            let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
+                continue;
             };
-            if asked {
-                self.open_rail_on_operation();
-                // The field takes the keyboard on this frame's draw, so the
-                // text the same keystroke made is the key's, not the field's.
-                ctx.input_mut(|i| {
-                    i.events
-                        .retain(|e| !matches!(e, egui::Event::Text(t) if t == token));
-                });
+            if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
                 ctx.request_repaint();
             }
         }
@@ -9489,12 +9525,17 @@ impl MeridianApp {
     /// palette and not yet saved, the statement form holding that statement,
     /// selected whole, to correct it or read it; otherwise the palette's
     /// search ([`Self::open_chart_search`]).
+    ///
+    /// Over the grid of a step an operation made the palette opens on its search: that step's
+    /// text is arc's model, which is corrected from the operation and not typed over
+    /// (`the_statement_form_over_a_drafts_grid_starts_empty`).
     fn open_chart_palette(&mut self) {
-        if let Some(step) = self.typed_step_in_front() {
-            let (statement, name) = (step.statement.clone(), step.name.clone());
-            self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
-        } else {
-            self.open_chart_search();
+        match self.statement_in_front() {
+            Some(step) => {
+                let (statement, name) = (step.statement.clone(), step.name.clone());
+                self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
+            }
+            None => self.open_chart_search(),
         }
     }
 
@@ -9517,6 +9558,15 @@ impl MeridianApp {
             .typed_steps()
             .iter()
             .find(|step| model.node_of_step_table(&step.name) == Some(node))
+    }
+
+    /// The kept **statement** whose table's grid the canvas holds: the step a statement typed on
+    /// the form corrects in place. A step an operation made is not one. Its text is arc's model,
+    /// so a statement typed over its grid is a step of its own
+    /// (`the_statement_form_over_a_drafts_grid_starts_empty`).
+    fn statement_in_front(&self) -> Option<&TypedStep> {
+        self.typed_step_in_front()
+            .filter(|step| step.operation.is_none())
     }
 
     /// Open the command palette's search at the chart altitude, restricted
@@ -9632,7 +9682,7 @@ impl MeridianApp {
                 {
                     becomes = Some(Overlay::Statement(StatementCard::new(
                         picker.query().to_owned(),
-                        self.typed_step_in_front().map(|step| step.name.clone()),
+                        self.statement_in_front().map(|step| step.name.clone()),
                     )));
                 }
             }
@@ -10134,6 +10184,11 @@ impl MeridianApp {
     /// field can take, which the loaded table's grid previews instead
     /// ([`ChartDoc::preview_typed_where`]).
     fn typed_grid_step(&mut self) -> Option<String> {
+        // An operation being made shows its rows the same way, and no statement form stands
+        // while one is made.
+        if let Some(step) = self.making_grid_step() {
+            return Some(step);
+        }
         let Some(Overlay::Statement(card)) = &self.overlay else {
             return None;
         };
@@ -10279,13 +10334,125 @@ impl MeridianApp {
                 statement: answer.text.clone(),
                 reads,
                 rows: None,
+                operation: None,
             });
         }
+        self.bring_kept_to_front(ctx, &name);
+    }
+
+    /// **Keep an operation's draft as the step `name`**: `request` is what arc
+    /// is asked to record at the next Save, and `model` the SQL arc writes for
+    /// it, which the step's grid previews by running. A step already kept
+    /// under `name` is corrected in place; otherwise the step goes at the foot
+    /// of the Protocol. The Protocol is laid out again with it and its table is
+    /// brought to the front in the grid, as a kept statement's is. No file is
+    /// written.
+    ///
+    /// Whether the step was kept. Over a join's rows no step is kept, as for a statement;
+    /// nor under a name the Protocol holds, nor one that reads what a removed step makes.
+    /// Each of those raises a banner saying so.
+    pub fn keep_draft(
+        &mut self,
+        ctx: &egui::Context,
+        name: String,
+        request: crate::operation::StepRequest,
+        model: String,
+    ) -> bool {
+        if !self.charts.doc.views_are_steps() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_KEPT_ON_A_JOIN_BANNER),
+                    Severity::Warning,
+                    "This step was not kept",
+                )
+                .body(NOT_KEPT_ON_A_JOIN_BODY),
+            );
+            ctx.request_repaint();
+            return false;
+        }
+        let kept = self
+            .charts
+            .doc
+            .typed_steps()
+            .iter()
+            .any(|step| step.name == name);
+        // A name a recorded step or the loaded table holds would lay out two steps of one name,
+        // and arc would refuse the second at Save. The caller names a draft free of them; this
+        // holds it to that.
+        let taken = {
+            let model = &self.protocol.doc.model;
+            let lower = name.to_lowercase();
+            !kept
+                && (model
+                    .source()
+                    .is_some_and(|source| source.name.to_lowercase() == lower)
+                    || model
+                        .generated()
+                        .is_some_and(|g| g.steps.iter().any(|s| s.name.to_lowercase() == lower)))
+        };
+        if taken {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("remove-step"),
+                    Severity::Warning,
+                    "This step was not kept",
+                )
+                .body(format!("The Protocol already has a table named {name}.")),
+            );
+            ctx.request_repaint();
+            return false;
+        }
+        // A step that reads what a step removed and not yet saved makes would read a table the
+        // Save takes out, so it is refused, naming the step, as a statement is.
+        let reads_removed: Vec<String> = {
+            let model = &self.protocol.doc.model;
+            let read: Vec<String> = crate::typed_sql::tables_read(&request)
+                .iter()
+                .map(|t| t.to_lowercase())
+                .collect();
+            self.charts
+                .doc
+                .removing_steps()
+                .into_iter()
+                .filter(|step| model.tables_of_step(step).iter().any(|t| read.contains(t)))
+                .collect()
+        };
+        if !reads_removed.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("remove-step"),
+                    Severity::Warning,
+                    "This step was not kept",
+                )
+                .body(reads_removed_sentence(&reads_removed)),
+            );
+            ctx.request_repaint();
+            return false;
+        }
+        if kept {
+            self.charts.doc.replace_draft(&name, request, model);
+        } else {
+            self.charts.doc.keep_typed(TypedStep {
+                name: name.clone(),
+                statement: model,
+                reads: crate::typed_sql::tables_read(&request),
+                rows: None,
+                operation: Some(request),
+            });
+        }
+        self.bring_kept_to_front(ctx, &name);
+        true
+    }
+
+    /// Lay the Protocol out again with the kept steps, bring the table of the
+    /// kept step `name` to the front in the grid with the cursor on its first
+    /// cell and the keys, and count its rows on a worker.
+    fn bring_kept_to_front(&mut self, ctx: &egui::Context, name: &str) {
         self.typed_in_grid = None;
         self.lay_out_typed_steps();
         let model = &mut self.protocol.doc.model;
-        model.select_step_table(&name);
-        if let Some(node) = model.node_of_step_table(&name).cloned() {
+        model.select_step_table(name);
+        if let Some(node) = model.node_of_step_table(name).cloned() {
             self.canvas_holds = CanvasHolds::View {
                 node,
                 view: NodeView::Grid,
@@ -10312,6 +10479,7 @@ impl MeridianApp {
             return;
         };
         let was_one_step = self.ledger_opens_collapsed();
+        self.step_sql_read = None;
         match source.inputs_with_typed(self.charts.doc.typed_steps()) {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
@@ -11506,6 +11674,11 @@ impl MeridianApp {
                 entries.insert(0, foot);
             }
         }
+        // An operation leads it: what it needs to start, why its draft is refused, or what it
+        // reads and makes.
+        if let Some(operation) = self.operation_status_entry() {
+            entries.insert(0, operation);
+        }
         // A saved version drawn in place of the chart leads it: the picture is
         // not the chart's own, and the band says so and names the two keys.
         if !graph_on_canvas {
@@ -11624,6 +11797,11 @@ impl MeridianApp {
                 // palette, it asks for the picker as Cmd+O does, and the dialog runs after this.
                 Request::Verb(verb) if verb.as_str() == OPEN_VERB => {
                     self.pick_requested = true;
+                }
+                // An operation's verb is the window's: chosen from a palette or a menu, it starts
+                // the operation as its key does, or says what it needs.
+                Request::Verb(verb) if crate::operation_ui::by_verb(verb.as_str()).is_some() => {
+                    self.start_operation_verb(ctx, verb.as_str());
                 }
                 // The model pane's verbs are its own, chosen from the palette it opens.
                 Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
@@ -11854,6 +12032,73 @@ impl MeridianApp {
             .doc
             .model
             .set_removing(self.charts.doc.removing_steps());
+        // The Editor is told the SQL of the step in front, which it shows read-only.
+        let sql = self.step_sql_in_front();
+        if self.charts.doc.set_step_sql(sql) {
+            ctx.request_repaint();
+        }
+    }
+
+    /// **The SQL of the step whose grid the canvas holds**, as the step's name and its text, for
+    /// the Editor: arc's model for the operation being made, as its last edit read; else arc's
+    /// model for a step an operation made, kept or recorded, as the Protocol was laid out with
+    /// it; else the model file of a recorded filter or sort. `None` when the canvas holds another
+    /// view, the loaded table's grid, or the grid of a statement, which is read on its form.
+    ///
+    /// A filter's or a sort's file is read when the step comes to the front and kept until
+    /// another step does or the Protocol is laid out again, so a frame reads no file.
+    fn step_sql_in_front(&mut self) -> Option<(String, String)> {
+        use crate::generated::StepEffect;
+        if let Some(making) = self.making_sql() {
+            return Some(making);
+        }
+        let found = (|| {
+            let CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } = self.canvas_holds()
+            else {
+                return None;
+            };
+            let model = &self.protocol.doc.model;
+            let generated = model.generated()?;
+            let label = model.label_of(node)?.to_lowercase();
+            let step = generated
+                .steps
+                .iter()
+                .find(|s| s.name.to_lowercase() == label)?;
+            match &step.effect {
+                // The model as arc wrote it is what the grid runs, kept or recorded, so the
+                // Editor shows that text and no file is read.
+                StepEffect::Generated(_) => Some(Ok((step.name.clone(), step.argument.clone()))),
+                // A filter's or a sort's step keeps its clause alone, so its file is read.
+                StepEffect::Operation(_) => Some(Err((step.name.clone(), generated.dir.clone()))),
+                StepEffect::Sql => None,
+            }
+        })();
+        let (name, dir) = match found {
+            Some(Ok(sql)) => {
+                self.step_sql_read = None;
+                return Some(sql);
+            }
+            Some(Err(read)) => read,
+            None => {
+                self.step_sql_read = None;
+                return None;
+            }
+        };
+        if self.step_sql_read.as_ref().map(|(step, _)| step) != Some(&name) {
+            let text = std::fs::read_to_string(dir.join("arcform.yaml"))
+                .ok()
+                .and_then(|text| brightfield_protocol::parse_manifest_str(&text).ok())
+                .and_then(|manifest| {
+                    let step = manifest.steps.iter().find(|s| s.name == name)?;
+                    std::fs::read_to_string(dir.join(step.sql.as_ref()?)).ok()
+                });
+            self.step_sql_read = Some((name.clone(), text));
+        }
+        let (_, text) = self.step_sql_read.as_ref()?;
+        text.clone().map(|text| (name, text))
     }
 
     /// **Remove the recorded step `step` from the spine as a draft, or put it back**: what `d d`
@@ -11865,8 +12110,28 @@ impl MeridianApp {
     /// the order they were made. For the same reason a removed step that reads one removed after it
     /// is not put back until that one is. The step stays in `arcform.yaml` until a Save takes it
     /// out ([`Self::record_pending`]).
+    ///
+    /// A step kept and not yet saved is in no file, so it is taken back at once and is no draft
+    /// of a removal: it leaves the spine, and a step kept after it that reads its table refuses
+    /// that, named in the banner (`remove_step_takes_a_kept_draft_back`).
     fn ask_remove_step(&mut self, step: &str) {
         let banner = NotificationId::new("remove-step");
+        if self.protocol.doc.model.is_typed(step) {
+            match self.charts.doc.discard_kept(step) {
+                Ok(()) => {
+                    self.notifications.dismiss(banner);
+                    self.typed_in_grid = None;
+                    self.lay_out_typed_steps();
+                }
+                Err(readers) => {
+                    self.notifications.raise(
+                        Notification::new(banner, Severity::Warning, REMOVE_STEP_REFUSED)
+                            .body(readers_sentence(step, &readers)),
+                    );
+                }
+            }
+            return;
+        }
         let model = &self.protocol.doc.model;
         if self.charts.doc.is_removing(step) {
             let read: Vec<String> = self
@@ -15240,6 +15505,12 @@ impl MeridianApp {
         // What a refusal left unrecorded leads the pending work, since what
         // was made before it was recorded and left it.
         let refused_first = self.charts.doc.pending_in_order().first().cloned();
+        // Whether that work is a step an operation made, which is named a step and not SQL.
+        let refused_operation = matches!(
+            &refused_first,
+            Some(crate::app::PendingWork::Typed(name))
+                if self.charts.doc.typed_steps().iter().any(|s| s.name == *name && s.operation.is_some())
+        );
         // A part recorded before a refusal is in the folder all the same.
         if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
@@ -15264,6 +15535,9 @@ impl MeridianApp {
                         }
                         Some(crate::app::PendingWork::Remove(_)) => {
                             ("Could not remove the step", why)
+                        }
+                        Some(crate::app::PendingWork::Typed(_)) if refused_operation => {
+                            ("Could not record the step", why)
                         }
                         _ => ("Could not record the SQL step", why),
                     },
@@ -15325,12 +15599,26 @@ impl MeridianApp {
                     else {
                         continue;
                     };
-                    crate::operation::record_sql(
-                        &runner,
-                        &source.dir,
-                        &step.statement,
-                        &step.name,
-                    )?;
+                    // A step an operation made is recorded as that operation, so the file is
+                    // the one arc writes for it however it is recorded; a statement as typed.
+                    match &step.operation {
+                        Some(request) => {
+                            crate::operation::record_step(
+                                &runner,
+                                &source.dir,
+                                &step.name,
+                                request,
+                            )?;
+                        }
+                        None => {
+                            crate::operation::record_sql(
+                                &runner,
+                                &source.dir,
+                                &step.statement,
+                                &step.name,
+                            )?;
+                        }
+                    }
                     self.charts.doc.mark_typed_recorded(&name);
                     // A step this edition cannot run is recorded as typed, and said so as it is
                     // added: the Protocol keeps it, and runs it in the full edition.
@@ -15541,14 +15829,16 @@ impl MeridianApp {
         // The steps the step reads, and theirs, back to the load, in the
         // order the manifest makes them.
         let chain = crate::generated::preview_chain(generated, &step.name)?;
-        let fields = match step.effect {
+        let fields = match &step.effect {
             StepEffect::Operation(KnownOperation::FilterRows) => {
                 [step.argument.clone(), String::new()]
             }
             StepEffect::Operation(KnownOperation::SortRows) => {
                 [String::new(), step.argument.clone()]
             }
-            StepEffect::Sql => [String::new(), String::new()],
+            // Another operation's step shows no field: the foot row writes a
+            // condition or an order, and this step is neither.
+            StepEffect::Sql | StepEffect::Generated(_) => [String::new(), String::new()],
         };
         Some(crate::data_grid::PreviewRequest {
             step: step.name.clone(),
@@ -15574,6 +15864,7 @@ impl MeridianApp {
     /// on the load's table. The ledger rail takes the default a Protocol of
     /// several steps opens with, and the newest step arc recorded is selected.
     fn adopt_saved_protocol(&mut self) {
+        self.step_sql_read = None;
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return;
         };
@@ -20900,6 +21191,9 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
 // Unit tests — the notification wiring, which only this module can drive
 // through its private entry points.
 // ---------------------------------------------------------------------------
+
+mod operation_host;
+pub use operation_host::{NO_DUPLICATE_ROWS, OPERATION_STATUS_ID};
 
 #[cfg(test)]
 mod tests {

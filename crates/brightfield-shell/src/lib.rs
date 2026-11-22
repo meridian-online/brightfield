@@ -57,6 +57,9 @@
 //! - [`one_step`] — the Protocol a data file opens as: one SQL step reading
 //!   the file, the table it produces, and the columns the rails list under it.
 //!   The spec brightfield writes, and never a run record.
+//! - [`operation_ui`] — Brightfield's side of each of arc's operations: where it
+//!   starts in the window, the draft it starts as, and how it asks, one slot
+//!   per operation, empty until that operation is built.
 //! - [`protocol_panels`] — an arc Protocol's `panels/*.yaml`, each composed
 //!   against a Parquet snapshot of the tables it reads, one outcome per tile,
 //!   without holding the Protocol's database open.
@@ -149,6 +152,7 @@ pub mod one_step;
 pub mod open_queue;
 pub mod operation;
 pub mod operation_panel;
+pub mod operation_ui;
 pub mod organise_joins;
 pub mod organise_joins_view;
 pub mod overlays;
