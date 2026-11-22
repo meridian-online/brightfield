@@ -265,8 +265,8 @@ const NEEDS_HOME: &[Requirement] = &[Requirement::new(
 const NEEDS_PROTOCOL: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_UNSAVED_WORK: &[Requirement] =
     &[Requirement::of(Need::Condition(Condition::UnsavedWork))];
-const NEEDS_PROTOCOL_TO_RUN: &[Requirement] =
-    &[Requirement::of(Need::Condition(Condition::ProtocolToRun))];
+const NEEDS_PROTOCOL_TO_SAVE: &[Requirement] =
+    &[Requirement::of(Need::Condition(Condition::ProtocolToSave))];
 const NEEDS_RUN: &[Requirement] = &[
     Requirement::of(Need::Condition(Condition::ProtocolToRun)),
     Requirement::of(Need::Condition(Condition::Trusted)),
@@ -707,14 +707,14 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "save-spec",
             label: "Save the spec",
-            needs: NEEDS_PROTOCOL_TO_RUN,
+            needs: NEEDS_PROTOCOL_TO_SAVE,
             tier: CommandTier::View,
             binding_specs: vec![editor("cmd-s")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::RuntimeDispatch,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Save the Protocol this data file opened as",
+            help: "Save the Protocol, or the panel open from its tile",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
         },
         // The window's Save, on the same chord everywhere else. The editor's `save-spec` layers
@@ -785,7 +785,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::RuntimeDispatch,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Run the Protocol this data file opened as",
+            help: "Run the Protocol",
             scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 5, motor_note: "cmd-enter = run (notebook cells, SQL consoles); cmd-r is taken by reload-spec" }),
         },
         // The picture: the chart under the pointer handed over as a PNG, on the

@@ -333,19 +333,18 @@ fn confirm_chart_verb(win: &mut Window, longname: &str) {
     );
 }
 
-/// **A shipped chart start is offered no Save.**
+/// **A shipped chart start greys Save and Run, each with its sentence.**
 ///
 /// `signals-dashboard` is one of the four shipped starts that open a chart
 /// spec, and a chart spec has no Protocol behind it — so `save_protocol`
-/// returns before it writes anything. Offering the row anyway is the defect
-/// this test exists to keep out: a palette row that confirms, closes the
-/// palette, and does nothing.
+/// returns before it writes anything. A live row there is the defect this
+/// test exists to keep out: a palette row that confirms, closes the palette,
+/// and does nothing.
 ///
 /// Read off the palette the window actually opened, through the key a person
-/// presses, rather than off the allow list — the list was the thing that was
-/// wrong.
+/// presses, rather than off the allow list.
 #[test]
-fn a_chart_start_is_offered_no_save() {
+fn a_chart_start_greys_save_and_run_with_their_sentences() {
     let boot = Boot::start(starts::DASHBOARD, Flow::Vertical).expect("the start ships");
     let mut win = Window::open(boot);
     win.settle();
@@ -360,21 +359,74 @@ fn a_chart_start_is_offered_no_save() {
     assert_eq!(win.app.open_overlay(), Some("palette"));
     win.settle();
     let rows = win.palette_rows();
-    assert!(
-        !rows.is_empty(),
-        "the palette drew no rows, so an absence proves nothing: {rows:?}"
-    );
+    let missing = win.app.open_palette_missing();
     assert!(
         rows.iter().any(|r| r == "clear-selection"),
-        "the palette is missing the verbs every chart window offers, so this \
+        "the palette is missing the verbs every chart window lists, so this \
          is not the chart palette: {rows:?}"
     );
+    for (verb, sentence) in [
+        (
+            "save-spec",
+            "Save the spec needs a Protocol to save: open a data file or a folder, or open a panel \
+             from its tile.",
+        ),
+        (
+            "run-protocol",
+            "Run needs a Protocol to act on: open one, or open a data file or a folder.",
+        ),
+    ] {
+        assert!(
+            rows.iter().any(|r| r == verb),
+            "{verb} is not listed: {rows:?}"
+        );
+        assert!(
+            missing.iter().any(|(v, s)| *v == verb && s == sentence),
+            "a window with no Protocol to act on lists {verb} live, or with \
+             other words: {missing:?}"
+        );
+    }
+    // A row whose inputs the window holds is not greyed.
     assert!(
-        !rows.iter().any(|r| r == "save-spec"),
-        "a window with nothing to save is offered Save; confirming it closes \
-         the palette and does nothing: {rows:?}"
+        !missing.iter().any(|(v, _)| *v == "zoom-in"),
+        "zoom-in is greyed over a chart: {missing:?}"
     );
     win.key(egui::Key::Escape);
+}
+
+/// Confirming a greyed row says the sentence it declares, in the palette's
+/// own hint, keeps the palette open, and runs nothing: over a shipped chart
+/// start, Run starts no run.
+#[test]
+fn confirming_a_greyed_row_says_its_sentence_and_runs_nothing() {
+    let boot = Boot::start(starts::DASHBOARD, Flow::Vertical).expect("the start ships");
+    let mut win = Window::open(boot);
+    win.settle();
+    let banners = win.app.notifications().iter().count();
+
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.settle();
+    win.type_text("run-protocol");
+    win.key(egui::Key::Enter);
+
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("palette"),
+        "confirming a greyed row closed the palette"
+    );
+    assert!(!win.app.run_in_progress(), "a greyed Run started a run");
+    assert_eq!(
+        win.app.notifications().iter().count(),
+        banners,
+        "a greyed Run reached its handler, which raised a banner"
+    );
+    assert_eq!(
+        win.app.open_palette_hint().as_deref(),
+        Some("Run needs a Protocol to act on: open one, or open a data file or a folder."),
+    );
+    win.key(egui::Key::Escape);
+    assert_eq!(win.app.open_overlay(), None);
 }
 
 /// **AC2 + AC3.** Every verb the chart palette lists is dispatchable at the
@@ -394,18 +446,18 @@ fn a_chart_start_is_offered_no_save() {
 /// the sweep does not pass an unproven verb by omission.
 #[test]
 fn every_chart_palette_candidate_actually_dispatches() {
-    // The saveable state, because that is the state with the MOST rows on it:
-    // a sweep over the other one would pass over `save-spec` by never seeing
-    // it. What keeps the two states honest about each other is
-    // `overlays::the_chart_palette_offers_save_only_where_there_is_something_to_save`
-    // and `a_chart_start_is_offered_no_save` below.
-    let candidates = chart_palette_candidates(true);
+    // Each verb is chosen on a window that holds what it needs, so its row is
+    // live there: `confirm_chart_verb` fails on a greyed row, which keeps the
+    // palette open. What a window without the input shows is held by
+    // `overlays::the_chart_palette_greys_save_where_there_is_nothing_to_save`
+    // and `a_chart_start_greys_save_and_run_with_their_sentences` above.
+    let candidates = chart_palette_candidates();
     assert!(!candidates.is_empty(), "the chart palette lists nothing");
     assert_eq!(
         candidates.len(),
-        chart_palette_verbs(true).len(),
-        "the chart palette's candidate count does not match what a saveable \
-         window offers: {candidates:?}"
+        chart_palette_verbs().len(),
+        "the chart palette's candidate count does not match its verbs: \
+         {candidates:?}"
     );
 
     for longname in candidates {

@@ -531,6 +531,17 @@ impl ChartDoc {
         true
     }
 
+    /// Whether the grid's cursor is on a cell of a live table: a cursor, on a
+    /// column the foot row knows, over a document with a session to read the
+    /// cell from. It is what the filter and sort asks need before they open.
+    #[must_use]
+    pub fn grid_cursor_on_cell(&self) -> bool {
+        self.live_dashboard().is_some()
+            && self
+                .grid_cursor
+                .is_some_and(|at| self.grid_foot.columns.get(at.col).is_some())
+    }
+
     /// **Open `order by` with the cursor's column in it.** Whether it opened,
     /// on the terms [`Self::ask_where_at_cursor`] gives.
     pub fn ask_order_at_cursor(&mut self) -> bool {

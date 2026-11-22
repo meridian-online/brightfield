@@ -687,7 +687,7 @@ fn the_move_is_a_bound_verb_and_both_spots_take_it() {
     assert_eq!(entry.primary_key(), Some("cmd-j"));
     assert!(!entry.help.is_empty());
     assert!(
-        brightfield_shell::overlays::chart_palette_verbs(true).contains(&MOVE_GRID),
+        brightfield_shell::overlays::chart_palette_verbs().contains(&MOVE_GRID),
         "the chart palette does not offer the move"
     );
 

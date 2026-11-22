@@ -9421,7 +9421,8 @@ impl MeridianApp {
     fn open_model_palette(&mut self) {
         let allow = crate::model_pane::model_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
@@ -9467,21 +9468,19 @@ impl MeridianApp {
     }
 
     /// Open the command palette at the Protocol altitude, over a snapshot of
-    /// the session's recency, restricted to what choosing a row does here —
-    /// [`crate::overlays::protocol_palette_verbs`].
+    /// the session's recency, over the Protocol altitude's verbs —
+    /// [`crate::overlays::protocol_palette_verbs`] — each read against what
+    /// the window holds ([`Self::situation`]).
     ///
     /// It opens over the graph, and over the graph a column put on a channel is
     /// dropped ([`Self::outline_put`]), so the three `put-column-on-*` rows are
-    /// not offered: each would confirm and put no column —
-    /// `the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing`.
+    /// greyed there, each with the sentence it declares —
+    /// `the_protocol_palette_greys_the_put_rows_over_the_graph_with_their_sentence`.
     fn open_protocol_palette(&mut self) {
-        let puts_column = !self.graph_on_canvas()
-            && self.protocol.doc.model.outline_column().is_some()
-            && self.charts.shelf.band.is_some();
-        let removes_step = self.protocol.doc.model.removable_step().is_some();
-        let allow = crate::overlays::protocol_palette_verbs(puts_column, removes_step);
+        let allow = crate::overlays::protocol_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
@@ -9520,25 +9519,21 @@ impl MeridianApp {
     }
 
     /// Open the command palette's search at the chart altitude, restricted
-    /// to what a window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// to the verbs this shell dispatches there — see [`Self::overlay_open_keys`] for
     /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
-    /// The list is [`crate::overlays::chart_palette_verbs`] over
-    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler has
-    /// no work on this window is a row that confirms and then sits there,
-    /// which is the row that list exists to keep out.
-    /// `overlay_wiring.rs`'s `a_chart_start_is_offered_no_save` reads the
-    /// absence off a shipped start's own palette, and
-    /// `going_home_takes_the_save_offer_with_the_start` walks one window from
-    /// a data file, to the front door, and into a shipped start.
+    /// The list is [`crate::overlays::chart_palette_verbs`], read against what
+    /// the window holds ([`Self::situation`]): a verb whose handler has no work
+    /// on this window is greyed with the sentence it declares, where a live row
+    /// would confirm and then sit there.
+    /// `overlay_wiring.rs`'s `a_chart_start_greys_save_and_run_with_their_sentences`
+    /// reads that off a shipped start's own palette.
     fn open_chart_search(&mut self) {
-        // A Protocol's panels save and run through the same two verbs.
-        let allow = crate::overlays::chart_palette_verbs(
-            self.has_protocol_to_save() || self.tiles.is_some(),
-        );
+        let allow = crate::overlays::chart_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
@@ -9556,6 +9551,131 @@ impl MeridianApp {
     #[must_use]
     pub fn has_protocol_to_save(&self) -> bool {
         self.protocol.doc.model.source().is_some()
+    }
+
+    /// **What the window holds**, as far as a command's declared needs can ask:
+    /// how many sources, what is selected or on the canvas, the column under
+    /// the Outline's cursor, the edition's grants and the conditions that hold.
+    /// The palettes, and the menus after them, read each command's
+    /// availability from this one value ([`Self::availability_of`]).
+    #[must_use]
+    pub fn situation(&self) -> brightfield_keys::Situation {
+        use brightfield_keys::{ColumnKind, Condition, Grant, Selected};
+        let door = self.front_door_is_live();
+        let model_pane = self.model.as_ref().filter(|m| m.shown());
+        let protocol = &self.protocol.doc.model;
+
+        let mut selected = Vec::new();
+        let mut hold = |holds: bool, what: Selected| {
+            if holds {
+                selected.push(what);
+            }
+        };
+        hold(!door, Selected::Protocol);
+        hold(!door && self.graph_on_canvas(), Selected::Graph);
+        hold(
+            !door
+                && matches!(
+                    self.canvas_holds,
+                    CanvasHolds::Dashboard { .. } | CanvasHolds::Chart
+                )
+                && model_pane.is_none()
+                && !self.charts.doc.is_empty(),
+            Selected::Chart,
+        );
+        // The grid draws a Protocol's table, and a live chart's rows where no
+        // Protocol is behind it; Move grid moves either.
+        hold(
+            protocol.table().is_some() || (!door && self.charts.doc.is_live()),
+            Selected::Rows,
+        );
+        hold(
+            self.drawn_grid_layout() == crate::app::GridLayout::Rows
+                && self.charts.doc.grid_cursor_on_cell(),
+            Selected::GridCell,
+        );
+        hold(
+            protocol.selected().is_some() || self.canvas_holds.node().is_some(),
+            Selected::Asset,
+        );
+        hold(protocol.removable_step().is_some(), Selected::Step);
+        if let Some(pane) = model_pane {
+            use brightfield_render::model_scene::Selection;
+            selected.push(Selected::Model);
+            match pane.doc.focus.selected {
+                Some(Selection::Dataset(_)) => selected.push(Selected::ModelTable),
+                Some(Selection::Relationship(_)) => selected.push(Selected::ModelJoin),
+                None => {}
+            }
+        }
+
+        let mut conditions = Vec::new();
+        let mut when = |holds: bool, condition: Condition| {
+            if holds {
+                conditions.push(condition);
+            }
+        };
+        when(self.charts.doc.selection_active(), Condition::SelectionHeld);
+        when(
+            self.charts.doc.last_shelf_edit().is_some(),
+            Condition::EditToTakeBack,
+        );
+        when(self.anything_to_save(), Condition::UnsavedWork);
+        // What Run acts on: a Protocol a data file or a folder made, one whose
+        // panels the window holds as tiles, and the model pane's.
+        when(
+            self.has_protocol_to_save() || self.tiles.is_some() || model_pane.is_some(),
+            Condition::ProtocolToRun,
+        );
+        // What Save the spec writes: that Protocol's source, or a panel open
+        // from its tile.
+        when(
+            self.has_protocol_to_save() || self.open_tile_path().is_some(),
+            Condition::ProtocolToSave,
+        );
+        when(
+            !door && self.restricted.is_none() && self.held_untrusted().is_none(),
+            Condition::Trusted,
+        );
+        when(
+            self.protocol_taking_sources().is_some(),
+            Condition::TakesSources,
+        );
+        when(
+            self.fetching.is_none() && self.data_file_to_reload().is_some(),
+            Condition::FileToReload,
+        );
+        when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+
+        let sources = model_pane.map_or_else(
+            || usize::from(self.has_protocol_to_save()),
+            |pane| pane.doc.model.datasets.len(),
+        );
+        brightfield_keys::Situation {
+            sources,
+            selected,
+            // The shell reports a column of any kind until a command declares
+            // a need for a typed one.
+            column: protocol.outline_column().map(|_| ColumnKind::Any),
+            grants: if crate::edition::current() == crate::edition::Edition::Full {
+                vec![Grant::FullEdition]
+            } else {
+                Vec::new()
+            },
+            conditions,
+        }
+    }
+
+    /// Whether the command named `longname` can act on what the window holds,
+    /// and the sentence it says when it cannot. `None` for a longname the
+    /// registry lacks.
+    #[must_use]
+    pub fn availability_of(&self, longname: &str) -> Option<brightfield_keys::Availability> {
+        let situation = self.situation();
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == longname)
+            .map(|verb| brightfield_keys::availability(verb, &situation))
     }
 
     /// Open the node jump over the outline — the graph in view, in its
@@ -11198,6 +11318,36 @@ impl MeridianApp {
             .collect()
     }
 
+    /// The **open palette's greyed rows**: each command listed with an input
+    /// missing, and the sentence its row says — empty when no palette is open.
+    /// Read off the delegate, as [`Self::open_palette_rows`] is.
+    #[must_use]
+    pub fn open_palette_missing(&self) -> Vec<(&'static str, String)> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return Vec::new();
+        };
+        use meridian_egui::PickerDelegate as _;
+        let delegate = &picker.delegate;
+        (0..delegate.match_count())
+            .filter_map(|i| delegate.candidate(i))
+            .filter_map(|c| c.missing.clone().map(|sentence| (c.longname, sentence)))
+            .collect()
+    }
+
+    /// What the **open palette** says under its query line after refusing a
+    /// row, if it has refused one: a test hook.
+    #[must_use]
+    pub fn open_palette_hint(&self) -> Option<String> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return None;
+        };
+        use meridian_egui::PickerDelegate as _;
+        match picker.delegate.hint() {
+            Some(meridian_egui::PickerHint::Error(said)) => Some(said),
+            _ => None,
+        }
+    }
+
     /// The persistent banner layer, read-only — what a test holds the
     /// replace-not-stack contract against.
     #[must_use]
@@ -11704,7 +11854,10 @@ impl MeridianApp {
                     if graph_on_canvas {
                         self.toasts.push(Toast::new(
                             Severity::Info,
-                            "Open a chart to copy or export it as a picture",
+                            declared_sentence(
+                                verb.as_str(),
+                                brightfield_keys::Need::Selected(brightfield_keys::Selected::Chart),
+                            ),
                         ));
                     } else {
                         self.chart_picture(ctx, verb.as_str());
@@ -13460,7 +13613,10 @@ impl MeridianApp {
             Some(sheet) => self.overlay = Some(Overlay::OrganiseJoins(Box::new(sheet))),
             None => self.toasts.push(Toast::new(
                 Severity::Info,
-                "Organising joins needs a Protocol of two sources or more",
+                declared_sentence(
+                    crate::protocol::ORGANISE_JOINS,
+                    brightfield_keys::Need::Sources(2),
+                ),
             )),
         }
         ctx.request_repaint();
@@ -16698,14 +16854,22 @@ impl MeridianApp {
     pub fn untrust_open_protocol(&mut self, ctx: &egui::Context) -> bool {
         ctx.request_repaint();
         if self.restricted.is_some() {
-            self.toasts
-                .push(Toast::new(Severity::Info, "This Protocol is not trusted"));
+            self.toasts.push(Toast::new(
+                Severity::Info,
+                declared_sentence(
+                    UNTRUST_PROTOCOL,
+                    brightfield_keys::Need::Condition(brightfield_keys::Condition::Trusted),
+                ),
+            ));
             return false;
         }
         let Some(dir) = self.held_protocol_dir() else {
             self.toasts.push(Toast::new(
                 Severity::Info,
-                "Open a Protocol to stop trusting it",
+                declared_sentence(
+                    UNTRUST_PROTOCOL,
+                    brightfield_keys::Need::Selected(brightfield_keys::Selected::Protocol),
+                ),
             ));
             return false;
         };
@@ -17884,6 +18048,13 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
 
 /// The stable id of the status band's line naming a range the shelf refused.
 pub const SHELF_REFUSAL_STATUS_ID: &str = "shelf-range-refused";
+
+/// The sentence the command named `longname` declares for `need`, for a handler
+/// that refuses for that need to say. Each pair the window passes is declared
+/// (`the_refusals_the_window_says_are_declared`).
+fn declared_sentence(longname: &str, need: brightfield_keys::Need) -> String {
+    brightfield_keys::sentence(longname, need).unwrap_or_default()
+}
 
 /// The stable id `last_shelf_edit_status_entry` writes — the handle a test
 /// reads the line by.
@@ -20907,6 +21078,37 @@ mod tests {
 
     fn app() -> MeridianApp {
         MeridianApp::headless(Boot::empty(), Mode::Light)
+    }
+
+    /// A handler that refuses for a need its command declares says the
+    /// declared sentence, so each pair it asks for has to be declared.
+    #[test]
+    fn the_refusals_the_window_says_are_declared() {
+        use brightfield_keys::{Condition, Need, Selected};
+        let mut pairs = vec![
+            (crate::protocol::ORGANISE_JOINS, Need::Sources(2)),
+            (COPY_CHART_PICTURE, Need::Selected(Selected::Chart)),
+            (EXPORT_CHART_PICTURE, Need::Selected(Selected::Chart)),
+            (UNTRUST_PROTOCOL, Need::Condition(Condition::Trusted)),
+            (UNTRUST_PROTOCOL, Need::Selected(Selected::Protocol)),
+        ];
+        // The model pane's reshape verbs: three act on a join, the rest on a
+        // table.
+        for verb in crate::model_pane::RESHAPE_VERBS {
+            let on = if matches!(verb, "keep-join" | "drop-join" | "change-join-keys") {
+                Selected::ModelJoin
+            } else {
+                Selected::ModelTable
+            };
+            pairs.push((verb, Need::Selected(on)));
+        }
+        for (verb, need) in pairs {
+            let said = declared_sentence(verb, need);
+            assert!(
+                said.ends_with('.') && !said.contains('{'),
+                "{verb} declares no sentence for {need:?}: {said:?}"
+            );
+        }
     }
 
     /// Every bucket of a Protocols row's relative time, walked from both

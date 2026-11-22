@@ -80,10 +80,13 @@ pub enum Condition {
     EditToTakeBack,
     /// A change is not saved yet.
     UnsavedWork,
-    /// The window holds a Protocol that Save and Run act on: one made from a
-    /// data file or a folder, one whose panels it holds as tiles, or the one
-    /// the model pane is over. A chart spec and a shipped start are neither.
+    /// The window holds a Protocol that Run acts on: one made from a data file
+    /// or a folder, one whose panels it holds as tiles, or the one the model
+    /// pane is over. A chart spec and a shipped start are neither.
     ProtocolToRun,
+    /// The window holds something Save the spec writes: a Protocol made from a
+    /// data file or a folder, or a panel open from its tile.
+    ProtocolToSave,
     /// The Protocol is trusted.
     Trusted,
     /// The Protocol is one Brightfield made, which sources can be added to.
@@ -143,6 +146,10 @@ impl Need {
             }
             Need::Condition(Condition::ProtocolToRun) => {
                 "{command} needs a Protocol to act on: open one, or open a data file or a folder."
+            }
+            Need::Condition(Condition::ProtocolToSave) => {
+                "{command} needs a Protocol to save: open a data file or a folder, or open a \
+                 panel from its tile."
             }
             Need::Condition(Condition::Trusted) => {
                 "{command} needs the Protocol trusted: trust it from the band over its canvas."
@@ -319,9 +326,39 @@ mod tests {
         assert!(availability(&verb("open"), &Situation::default()).is_available());
     }
 
+    /// Run acts on a Protocol held as tiles or under the model pane, where
+    /// Save the spec has nothing to write.
+    #[test]
+    fn save_waits_on_something_to_write_where_run_can_act() {
+        let s = Situation {
+            conditions: vec![Condition::ProtocolToRun, Condition::Trusted],
+            ..Situation::default()
+        };
+        assert_eq!(
+            availability(&verb("run-protocol"), &s),
+            Availability::Available
+        );
+        assert_eq!(
+            availability(&verb("save-spec"), &s),
+            Availability::Missing(
+                "Save the spec needs a Protocol to save: open a data file or a folder, or open \
+                 a panel from its tile."
+                    .into()
+            )
+        );
+        let s = Situation {
+            conditions: vec![Condition::ProtocolToSave],
+            ..Situation::default()
+        };
+        assert_eq!(
+            availability(&verb("save-spec"), &s),
+            Availability::Available
+        );
+    }
+
     #[test]
     fn the_first_missing_need_says_its_sentence() {
-        // Nothing held: Run's first need, a Protocol of the analyst's own.
+        // Nothing held: Run's first need, a Protocol to act on.
         assert_eq!(
             availability(&verb("run-protocol"), &Situation::default()),
             Availability::Missing(

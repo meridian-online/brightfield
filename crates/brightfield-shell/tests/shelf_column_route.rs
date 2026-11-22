@@ -446,6 +446,26 @@ impl Window {
         self.app.open_overlay()
     }
 
+    /// The rows the palette greys when `space` opens it, each with the
+    /// sentence it says, closed again after.
+    fn palette_missing(&mut self) -> Vec<(&'static str, String)> {
+        self.press(egui::Key::Space);
+        assert_eq!(
+            self.app.open_overlay(),
+            Some("palette"),
+            "space opened no palette"
+        );
+        self.settle();
+        let missing = self.app.open_palette_missing();
+        self.press(egui::Key::Escape);
+        assert_eq!(
+            self.app.open_overlay(),
+            None,
+            "escape left the palette open"
+        );
+        missing
+    }
+
     /// The rows the palette lists when `space` opens it, closed again after.
     fn palette_rows(&mut self) -> Vec<String> {
         self.press(egui::Key::Space);
@@ -898,11 +918,12 @@ fn a_column_put_from_its_row_leaves_the_spec_the_bands_route_leaves() {
     }
 }
 
-/// **AC5.** The Protocol palette opens over the graph, where a column put on a
-/// channel is dropped, so with a column under the Outline's cursor it offers
-/// none of the three put rows; and `z c` there changes nothing either.
+/// The Protocol palette opens over the graph, where a column put on a channel
+/// is dropped, so with a column under the Outline's cursor it greys the three
+/// put rows, each with the sentence it declares; choosing one puts no column,
+/// and `z c` there changes nothing either.
 #[test]
-fn the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing() {
+fn the_protocol_palette_greys_the_put_rows_over_the_graph_with_their_sentence() {
     let mut win = Window::fixture();
     win.select_in_outline(VALUE);
     let kept = win.spec();
@@ -916,11 +937,30 @@ fn the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing()
         rows.iter().any(|r| r == "toggle-fold"),
         "the palette lists no Protocol verb, so this is not the Protocol palette: {rows:?}"
     );
-    for verb in PUT_VERBS {
+    let missing = win.palette_missing();
+    for (verb, label) in
+        PUT_VERBS
+            .iter()
+            .zip(["Put column on x", "Put column on y", "Put column on colour"])
+    {
         assert!(
-            !rows.iter().any(|r| r == verb),
-            "the Protocol palette offers {verb}, which puts nothing over the graph: {rows:?}"
+            rows.iter().any(|r| r == verb),
+            "the Protocol palette does not list {verb}: {rows:?}"
         );
+        let sentence = format!("{label} needs a chart on the canvas.");
+        assert!(
+            missing.iter().any(|(v, s)| v == verb && *s == sentence),
+            "the Protocol palette lists {verb} live over the graph, where it puts nothing, \
+             or greys it in other words: {missing:?}"
+        );
+        // Choosing the greyed row keeps the palette open and puts no column.
+        assert_eq!(
+            win.confirm_leaving(verb),
+            Some("palette"),
+            "confirming the greyed {verb} closed the palette"
+        );
+        win.press(egui::Key::Escape);
+        assert_eq!(win.spec(), kept, "{verb} over the graph changed the spec");
     }
 
     win.chord(egui::Key::C, "c");
@@ -932,6 +972,41 @@ fn the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing()
     assert!(
         !win.marked_unsaved(),
         "z c over the graph marked the window unsaved"
+    );
+}
+
+/// A column kept from the shelf is the edit Undo waits on: with none kept the
+/// command says so, and with one kept it is available.
+#[test]
+fn a_kept_column_is_a_condition() {
+    use brightfield_keys::{Availability, Condition};
+    let mut win = Window::fixture();
+    assert!(!win
+        .app
+        .situation()
+        .conditions
+        .contains(&Condition::EditToTakeBack));
+    assert_eq!(
+        win.app.availability_of("undo"),
+        Some(Availability::Missing(
+            "Undo needs a column kept from the shelf since the last Save.".to_owned()
+        ))
+    );
+
+    win.select_in_outline(VALUE);
+    win.chord(egui::Key::C, "c");
+    assert!(win.marked_unsaved(), "z c kept no column");
+    assert!(
+        win.app
+            .situation()
+            .conditions
+            .contains(&Condition::EditToTakeBack),
+        "{:?}",
+        win.app.situation()
+    );
+    assert_eq!(
+        win.app.availability_of("undo"),
+        Some(Availability::Available)
     );
 }
 
@@ -953,6 +1028,7 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
     let row = win.column_row(VALUE);
     win.click(row.name_rect.center());
     let reg = registry::registry();
+    let missing = win.palette_missing();
     let enabled: Vec<String> = win
         .palette_rows()
         .into_iter()
@@ -961,7 +1037,19 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                 .find(|v| v.longname == r)
                 .is_some_and(|v| v.status != VerbStatus::Reserved)
         })
+        .filter(|r| !missing.iter().any(|(greyed, _)| greyed == r))
         .collect();
+    // Organising joins is greyed here, as over each Protocol this palette
+    // opens on: it is drawn over the graph, which holds the canvas only for a
+    // Protocol of one source. tests/organise_joins.rs opens the sheet over
+    // several.
+    assert!(
+        missing
+            .iter()
+            .any(|(greyed, sentence)| *greyed == "organise-joins"
+                && sentence == "Organising joins needs a Protocol of two sources or more."),
+        "organise-joins is live over one source: {missing:?}"
+    );
     assert!(
         enabled.len() > 3,
         "the Protocol palette offers too little to sweep: {enabled:?}"
@@ -1105,20 +1193,6 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     at.confirm_leaving(verb),
                     Some("sources-browser"),
                     "{verb} opened no sources browser"
-                );
-            }
-            "organise-joins" => {
-                // The Protocol palette is drawn over the graph, which holds the canvas only for a
-                // Protocol of one source: over several, the model pane holds it and its palette
-                // lists the model's verbs. So here choosing it says, in a toast, that organising
-                // joins needs two sources; tests/organise_joins.rs opens the sheet over several.
-                let mut at = Window::own_protocol();
-                at.graph_to_canvas();
-                let toasts = at.app.toasts().len();
-                assert_eq!(at.confirm_leaving(verb), None, "{verb} opened a sheet");
-                assert!(
-                    at.app.toasts().len() > toasts,
-                    "{verb} said nothing over one source"
                 );
             }
             "untrust-protocol" => {

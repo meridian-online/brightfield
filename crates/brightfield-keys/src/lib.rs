@@ -62,7 +62,7 @@ mod tests {
                 .map(|v| v.longname)
                 .collect();
             let palette_enables: std::collections::HashSet<&str> =
-                palette_filter(&reg, altitude, "", &recency)
+                palette_filter(&reg, altitude, "", &recency, None)
                     .into_iter()
                     .filter(|c| c.enabled)
                     .map(|c| c.longname)
