@@ -700,23 +700,29 @@ impl WarmPreview {
         stop: &PreviewStop,
     ) -> Result<WarmPage, PreviewRefusal> {
         let bytes = self.bytes;
-        let watch = Watchdog::start(&self.conn, PREVIEW_DEADLINE, stop.clone());
-        let refused = |e: duckdb::Error| {
-            watch
-                .refusal(PREVIEW_DEADLINE)
-                .unwrap_or_else(|| refusal(&e.to_string(), bytes))
+        let (page, fired) = {
+            let watch = Watchdog::start(&self.conn, PREVIEW_DEADLINE, stop.clone());
+            let refused = |e: duckdb::Error| {
+                watch
+                    .refusal(PREVIEW_DEADLINE)
+                    .unwrap_or_else(|| refusal(&e.to_string(), bytes))
+            };
+            let page = self.read_watched(name, on, op, limit, &refused);
+            (page, watch.refusal(PREVIEW_DEADLINE))
         };
-        let page = self.read_watched(name, on, op, limit, &refused);
-        if page.is_err() {
+        // The watch is over before the rollback: a watch that fired goes on
+        // interrupting the connection until it is dropped, and a rollback it
+        // interrupted would leave the next read inside this one's transaction.
+        if page.is_err() || fired.is_some() {
             // Not in a transaction is the usual case, and DuckDB's refusal of
             // the rollback then is of no interest.
             let _ = self.conn.execute_batch("ROLLBACK;");
         }
         let page = page?;
-        if let Some(why) = watch.refusal(PREVIEW_DEADLINE) {
-            return Err(why);
+        match fired {
+            Some(why) => Err(why),
+            None => Ok(page),
         }
-        Ok(page)
     }
 
     fn read_watched(

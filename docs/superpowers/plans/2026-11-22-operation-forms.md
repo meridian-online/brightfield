@@ -944,7 +944,7 @@ The housing sample (`tests/data/california_housing_sample.csv`) loads as the tab
 - **Spec:** `icon: "copy-off"`, `name: NameRule { word: "deduped", from: By::Value("key"), with_by: true }`.
 - **Tests:**
   - On a CSV the test writes, `with_nulls`' rows with Alameda's twice, `shift-u` keeps `with_nulls_deduped`, 3 rows from 4, and the model holds `SELECT DISTINCT *`.
-  - In the form, set the key to `city`, ordered by `house_age desc`: the kept draft is replaced, its model holds `QUALIFY`, and its name becomes `with_nulls_deduped_by_city`.
+  - In the form, set the key to `city`, ordered by `house_age desc`: the kept draft is replaced in place, its model holds `QUALIFY`, and it keeps the name it was kept under, since a name is fixed when a draft is kept.
   - `dedupe_rows_on_a_table_without_duplicates_says_so_and_keeps_nothing`, on the housing sample.
   - Refusal: the order emptied with the key kept gives arc's "the argument `key` of `dedupe-rows` needs `order_by` as well".
 

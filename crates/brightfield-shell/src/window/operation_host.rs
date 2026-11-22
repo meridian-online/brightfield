@@ -80,6 +80,8 @@ pub(super) struct OperationHost {
     in_grid: Option<(String, bool, u64)>,
     /// How many times the reads' answers have changed.
     answers: u64,
+    /// What the canvas held when the draft began: the grid it is made over.
+    began_over: Option<CanvasHolds>,
 }
 
 impl OperationHost {
@@ -90,6 +92,7 @@ impl OperationHost {
             said_now: false,
             in_grid: None,
             answers: 0,
+            began_over: None,
         }
     }
 }
@@ -393,6 +396,7 @@ impl MeridianApp {
             move || wake.request_repaint(),
         ));
         self.operation.in_grid = None;
+        self.operation.began_over = Some(self.canvas_holds().clone());
         self.charts.doc.set_making(Making {
             spec,
             draft,
@@ -457,6 +461,7 @@ impl MeridianApp {
         }
         self.operation.reads = None;
         self.operation.in_grid = None;
+        self.operation.began_over = None;
         self.typed_in_grid = None;
         self.restore_rail_after_ask();
         ctx.request_repaint();
@@ -679,6 +684,19 @@ impl MeridianApp {
                     making.suggestions = offered;
                     making.suggestion = None;
                 }
+            }
+        }
+        // **A draft is made over the grid it began on, and goes when that grid does.** Its
+        // keys and its page are that grid's: once the canvas holds another view, the graph, or
+        // a field of the foot row takes the keyboard, the typing would go to a draft no longer
+        // on screen, so the draft is dropped as Esc drops it
+        // (`a_draft_goes_when_the_grid_it_began_over_does` in `tests/operation_start.rs`).
+        if self.charts.doc.making().is_some() {
+            let moved = self.operation.began_over.as_ref() != Some(self.canvas_holds())
+                || self.graph_on_canvas()
+                || self.charts.doc.foot_asking().is_some();
+            if moved {
+                self.drop_making(ctx);
             }
         }
         let Some(making) = self.charts.doc.making().cloned() else {

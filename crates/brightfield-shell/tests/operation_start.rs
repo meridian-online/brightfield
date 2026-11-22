@@ -481,6 +481,38 @@ fn enter_keeps_and_esc_keeps_nothing() {
 }
 
 #[test]
+fn a_draft_goes_when_the_grid_it_began_over_does() {
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    assert!(start(&mut win, &HIDE_LIKE, "house_age"), "{:?}", win.said());
+    win.settle_reads();
+    let hidden = win.kept()[0].name.clone();
+    // A rename begun over the loaded table's grid.
+    assert!(
+        start(&mut win, &RENAME_LIKE, "median_income"),
+        "{:?}",
+        win.said()
+    );
+    win.type_keys("inc");
+    assert!(win.making().is_some());
+    // Another step's grid is brought to the front: the draft goes with the
+    // grid it was made over, and a key typed now is the grid's own.
+    win.show_grid_of(&hidden);
+    assert!(win.making().is_none(), "the draft went with its grid");
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .grid_preview()
+            .map(|p| p.step().to_string()),
+        Some(hidden.clone()),
+        "the grid shows the step brought forward"
+    );
+    win.focus_grid();
+    win.type_keys("j");
+    assert!(win.making().is_none());
+    assert_eq!(win.kept().len(), 1, "no step was kept unseen");
+}
+
+#[test]
 fn enter_with_a_required_value_empty_says_what_is_missing() {
     let mut win = OpWindow::on_copy_of(SAMPLE);
     assert!(

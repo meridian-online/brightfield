@@ -58,6 +58,7 @@ Each of these is reversible, and each is the owner's to overturn.
 14. **A keystroke typed into a field in place is that field's alone.** While an operation asks on a header, a letter goes into its value and reaches no other handler, so `o` typed into a name does not sort the rows. A key held with Cmd, Ctrl or Alt is still the window's.
 15. **The new-column cell stays in reach.** It stands after the table's last column where that leaves it inside the pane, and at the pane's trailing edge otherwise.
 16. **A header's type is one place, not a region.** The type part is the leaf and storage row at the full density, the title beside the name at the compact one, and the glyph where neither is drawn.
+17. **A draft goes when the grid it began over does.** Its keys and its preview are that grid's. Once the canvas holds another view or the graph, or a field of the foot row takes the keyboard, the draft is dropped as Esc drops it, so typing never goes to a draft that is no longer on screen.
 
 ## What arc lacks
 
