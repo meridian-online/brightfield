@@ -3786,8 +3786,8 @@ impl SpineTables {
 /// **What the spine shows while it picks a table for an operation**
 /// ([`crate::spine_pick::SpinePick`]): the table in front reads `in front`,
 /// each table the operation can read trails what it has in common with it, the
-/// cursor's table and the tables added are drawn selected, and every row that
-/// is not a table is named in the muted ink.
+/// cursor's table and the tables added are drawn selected, and a row that is
+/// not a table is named in the muted ink.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpinePickRows {
     /// The table the operation is on.

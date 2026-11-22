@@ -283,7 +283,7 @@ fn each_table_says_whether_it_shares_the_cursors_column() {
     assert_eq!(table_row(&win, "top").kind, "shares house_age");
     assert_eq!(cursor(&win), "by_age", "the first of the two");
 
-    // With the cursor on a column `by_age` lacks, only `top` says it shares it.
+    // With the cursor on a column `by_age` lacks, `top` says it shares it and `by_age` says nothing.
     let mut win = window();
     assert!(start(&mut win, &JOIN_LIKE, "latitude"), "{:?}", win.said());
     assert_eq!(table_row(&win, "by_age").kind, "");
@@ -507,6 +507,21 @@ fn esc_goes_back_to_the_grid_and_keeps_nothing() {
         .texts
         .iter()
         .any(|t| t.contains("pick a table in the spine")));
+}
+
+#[test]
+fn the_pick_closes_when_another_pane_takes_the_keys() {
+    let mut win = window();
+    assert!(start(&mut win, &JOIN_LIKE, "house_age"), "{:?}", win.said());
+    // A press on the grid gives it the keys: the pick's keys were the rail's.
+    win.focus_grid();
+    assert!(win.app.spine_pick().is_none());
+    assert!(win.making().is_none());
+    assert_eq!(win.app.focused_pane(), Some(grid()));
+    assert!(!win.rows().iter().any(|row| row.muted));
+    // `j` is the grid's again, and moves its cursor a row.
+    win.letter(egui::Key::J, "j");
+    assert_eq!(win.app.chart_doc().grid_cursor.map(|at| at.row), Some(1));
 }
 
 #[test]

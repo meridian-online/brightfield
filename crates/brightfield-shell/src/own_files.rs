@@ -1601,15 +1601,35 @@ pub fn reopen(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
 ///
 /// The reason when the Protocol has not been run or the copy fails.
 pub fn grid_copy(p: &OwnProtocol, name: &str) -> Result<PathBuf, String> {
-    crate::model_inspector::snapshot(
-        &p.dir,
-        name,
-        &format!(
-            "SELECT * EXCLUDE ({}) FROM {}",
-            LINEAGE.join(", "),
-            quoted(name)
-        ),
+    crate::model_inspector::snapshot(&p.dir, name, &grid_rows(name))
+}
+
+/// What the grid shows of the silver table `name`: its rows without the lineage columns.
+fn grid_rows(name: &str) -> String {
+    format!(
+        "SELECT * EXCLUDE ({}) FROM {}",
+        LINEAGE.join(", "),
+        quoted(name)
     )
+}
+
+/// Where [`grid_copy`] writes the copy of the silver table `name`.
+#[must_use]
+pub fn grid_copy_path(p: &OwnProtocol, name: &str) -> PathBuf {
+    p.dir
+        .join(crate::model_inspector::GRID_DIR)
+        .join(format!("{name}.parquet"))
+}
+
+/// The columns [`grid_copy`] would write for the silver table `name`, read from the Protocol's
+/// database with no row copied.
+///
+/// # Errors
+///
+/// The reason when the Protocol has not been run or the table cannot be read.
+pub fn grid_columns(p: &OwnProtocol, name: &str) -> Result<Vec<String>, String> {
+    crate::model_inspector::query(&p.dir, &format!("{} LIMIT 0", grid_rows(name)))
+        .map(|rows| rows.columns)
 }
 
 /// Record `set` in the Protocol folder `dir`, for [`reopen`], with the folder's canonical path as

@@ -166,8 +166,8 @@ pub(super) struct OperationHost {
     /// The spine's ask for the operation's table, while one is open.
     picking: Option<Picking>,
     /// The model's tables the spine has handed an operation, each with the
-    /// grid copy its rows are read from, so the operation's preview and the
-    /// kept step's can load them.
+    /// grid copy its rows are read from, which the operation's preview loads
+    /// and so does the preview of a step kept from it.
     model_tables: Vec<(String, std::path::PathBuf)>,
 }
 
@@ -262,6 +262,16 @@ impl MeridianApp {
         }
         for step in model.generated().into_iter().flat_map(|g| &g.steps) {
             tables.push((step.name.clone(), None));
+        }
+        // While the grid holds a table of a model, the model's other tables are the
+        // Protocol's too: the ones the spine offers an operation that reads a second.
+        for table in self.model_tables_beside_the_grid() {
+            if !tables
+                .iter()
+                .any(|(held, _)| held.eq_ignore_ascii_case(&table))
+            {
+                tables.push((table, None));
+            }
         }
         OperationContext {
             runner: self.runner.is_some(),
@@ -992,66 +1002,73 @@ impl MeridianApp {
         brightfield_ossie::read(&text).ok()
     }
 
-    /// The tables the spine lists for an operation to read, each with its
-    /// columns where they are known and where its rows are read from; and the
-    /// Protocol whose grid copies a model table's rows come from, when the
-    /// tables are a model's.
-    ///
-    /// While the grid holds a table of a Protocol made from a folder, workbook
-    /// or database, they are the model's tables that have rows to read. In a
-    /// Protocol made from a data file they are the loaded table and the steps
-    /// after it.
-    fn pick_tables(
-        &self,
-        cx: &OperationContext,
-    ) -> (
-        Vec<crate::spine_pick::Listed>,
-        Option<crate::own_files::OwnProtocol>,
-    ) {
-        if let Some(model) = self.model.as_ref().filter(|m| m.in_grid.is_some()) {
-            let pane = &model.doc;
-            let folder = pane.protocol.dir.join(crate::model_inspector::GRID_DIR);
-            let tables = pane
-                .model
-                .datasets
-                .iter()
-                .filter(|d| crate::model_inspector::materialised(&pane.model, &d.name))
-                .map(|d| {
-                    (
-                        d.name.clone(),
-                        None,
-                        CandidateSource::ModelTable {
-                            grid_copy: folder.join(format!("{}.parquet", d.name)),
-                        },
-                    )
-                })
-                .collect();
-            return (tables, Some(pane.protocol.clone()));
-        }
-        let tables = cx
-            .tables
+    /// The model's tables that have rows to read, while the grid holds one of
+    /// them: none while it holds a join's rows, whose spine the rail does not
+    /// draw, and none in a window with no model pane.
+    fn model_tables_beside_the_grid(&self) -> Vec<String> {
+        let Some(model) = self.model.as_ref().filter(|m| m.grid_table.is_some()) else {
+            return Vec::new();
+        };
+        let pane = &model.doc;
+        pane.model
+            .datasets
             .iter()
-            .map(|(table, columns)| (table.clone(), columns.clone(), CandidateSource::Step))
-            .collect();
-        (tables, None)
+            .filter(|d| crate::model_inspector::materialised(&pane.model, &d.name))
+            .map(|d| d.name.clone())
+            .collect()
+    }
+
+    /// The Protocol whose model's table the grid holds, when it holds one.
+    fn model_protocol_beside_the_grid(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.model
+            .as_ref()
+            .filter(|m| m.grid_table.is_some())
+            .map(|m| &m.doc.protocol)
+    }
+
+    /// **The tables the spine lists for an operation to read**, each with its
+    /// columns where they are known and where its rows are read from: the
+    /// tables `cx` holds, which are the ones the operation's needs were checked
+    /// against (`availability`). A table of the model the grid's table belongs
+    /// to is read from its grid copy; any other is the loaded table or a step
+    /// after it.
+    fn pick_tables(&self, cx: &OperationContext) -> Vec<crate::spine_pick::Listed> {
+        let of_model = self.model_tables_beside_the_grid();
+        let protocol = self.model_protocol_beside_the_grid();
+        cx.tables
+            .iter()
+            .map(|(table, columns)| {
+                let source = match protocol.filter(|_| of_model.contains(table)) {
+                    Some(protocol) => CandidateSource::ModelTable {
+                        grid_copy: crate::own_files::grid_copy_path(protocol, table),
+                    },
+                    None => CandidateSource::Step,
+                };
+                (table.clone(), columns.clone(), source)
+            })
+            .collect()
     }
 
     /// The model's tables the spine has handed an operation, each with the
-    /// grid copy it is read from: none unless a table of that model is in the
-    /// grid, and never the table the grid itself holds.
+    /// grid copy it is read from: those picked in the Protocol whose table the
+    /// grid holds, and never the table the grid itself holds.
     pub(super) fn picked_model_tables(&self) -> Vec<(String, std::path::PathBuf)> {
-        let Some(in_grid) = self
-            .model
-            .as_ref()
-            .filter(|m| m.in_grid.is_some())
-            .map(|m| m.grid_table.clone().unwrap_or_default())
-        else {
+        let Some(model) = self.model.as_ref().filter(|m| m.grid_table.is_some()) else {
             return Vec::new();
         };
+        let in_grid = model.grid_table.clone().unwrap_or_default();
+        let folder = model
+            .doc
+            .protocol
+            .dir
+            .join(crate::model_inspector::GRID_DIR);
         self.operation
             .model_tables
             .iter()
-            .filter(|(table, _)| !table.eq_ignore_ascii_case(&in_grid))
+            // A table picked in another Protocol is that Protocol's, whatever its name.
+            .filter(|(table, path)| {
+                path.starts_with(&folder) && !table.eq_ignore_ascii_case(&in_grid)
+            })
             .cloned()
             .collect()
     }
@@ -1069,7 +1086,8 @@ impl MeridianApp {
         cx: &OperationContext,
     ) -> bool {
         let front = cx.in_front.clone().unwrap_or_default();
-        let (tables, copies) = self.pick_tables(cx);
+        let tables = self.pick_tables(cx);
+        let copies = self.model_protocol_beside_the_grid().cloned();
         let relationships: Vec<(String, String)> = self
             .relationship_model()
             .map(|model| {
@@ -1176,9 +1194,7 @@ impl MeridianApp {
             self.say_operation(ctx, why);
             return;
         }
-        let taken: Vec<Taken> = picking
-            .pick
-            .take()
+        let taken: Vec<Taken> = tables
             .into_iter()
             .map(|table| {
                 let columns = picking
@@ -1199,6 +1215,16 @@ impl MeridianApp {
             })
             .collect();
         let (spec, start, column) = (picking.spec, picking.start, picking.column.clone());
+        // A model's table is read from a copy of its rows, written now for the tables
+        // taken and no other, as opening a table's grid writes its own.
+        if let Some(protocol) = self.model_protocol_beside_the_grid().cloned() {
+            for (table, _) in &from_model {
+                if let Err(why) = crate::own_files::grid_copy(&protocol, table) {
+                    self.say_operation(ctx, format!("{table} could not be read: {why}"));
+                    return;
+                }
+            }
+        }
         for (table, path) in from_model {
             self.operation
                 .model_tables

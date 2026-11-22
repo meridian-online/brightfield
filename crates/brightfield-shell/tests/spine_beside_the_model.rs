@@ -675,7 +675,9 @@ mod pick {
         icon: "arrows-join",
         starts: &[Start::Spine { role: "other" }],
         menu_words: "Join tables",
-        needs: &[Need::Rows],
+        // What a built join declares: the pick's tables are the ones this need is checked
+        // against, so it is met by the model's other tables.
+        needs: &[Need::Rows, Need::AnotherTable],
         begin: begin_join,
         keeps: Keeps::OnEnter,
         field: None,
@@ -802,5 +804,103 @@ fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
     assert_eq!(reads.refusal(), None);
     let answer = reads.current().expect("the draft is answered");
     assert_eq!(answer.unread, None);
-    assert!(answer.rows > 0, "the join of the two tables has rows");
+    let joined_rows = answer.rows;
+    assert!(joined_rows > 0, "the join of the two tables has rows");
+    // The copy of the table taken was written at the take, and of no other candidate.
+    let grid = win.pane().protocol.dir.join(".grid");
+    for candidate in pick.candidates() {
+        let copied = grid.join(format!("{}.parquet", candidate.table)).is_file();
+        assert_eq!(
+            copied,
+            candidate.table == under.table,
+            "{}",
+            candidate.table
+        );
+    }
+
+    // Enter keeps the draft, and the kept step reads the table taken too: its grid
+    // previews, and its rows are counted.
+    let enter = || egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    win.frame(vec![enter()]);
+    win.frame(Vec::new());
+    let kept = win.app.chart_doc().typed_steps().to_vec();
+    assert_eq!(kept.len(), 1, "{:?}", win.app.operation_said());
+    let name = kept[0].name.clone();
+    let counted = |win: &Window| win.app.chart_doc().typed_steps()[0].rows;
+    let previewing = |win: &Window| {
+        win.app
+            .chart_doc()
+            .grid_preview()
+            .is_none_or(|p| p.is_reading())
+    };
+    while counted(&win).is_none() || previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert_eq!(counted(&win), Some(joined_rows));
+    let page = win
+        .app
+        .chart_doc()
+        .grid_preview()
+        .and_then(|p| p.page())
+        .unwrap_or_else(|| panic!("the kept step's grid shows no page"));
+    assert!(!page.rows.is_empty(), "the kept step's grid shows no rows");
+}
+
+/// Over a join's rows the rail does not draw the model's spine, so an operation that reads a
+/// second table is told it needs one, and no pick opens over tables the rail does not list.
+#[test]
+fn over_a_joins_rows_the_spine_offers_no_model_table() {
+    let mut win = Window::over_fixture();
+    let join = win
+        .pane()
+        .model
+        .relationships
+        .iter()
+        .find(|r| !brightfield_ossie::is_proposal(r))
+        .map(|r| r.name.clone())
+        .expect("the written model makes a join");
+    win.app.perform_model_action(
+        &win.ctx.clone(),
+        ModelAction::OpenInGrid(brightfield_render::model_scene::Selection::Relationship(
+            join,
+        )),
+    );
+    win.frame(Vec::new());
+    win.frame(Vec::new());
+    assert!(
+        win.app.is_model_behind_grid(),
+        "the join's rows did not open"
+    );
+    assert_eq!(win.app.model_grid_table(), None);
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        assert!(!win
+            .app
+            .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, None));
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        if !said.starts_with("Reading arc's description") {
+            assert!(win.app.spine_pick().is_none());
+            assert!(!said.is_empty(), "nothing was said");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
 }

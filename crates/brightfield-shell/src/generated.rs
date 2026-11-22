@@ -539,19 +539,68 @@ pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engin
     }
 }
 
-/// **A file read as a table named `name`**, as a step the preview loads beside
-/// the data file ([`read_file_op`]): how a table of the Protocol's model the
-/// spine picked for an operation, which no step of the chain makes, is there
-/// for the operation's preview to read. Its model is the one line of arc's
-/// `read-file` model the preview reads the path from.
-pub(crate) fn file_root_step(name: &str, path: &Path) -> GeneratedStep {
-    GeneratedStep {
-        name: name.to_string(),
-        effect: StepEffect::Generated("read-file".to_string()),
-        on: String::new(),
-        reads: Vec::new(),
-        argument: format!("FROM '{}';", path.to_string_lossy().replace('\'', "''")),
+/// **`chain`, with each file of `roots` loaded as a table ahead of it**: how a
+/// table of the Protocol's model the spine picked for an operation, which no
+/// step of the chain makes, is there for a preview to read. Each root is a
+/// Parquet file Brightfield wrote, loaded from its path as given, so the rules
+/// for a path an analyst typed into a `read-file` step ([`read_file_op`]) do
+/// not apply to it. A root the chain already makes, or named as `root_table`
+/// is, is left out.
+///
+/// The engine runs a `where` or an `order by` on the table made just before
+/// it, which for the first step of `chain` was `root_table` and would now be
+/// the last root. That step is rewritten as the statement over `root_table`
+/// that arc's template is, as a step that branches off an earlier table is.
+pub(crate) fn with_file_roots(
+    root_table: &str,
+    mut chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    roots: &[(String, PathBuf)],
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    use brightfield_engine::{FileReader, PreviewOp};
+    let made = |name: &str| {
+        name.eq_ignore_ascii_case(root_table)
+            || chain
+                .iter()
+                .any(|(step, _)| step.eq_ignore_ascii_case(name))
+    };
+    let mut loaded: Vec<(String, PreviewOp)> = Vec::new();
+    for (name, path) in roots {
+        if made(name)
+            || loaded
+                .iter()
+                .any(|(held, _)| held.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        loaded.push((
+            name.clone(),
+            PreviewOp::ReadFile {
+                path: path.clone(),
+                reader: FileReader::Parquet,
+            },
+        ));
     }
+    if loaded.is_empty() {
+        return chain;
+    }
+    let over_root = |operation: KnownOperation, argument: &str| {
+        PreviewOp::Statement(format!(
+            "SELECT *\nFROM {}\n{}{argument}\n",
+            quoted(root_table),
+            operation.clause(),
+        ))
+    };
+    if let Some((_, first)) = chain.first_mut() {
+        match first {
+            PreviewOp::Where(condition) => {
+                *first = over_root(KnownOperation::FilterRows, condition);
+            }
+            PreviewOp::OrderBy(order) => *first = over_root(KnownOperation::SortRows, order),
+            _ => {}
+        }
+    }
+    loaded.extend(chain);
+    loaded
 }
 
 /// The index of the step of `steps` named `name`, in any case.
@@ -1102,6 +1151,81 @@ pub fn step_name_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A table the spine picked is loaded from its path as given, brackets and
+    /// all, ahead of the chain; a first `where` is rewritten over the root
+    /// table, since the table made just before it is now the last root.
+    #[test]
+    fn a_picked_table_is_loaded_ahead_of_the_chain_from_its_path_as_given() {
+        use brightfield_engine::{FileReader, PreviewOp};
+        let path = PathBuf::from("/data/Sales [2026]/.grid/stores.parquet");
+        let roots = vec![
+            ("stores".to_string(), path.clone()),
+            // The root table and a table the chain makes are not loaded over.
+            ("housing".to_string(), PathBuf::from("/x/housing.parquet")),
+            ("OLD".to_string(), PathBuf::from("/x/old.parquet")),
+        ];
+        let chain = vec![
+            (
+                "old".to_string(),
+                PreviewOp::Where("house_age > 30".to_string()),
+            ),
+            (
+                "older".to_string(),
+                PreviewOp::Where("house_age > 40".to_string()),
+            ),
+        ];
+        let with = with_file_roots("housing", chain.clone(), &roots);
+        assert_eq!(
+            with,
+            vec![
+                (
+                    "stores".to_string(),
+                    PreviewOp::ReadFile {
+                        path,
+                        reader: FileReader::Parquet
+                    }
+                ),
+                (
+                    "old".to_string(),
+                    PreviewOp::Statement(
+                        "SELECT *\nFROM \"housing\"\nWHERE house_age > 30\n".to_string()
+                    )
+                ),
+                // The second filter still follows the first.
+                chain[1].clone(),
+            ]
+        );
+        // An order is rewritten the same way, and a statement is left as written.
+        let ordered = with_file_roots(
+            "housing",
+            vec![(
+                "s".to_string(),
+                PreviewOp::OrderBy("house_age DESC".to_string()),
+            )],
+            &roots[..1],
+        );
+        assert_eq!(
+            ordered[1].1,
+            PreviewOp::Statement(
+                "SELECT *\nFROM \"housing\"\nORDER BY house_age DESC\n".to_string()
+            )
+        );
+        let statement = vec![(
+            "q".to_string(),
+            PreviewOp::Statement("SELECT 1".to_string()),
+        )];
+        assert_eq!(
+            with_file_roots("housing", statement.clone(), &roots[..1])[1],
+            statement[0]
+        );
+        // With no root to load, the chain is as it was.
+        assert_eq!(with_file_roots("housing", chain.clone(), &[]), chain);
+        assert_eq!(
+            with_file_roots("housing", chain.clone(), &roots[1..]),
+            chain
+        );
+    }
 
     /// A folder recorded with one SQL step after the load is read with that
     /// step parsed once: each parse opens an in-memory DuckDB database, and

@@ -15,8 +15,8 @@
 //! **What a candidate says.** A table the Protocol's model relates to the one
 //! in front trails `related`. Any other trails `shares <column>` when it holds
 //! the column the grid's cursor is on, once its columns are known. A table's
-//! columns are read on a worker (`read_columns`), so the spine draws at once
-//! and never waits on DuckDB.
+//! columns are read on a worker (`read_columns`), so the spine draws without
+//! waiting on DuckDB.
 //!
 //! **Where the cursor starts**: on the first related table, else on the first
 //! that shares the cursor's column, else on the first. Until a key moves it,
@@ -29,7 +29,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 
-use brightfield_engine::{FileReader, PreviewStop};
+use brightfield_engine::PreviewStop;
 
 use crate::typed_sql::TypedSource;
 
@@ -56,7 +56,7 @@ pub enum CandidateSource {
     /// A table of the Protocol's model, read from the copy of its rows the
     /// grid opens.
     ModelTable {
-        /// The Parquet file the copy is written to.
+        /// The Parquet file the copy is written to, once the table is taken.
         grid_copy: PathBuf,
     },
 }
@@ -338,8 +338,9 @@ impl Drop for ColumnReads {
 ///
 /// A step's columns are those of the first row of its preview, read over
 /// `source` as a statement over it would be: the steps it reads are made, and
-/// no other. A model table's columns are those of its grid copy, which the
-/// worker writes first from `copies`. A table that cannot be read answers with
+/// no other. A model table's columns are those its grid copy would hold, read
+/// from the database of `copies` with no row copied: the copy is written once
+/// the table is taken. A table that cannot be read answers with
 /// no columns, so the ask is never left waiting on it: arc and DuckDB say what
 /// is wrong with it once it is taken.
 #[must_use]
@@ -368,16 +369,10 @@ pub(crate) fn read_columns(
                     .as_ref()
                     .map(|source| step_columns(source, &table, &stop))
                     .unwrap_or_default(),
-                CandidateSource::ModelTable { grid_copy } => {
-                    let made = copies
-                        .as_ref()
-                        .is_some_and(|p| crate::own_files::grid_copy(p, &table).is_ok());
-                    if made {
-                        file_columns(grid_copy, &table, &stop)
-                    } else {
-                        Vec::new()
-                    }
-                }
+                CandidateSource::ModelTable { .. } => copies
+                    .as_ref()
+                    .and_then(|p| crate::own_files::grid_columns(p, &table).ok())
+                    .unwrap_or_default(),
             });
             if tell.send((table, columns)).is_err() {
                 return;
@@ -438,20 +433,6 @@ fn step_columns(source: &TypedSource, table: &str, stop: &PreviewStop) -> Vec<St
     .into_iter()
     .filter(|column| !hidden.contains(column))
     .collect()
-}
-
-/// The columns of the Parquet file `path`, loaded as `table`.
-fn file_columns(path: &std::path::Path, table: &str, stop: &PreviewStop) -> Vec<String> {
-    columns_of(brightfield_engine::preview_first_page_stoppable(
-        path,
-        FileReader::for_path(path).unwrap_or(FileReader::Parquet),
-        table,
-        &[],
-        1,
-        brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
-        brightfield_engine::PREVIEW_DEADLINE,
-        stop,
-    ))
 }
 
 #[cfg(test)]

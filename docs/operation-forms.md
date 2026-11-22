@@ -48,7 +48,9 @@ An operation whose first start is `Start::Spine { role }` reads a second table u
 - The cursor starts on the first related table, else the first that shares the cursor's column, else the first. It is drawn as the selected row.
 - `j` and `k`, and the arrows, move the cursor. `Enter` takes the table under it. For a role that takes a list, `Space` adds the table under the cursor, or takes it off, and `Enter` takes the added tables in the order they were added. `Esc` gives the keys back to the grid and begins nothing. A click on a table's row puts the cursor on it. The status band names the five keys, read from the key registry.
 - The tables come from one of two places. In a Protocol made from a data file they are the loaded table and the steps after it. While the grid holds a table of a Protocol made from a folder, workbook or database, they are the model's other tables that have rows, each read from its grid copy, which the operation's preview loads beside the table in front.
-- A table's columns are read on a worker, so the spine draws at once. A step's columns are those of its preview's first row; a model table's are those of its grid copy.
+- A table's columns are read on a worker, so the spine draws at once. A step's columns are those of its preview's first row. A model table's are read from the Protocol's database with no row copied; its grid copy is written when it is taken, and for no other candidate.
+- The tables the pick lists are the ones the operation's needs were checked against (`OperationContext::tables`), so `Need::AnotherTable` is met exactly when the pick has a candidate. Over a join's rows, where the rail does not draw the model's spine, the model's tables are not offered.
+- A step kept from a draft that reads a model's table loads that table's grid copy for its own preview and row count, as the draft did (`generated::with_file_roots`).
 
 The take hands `begin` the tables through `Begin::taken`, each with its columns, and the Protocol's model through `Begin::model`: the model pane's while one of its tables is in the grid, and otherwise the `model.ossie.yaml` in the Protocol's folder when it holds one. `Begin::model` is `None` for an operation that did not start from the spine.
 
@@ -81,7 +83,8 @@ Each of these is reversible, and each is the owner's to overturn.
 22. **An added table trails `added`** ahead of what it shares, and is drawn selected as the cursor's row is. The design system has no second row mark to tell the two apart, and none was added.
 23. **Space on a pick for one table adds nothing and says so**, in place of being ignored or opening the palette.
 24. **The pick closes, beginning nothing, when its grid leaves the canvas or another pane takes the keys**, as a draft goes when the grid it began over does.
-25. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
+25. **A model's table is copied when it is taken, on the frame of the take**, as opening a table's grid copies it. Reading the columns of each candidate copies nothing.
+26. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
 
 ## What arc lacks
 

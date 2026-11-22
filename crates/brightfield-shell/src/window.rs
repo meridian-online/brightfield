@@ -10093,11 +10093,6 @@ impl MeridianApp {
                 .collect();
             steps.retain(|step| !later.contains(step.name.as_str()));
         }
-        // A table of the model the spine picked for an operation is made by no step of the
-        // chain: it is loaded from its grid copy, ahead of the steps that may read it.
-        for (at, (table, path)) in self.picked_model_tables().into_iter().enumerate() {
-            steps.insert(at, crate::generated::file_root_step(&table, &path));
-        }
         Some(TypedSource {
             data: source.data.clone(),
             reader,
@@ -10107,6 +10102,9 @@ impl MeridianApp {
             runner: self.runner.clone(),
             shown: self.charts.doc.column_facts().shown().clone(),
             casts: source.casts.clone(),
+            // A table of the model the spine picked for an operation is made by no step
+            // of the chain: it is loaded from its grid copy.
+            file_roots: self.picked_model_tables(),
         })
     }
 
@@ -10517,6 +10515,8 @@ impl MeridianApp {
         let Some(reader) = brightfield_engine::FileReader::for_path(&source.data) else {
             return;
         };
+        // A kept step may read a table of the model the spine picked, which its chain loads.
+        let picked = self.picked_model_tables();
         for step in self
             .charts
             .doc
@@ -10527,6 +10527,7 @@ impl MeridianApp {
             let Some(chain) = crate::generated::preview_chain(generated, &step.name) else {
                 continue;
             };
+            let chain = crate::generated::with_file_roots(&source.name, chain, &picked);
             if self
                 .typed_counts
                 .iter()
@@ -10545,6 +10546,8 @@ impl MeridianApp {
                     runner: None,
                     shown: crate::data_grid::Shown::new(),
                     casts: source.casts.clone(),
+                    // The chain handed over already loads the tables the spine picked.
+                    file_roots: Vec::new(),
                 },
                 chain.clone(),
                 move || wake.request_repaint(),
@@ -10573,13 +10576,12 @@ impl MeridianApp {
                 Ok(Err(_)) | Err(TryRecvError::Disconnected) => false,
                 Err(TryRecvError::Empty) => true,
             });
+        let picked = self.picked_model_tables();
         for (name, chain, rows) in landed {
-            let current = self
-                .protocol
-                .doc
-                .model
-                .generated()
-                .and_then(|g| crate::generated::preview_chain(g, &name));
+            let current = self.protocol.doc.model.generated().and_then(|g| {
+                crate::generated::preview_chain(g, &name)
+                    .map(|chain| crate::generated::with_file_roots(&g.root_table, chain, &picked))
+            });
             if current.as_ref() == Some(&chain) {
                 self.charts.doc.set_typed_rows(&name, rows);
                 self.protocol.doc.model.set_typed_rows(&name, rows);
@@ -15837,7 +15839,11 @@ impl MeridianApp {
             .find(|s| s.name.to_lowercase() == label)?;
         // The steps the step reads, and theirs, back to the load, in the
         // order the manifest makes them.
-        let chain = crate::generated::preview_chain(generated, &step.name)?;
+        let chain = crate::generated::with_file_roots(
+            &generated.root_table,
+            crate::generated::preview_chain(generated, &step.name)?,
+            &self.picked_model_tables(),
+        );
         let fields = match &step.effect {
             StepEffect::Operation(KnownOperation::FilterRows) => {
                 [step.argument.clone(), String::new()]
