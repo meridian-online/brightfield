@@ -172,7 +172,7 @@ pub(super) struct OperationHost {
     picking: Option<Picking>,
     /// When each grid copy of a model's table was last written, or tried, for
     /// a step's preview: a preview is asked for on each frame, and a copy that
-    /// cannot be written is tried again only after [`COPY_AGAIN_AFTER`].
+    /// cannot be written waits [`COPY_AGAIN_AFTER`] before it is tried again.
     copies_tried: std::cell::RefCell<BTreeMap<std::path::PathBuf, std::time::Instant>>,
 }
 
