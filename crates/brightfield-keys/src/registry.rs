@@ -144,7 +144,7 @@ pub enum ReservedReason {
     /// Needs the durable spec-edit spine (the `ChartEdit` AST mutation API) to
     /// persist a structural change. Now an empty bucket: set-channel and undo
     /// are built, and the three mark verbs wait under `NeedsChartEditing`. The
-    /// variant is retained only for its `reason()` surface.
+    /// variant is kept for its `reason()` surface.
     NeedsCommandLog,
     /// `f` / `g f` / `t` / set-param — need a keyboard data-target: a way to
     /// name a predicate without a pointer-derived rectangle or point.
