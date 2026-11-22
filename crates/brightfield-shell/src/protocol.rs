@@ -6138,7 +6138,7 @@ mod tests {
     const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
 
     /// A verb the model has no arm for is not one of its own, which `perform`
-    /// says apart from one of its own that changed nothing.
+    /// tells from one of its own that left the model as it was.
     #[test]
     fn perform_answers_none_for_a_verb_it_has_no_arm_for() {
         let mut m = model();
