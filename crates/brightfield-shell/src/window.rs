@@ -3000,6 +3000,19 @@ fn consume_unshifted(i: &mut egui::InputState, key: egui::Key) -> bool {
     i.events.len() != before
 }
 
+/// Whether `event` is the keyboard's: a key, the text it typed, or the copy,
+/// cut or paste a host makes of a chord in place of its key event.
+fn is_keyboard_event(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_)
+    )
+}
+
 /// The registry's own spelling of `longname`, when it registers the verb: the
 /// name with the lifetime the window's records keep.
 fn registered_longname(longname: &str) -> Option<&'static str> {
@@ -6921,7 +6934,7 @@ impl MeridianApp {
             ctx.input_mut(|i| {
                 let (keys, rest) = std::mem::take(&mut i.events)
                     .into_iter()
-                    .partition(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                    .partition(is_keyboard_event);
                 menu_keys = keys;
                 i.events = rest;
             });
@@ -7084,8 +7097,7 @@ impl MeridianApp {
         // What the menus left of them is not the window's either.
         if menus_open {
             ctx.input_mut(|i| {
-                i.events
-                    .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                i.events.retain(|e| !is_keyboard_event(e));
             });
         }
         self.regions.push((title.id, drawn.response.rect));

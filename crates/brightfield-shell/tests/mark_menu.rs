@@ -177,6 +177,17 @@ fn keys_pressed_over_the_open_menus_are_not_the_windows() {
         "`=` closed the menus"
     );
 
+    // A host that makes a copy of the chord in place of its key event.
+    win.answered.clear();
+    let held = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    win.frame(held, vec![egui::Event::Copy]);
+    win.settle();
+    assert_eq!(
+        win.answered,
+        Vec::<&str>::new(),
+        "a copy acted under the menus"
+    );
+
     win.press("escape");
     assert_eq!(win.answered, Vec::<&str>::new());
     assert!(
