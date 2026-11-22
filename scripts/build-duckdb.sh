@@ -94,7 +94,7 @@ VCPKG_COMMIT="cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
 VCPKG_URL="https://github.com/microsoft/vcpkg"
 # FineType: the tag is packaging/finetype-pin.env's; this is the commit it names.
 FINETYPE_URL="https://github.com/meridian-online/finetype"
-FINETYPE_COMMIT="3693c9f79c59530ac04f266b4dbd36762b79c328"
+FINETYPE_COMMIT="47f59e2bf6f1b6d05ce42d3ec8019832e368bb17"
 
 JOBS="${BRIGHTFIELD_DUCKDB_JOBS:-6}"
 case "$JOBS" in ''|*[!0-9]*) fail "BRIGHTFIELD_DUCKDB_JOBS='${JOBS}' is not a number" ;; esac
