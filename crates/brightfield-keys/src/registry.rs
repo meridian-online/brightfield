@@ -90,7 +90,7 @@ pub enum Drives {
     /// Palette / help meta-surfaces.
     PaletteMeta,
     /// A structural spec edit that writes the durable protocol document:
-    /// change-mark-type / add-mark / set-channel / remove-mark / undo. NOT
+    /// set-channel, undo and the model's reshape verbs. NOT
     /// `g`-broadcast eligible (that is runtime-dispatch only, `scope::g_eligible`).
     SpecEdit,
     /// A deferred verb, shown but unbound.
@@ -133,18 +133,18 @@ impl CommandTier {
 pub enum VerbStatus {
     /// Wired: a live binding that a handler answers.
     Built,
-    /// Listed flagged in the palette and unbound, until the feature behind it
-    /// is built.
+    /// Unbound, and carried in the palette corpus with its reason, until the
+    /// feature behind it is built.
     Reserved,
 }
 
 /// Why a reserved verb is not yet available — the named buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservedReason {
-    /// `m` / `a` / `e` / `d` / undo — need the durable spec-edit spine (the
-    /// `ChartEdit` AST mutation API) to persist a structural change. Now an
-    /// empty bucket: those verbs are built, and the variant is retained only for
-    /// its `reason()` surface.
+    /// Needs the durable spec-edit spine (the `ChartEdit` AST mutation API) to
+    /// persist a structural change. Now an empty bucket: set-channel and undo
+    /// are built, and the three mark verbs wait under `NeedsChartEditing`. The
+    /// variant is retained only for its `reason()` surface.
     NeedsCommandLog,
     /// `f` / `g f` / `t` / set-param — need a keyboard data-target: a way to
     /// name a predicate without a pointer-derived rectangle or point.
@@ -2065,8 +2065,9 @@ pub struct HelpRow {
 }
 
 /// The help sheet: each built verb with its keys, help and scope. A reserved
-/// verb has no key to show and no handler to answer one, so it is left to the
-/// palette, which lists it flagged.
+/// verb has no key to show and no handler to answer one, so the sheet leaves
+/// it out; [`palette_corpus`] still carries it, with its reason, for a palette
+/// that lists its altitude unrestricted.
 #[must_use]
 pub fn help_sheet(reg: &[VerbEntry]) -> Vec<HelpRow> {
     reg.iter()
@@ -2174,10 +2175,10 @@ mod tests {
             .collect();
         needs_log.sort_unstable();
         needs_target.sort_unstable();
-        // The command log flipped the 5 verbs Reserved -> Built, so the
-        // NeedsCommandLog bucket is now EMPTY (deliberate update; the enum
-        // variant + its reason() surface are retained). NeedsKeyboardTarget is
-        // unchanged.
+        // The command log built set-channel and undo, and the three mark
+        // verbs moved to NeedsChartEditing, so the NeedsCommandLog bucket is
+        // now EMPTY (the enum variant + its reason() surface are retained).
+        // NeedsKeyboardTarget is unchanged.
         assert!(
             needs_log.is_empty(),
             "NeedsCommandLog bucket is now empty: {needs_log:?}"

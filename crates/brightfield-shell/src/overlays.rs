@@ -14,8 +14,9 @@
 //!
 //! - [`CommandPalette`] — query + ranked corpus:
 //!   `brightfield_keys::palette_filter` over the registry at one altitude,
-//!   frequency/recency-ordered on an empty query. Reserved verbs are shown
-//!   flagged and refuse to run, exactly as the corpus says.
+//!   frequency/recency-ordered on an empty query. A reserved verb the palette
+//!   lists is flagged and refuses to run, as the corpus says; the chart's
+//!   palette is an allow-list of built verbs and lists none.
 //! - [`ArgPrompt`] — the step-wise argument collection for the two
 //!   argument-taking verbs, driven by `brightfield_model::arg_collector`.
 //!   Enumerable steps read as a filtered pick list; a step with no
@@ -58,11 +59,10 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// not the public build, and doc links do not get to widen an API.)
 ///
 /// `Altitude::View` in the registry is deliberately broader than this: it
-/// also names verbs the chart view's editing bridge will wire later
-/// (`add-mark`, `set-channel`, ...) and meta verbs this shell handles
-/// elsewhere rather than through `MeridianApp::apply`
-/// (`open-help`, `toggle-focus`, `reload-spec`, `toggle-presentation`,
-/// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
+/// also names reserved verbs no handler answers yet (`add-mark`,
+/// `toggle-focus`, `reload-spec`, `toggle-presentation`,
+/// `cycle-colour-scheme`, ...) and meta verbs this shell handles elsewhere
+/// rather than through `MeridianApp::apply` (`open-help`, ...). Listing
 /// the raw altitude scope on the chart view would put rows in the palette
 /// that confirm and silently do nothing; this curated list is what keeps
 /// that from happening. `undo` takes back a column kept from the shelf, by key
@@ -333,8 +333,8 @@ struct HelpLine {
 
 /// The keyboard help sheet: each built verb with its keys and help, grouped by
 /// the altitudes it applies at, filterable, read-only. A reserved verb has no
-/// key and is left to the palette. Enter dismisses — there is
-/// nothing to run from a reference sheet.
+/// key and is left out. Enter dismisses — there is nothing to run from a
+/// reference sheet.
 pub struct HelpSheet {
     lines: Vec<HelpLine>,
     matches: Vec<usize>,
