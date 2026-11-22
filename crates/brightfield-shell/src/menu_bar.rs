@@ -11,11 +11,12 @@
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use brightfield_keys::{
-    availability, items_without_native, keys_label, menu_bar, registry, Availability,
+    availability, item_title, items_without_native, keys_label, menu_bar, registry, Availability,
     BindingContext, KeyPlatform, Menu, MenuItem, Situation, VerbEntry,
 };
 
-/// What every row says while a sheet over the window waits on an answer.
+/// What a row a sheet stops says while the sheet waits on an answer
+/// ([`Sheet::stops`]).
 pub const SHEET_UP: &str = "Finish what the sheet over the window asks first.";
 
 /// One command of the menu bar, as a menu draws it.
@@ -84,16 +85,11 @@ fn fixed_rows() -> &'static [(MenuRow, Option<VerbEntry>)] {
                     continue;
                 };
                 let verb = reg.iter().find(|v| v.longname == longname).cloned();
-                let label = verb.as_ref().map_or(longname, |v| v.label);
                 rows.push((
                     MenuRow {
                         menu: menu.title,
                         longname,
-                        title: if asks {
-                            format!("{label}…")
-                        } else {
-                            label.to_owned()
-                        },
+                        title: item_title(longname, asks),
                         keys: verb.as_ref().and_then(menu_key),
                         missing: None,
                     },

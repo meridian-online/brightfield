@@ -6,7 +6,9 @@
 #[path = "support/scenes.rs"]
 mod scenes;
 
-use brightfield_keys::{registry, Availability, BindingContext, Need, Selected, Situation};
+use brightfield_keys::{
+    registry, Availability, BindingContext, Condition, Need, Selected, Situation,
+};
 use brightfield_shell::menu_bar::{menu_rows, Sheet, SHEET_UP};
 
 #[test]
@@ -91,7 +93,7 @@ fn verb_needs_protocol_somewhere(reg: &[brightfield_keys::VerbEntry]) -> bool {
 }
 
 #[test]
-fn no_menu_command_acts_behind_a_sheet() {
+fn a_sheet_stops_each_menu_command_but_quit_and_save() {
     let mut win = scenes::data_file();
     win.choose("open-preferences");
     assert_eq!(win.app.open_overlay(), Some("preferences"));
@@ -146,4 +148,46 @@ fn the_menu_rows_carry_each_commands_title_key_and_sentence() {
         row("run-protocol").missing.as_deref(),
         Some("Run needs a Protocol to act on: open one, or open a data file or a folder.")
     );
+}
+
+/// Save's key is read under a sheet, so its menu item acts there; the close
+/// question asks about saving itself, and under it Save stands down while
+/// Quit stays live.
+#[test]
+fn save_acts_under_a_sheet_and_stands_down_under_the_close_question() {
+    let row = |win: &scenes::Window, name: &str| {
+        win.app
+            .menu_rows()
+            .into_iter()
+            .find(|r| r.longname == name)
+            .expect("on a menu")
+    };
+
+    let mut win = scenes::data_file();
+    assert!(
+        scenes::arrange(&mut win, Need::Condition(Condition::UnsavedWork)),
+        "the scene holds unsaved work"
+    );
+    win.choose("quit");
+    assert_eq!(win.app.open_overlay(), Some("close-question"));
+    assert_eq!(
+        row(&win, "save-protocol").missing.as_deref(),
+        Some(SHEET_UP)
+    );
+    assert_eq!(row(&win, "quit").missing, None);
+    win.choose("save-protocol");
+    assert_eq!(win.applied, Vec::<&str>::new());
+    assert_eq!(win.app.open_overlay(), Some("close-question"));
+
+    let mut win = scenes::data_file();
+    assert!(scenes::arrange(
+        &mut win,
+        Need::Condition(Condition::UnsavedWork)
+    ));
+    win.choose("open-preferences");
+    assert_eq!(win.app.open_overlay(), Some("preferences"));
+    assert_eq!(row(&win, "save-protocol").missing, None);
+    win.choose("save-protocol");
+    assert_eq!(win.applied, ["save-protocol"]);
+    assert_eq!(win.app.open_overlay(), Some("preferences"));
 }
