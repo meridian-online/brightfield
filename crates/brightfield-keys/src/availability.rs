@@ -80,8 +80,10 @@ pub enum Condition {
     EditToTakeBack,
     /// A change is not saved yet.
     UnsavedWork,
-    /// The Protocol is the analyst's own, made from a data file or a folder.
-    ProtocolSource,
+    /// The window holds a Protocol that Save and Run act on: one made from a
+    /// data file or a folder, one whose panels it holds as tiles, or the one
+    /// the model pane is over. A chart spec and a shipped start are neither.
+    ProtocolToRun,
     /// The Protocol is trusted.
     Trusted,
     /// The Protocol is one Brightfield made, which sources can be added to.
@@ -139,8 +141,8 @@ impl Need {
             Need::Condition(Condition::UnsavedWork) => {
                 "{command} needs a change that is not saved yet."
             }
-            Need::Condition(Condition::ProtocolSource) => {
-                "{command} needs a Protocol of your own: open a data file or a folder."
+            Need::Condition(Condition::ProtocolToRun) => {
+                "{command} needs a Protocol to act on: open one, or open a data file or a folder."
             }
             Need::Condition(Condition::Trusted) => {
                 "{command} needs the Protocol trusted: trust it from the band over its canvas."
@@ -323,12 +325,12 @@ mod tests {
         assert_eq!(
             availability(&verb("run-protocol"), &Situation::default()),
             Availability::Missing(
-                "Run needs a Protocol of your own: open a data file or a folder.".into()
+                "Run needs a Protocol to act on: open one, or open a data file or a folder.".into()
             )
         );
         // That one held: its second.
         let s = Situation {
-            conditions: vec![Condition::ProtocolSource],
+            conditions: vec![Condition::ProtocolToRun],
             ..Situation::default()
         };
         assert_eq!(
@@ -339,7 +341,7 @@ mod tests {
         );
         // Both held: it can act.
         let s = Situation {
-            conditions: vec![Condition::ProtocolSource, Condition::Trusted],
+            conditions: vec![Condition::ProtocolToRun, Condition::Trusted],
             ..Situation::default()
         };
         assert_eq!(

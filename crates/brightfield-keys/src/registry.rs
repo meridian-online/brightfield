@@ -265,10 +265,10 @@ const NEEDS_HOME: &[Requirement] = &[Requirement::new(
 const NEEDS_PROTOCOL: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_UNSAVED_WORK: &[Requirement] =
     &[Requirement::of(Need::Condition(Condition::UnsavedWork))];
-const NEEDS_OWN_PROTOCOL: &[Requirement] =
-    &[Requirement::of(Need::Condition(Condition::ProtocolSource))];
+const NEEDS_PROTOCOL_TO_RUN: &[Requirement] =
+    &[Requirement::of(Need::Condition(Condition::ProtocolToRun))];
 const NEEDS_RUN: &[Requirement] = &[
-    Requirement::of(Need::Condition(Condition::ProtocolSource)),
+    Requirement::of(Need::Condition(Condition::ProtocolToRun)),
     Requirement::of(Need::Condition(Condition::Trusted)),
 ];
 const NEEDS_UNTRUST: &[Requirement] = &[
@@ -707,7 +707,7 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "save-spec",
             label: "Save the spec",
-            needs: NEEDS_OWN_PROTOCOL,
+            needs: NEEDS_PROTOCOL_TO_RUN,
             tier: CommandTier::View,
             binding_specs: vec![editor("cmd-s")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
