@@ -19,7 +19,7 @@ Work that needs no new component gets its own task, so it can land before the co
 - arc's run record and `.jsonl` stream, through `brightfield-protocol`.
 - chrono.
 
-**Spec:** `docs/superpowers/specs/2026-11-21-brightfield-chrome-design.md`. Slice 1 (availability declarations and the native menu bar) and the operation forms are planned separately. This plan consumes slice 1 as an interface (`docs/superpowers/plans/2026-11-22-chrome-slice-1-availability-and-menu-bar.md`); see "What this plan needs from slice 1". It reads the operation forms from their registry (`docs/superpowers/plans/2026-11-22-operation-forms.md`), so no form task edits a file of this plan's.
+**Spec:** `docs/superpowers/specs/2026-11-21-brightfield-chrome-design.md`. Slice 1 (availability declarations and the native menu bar) and the operation forms are planned separately. This plan consumes slice 1 as an interface; slice 1 is built and its plan removed, so the interface is the code and the README's "Commands, menus and keys". See "What this plan needs from slice 1". It reads the operation forms from their registry (`docs/superpowers/plans/2026-11-22-operation-forms.md`), so no form task edits a file of this plan's.
 
 ## Global Constraints
 
@@ -99,7 +99,7 @@ Work that needs no new component gets its own task, so it can land before the co
 
 ## What this plan needs from slice 1
 
-These names come from slice 1's plan, `docs/superpowers/plans/2026-11-22-chrome-slice-1-availability-and-menu-bar.md`. Every task below uses them as slice 1 defines them.
+These names come from slice 1, which is built; its plan is removed and its outcome is in the README's "Commands, menus and keys". Every task below uses them as slice 1 defines them. Where the build's names differ from the ones written below, the code's hold: `Condition::ProtocolSource` became `ProtocolToRun` (Run's) and `ProtocolToSave` (Save the spec's), with `ProtocolFolder` for Stop trusting; `menu_rows` takes a `Sheet` (`None`, `Up`, `CloseQuestion`) where it took `sheet_up: bool`; and the test support's `scene_for` takes the binding context after the longname.
 
 **What this plan consumes**
 
