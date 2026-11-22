@@ -830,6 +830,11 @@ pub struct EditorPane {
     last_poll: Option<Instant>,
     /// The last drawn cursor, echoed while the pane redraws.
     cursor: Option<(usize, usize)>,
+    /// **A step's SQL, shown read-only**: its title and its text, held in
+    /// memory with no file behind it ([`Self::show_sql`]). While it is set the
+    /// pane draws it in place of the spec file's buffer, which is kept as it
+    /// was.
+    sql: Option<(String, String)>,
 }
 
 impl Default for EditorPane {
@@ -850,7 +855,27 @@ impl EditorPane {
             reload_pending_since: None,
             last_poll: None,
             cursor: None,
+            sql: None,
         }
+    }
+
+    /// **Show `text` read-only under the title `title`**: a step's SQL, which
+    /// has no file of the editor's behind it and is not edited here. The spec
+    /// file's buffer, if one is open, is left as it is and is drawn again once
+    /// [`Self::hide_sql`] is called.
+    pub fn show_sql(&mut self, title: &str, text: &str) {
+        let same = self
+            .sql
+            .as_ref()
+            .is_some_and(|(t, x)| t == title && x == text);
+        if !same {
+            self.sql = Some((title.to_string(), text.to_string()));
+        }
+    }
+
+    /// Stop showing a step's SQL, so the pane draws its spec file again.
+    pub fn hide_sql(&mut self) {
+        self.sql = None;
     }
 
     /// Open `path`, seeding the buffer from disk.
@@ -1124,6 +1149,21 @@ impl EditorPane {
     }
 }
 
+/// Leave on the document what the pane drew this frame, when it differs from
+/// what is there, so a frame that draws the same text makes no copy of it.
+fn note_drawn(doc: &mut ChartDoc, title: &str, text: &str, read_only: bool) {
+    let same = doc
+        .editor_drawn()
+        .is_some_and(|d| d.title == title && d.text == text && d.read_only == read_only);
+    if !same {
+        doc.set_editor_drawn(Some(crate::app::EditorDrawn {
+            title: title.to_string(),
+            text: text.to_string(),
+            read_only,
+        }));
+    }
+}
+
 impl Item<ChartDoc> for EditorPane {
     fn item_id(&self) -> ItemId {
         EDITOR
@@ -1139,7 +1179,7 @@ impl Item<ChartDoc> for EditorPane {
     /// the shell would draw the empty state instead of calling `ui`, and the
     /// open would never happen.
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
-        if self.file.is_some() || doc.spec_path.is_some() {
+        if self.file.is_some() || doc.spec_path.is_some() || doc.step_sql().is_some() {
             return None;
         }
         Some(EmptyState::new(
@@ -1151,6 +1191,10 @@ impl Item<ChartDoc> for EditorPane {
     }
 
     fn describe(&self, _doc: &ChartDoc) -> Subject {
+        // A step's SQL is titled with the step's name, and carries no breadcrumb, Save or warning of the spec file's: it is not a file here.
+        if let Some((title, _)) = &self.sql {
+            return Subject::new(title.clone(), ICON_EDITOR, BindingContext::Editor);
+        }
         let title = self
             .file
             .as_ref()
@@ -1236,12 +1280,38 @@ impl Item<ChartDoc> for EditorPane {
             }
         }
         self.poll_disk();
+        // **The step in front's SQL, read-only**, while the canvas holds the
+        // grid of a step whose SQL the window has left on the document, and
+        // the spec file's buffer holds no unsaved edit. An edited buffer stays
+        // on the surface, so keystrokes not yet saved are not covered over.
+        match doc.step_sql().cloned() {
+            Some((title, text)) if !matches!(self.dirty(), Dirty::Edited) => {
+                self.show_sql(&title, &text);
+            }
+            _ => self.hide_sql(),
+        }
+        if let Some((title, text)) = &mut self.sql {
+            // The surface edits a copy it is given and reports no change in
+            // read-only, so the text shown stays the step's.
+            let mut shown = text.clone();
+            code_surface(ui, "step-sql", &mut shown, Access::ReadOnly, cx.mode);
+            note_drawn(doc, title, text, true);
+            self.publish_buffer(doc);
+            return;
+        }
         let Some(file) = &mut self.file else {
             // Unreachable through the shell (the empty state draws instead
             // when there is no file and no path to open one from); blank
             // rather than apologetic if reached directly.
+            doc.set_editor_drawn(None);
             return;
         };
+        let title = file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        note_drawn(doc, &title, &file.buffer, false);
 
         let out = code_surface(
             ui,

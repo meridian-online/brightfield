@@ -62,23 +62,6 @@ impl Drop for Scratch {
     }
 }
 
-/// The tables `request` reads, each once in any case: the one it is on, then
-/// the others in order.
-fn tables_read(request: &StepRequest) -> Vec<&str> {
-    let mut tables: Vec<&str> = Vec::new();
-    let read = request
-        .on
-        .iter()
-        .map(String::as_str)
-        .chain(request.reads.iter().map(|(_, table)| table.as_str()));
-    for table in read {
-        if !tables.iter().any(|t| t.eq_ignore_ascii_case(table)) {
-            tables.push(table);
-        }
-    }
-    tables
-}
-
 fn write(path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -99,7 +82,7 @@ pub fn draft_model(
     let scratch = Scratch::new()?;
     let dir = &scratch.0;
     let mut manifest = String::from("name: draft\nsteps:");
-    let tables = tables_read(request);
+    let tables = crate::typed_sql::tables_read(request);
     if tables.is_empty() {
         manifest.push_str(" []\n");
     } else {

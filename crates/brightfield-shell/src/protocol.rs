@@ -2597,8 +2597,9 @@ impl ProtocolModel {
     /// **The step `remove-step` would remove**: the selected asset's step
     /// ([`Self::selected_step`]), when this Protocol is one Brightfield saves
     /// ([`Self::source`]) and the step is recorded in its folder and is neither
-    /// a load nor one of the model's (`fixed_steps`). A statement kept and not
-    /// yet saved is not one: it is in no file to remove it from.
+    /// a load nor one of the model's (`fixed_steps`). A step kept and not yet
+    /// saved is one too: no file holds it, so the window takes it back in
+    /// place of drafting a removal.
     ///
     /// Whether later steps read it is not asked here: that refusal is said in
     /// a sentence naming them, so the verb is offered and refuses
@@ -2608,8 +2609,7 @@ impl ProtocolModel {
         self.source.as_ref()?;
         self.selected_step().filter(|step| {
             !self.fixed_steps.contains(*step)
-                && !self.typed.contains_key(*step)
-                && self.graph_full.seams.contains_key(*step)
+                && (self.typed.contains_key(*step) || self.graph_full.seams.contains_key(*step))
         })
     }
 

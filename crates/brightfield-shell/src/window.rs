@@ -3805,6 +3805,9 @@ pub struct MeridianApp {
     /// The text of the answer whose rows the grid shows, so the grid is handed
     /// a page only when a new one is read.
     typed_in_grid: Option<String>,
+    /// The recorded step whose model file was last read for the Editor, with its text, or `None`
+    /// for a file that did not read ([`Self::step_sql_in_front`]).
+    step_sql_read: Option<(String, Option<String>)>,
     /// The text of the answer whose filter the grid previews on the loaded
     /// table ([`ChartDoc::preview_typed_where`]), so a frame hands the preview
     /// over when a new answer is read rather than each time it draws.
@@ -4306,6 +4309,7 @@ impl MeridianApp {
             typed: None,
             typed_pause: TYPED_PAUSE,
             typed_in_grid: None,
+            step_sql_read: None,
             typed_where_in_grid: None,
             typed_counts: Vec::new(),
             overlay_keys: OverlayKeys::from_registry(),
@@ -9489,12 +9493,20 @@ impl MeridianApp {
     /// palette and not yet saved, the statement form holding that statement,
     /// selected whole, to correct it or read it; otherwise the palette's
     /// search ([`Self::open_chart_search`]).
+    ///
+    /// Over the grid of a step an operation made the palette opens on its search: that step's
+    /// text is arc's model, which is corrected from the operation and not typed over
+    /// (`the_statement_form_over_a_drafts_grid_starts_empty`).
     fn open_chart_palette(&mut self) {
-        if let Some(step) = self.typed_step_in_front() {
-            let (statement, name) = (step.statement.clone(), step.name.clone());
-            self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
-        } else {
-            self.open_chart_search();
+        match self
+            .typed_step_in_front()
+            .filter(|step| step.operation.is_none())
+        {
+            Some(step) => {
+                let (statement, name) = (step.statement.clone(), step.name.clone());
+                self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
+            }
+            None => self.open_chart_search(),
         }
     }
 
@@ -10279,13 +10291,69 @@ impl MeridianApp {
                 statement: answer.text.clone(),
                 reads,
                 rows: None,
+                operation: None,
             });
         }
+        self.bring_kept_to_front(ctx, &name);
+    }
+
+    /// **Keep an operation's draft as the step `name`**: `request` is what arc
+    /// is asked to record at the next Save, and `model` the SQL arc writes for
+    /// it, which the step's grid previews by running. A step already kept
+    /// under `name` is corrected in place; otherwise the step goes at the foot
+    /// of the Protocol. The Protocol is laid out again with it and its table is
+    /// brought to the front in the grid, as a kept statement's is. No file is
+    /// written.
+    ///
+    /// Over a join's rows no step is kept, as for a statement.
+    pub fn keep_draft(
+        &mut self,
+        ctx: &egui::Context,
+        name: String,
+        request: crate::operation::StepRequest,
+        model: String,
+    ) {
+        if !self.charts.doc.views_are_steps() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_KEPT_ON_A_JOIN_BANNER),
+                    Severity::Warning,
+                    "This step was not kept",
+                )
+                .body(NOT_KEPT_ON_A_JOIN_BODY),
+            );
+            ctx.request_repaint();
+            return;
+        }
+        let kept = self
+            .charts
+            .doc
+            .typed_steps()
+            .iter()
+            .any(|step| step.name == name);
+        if kept {
+            self.charts.doc.replace_draft(&name, request, model);
+        } else {
+            self.charts.doc.keep_typed(TypedStep {
+                name: name.clone(),
+                statement: model,
+                reads: crate::typed_sql::tables_read(&request),
+                rows: None,
+                operation: Some(request),
+            });
+        }
+        self.bring_kept_to_front(ctx, &name);
+    }
+
+    /// Lay the Protocol out again with the kept steps, bring the table of the
+    /// kept step `name` to the front in the grid with the cursor on its first
+    /// cell and the keys, and count its rows on a worker.
+    fn bring_kept_to_front(&mut self, ctx: &egui::Context, name: &str) {
         self.typed_in_grid = None;
         self.lay_out_typed_steps();
         let model = &mut self.protocol.doc.model;
-        model.select_step_table(&name);
-        if let Some(node) = model.node_of_step_table(&name).cloned() {
+        model.select_step_table(name);
+        if let Some(node) = model.node_of_step_table(name).cloned() {
             self.canvas_holds = CanvasHolds::View {
                 node,
                 view: NodeView::Grid,
@@ -11854,6 +11922,70 @@ impl MeridianApp {
             .doc
             .model
             .set_removing(self.charts.doc.removing_steps());
+        // The Editor is told the SQL of the step in front, which it shows read-only.
+        let sql = self.step_sql_in_front();
+        if self.charts.doc.set_step_sql(sql) {
+            ctx.request_repaint();
+        }
+    }
+
+    /// **The SQL of the step whose grid the canvas holds**, as the step's name and its text, for
+    /// the Editor: arc's model for a step an operation made and Save has not recorded, or the
+    /// model file of a step arc generated that is recorded. `None` when the canvas holds another
+    /// view, the loaded table's grid, or the grid of a statement, which is read on its form.
+    ///
+    /// A recorded step's file is read when the step comes to the front and kept while it stays
+    /// there, so a frame reads no file.
+    fn step_sql_in_front(&mut self) -> Option<(String, String)> {
+        use crate::generated::StepEffect;
+        let found = (|| {
+            let CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } = self.canvas_holds()
+            else {
+                return None;
+            };
+            let model = &self.protocol.doc.model;
+            let generated = model.generated()?;
+            let label = model.label_of(node)?.to_lowercase();
+            let step = generated
+                .steps
+                .iter()
+                .find(|s| s.name.to_lowercase() == label)?;
+            let kept = model.is_typed(&step.name);
+            let of_an_operation = matches!(
+                step.effect,
+                StepEffect::Operation(_) | StepEffect::Generated(_)
+            );
+            of_an_operation.then(|| (step.name.clone(), kept, generated.dir.clone()))
+        })();
+        let Some((name, kept, dir)) = found else {
+            self.step_sql_read = None;
+            return None;
+        };
+        if kept {
+            self.step_sql_read = None;
+            return self
+                .charts
+                .doc
+                .typed_steps()
+                .iter()
+                .find(|step| step.name == name)
+                .map(|step| (name.clone(), step.statement.clone()));
+        }
+        if self.step_sql_read.as_ref().map(|(step, _)| step) != Some(&name) {
+            let text = std::fs::read_to_string(dir.join("arcform.yaml"))
+                .ok()
+                .and_then(|text| brightfield_protocol::parse_manifest_str(&text).ok())
+                .and_then(|manifest| {
+                    let step = manifest.steps.iter().find(|s| s.name == name)?;
+                    std::fs::read_to_string(dir.join(step.sql.as_ref()?)).ok()
+                });
+            self.step_sql_read = Some((name.clone(), text));
+        }
+        let (_, text) = self.step_sql_read.as_ref()?;
+        text.clone().map(|text| (name, text))
     }
 
     /// **Remove the recorded step `step` from the spine as a draft, or put it back**: what `d d`
@@ -11865,8 +11997,28 @@ impl MeridianApp {
     /// the order they were made. For the same reason a removed step that reads one removed after it
     /// is not put back until that one is. The step stays in `arcform.yaml` until a Save takes it
     /// out ([`Self::record_pending`]).
+    ///
+    /// A step kept and not yet saved is in no file, so it is taken back at once and is no draft
+    /// of a removal: it leaves the spine, and a step kept after it that reads its table refuses
+    /// that, named in the banner (`remove_step_takes_a_kept_draft_back`).
     fn ask_remove_step(&mut self, step: &str) {
         let banner = NotificationId::new("remove-step");
+        if self.protocol.doc.model.is_typed(step) {
+            match self.charts.doc.discard_kept(step) {
+                Ok(()) => {
+                    self.notifications.dismiss(banner);
+                    self.typed_in_grid = None;
+                    self.lay_out_typed_steps();
+                }
+                Err(readers) => {
+                    self.notifications.raise(
+                        Notification::new(banner, Severity::Warning, REMOVE_STEP_REFUSED)
+                            .body(readers_sentence(step, &readers)),
+                    );
+                }
+            }
+            return;
+        }
         let model = &self.protocol.doc.model;
         if self.charts.doc.is_removing(step) {
             let read: Vec<String> = self
@@ -15325,12 +15477,26 @@ impl MeridianApp {
                     else {
                         continue;
                     };
-                    crate::operation::record_sql(
-                        &runner,
-                        &source.dir,
-                        &step.statement,
-                        &step.name,
-                    )?;
+                    // A step an operation made is recorded as that operation, so the file is
+                    // the one arc writes for it however it is recorded; a statement as typed.
+                    match &step.operation {
+                        Some(request) => {
+                            crate::operation::record_step(
+                                &runner,
+                                &source.dir,
+                                &step.name,
+                                request,
+                            )?;
+                        }
+                        None => {
+                            crate::operation::record_sql(
+                                &runner,
+                                &source.dir,
+                                &step.statement,
+                                &step.name,
+                            )?;
+                        }
+                    }
                     self.charts.doc.mark_typed_recorded(&name);
                     // A step this edition cannot run is recorded as typed, and said so as it is
                     // added: the Protocol keeps it, and runs it in the full edition.

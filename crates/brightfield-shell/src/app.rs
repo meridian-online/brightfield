@@ -782,6 +782,18 @@ impl ShelfUndo {
     }
 }
 
+/// What the Editor drew on a frame: its title, its text, and whether the text
+/// could be edited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorDrawn {
+    /// The pane's title: a file's name, or a step's.
+    pub title: String,
+    /// The text on the surface.
+    pub text: String,
+    /// Whether the surface was read-only.
+    pub read_only: bool,
+}
+
 /// One piece of work a Save records through arc
 /// ([`ChartDoc::pending_in_order`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -792,6 +804,17 @@ pub enum PendingWork {
     Typed(String),
     /// The removal of the recorded step of this name.
     Remove(String),
+}
+
+/// How a step kept and not yet saved is named to a reader, in the close
+/// question and on the version a close without saving keeps: `SQL step ·
+/// <name>` for a statement, and `<long name> · <name>` for a step an operation
+/// made.
+fn kept_words(step: &crate::typed_sql::TypedStep) -> String {
+    match &step.operation {
+        Some(request) => format!("{} \u{b7} {}", request.long_name, step.name),
+        None => format!("SQL step \u{b7} {}", step.name),
+    }
 }
 
 /// How a step removed and not yet saved is named to a reader: in the close
@@ -964,6 +987,14 @@ pub struct ChartDoc {
     /// whenever it changes, and a close without saving keeps it as a version
     /// ([`Self::editor_buffer`]).
     editor_buffer: Option<(std::path::PathBuf, String)>,
+    /// **The SQL of the step in front**, for the Editor to show read-only: the
+    /// step's name and its text. The window sets it each frame, since which
+    /// step is in front is the window's to know and the editor holds no handle
+    /// on the window ([`Self::step_sql`]).
+    step_sql: Option<(String, String)>,
+    /// What the Editor drew on its last frame, left here by the pane for a
+    /// reader that cannot reach pane state ([`Self::editor_drawn`]).
+    editor_drawn: Option<EditorDrawn>,
     /// Whether the next `save-spec` the editor performs is the window's, made
     /// away from the editor, and what that save did once it has run: the
     /// window cannot reach the editor's report any other way.
@@ -1509,6 +1540,8 @@ impl ChartDoc {
             removing: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
+            step_sql: None,
+            editor_drawn: None,
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
@@ -1589,6 +1622,8 @@ impl ChartDoc {
             removing: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
+            step_sql: None,
+            editor_drawn: None,
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
@@ -1821,6 +1856,35 @@ impl ChartDoc {
             || !self.removing.is_empty()
     }
 
+    /// The SQL of the step in front, as its name and its text, when the
+    /// canvas holds the grid of a step whose SQL the Editor shows.
+    #[must_use]
+    pub fn step_sql(&self) -> Option<&(String, String)> {
+        self.step_sql.as_ref()
+    }
+
+    /// Set the SQL of the step in front, or that there is no such step. Answers
+    /// whether it changed.
+    pub(crate) fn set_step_sql(&mut self, sql: Option<(String, String)>) -> bool {
+        let changed = self.step_sql != sql;
+        self.step_sql = sql;
+        changed
+    }
+
+    /// What the Editor drew on the last frame it drew: `None` before it has
+    /// drawn, and while it draws its empty state.
+    #[must_use]
+    pub fn editor_drawn(&self) -> Option<&EditorDrawn> {
+        self.editor_drawn.as_ref()
+    }
+
+    /// Record what the Editor drew this frame: the editor's to say.
+    pub(crate) fn set_editor_drawn(&mut self, drawn: Option<EditorDrawn>) {
+        if self.editor_drawn != drawn {
+            self.editor_drawn = drawn;
+        }
+    }
+
     /// Record the YAML editor's unsaved buffer, or that it has none: the
     /// editor's to say, whenever its buffer changes.
     pub(crate) fn set_editor_buffer(&mut self, buffer: Option<(std::path::PathBuf, String)>) {
@@ -1987,9 +2051,60 @@ impl ChartDoc {
         let step = &mut self.typed[at];
         step.statement = statement;
         step.reads = reads;
+        // A statement typed over it is a statement, whatever made the step.
+        step.operation = None;
         for step in &mut self.typed[at..] {
             step.rows = None;
         }
+    }
+
+    /// Correct the kept step `name` to the operation `request`, whose model
+    /// arc writes as `model`: it keeps its name and its place. Its count, and
+    /// the count of each step kept after it, which may read it, are dropped to
+    /// be taken again.
+    pub(crate) fn replace_draft(
+        &mut self,
+        name: &str,
+        request: crate::operation::StepRequest,
+        model: String,
+    ) {
+        let Some(at) = self.typed.iter().position(|s| s.name == name) else {
+            return;
+        };
+        let step = &mut self.typed[at];
+        step.statement = model;
+        step.reads = crate::typed_sql::tables_read(&request);
+        step.operation = Some(request);
+        for step in &mut self.typed[at..] {
+            step.rows = None;
+        }
+    }
+
+    /// **Take the kept step `name` back**: it leaves the kept steps, and no
+    /// file is touched, since the step is in no file. A step no longer kept is left
+    /// alone.
+    ///
+    /// # Errors
+    ///
+    /// The steps kept after it that read its table, each named, while there
+    /// are such steps: they would read a table no step makes. Both stay kept
+    /// (`a_kept_draft_another_reads_is_not_taken_back` in
+    /// `tests/operation_keep.rs`).
+    pub(crate) fn discard_kept(&mut self, name: &str) -> Result<(), Vec<String>> {
+        let Some(at) = self.typed.iter().position(|s| s.name == name) else {
+            return Ok(());
+        };
+        let readers: Vec<String> = self.typed[at + 1..]
+            .iter()
+            .filter(|later| later.reads.iter().any(|t| t.eq_ignore_ascii_case(name)))
+            .map(|later| later.name.clone())
+            .collect();
+        if !readers.is_empty() {
+            return Err(readers);
+        }
+        self.typed.remove(at);
+        self.typed_stamps.remove(at);
+        Ok(())
     }
 
     /// Note that the table the kept statement `name` makes holds `rows` rows.
@@ -1999,14 +2114,12 @@ impl ChartDoc {
         }
     }
 
-    /// Each kept statement in words for the close question:
-    /// `SQL step · <name>`.
+    /// Each kept step in words for the close question: `SQL step · <name>`
+    /// for a statement, and `<long name> · <name>` for a step an operation
+    /// made.
     #[must_use]
     pub fn typed_lines(&self) -> Vec<String> {
-        self.typed
-            .iter()
-            .map(|s| format!("SQL step \u{b7} {}", s.name))
-            .collect()
+        self.typed.iter().map(kept_words).collect()
     }
 
     /// The unrecorded part of the grid view in words for the close question,
@@ -2455,7 +2568,7 @@ impl ChartDoc {
                 PendingWork::Typed(name) => {
                     let step = self.typed.iter().find(|s| s.name == name)?;
                     Some(brightfield_protocol::PendingStep {
-                        words: format!("SQL step \u{b7} {}", step.name),
+                        words: kept_words(step),
                         sql: step.statement.clone(),
                     })
                 }
