@@ -285,6 +285,8 @@ const TITLE_MARK_SIDE: f32 = spacing::ROW_GRID;
 /// be able to name every control on it, which is why an icon-only control
 /// carries its name here rather than relying on the picture.
 pub const HOME_CONTROL_NAME: &str = "Home";
+/// The name of the mark where it opens the menus: on a host with no menu bar.
+pub const MENUS_CONTROL_NAME: &str = "Menus";
 
 /// The curated section's heading: the datasets chosen for this build.
 ///
@@ -2216,6 +2218,12 @@ struct TopBar {
     /// The band's controls with their names, as drawn: Home by its hover
     /// text, and the flow toggle by its label on a frame that drew it.
     controls: Vec<chrome::NamedControl>,
+    /// The mark's rect, when the band drew it.
+    mark_rect: Option<egui::Rect>,
+    /// What the menus the mark opens drew, on a host where it opens them.
+    menu_drawn: Vec<crate::menu_bar::DrawnRow>,
+    /// The command chosen from those menus this frame.
+    menu_choice: Option<&'static str>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -3993,6 +4001,12 @@ pub struct MeridianApp {
     menu_state: crate::menu_bar::MenuState,
     /// The sentence said for the last menu command the window refused.
     menu_said: Option<String>,
+    /// Which menus this window's host draws.
+    menu_host: crate::menu_bar::MenuHost,
+    /// Where the title band drew the mark on the last frame that drew it.
+    mark_rect: Option<egui::Rect>,
+    /// What the menus the mark opens drew on the last frame.
+    mark_menu_drawn: Vec<crate::menu_bar::DrawnRow>,
     /// `untrust-protocol`'s key, off the registry.
     untrust_binding: Option<&'static str>,
     /// `reload-data`'s key, off the registry.
@@ -4451,6 +4465,9 @@ impl MeridianApp {
             verbs_applied: Vec::new(),
             menu_state: crate::menu_bar::MenuState::default(),
             menu_said: None,
+            menu_host: crate::menu_bar::MenuHost::of_this_build(),
+            mark_rect: None,
+            mark_menu_drawn: Vec::new(),
             untrust_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == UNTRUST_PROTOCOL)
@@ -7042,6 +7059,13 @@ impl MeridianApp {
             .show(ui, |ui| bar = self.title_band(ui));
         self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
+        self.mark_rect = bar.mark_rect;
+        self.mark_menu_drawn = std::mem::take(&mut bar.menu_drawn);
+        // A command chosen from the mark's menus goes the way one chosen from
+        // the native bar goes, so it is refused on the same terms.
+        if let Some(choice) = bar.menu_choice.take() {
+            self.open_queue.ask_verb(choice);
+        }
 
         let canvas = plan.expect_region(arrangement::CANVAS);
 
@@ -8552,6 +8576,31 @@ impl MeridianApp {
     #[must_use]
     pub fn menu_state(&self) -> crate::menu_bar::MenuState {
         self.menu_state.clone()
+    }
+
+    /// Which menus this window's host draws: the native bar's, or the ones
+    /// the mark opens.
+    #[must_use]
+    pub fn menu_host(&self) -> crate::menu_bar::MenuHost {
+        self.menu_host
+    }
+
+    /// Say which menus this window's host draws.
+    pub fn set_menu_host(&mut self, host: crate::menu_bar::MenuHost) {
+        self.menu_host = host;
+    }
+
+    /// Where the title band drew the mark on the last frame, when it drew it.
+    #[must_use]
+    pub fn mark_rect(&self) -> Option<egui::Rect> {
+        self.mark_rect
+    }
+
+    /// What the menus the mark opens drew on the last frame: each menu's title
+    /// row while the mark's popup is open, and the commands of an open menu.
+    #[must_use]
+    pub fn mark_menu_drawn(&self) -> &[crate::menu_bar::DrawnRow] {
+        &self.mark_menu_drawn
     }
 
     /// The verbs [`Self::apply`] performed on the last frame drawn.
@@ -11693,6 +11742,14 @@ impl MeridianApp {
         let mut bar = TopBar::default();
         let home_key = self.home_binding;
         let mark = self.mark.clone();
+        // On a host with no menu bar the mark opens the menus, on the front
+        // door too, and Home is the File menu's item and its key.
+        let opens_menus = self.menu_host == crate::menu_bar::MenuHost::Mark;
+        let menu_rows = if opens_menus {
+            self.menu_rows()
+        } else {
+            Vec::new()
+        };
         ui.horizontal_centered(|ui| {
             // The mark is the route home, and off the door it is the whole of
             // what stands left of the title. The word *Meridian* used to lead
@@ -11700,7 +11757,40 @@ impl MeridianApp {
             // on to name the application it is already looking at; the mark
             // says the same thing in a quarter of the width and takes the
             // click as well. Hugh's look of 2026-09-05.
-            if !door {
+            if opens_menus {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(TITLE_MARK_SIDE, TITLE_MARK_SIDE),
+                    egui::Sense::click(),
+                );
+                let ink = if response.hovered() {
+                    sem.text.primary
+                } else {
+                    sem.text.secondary
+                };
+                crate::brand::paint(ui.painter(), mark.as_ref(), rect, chrome::colour(ink));
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        MENUS_CONTROL_NAME,
+                    )
+                });
+                bar.mark_rect = Some(rect);
+                bar.controls
+                    .push(chrome::NamedControl::hovered(rect, MENUS_CONTROL_NAME));
+                let (menu_drawn, menu_choice) = (&mut bar.menu_drawn, &mut bar.menu_choice);
+                egui::Popup::menu(&response).show(|ui| {
+                    *menu_choice = crate::menu_bar::show_menus(
+                        ui,
+                        &brightfield_keys::menu_bar(),
+                        &menu_rows,
+                        brightfield_keys::KeyPlatform::Other,
+                        menu_drawn,
+                    );
+                });
+                response.on_hover_text(MENUS_CONTROL_NAME);
+                ui.add_space(spacing::SPACE_4);
+            } else if !door {
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(TITLE_MARK_SIDE, TITLE_MARK_SIDE),
                     egui::Sense::click(),
@@ -11726,6 +11816,7 @@ impl MeridianApp {
                     None => HOME_CONTROL_NAME.to_string(),
                 });
                 bar.home_rect = Some(rect);
+                bar.mark_rect = Some(rect);
                 bar.controls
                     .push(chrome::NamedControl::hovered(rect, HOME_CONTROL_NAME));
                 if response.clicked() {

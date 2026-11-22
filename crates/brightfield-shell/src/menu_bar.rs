@@ -11,8 +11,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use brightfield_keys::{
-    availability, item_title, menu_bar, registry, Availability, BindingContext, MenuItem,
-    Situation, VerbEntry,
+    availability, item_title, items_without_native, keys_label, menu_bar, registry, Availability,
+    BindingContext, KeyPlatform, Menu, MenuItem, Situation, VerbEntry,
 };
 
 /// What every row says while a sheet over the window waits on an answer.
@@ -98,6 +98,106 @@ impl MenuState {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+}
+
+/// Which menus a window's host draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuHost {
+    /// The host has a menu bar of its own, which draws the menus: macOS.
+    Native,
+    /// The host has none, and the mark in the title band opens the menus.
+    Mark,
+}
+
+impl MenuHost {
+    /// The host this build runs on.
+    #[must_use]
+    pub const fn of_this_build() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Native
+        } else {
+            Self::Mark
+        }
+    }
+}
+
+/// One row the in-window menus drew on a frame: a menu's own title, or a
+/// command in a menu that was open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawnRow {
+    /// The title of the menu the row belongs to.
+    pub menu: &'static str,
+    /// The command's longname. `None` for the menu's own title row.
+    pub longname: Option<&'static str>,
+    /// Where the row was drawn.
+    pub rect: egui::Rect,
+    /// Whether the row can be chosen.
+    pub enabled: bool,
+    /// What a greyed row says under the pointer: its command's sentence.
+    pub hover: Option<String>,
+    /// The key the row shows, as the host writes keys.
+    pub keys: Option<String>,
+}
+
+/// **Draw `menus` as a column of menu buttons**, each opening its commands
+/// from `rows`, and answer the command chosen this frame. A command is greyed
+/// while its row says a sentence, which it shows under the pointer; the window
+/// items a platform supplies are left out. What was drawn is pushed to `drawn`.
+pub fn show_menus(
+    ui: &mut egui::Ui,
+    menus: &[Menu],
+    rows: &[MenuRow],
+    platform: KeyPlatform,
+    drawn: &mut Vec<DrawnRow>,
+) -> Option<&'static str> {
+    let mut chosen = None;
+    for menu in menus {
+        let items = items_without_native(menu);
+        let opened = ui.menu_button(menu.title, |ui| {
+            for item in &items {
+                let longname = match *item {
+                    MenuItem::Separator => {
+                        ui.separator();
+                        continue;
+                    }
+                    MenuItem::Native(_) => continue,
+                    MenuItem::Command { longname, .. } => longname,
+                };
+                let Some(row) = rows.iter().find(|r| r.longname == longname) else {
+                    continue;
+                };
+                let keys = row.keys.map(|keys| keys_label(keys, platform));
+                let mut button = egui::Button::new(row.title.as_str());
+                if let Some(keys) = &keys {
+                    button = button.shortcut_text(keys.as_str());
+                }
+                let mut response = ui.add_enabled(row.missing.is_none(), button);
+                if let Some(sentence) = &row.missing {
+                    response = response.on_disabled_hover_text(sentence.as_str());
+                }
+                drawn.push(DrawnRow {
+                    menu: menu.title,
+                    longname: Some(longname),
+                    rect: response.rect,
+                    enabled: row.missing.is_none(),
+                    hover: row.missing.clone(),
+                    keys,
+                });
+                if response.clicked() {
+                    chosen = Some(longname);
+                }
+            }
+        });
+        drawn.push(DrawnRow {
+            menu: menu.title,
+            longname: None,
+            rect: opened.response.rect,
+            enabled: true,
+            hover: None,
+            keys: None,
+        });
+    }
+    chosen
 }
 
 #[cfg(test)]
