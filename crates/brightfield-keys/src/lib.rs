@@ -22,6 +22,7 @@ pub mod esc;
 pub mod focus;
 pub mod fuzzy;
 pub mod keystroke;
+pub mod menus;
 pub mod palette;
 pub mod registry;
 pub mod scope;
@@ -35,6 +36,7 @@ pub use dispatch::{fires, resolution_table, DispatchContext, ResolutionTable};
 pub use esc::{esc_action, EscAction, EscState};
 pub use focus::{focus_jump_candidates, FocusNode, FocusState, FocusTree, JumpCandidate, NodeKind};
 pub use keystroke::{keys_label, parse_keystrokes, KeyPlatform, Keystroke, KEY_NAMES};
+pub use menus::{item_title, menu_bar, Menu, MenuItem, NativeItem};
 pub use palette::{palette_filter, PaletteCandidate, RecencyCounter};
 pub use registry::{
     help_sheet, keymap_bindings, palette_corpus, registry, BindingContext, BindingSpec, BoundKey,
