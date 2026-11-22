@@ -95,6 +95,9 @@ pub struct Window {
     /// The verbs a key performed since the last [`Window::press`] began, in
     /// the order their handlers took them.
     pub answered: Vec<&'static str>,
+    /// The verbs the window applied since a test last cleared this, oldest
+    /// first.
+    pub applied: Vec<&'static str>,
     /// The table of the data file the scene opened, when it opened one.
     pub table: Option<String>,
     /// The frame clock, at sixty frames a second, so a toast a test reads does
@@ -116,6 +119,7 @@ impl Window {
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             commands: Vec::new(),
             answered: Vec::new(),
+            applied: Vec::new(),
             table: None,
             time: 0.0,
         };
@@ -143,6 +147,7 @@ impl Window {
         let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
         self.commands.extend(out.platform_output.commands);
         self.answered.extend_from_slice(self.app.keys_answered());
+        self.applied.extend_from_slice(self.app.verbs_applied());
     }
 
     /// Press a binding's keystrokes as a keyboard brings them, a frame a
@@ -173,6 +178,14 @@ impl Window {
     /// Type `text`, then a frame for what it did.
     pub fn type_text(&mut self, text: &str) {
         self.run(vec![vec![egui::Event::Text(text.to_owned())], Vec::new()]);
+    }
+
+    /// Choose `longname` as a menu item does, through the window's queue, and
+    /// settle. [`Window::applied`] holds what the window then performed.
+    pub fn choose(&mut self, longname: &'static str) {
+        self.applied.clear();
+        self.app.open_queue().ask_verb(longname);
+        self.settle();
     }
 
     /// A click at `at`: the pointer moved there, pressed and released, and the

@@ -141,6 +141,7 @@ pub mod mac_grants;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_open;
+pub mod menu_bar;
 pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;
