@@ -1621,20 +1621,29 @@ pub fn grid_copy_path(p: &OwnProtocol, name: &str) -> PathBuf {
         .join(format!("{name}.parquet"))
 }
 
-/// Whether the folder holds a copy of the silver table `name` written since the Protocol's
-/// database last changed: a copy older than the database may hold rows a run has since replaced,
-/// and a preview that reads it would disagree with what a run makes. A copy is taken as current
-/// when the database's time cannot be read, since there is then no run to have replaced it.
+/// When the database of the Protocol `p` last changed, where that can be read. It reads the
+/// manifest for the database's path, so a caller with several tables to ask about reads it once.
 #[must_use]
-pub fn grid_copy_is_current(p: &OwnProtocol, name: &str) -> bool {
-    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    let Some(copied) = modified(&grid_copy_path(p, name)) else {
+pub fn database_changed(p: &OwnProtocol) -> Option<std::time::SystemTime> {
+    let db = arc::spec::protocol_db_path(&p.dir).ok()?;
+    std::fs::metadata(db).and_then(|m| m.modified()).ok()
+}
+
+/// Whether the folder holds a copy of the silver table `name` written since the Protocol's
+/// database last changed, at `database` ([`database_changed`]): a copy older than the database
+/// may hold rows a run has since replaced, and a preview that reads it would disagree with what
+/// a run makes. A copy is taken as current when the database's time could not be read, since
+/// there is then no run to have replaced it.
+#[must_use]
+pub fn grid_copy_is_current(
+    p: &OwnProtocol,
+    name: &str,
+    database: Option<std::time::SystemTime>,
+) -> bool {
+    let Ok(copied) = std::fs::metadata(grid_copy_path(p, name)).and_then(|m| m.modified()) else {
         return false;
     };
-    arc::spec::protocol_db_path(&p.dir)
-        .ok()
-        .and_then(|db| modified(&db))
-        .is_none_or(|database| copied >= database)
+    database.is_none_or(|database| copied >= database)
 }
 
 /// The columns [`grid_copy`] would write for the silver table `name`, read from the Protocol's

@@ -336,9 +336,9 @@ impl Drop for ColumnReads {
 /// one table at a time in the order given. `wake` is called as each answer is
 /// ready.
 ///
-/// A step's columns are those of the first row of its preview, read over
-/// `source` as a statement over it would be: the steps it reads are made, and
-/// no other. A model table's columns are those its grid copy would hold, read
+/// A step's columns are read from a description of its table, over `source`
+/// as a statement over it would be: the steps it reads are made, and no
+/// other. A model table's columns are those its grid copy would hold, read
 /// from the database of `copies` with no row copied: the copy is written once
 /// the table is taken. A table that cannot be read answers with
 /// no columns, so the ask is never left waiting on it: arc and DuckDB say what

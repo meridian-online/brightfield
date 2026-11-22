@@ -83,7 +83,7 @@ Each of these is reversible, and each is the owner's to overturn.
 21. **Enter waits for the columns of the table it takes.** While they are still being read the status band says to press Enter again, since `begin` proposes a join's keys from them.
 22. **An added table trails `added`** ahead of what it shares, and is drawn selected as the cursor's row is. The design system has no second row mark to tell the two apart, and none was added.
 23. **Space on a pick for one table adds nothing and says so**, in place of being ignored or opening the palette.
-24. **The pick closes, beginning nothing, when its grid leaves the canvas or another pane takes the keys**, as a draft goes when the grid it began over does.
+24. **The pick closes, beginning nothing, when its grid leaves the canvas, another pane takes the keys or the rail is put away**, as a draft goes when the grid it began over does.
 25. **A model's table is copied when it is taken, on the frame of the take**, as opening a table's grid copies it. Reading the columns of each candidate copies nothing.
 26. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
 

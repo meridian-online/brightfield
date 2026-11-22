@@ -1121,9 +1121,10 @@ impl MeridianApp {
         let Some(protocol) = self.model_protocol_beside_the_grid() else {
             return Vec::new();
         };
+        let database = crate::own_files::database_changed(protocol);
         self.model_file_roots()
             .into_iter()
-            .filter(|(table, _)| crate::own_files::grid_copy_is_current(protocol, table))
+            .filter(|(table, _)| crate::own_files::grid_copy_is_current(protocol, table, database))
             .collect()
     }
 
@@ -1150,6 +1151,7 @@ impl MeridianApp {
             return chain;
         };
         let running = self.model_database_is_being_run();
+        let mut database: Option<Option<std::time::SystemTime>> = None;
         for (table, op) in &chain {
             let brightfield_engine::PreviewOp::ReadFile { path, .. } = op else {
                 continue;
@@ -1157,7 +1159,13 @@ impl MeridianApp {
             let ours = roots
                 .iter()
                 .any(|(name, copy)| name == table && copy == path);
-            if !ours || crate::own_files::grid_copy_is_current(protocol, table) {
+            if !ours {
+                continue;
+            }
+            // Read once for the chain, and not at all for a chain that reads no model table.
+            let database =
+                *database.get_or_insert_with(|| crate::own_files::database_changed(protocol));
+            if crate::own_files::grid_copy_is_current(protocol, table, database) {
                 continue;
             }
             // The copy waits for a run under way to end, and a frame is asked for to
@@ -1408,8 +1416,9 @@ impl MeridianApp {
     /// **The spine pick's frame**: the columns read since the last are noted,
     /// a click on a table's row puts the cursor on it, and the spine is told
     /// what to show. The pick closes, beginning nothing, once the grid it
-    /// opened over is no longer on the canvas or another pane has taken the
-    /// keys: its keys are the rail's, and the table it is for is that grid's.
+    /// opened over is no longer on the canvas, another pane has taken the keys
+    /// or the rail has been put away: its keys are the rail's, and the table
+    /// it is for is that grid's.
     fn spine_pick_frame(&mut self, ctx: &egui::Context) {
         let clicked = self.protocol.doc.take_spine_pick_click();
         let Some(picking) = self.operation.picking.as_mut() else {
@@ -1427,7 +1436,12 @@ impl MeridianApp {
         let moved = began_over != *self.canvas_holds()
             || self.graph_on_canvas()
             || self.charts.doc.foot_asking().is_some()
-            || self.focused_pane() != Some(PaneKey::new(crate::protocol::OUTLINE));
+            || self.focused_pane() != Some(PaneKey::new(crate::protocol::OUTLINE))
+            // A rail put away draws no spine: the pick's keys would act on a cursor
+            // that is not on screen.
+            || self
+                .collapsed
+                .contains(&brightfield_workbench::arrangement::NAVIGATOR_RAIL);
         if moved {
             self.end_pick(ctx);
             return;

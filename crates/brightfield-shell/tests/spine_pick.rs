@@ -544,6 +544,25 @@ fn the_pick_closes_when_another_pane_takes_the_keys() {
 }
 
 #[test]
+fn the_pick_closes_when_its_rail_is_put_away() {
+    use brightfield_workbench::arrangement::NAVIGATOR_RAIL;
+    let mut win = window();
+    assert!(start(&mut win, &JOIN_LIKE, "house_age"), "{:?}", win.said());
+    let control = win
+        .app
+        .rail_collapse_rect(NAVIGATOR_RAIL)
+        .expect("the navigator rail drew its collapse control");
+    win.click(control.center());
+    assert!(win.app.rail_is_collapsed(NAVIGATOR_RAIL));
+    // The spine is not drawn, so the pick is over, and Enter takes no table unseen.
+    assert!(win.app.spine_pick().is_none());
+    win.key(egui::Key::Enter);
+    assert!(win.making().is_none());
+    // The rail stays as the click left it.
+    assert!(win.app.rail_is_collapsed(NAVIGATOR_RAIL));
+}
+
+#[test]
 fn a_protocol_with_no_other_table_says_so_and_opens_no_pick() {
     let mut win = OpWindow::on_copy_of(SAMPLE);
     assert!(!start(&mut win, &JOIN_LIKE, "house_age"));

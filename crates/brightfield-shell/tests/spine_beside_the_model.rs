@@ -971,8 +971,13 @@ fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
     // A copy from before the Protocol's database last changed is not current either. The next
     // frame writes it again, and the grid reads the step again from the new copy.
     let protocol = win.pane().protocol.clone();
-    let current =
-        |table: &str| brightfield_shell::own_files::grid_copy_is_current(&protocol, table);
+    let current = |table: &str| {
+        brightfield_shell::own_files::grid_copy_is_current(
+            &protocol,
+            table,
+            brightfield_shell::own_files::database_changed(&protocol),
+        )
+    };
     assert!(current(&under.table));
     assert!(!current("no_such_table"));
     // The copy was written within the last two seconds, so the next write of it waits them out.
