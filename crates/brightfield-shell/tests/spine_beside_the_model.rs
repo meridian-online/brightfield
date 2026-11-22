@@ -639,3 +639,168 @@ fn every_table_of_the_retail_model_opens_from_its_row() {
 fn every_table_of_a_protocol_with_no_saved_model_opens_from_its_row() {
     every_table_opens_from_one_row(Window::over_own_files());
 }
+
+// ---- the spine picks a table for an operation, among the model's tables ----
+
+mod pick {
+    use std::cell::RefCell;
+
+    use brightfield_shell::operation_ui::{
+        Begin, By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start,
+    };
+
+    thread_local! {
+        /// The tables the last `begin` on this thread was handed, each with its columns.
+        pub static TAKEN: RefCell<Vec<(String, Vec<String>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn begin_join(b: &Begin<'_>) -> Result<Draft, String> {
+        TAKEN.with(|taken| *taken.borrow_mut() = b.taken.to_vec());
+        let mut draft = Draft::empty("join-tables");
+        draft.on = b.table.map(str::to_string);
+        draft.reads = b
+            .taken
+            .iter()
+            .map(|(table, _)| ("other".to_string(), table.clone()))
+            .collect();
+        draft.set("using", b.column.unwrap_or_default().to_string());
+        Ok(draft)
+    }
+
+    /// An operation that reads one other table, as joining two tables does.
+    pub static JOIN_LIKE: OperationUi = OperationUi {
+        long_name: "join-tables",
+        verb: "join-tables",
+        stage: Stage::Model,
+        icon: "arrows-join",
+        starts: &[Start::Spine { role: "other" }],
+        menu_words: "Join tables",
+        needs: &[Need::Rows],
+        begin: begin_join,
+        keeps: Keeps::OnEnter,
+        field: None,
+        form: None,
+        name: NameRule {
+            word: "joined",
+            from: By::Nothing,
+            with_by: false,
+        },
+    };
+}
+
+/// While the grid holds one of a model's tables, an operation that reads a second table picks it
+/// among the model's other tables: each the model joins to the one in front says `related`, the
+/// cursor starts on the first of them, and the table taken is handed over with the columns of its
+/// grid copy, which the operation's preview reads.
+#[test]
+fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
+    use brightfield_shell::protocol::IN_FRONT;
+    use brightfield_workbench::PaneKey;
+
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+
+    // Start from the spine on `customer_id`, once arc's description has come.
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id"))
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    // The columns of each table's grid copy are read on a worker.
+    while win
+        .app
+        .spine_pick()
+        .is_some_and(|p| p.candidates().iter().any(|c| c.columns.is_none()))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the columns never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    win.frame(Vec::new());
+
+    // The candidates are the model's other tables that have rows to read.
+    let model = win.pane().model.clone();
+    let pick = win.app.spine_pick().expect("the pick is open").clone();
+    assert_eq!(pick.in_front(), "customers");
+    let candidates: Vec<&str> = pick.candidates().iter().map(|c| c.table.as_str()).collect();
+    assert!(!candidates.contains(&"customers"), "{candidates:?}");
+    assert!(candidates.contains(&"loyalty_visits"), "{candidates:?}");
+    // Each the model joins to `customers` says so, and no other does.
+    let joined = |table: &str| {
+        model.relationships.iter().any(|r| {
+            (r.from == table && r.to == "customers") || (r.from == "customers" && r.to == table)
+        })
+    };
+    for candidate in pick.candidates() {
+        assert_eq!(
+            candidate.related,
+            joined(&candidate.table),
+            "{}",
+            candidate.table
+        );
+        assert!(
+            candidate.columns.as_ref().is_some_and(|c| !c.is_empty()),
+            "{} has no columns",
+            candidate.table
+        );
+    }
+    let under = pick.under_cursor().expect("a candidate").clone();
+    assert!(under.related, "the cursor starts on {}", under.table);
+    // The rail says the same: the table in front, and `related` on the cursor's row.
+    assert_eq!(win.drawn_row("customers").kind, IN_FRONT);
+    let drawn = win.drawn_row(&under.table);
+    assert_eq!(drawn.kind, "related");
+    assert!(drawn.washed);
+
+    // Enter hands the table over with its columns, and the draft's preview reads it.
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+    let taken = pick::TAKEN.with(|taken| taken.borrow().clone());
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].0, under.table);
+    assert_eq!(Some(&taken[0].1), under.columns.as_ref());
+    assert!(taken[0].1.contains(&"customer_id".to_string()), "{taken:?}");
+    let making = win
+        .app
+        .making()
+        .unwrap_or_else(|| panic!("no draft: {:?}", win.app.operation_said()));
+    assert_eq!(
+        making.draft.reads,
+        [("other".to_string(), under.table.clone())]
+    );
+    assert!(win
+        .app
+        .finish_operation_reads(std::time::Duration::from_secs(60)));
+    let reads = win.app.draft_reads().expect("the draft is read");
+    assert_eq!(reads.refusal(), None);
+    let answer = reads.current().expect("the draft is answered");
+    assert_eq!(answer.unread, None);
+    assert!(answer.rows > 0, "the join of the two tables has rows");
+}

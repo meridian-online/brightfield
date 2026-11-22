@@ -39,6 +39,8 @@ use crate::operation_ui::header::HeaderHit;
 use crate::operation_ui::open::{availability, Availability, InFront, OperationContext};
 use crate::operation_ui::reads::DraftReads;
 use crate::operation_ui::{self, BegunWith, Draft, HeaderPart, Keeps, OperationUi, Start};
+use crate::spine_pick::{CandidateSource, ColumnReads, SpinePick};
+use brightfield_workbench::PaneKey;
 
 /// The stable id of the status band's line for an operation: the handle a
 /// test reads the line by.
@@ -64,6 +66,85 @@ fn static_key(key: &str) -> &'static str {
     leaked
 }
 
+/// The stable id of the status band's line while the spine picks a table.
+pub const SPINE_PICK_STATUS_ID: &str = "spine-pick";
+
+/// **The spine's ask for an operation's table, while it is open**: the
+/// operation waiting on it, the pick itself, and how the window stood before
+/// the rail took the keys, so backing out puts it back.
+pub(super) struct Picking {
+    /// The operation the table is picked for.
+    spec: &'static OperationUi,
+    /// Where it started from.
+    start: Start,
+    /// The column it started on.
+    column: Option<String>,
+    /// The pick.
+    pick: SpinePick,
+    /// The reads of the candidates' columns.
+    columns: ColumnReads,
+    /// The pane that held the keys before the rail took them.
+    focus_before: Option<PaneKey>,
+    /// Whether the navigator rail was collapsed.
+    rail_was_collapsed: bool,
+    /// What the canvas held when the pick opened: the grid it is made over.
+    began_over: CanvasHolds,
+}
+
+/// A table the spine handed an operation, with its columns.
+type Taken = (String, Vec<String>);
+
+/// The spine pick's `(keystroke token, longname)` pairs: every binding the
+/// registry declares in its SpinePick context, the arrow twins included.
+fn spine_pick_bindings() -> Vec<(&'static str, &'static str)> {
+    brightfield_keys::registry()
+        .iter()
+        .flat_map(|verb| {
+            verb.binding_specs
+                .iter()
+                .filter(|spec| spec.context == brightfield_keys::BindingContext::SpinePick)
+                .map(move |spec| (spec.keystrokes, verb.longname))
+        })
+        .collect()
+}
+
+/// Consume the press of the key a SpinePick binding's token names, if it is
+/// down this frame. The five tokens are spelled here, since the pick is the
+/// one caller that takes `enter`, `escape` and `space` together.
+fn consume_pick_token(ctx: &egui::Context, token: &str) -> bool {
+    use egui::{Key, Modifiers};
+    let key = match token {
+        "j" => Key::J,
+        "k" => Key::K,
+        "down" => Key::ArrowDown,
+        "up" => Key::ArrowUp,
+        "space" => Key::Space,
+        "enter" => Key::Enter,
+        "escape" => Key::Escape,
+        _ => return false,
+    };
+    ctx.input_mut(|i| {
+        let pressed = i.consume_key(Modifiers::NONE, key);
+        if pressed {
+            // The text the key made goes with it, so `j` typed over the pick
+            // reaches no field and no other handler.
+            i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+        }
+        pressed
+    })
+}
+
+/// The keys the registry binds to `longname` while the spine picks, as the
+/// status band names them: `j`, or `j/down` for a verb with a twin.
+fn pick_keys_of(longname: &str) -> String {
+    spine_pick_bindings()
+        .into_iter()
+        .filter(|(_, name)| *name == longname)
+        .map(|(token, _)| token)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// What the window holds of an operation being made, beside the draft on the
 /// document: its reads, and what of them the grid has been handed.
 pub(super) struct OperationHost {
@@ -82,6 +163,12 @@ pub(super) struct OperationHost {
     answers: u64,
     /// What the canvas held when the draft began: the grid it is made over.
     began_over: Option<CanvasHolds>,
+    /// The spine's ask for the operation's table, while one is open.
+    picking: Option<Picking>,
+    /// The model's tables the spine has handed an operation, each with the
+    /// grid copy its rows are read from, so the operation's preview and the
+    /// kept step's can load them.
+    model_tables: Vec<(String, std::path::PathBuf)>,
 }
 
 impl OperationHost {
@@ -93,6 +180,8 @@ impl OperationHost {
             in_grid: None,
             answers: 0,
             began_over: None,
+            picking: None,
+            model_tables: Vec::new(),
         }
     }
 }
@@ -279,6 +368,10 @@ impl MeridianApp {
     /// the window meets the operation's needs; the operation begins its draft.
     /// It then becomes the operation being made, with its first edit sent to
     /// be read.
+    ///
+    /// An operation that starts from the spine opens the spine's pick in place
+    /// of its draft, and answers `true`: the draft begins once a table is taken
+    /// ([`Self::take_pick`]).
     pub(crate) fn start_operation(
         &mut self,
         ctx: &egui::Context,
@@ -286,8 +379,23 @@ impl MeridianApp {
         start: Start,
         column: Option<String>,
     ) -> bool {
-        // One operation is made at a time; starting another drops the first.
+        self.start_operation_taking(ctx, spec, start, column, None)
+    }
+
+    /// [`Self::start_operation`], with the tables the spine took for it once
+    /// it has: `None` for a start that has not asked the spine.
+    fn start_operation_taking(
+        &mut self,
+        ctx: &egui::Context,
+        spec: &'static OperationUi,
+        start: Start,
+        column: Option<String>,
+        taken: Option<Vec<Taken>>,
+    ) -> bool {
+        // One operation is made at a time; starting another drops the first,
+        // and an ask the spine has open for one.
         self.drop_making(ctx);
+        self.end_pick(ctx);
         // A field of the foot row writes its own text and a Save records it, so it opens
         // with no description from arc, and in a window with no arc to ask: the operation
         // panel beside it says what arc gave, or that it gave no description.
@@ -342,6 +450,12 @@ impl MeridianApp {
                     .is_some_and(|request| request.long_name == spec.long_name)
             })
             .cloned();
+        // An operation that reads a second table asks for it in the spine first. A kept
+        // step being corrected holds its tables already.
+        if let (Start::Spine { role }, None, None) = (start, &taken, &corrects) {
+            return self.open_pick(ctx, spec, (start, role), column, &description, &cx);
+        }
+        let model = taken.as_ref().and_then(|_| self.relationship_model());
         let with = BegunWith {
             start,
             table: Some(front.table.clone()).filter(|t| !t.is_empty()),
@@ -350,7 +464,8 @@ impl MeridianApp {
             columns: front.columns.clone(),
             facts: front.facts.clone(),
             description,
-            taken: Vec::new(),
+            taken: taken.unwrap_or_default(),
+            model,
         };
         let draft = match &corrects {
             Some(step) => {
@@ -641,6 +756,7 @@ impl MeridianApp {
     /// when it changed; take the answers; hand the grid the page to show; and
     /// keep an operation that asks for no value on its first answer.
     pub(super) fn operation_frame(&mut self, ctx: &egui::Context) {
+        self.spine_pick_frame(ctx);
         if let Some(runner) = self.runner.clone() {
             let wake = ctx.clone();
             let descriptions = self
@@ -834,6 +950,12 @@ impl MeridianApp {
         if let Some(said) = &self.operation.said {
             return Some(entry(said.clone(), Tone::Warning));
         }
+        if let Some(picking) = self.spine_pick_status() {
+            return Some(StatusEntry {
+                id: SPINE_PICK_STATUS_ID,
+                ..entry(picking, Tone::Neutral)
+            });
+        }
         let making = self.charts.doc.making()?;
         let reads = self.operation.reads.as_ref()?;
         if let Some(why) = reads.refusal() {
@@ -855,6 +977,343 @@ impl MeridianApp {
                 crate::column_header::thousands(answer.rows)
             ),
             Tone::Neutral,
+        ))
+    }
+
+    /// **The Protocol's model of its tables' relationships**: the model pane's,
+    /// while a table of its Protocol is in the grid, and otherwise the model
+    /// file in the Protocol's folder, when it holds one Brightfield reads.
+    fn relationship_model(&self) -> Option<brightfield_ossie::Model> {
+        if self.model_behind_grid() {
+            return self.model.as_ref().map(|m| m.doc.model.clone());
+        }
+        let dir = &self.protocol.doc.model.source()?.dir;
+        let text = std::fs::read_to_string(dir.join(crate::discovery::MODEL_FILE)).ok()?;
+        brightfield_ossie::read(&text).ok()
+    }
+
+    /// The tables the spine lists for an operation to read, each with its
+    /// columns where they are known and where its rows are read from; and the
+    /// Protocol whose grid copies a model table's rows come from, when the
+    /// tables are a model's.
+    ///
+    /// While the grid holds a table of a Protocol made from a folder, workbook
+    /// or database, they are the model's tables that have rows to read. In a
+    /// Protocol made from a data file they are the loaded table and the steps
+    /// after it.
+    fn pick_tables(
+        &self,
+        cx: &OperationContext,
+    ) -> (
+        Vec<crate::spine_pick::Listed>,
+        Option<crate::own_files::OwnProtocol>,
+    ) {
+        if let Some(model) = self.model.as_ref().filter(|m| m.in_grid.is_some()) {
+            let pane = &model.doc;
+            let folder = pane.protocol.dir.join(crate::model_inspector::GRID_DIR);
+            let tables = pane
+                .model
+                .datasets
+                .iter()
+                .filter(|d| crate::model_inspector::materialised(&pane.model, &d.name))
+                .map(|d| {
+                    (
+                        d.name.clone(),
+                        None,
+                        CandidateSource::ModelTable {
+                            grid_copy: folder.join(format!("{}.parquet", d.name)),
+                        },
+                    )
+                })
+                .collect();
+            return (tables, Some(pane.protocol.clone()));
+        }
+        let tables = cx
+            .tables
+            .iter()
+            .map(|(table, columns)| (table.clone(), columns.clone(), CandidateSource::Step))
+            .collect();
+        (tables, None)
+    }
+
+    /// The model's tables the spine has handed an operation, each with the
+    /// grid copy it is read from: none unless a table of that model is in the
+    /// grid, and never the table the grid itself holds.
+    pub(super) fn picked_model_tables(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(in_grid) = self
+            .model
+            .as_ref()
+            .filter(|m| m.in_grid.is_some())
+            .map(|m| m.grid_table.clone().unwrap_or_default())
+        else {
+            return Vec::new();
+        };
+        self.operation
+            .model_tables
+            .iter()
+            .filter(|(table, _)| !table.eq_ignore_ascii_case(&in_grid))
+            .cloned()
+            .collect()
+    }
+
+    /// **Open the spine's pick for `spec`**: the rail takes the keys, with its
+    /// focus ring, and lists the tables the operation can read. Whether it
+    /// opened; a Protocol with no other table says so and opens nothing.
+    fn open_pick(
+        &mut self,
+        ctx: &egui::Context,
+        spec: &'static OperationUi,
+        (start, role): (Start, &'static str),
+        column: Option<String>,
+        description: &OperationDescription,
+        cx: &OperationContext,
+    ) -> bool {
+        let front = cx.in_front.clone().unwrap_or_default();
+        let (tables, copies) = self.pick_tables(cx);
+        let relationships: Vec<(String, String)> = self
+            .relationship_model()
+            .map(|model| {
+                model
+                    .relationships
+                    .iter()
+                    .map(|r| (r.from.clone(), r.to.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let found = crate::spine_pick::candidates(&tables, &front.table, &relationships);
+        if found.is_empty() {
+            self.say_operation(
+                ctx,
+                operation_ui::open::sentence(
+                    operation_ui::Need::AnotherTable,
+                    &operation_ui::label(spec.long_name),
+                    None,
+                ),
+            );
+            return false;
+        }
+        let list = description
+            .reads
+            .iter()
+            .find(|r| r.name == role)
+            .is_some_and(|r| r.list);
+        let pick = SpinePick::new(role, list, &front.table, column.as_deref(), found);
+        let wake = ctx.clone();
+        let columns = crate::spine_pick::read_columns(
+            self.typed_source(None),
+            copies,
+            pick.candidates(),
+            self.charts.doc.preview_hooks().clone(),
+            move || wake.request_repaint(),
+        );
+        // The band's line is the pick's now: a sentence said by an earlier
+        // ask, as while arc's description was on its way, is over.
+        self.operation.said = None;
+        let rail = PaneKey::new(crate::protocol::OUTLINE);
+        let focus_before = self.focused_pane();
+        self.ws_mut().set_focus(rail);
+        self.operation.picking = Some(Picking {
+            spec,
+            start,
+            column,
+            pick,
+            columns,
+            focus_before,
+            rail_was_collapsed: self
+                .collapsed
+                .remove(&brightfield_workbench::arrangement::NAVIGATOR_RAIL),
+            began_over: self.canvas_holds().clone(),
+        });
+        ctx.request_repaint();
+        true
+    }
+
+    /// The spine's pick, while it is open.
+    #[must_use]
+    pub fn spine_pick(&self) -> Option<&SpinePick> {
+        self.operation.picking.as_ref().map(|p| &p.pick)
+    }
+
+    /// **Close the spine's pick and begin nothing**: the keys go back to the
+    /// pane that held them, and the rail is put away again if it was.
+    fn end_pick(&mut self, ctx: &egui::Context) {
+        let Some(picking) = self.operation.picking.take() else {
+            return;
+        };
+        let rail = PaneKey::new(crate::protocol::OUTLINE);
+        // The keys go back only if the rail still holds them: a press on
+        // another pane since has already said where they go.
+        if self.focused_pane() == Some(rail) {
+            self.ws_mut().clear_focus();
+            if let Some(before) = picking.focus_before {
+                self.ws_mut().set_focus(before);
+            }
+        }
+        if picking.rail_was_collapsed {
+            self.collapsed
+                .insert(brightfield_workbench::arrangement::NAVIGATOR_RAIL);
+        }
+        self.protocol.doc.spine_pick = None;
+        ctx.request_repaint();
+    }
+
+    /// **Take the picked tables and begin the operation with them**: the added
+    /// tables in order, or the one under the cursor. A table whose columns are
+    /// still being read is not taken yet, and the status band says to press
+    /// Enter again; the operation's `begin` is handed each table with its
+    /// columns.
+    fn take_pick(&mut self, ctx: &egui::Context) {
+        let Some(picking) = self.operation.picking.as_mut() else {
+            return;
+        };
+        let tables = picking.pick.would_take();
+        if let Some(waiting) = tables
+            .iter()
+            .find(|table| picking.pick.columns_of(table).is_none())
+        {
+            let why =
+                format!("Still reading {waiting}'s columns: press Enter again once they are read.");
+            self.say_operation(ctx, why);
+            return;
+        }
+        let taken: Vec<Taken> = picking
+            .pick
+            .take()
+            .into_iter()
+            .map(|table| {
+                let columns = picking
+                    .pick
+                    .columns_of(&table)
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default();
+                (table, columns)
+            })
+            .collect();
+        let from_model: Vec<(String, std::path::PathBuf)> = taken
+            .iter()
+            .filter_map(|(table, _)| match &picking.pick.candidate(table)?.source {
+                CandidateSource::ModelTable { grid_copy } => {
+                    Some((table.clone(), grid_copy.clone()))
+                }
+                CandidateSource::Step => None,
+            })
+            .collect();
+        let (spec, start, column) = (picking.spec, picking.start, picking.column.clone());
+        for (table, path) in from_model {
+            self.operation
+                .model_tables
+                .retain(|(held, _)| *held != table);
+            self.operation.model_tables.push((table, path));
+        }
+        self.end_pick(ctx);
+        self.start_operation_taking(ctx, spec, start, column, Some(taken));
+    }
+
+    /// **The spine pick's keys**, ahead of every other handler: `j` and `k`,
+    /// and the arrows, move the cursor a table; `Space` adds the table under it
+    /// to a list; `Enter` takes; `Esc` backs out. Each binding comes off the
+    /// registry's SpinePick context, so the keys the status band names are the
+    /// keys that act. A key is consumed whether or not the cursor could move,
+    /// so a move off the list's end does not fall through to another pane's
+    /// verb.
+    pub(super) fn spine_pick_keys(&mut self, ctx: &egui::Context) {
+        if self.operation.picking.is_none()
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+        {
+            return;
+        }
+        for (token, longname) in spine_pick_bindings() {
+            if !consume_pick_token(ctx, token) {
+                continue;
+            }
+            // A sentence said by the key before stays until this one.
+            self.operation.said = None;
+            match longname {
+                "take-picked-table" => {
+                    self.take_pick(ctx);
+                    return;
+                }
+                "back-out-of-pick" => {
+                    self.end_pick(ctx);
+                    return;
+                }
+                _ => {}
+            }
+            let Some(picking) = self.operation.picking.as_mut() else {
+                return;
+            };
+            match longname {
+                "pick-next-table" => picking.pick.next(),
+                "pick-previous-table" => picking.pick.previous(),
+                "add-table-to-pick" if !picking.pick.add() => {
+                    let why = format!(
+                        "{} reads one table: press Enter to take the one under the cursor.",
+                        operation_ui::label(picking.spec.long_name)
+                    );
+                    self.say_operation(ctx, why);
+                }
+                _ => {}
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// **The spine pick's frame**: the columns read since the last are noted,
+    /// a click on a table's row puts the cursor on it, and the spine is told
+    /// what to show. The pick closes, beginning nothing, once the grid it
+    /// opened over is no longer on the canvas or another pane has taken the
+    /// keys: its keys are the rail's, and the table it is for is that grid's.
+    fn spine_pick_frame(&mut self, ctx: &egui::Context) {
+        let clicked = self.protocol.doc.take_spine_pick_click();
+        let Some(picking) = self.operation.picking.as_mut() else {
+            self.protocol.doc.spine_pick = None;
+            return;
+        };
+        for (table, columns) in picking.columns.poll() {
+            picking.pick.set_columns(&table, columns);
+            ctx.request_repaint();
+        }
+        if let Some(table) = clicked {
+            picking.pick.put_cursor_on(&table);
+        }
+        let began_over = picking.began_over.clone();
+        let moved = began_over != *self.canvas_holds()
+            || self.graph_on_canvas()
+            || self.charts.doc.foot_asking().is_some()
+            || self.focused_pane() != Some(PaneKey::new(crate::protocol::OUTLINE));
+        if moved {
+            self.end_pick(ctx);
+            return;
+        }
+        let Some(picking) = self.operation.picking.as_ref() else {
+            return;
+        };
+        let pick = &picking.pick;
+        self.protocol.doc.spine_pick = Some(crate::protocol::SpinePickRows {
+            in_front: pick.in_front().to_string(),
+            candidates: pick
+                .candidates()
+                .iter()
+                .map(|c| (c.table.clone(), c.trail()))
+                .collect(),
+            cursor: pick.under_cursor().map(|c| c.table.clone()),
+            added: pick.added().to_vec(),
+        });
+    }
+
+    /// The status band's line while the spine picks: the operation, and the
+    /// pick's five keys as the registry binds them.
+    fn spine_pick_status(&self) -> Option<String> {
+        let picking = self.operation.picking.as_ref()?;
+        Some(format!(
+            "{}: pick a table in the spine \u{b7} {} next \u{b7} {} previous \u{b7} {} add to a list \u{b7} {} take \u{b7} {} back",
+            operation_ui::label(picking.spec.long_name),
+            pick_keys_of("pick-next-table"),
+            pick_keys_of("pick-previous-table"),
+            pick_keys_of("add-table-to-pick"),
+            pick_keys_of("take-picked-table"),
+            pick_keys_of("back-out-of-pick"),
         ))
     }
 

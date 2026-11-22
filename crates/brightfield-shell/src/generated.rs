@@ -539,6 +539,21 @@ pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engin
     }
 }
 
+/// **A file read as a table named `name`**, as a step the preview loads beside
+/// the data file ([`read_file_op`]): how a table of the Protocol's model the
+/// spine picked for an operation, which no step of the chain makes, is there
+/// for the operation's preview to read. Its model is the one line of arc's
+/// `read-file` model the preview reads the path from.
+pub(crate) fn file_root_step(name: &str, path: &Path) -> GeneratedStep {
+    GeneratedStep {
+        name: name.to_string(),
+        effect: StepEffect::Generated("read-file".to_string()),
+        on: String::new(),
+        reads: Vec::new(),
+        argument: format!("FROM '{}';", path.to_string_lossy().replace('\'', "''")),
+    }
+}
+
 /// The index of the step of `steps` named `name`, in any case.
 fn index_of(steps: &[GeneratedStep], name: &str) -> Option<usize> {
     let name = name.to_lowercase();

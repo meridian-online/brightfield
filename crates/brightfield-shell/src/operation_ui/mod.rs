@@ -325,6 +325,9 @@ pub struct BegunWith {
     pub taken: Vec<(String, Vec<String>)>,
     /// Each column as SQL spells it, where the session could say.
     pub spelled: std::collections::BTreeMap<String, String>,
+    /// The Protocol's model of its tables' relationships, when it has one and
+    /// the operation started from the spine.
+    pub model: Option<Model>,
 }
 
 /// FineType's vendored transforms, read once for the process.
@@ -356,7 +359,7 @@ impl BegunWith {
             facts: &self.facts,
             description: &self.description,
             taken: &self.taken,
-            model: None,
+            model: self.model.as_ref(),
             transforms: transforms(),
             quote: &quote,
         })

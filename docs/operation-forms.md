@@ -24,12 +24,14 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 | The window's side | `crates/brightfield-shell/src/window/operation_host.rs` | One entry point for a key, a palette row, a header gesture and a menu item; the keys while an operation is being made; the status band's line. |
 | A header as a place to act | `operation_ui/header.rs` | The parts of a column's header an operation starts from (a double-click on the name, a click on the type or the missing count), the menu a secondary click opens, the new-column cell, and the field an operation asks with in place, with what it suggests listed under it. |
 | A form in the Operation section | `crates/brightfield-shell/src/operation_panel.rs` | An operation with a form of its own draws it in the inspector's Operation section, over its own draft. The section adds the operation's name and no control of its own. |
+| The spine picks a table | `crates/brightfield-shell/src/spine_pick.rs`, `window/operation_host.rs`, `protocol.rs` | An operation that reads a second table, or a list of them, asks for it in the navigator rail's spine before its draft begins. The rail takes the keys, in a key context of its own (`SpinePick` in `crates/brightfield-keys`), and the operation's `begin` is handed each table taken with its columns. |
 | Availability | `operation_ui/open.rs` | What the window must hold for an operation to start, checked in the order the operation lists its needs, with one sentence per need. |
 | Reading a generated step back | `crates/brightfield-shell/src/generated.rs` | A folder holding a step arc generated for any operation opens, lays out and previews. A filter or a sort is read back into its clause; any other step is read by its header and the table it makes, and its preview runs the model as arc wrote it. |
 
 ## From a start to a Save
 
 1. **A start.** A key in the grid, a palette row, a gesture on a part of a column's header, or a menu item comes to `MeridianApp::start_operation`. It says the first thing in its way on the status band: the window has no arc, arc's description has not come, a need is unmet, or the operation's own `begin` refuses. The sentence stays until the next key or pointer press.
+   An operation that starts from the spine (`Start::Spine`) opens the spine's pick here, in place of its draft, and its draft begins once a table is taken. See "The spine's pick" below.
 2. **The draft.** `begin` makes the draft with its defaults filled from what Brightfield knows of the column. A column given to a value is spelled for that value: bare for a value arc takes as a name, and as SQL spells it (quoted when it needs quotes) for a value arc takes as SQL.
 3. **The preview.** The draft is read at each edit. The grid shows the answer's page under the preview label with the missing-value counts of the preview's own columns. While arc or DuckDB refuses the draft as it stands, the last good rows stay on screen, faded, and the reason is on the status band.
 4. **The Editor.** The Editor tab shows arc's model for the draft, read-only, following each edit. For a kept or recorded step in front it shows that step's model.
@@ -37,6 +39,18 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 6. **Saving.** ⌘S keeps an open draft first when Enter would, then records the kept steps through arc in the order they were made. A draft that cannot be kept stays open, saying why, and the rest is saved. A refusal from arc at Save leaves the step kept, with arc's words on a banner.
 
 Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name.
+
+## The spine's pick
+
+An operation whose first start is `Start::Spine { role }` reads a second table under that role of arc's. Starting it opens the pick: the navigator rail takes the keys and its focus ring, and the spine is drawn for the pick until a table is taken or Esc backs out.
+
+- The table in front trails `in front`. Each table the operation can read trails `related` when the Protocol's model holds a relationship between it and the table in front, and otherwise `shares <column>` when it holds the column the grid's cursor is on. Every row that is not one of those tables (a step, a view, the data file, the model's step) is named in the muted ink and answers no click.
+- The cursor starts on the first related table, else the first that shares the cursor's column, else the first. It is drawn as the selected row.
+- `j` and `k`, and the arrows, move the cursor. `Enter` takes the table under it. For a role that takes a list, `Space` adds the table under the cursor, or takes it off, and `Enter` takes the added tables in the order they were added. `Esc` gives the keys back to the grid and begins nothing. A click on a table's row puts the cursor on it. The status band names the five keys, read from the key registry.
+- The tables come from one of two places. In a Protocol made from a data file they are the loaded table and the steps after it. While the grid holds a table of a Protocol made from a folder, workbook or database, they are the model's other tables that have rows, each read from its grid copy, which the operation's preview loads beside the table in front.
+- A table's columns are read on a worker, so the spine draws at once. A step's columns are those of its preview's first row; a model table's are those of its grid copy.
+
+The take hands `begin` the tables through `Begin::taken`, each with its columns, and the Protocol's model through `Begin::model`: the model pane's while one of its tables is in the grid, and otherwise the `model.ossie.yaml` in the Protocol's folder when it holds one. `Begin::model` is `None` for an operation that did not start from the spine.
 
 ## Decisions made on the owner's behalf
 
@@ -60,6 +74,15 @@ Each of these is reversible, and each is the owner's to overturn.
 16. **A header's type is one place, not a region.** The type part is the leaf and storage row at the full density, the title beside the name at the compact one, and the glyph where neither is drawn.
 17. **A draft goes when the grid it began over does.** Its keys and its preview are that grid's. Once the canvas holds another view or the graph, or a field of the foot row takes the keyboard, the draft is dropped as Esc drops it, so typing never goes to a draft that is no longer on screen.
 
+18. **The pick's candidates stay in the spine's order.** A related table is where the cursor starts, and it is not moved to the head of the list, so `j` and `k` move down and up the rail as it is drawn.
+19. **A table says `shares` only for the column the grid's cursor is on.** A table that shares some other column says nothing; the operation's own defaults find the first column both tables hold.
+20. **The cursor follows the columns until a key moves it.** A step's columns arrive a moment after the pick opens, so the cursor's starting row is settled as they come, and it stays where a key or a click put it.
+21. **Enter waits for the columns of the table it takes.** While they are still being read the status band says to press Enter again, since `begin` proposes a join's keys from them.
+22. **An added table trails `added`** ahead of what it shares, and is drawn selected as the cursor's row is. The design system has no second row mark to tell the two apart, and none was added.
+23. **Space on a pick for one table adds nothing and says so**, in place of being ignored or opening the palette.
+24. **The pick closes, beginning nothing, when its grid leaves the canvas or another pane takes the keys**, as a draft goes when the grid it began over does.
+25. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
+
 ## What arc lacks
 
 These are arcform's to close. Until then the workarounds above stand.
@@ -81,4 +104,6 @@ An operation is three files, so operations can be built side by side.
 
 The tests in `tests/operation_registry.rs` then bite: the slot holds its own operation, its verb is in the key registry, its draft names only what arc describes, its needs agree with what arc says it reads, and it is filed under its stage.
 
-Three things the shared code does not do yet. The palette lists an unavailable operation without greying it, and choosing it says its sentence; a header's menu does grey it, with the sentence under it. The spine does not pick a table for an operation, so `Begin::taken` is empty. And `Begin::model`, the Protocol's model of its tables' relationships, is `None`.
+An operation that reads a second table lists `Start::Spine { role }` first in its `starts`, with the role arc reads that table under, and declares `Need::AnotherTable` (or `Need::AnotherTableSharingAColumn`) among its needs. Its `begin` then finds the tables in `Begin::taken`. Its test starts it with `start_operation_spec` and reads the pick through `MeridianApp::spine_pick`, as `tests/spine_pick.rs` does.
+
+One thing the shared code does not do yet. The palette lists an unavailable operation without greying it, and choosing it says its sentence; a header's menu does grey it, with the sentence under it.

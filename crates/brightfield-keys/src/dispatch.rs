@@ -39,6 +39,11 @@ pub enum DispatchContext {
     /// so `Space` marks a file rather than opens the palette and `a` adds a
     /// source rather than a mark.
     BrowserFocused,
+    /// The spine is picking a table for an operation — its grammar resolves
+    /// here, isolated from the Protocol panel's verbs and the chart canvas's
+    /// bare verbs, so `Space` adds a table rather than opens the palette and
+    /// `Enter` takes one rather than dives in.
+    SpinePickFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -59,7 +64,10 @@ pub enum DispatchContext {
 ///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`);
 /// - a Browser binding resolves when the sources browser is focused, so
 ///   `Space` marks a file there and opens the palette on the canvas
-///   (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`).
+///   (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`);
+/// - a SpinePick binding resolves while the spine picks a table, so `Space`
+///   adds a table there and `Enter` takes one
+///   (`the_spine_pick_takes_and_adds_on_the_keys_that_dive_and_open_the_palette_elsewhere`).
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(
@@ -72,6 +80,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
             | (BindingContext::Grid, DispatchContext::GridFocused)
             | (BindingContext::Versions, DispatchContext::VersionsFocused)
             | (BindingContext::Browser, DispatchContext::BrowserFocused)
+            | (BindingContext::SpinePick, DispatchContext::SpinePickFocused)
     )
 }
 
@@ -294,11 +303,50 @@ mod tests {
     }
 
     #[test]
+    fn the_spine_pick_takes_and_adds_on_the_keys_that_dive_and_open_the_palette_elsewhere() {
+        let t = table();
+        // Exact vectors: a Workspace or Protocol binding leaking into the
+        // pick's dispatch context would add a second verb, and Space would
+        // both add a table and open the palette.
+        for (keys, verb) in [
+            ("j", "pick-next-table"),
+            ("down", "pick-next-table"),
+            ("k", "pick-previous-table"),
+            ("up", "pick-previous-table"),
+            ("space", "add-table-to-pick"),
+            ("enter", "take-picked-table"),
+            ("escape", "back-out-of-pick"),
+        ] {
+            assert_eq!(
+                t.resolves(keys, DispatchContext::SpinePickFocused),
+                vec![verb],
+                "`{keys}` while the spine picks a table"
+            );
+            for elsewhere in [
+                DispatchContext::CanvasFocused,
+                DispatchContext::GridFocused,
+                DispatchContext::ProtocolFocused,
+            ] {
+                assert!(
+                    !t.resolves(keys, elsewhere).contains(&verb),
+                    "{verb} leaked into {elsewhere:?}"
+                );
+            }
+        }
+        assert_eq!(
+            t.resolves("space", DispatchContext::CanvasFocused),
+            vec!["open-palette"]
+        );
+    }
+
+    #[test]
     fn each_binding_context_fires_in_its_own_dispatch_context_and_global_in_all() {
-        use BindingContext::{Browser, Editor, Global, Grid, Protocol, Shelf, Versions, Workspace};
+        use BindingContext::{
+            Browser, Editor, Global, Grid, Protocol, Shelf, SpinePick, Versions, Workspace,
+        };
         use DispatchContext::{
             BrowserFocused, CanvasFocused, EditorFocused, GridFocused, OverlayOpen,
-            ProtocolFocused, ShelfFocused, VersionsFocused,
+            ProtocolFocused, ShelfFocused, SpinePickFocused, VersionsFocused,
         };
         // Written as a `match`, so a new binding context does not compile until
         // this test says which dispatch context it fires in.
@@ -310,10 +358,11 @@ mod tests {
             Grid => Some(GridFocused),
             Versions => Some(VersionsFocused),
             Browser => Some(BrowserFocused),
+            SpinePick => Some(SpinePickFocused),
             Global => None,
         };
         for binding in [
-            Workspace, Editor, Protocol, Shelf, Grid, Versions, Browser, Global,
+            Workspace, Editor, Protocol, Shelf, Grid, Versions, Browser, SpinePick, Global,
         ] {
             for dispatch in [
                 CanvasFocused,
@@ -324,6 +373,7 @@ mod tests {
                 GridFocused,
                 VersionsFocused,
                 BrowserFocused,
+                SpinePickFocused,
             ] {
                 let expected = own(binding).is_none_or(|own| own == dispatch);
                 assert_eq!(
@@ -425,6 +475,7 @@ mod tests {
             DispatchContext::ShelfFocused,
             DispatchContext::VersionsFocused,
             DispatchContext::BrowserFocused,
+            DispatchContext::SpinePickFocused,
             DispatchContext::OverlayOpen,
         ] {
             assert_eq!(

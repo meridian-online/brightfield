@@ -6839,6 +6839,9 @@ impl MeridianApp {
         if self.overlay.is_none() {
             self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| self.plot_under(at));
         }
+        // The spine's pick, ahead of every other handler: while the spine picks a table for
+        // an operation, its five keys are the pick's.
+        self.spine_pick_keys(&ctx);
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
         // …after an operation being made, whose Enter keeps it and whose Esc drops it.
@@ -7193,6 +7196,7 @@ impl MeridianApp {
                                 chip_live: false,
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
+                                muted: &|_| false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -10088,6 +10092,11 @@ impl MeridianApp {
                 .map(|step| step.name.as_str())
                 .collect();
             steps.retain(|step| !later.contains(step.name.as_str()));
+        }
+        // A table of the model the spine picked for an operation is made by no step of the
+        // chain: it is loaded from its grid copy, ahead of the steps that may read it.
+        for (at, (table, path)) in self.picked_model_tables().into_iter().enumerate() {
+            steps.insert(at, crate::generated::file_root_step(&table, &path));
         }
         Some(TypedSource {
             data: source.data.clone(),

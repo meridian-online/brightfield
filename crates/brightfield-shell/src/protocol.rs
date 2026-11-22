@@ -3541,6 +3541,12 @@ pub struct ProtocolDoc {
     pub spine_override: Option<SpineOverride>,
     /// What a reader asked of the overridden spine this frame. Taken by the window.
     spine_ask: Option<SpineAsk>,
+    /// What the spine shows while it picks a table for an operation. Set by the
+    /// window each frame, and `None` while no operation asks.
+    pub spine_pick: Option<SpinePickRows>,
+    /// The candidate table whose row was clicked this frame, while the spine
+    /// picks. Taken by the window, which holds the pick.
+    spine_pick_click: Option<String>,
     /// **What the canvas returns to** when the graph gives it back — a view of
     /// a node, whose chip draws filled in the node's foot on the graph, or the
     /// dashboard, which has no chip to fill.
@@ -3630,6 +3636,9 @@ pub struct SpineRowDrawn {
     /// Whether the row was drawn struck through, its name in the secondary
     /// ink: a step removed and not yet saved, and what it makes.
     pub struck: bool,
+    /// Whether the row's name was drawn in the muted ink: a row that is not a
+    /// table, while the spine picks a table for an operation.
+    pub muted: bool,
 }
 
 /// One of the **column verbs** on an Outline row as it was drawn: the chip that
@@ -3774,6 +3783,60 @@ impl SpineTables {
     }
 }
 
+/// **What the spine shows while it picks a table for an operation**
+/// ([`crate::spine_pick::SpinePick`]): the table in front reads `in front`,
+/// each table the operation can read trails what it has in common with it, the
+/// cursor's table and the tables added are drawn selected, and every row that
+/// is not a table is named in the muted ink.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpinePickRows {
+    /// The table the operation is on.
+    pub in_front: String,
+    /// Each table the operation can read, with what its row trails: `related`,
+    /// `shares <column>`, or nothing.
+    pub candidates: Vec<(String, Option<String>)>,
+    /// The table under the cursor.
+    pub cursor: Option<String>,
+    /// The tables added to the operation's list, in order.
+    pub added: Vec<String>,
+}
+
+/// What the row of the table in front trails while the spine picks.
+pub const IN_FRONT: &str = "in front";
+
+/// What the row of a table added to an operation's list trails, ahead of what
+/// it has in common with the table in front.
+pub const ADDED: &str = "added";
+
+impl SpinePickRows {
+    /// The candidate named `table`, in any case, as the pick spells it.
+    fn candidate(&self, table: &str) -> Option<&(String, Option<String>)> {
+        self.candidates
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(table))
+    }
+
+    /// Dress `row`, which stands for `table`, for the pick.
+    fn dress(&self, row: &mut SpineRow, table: &str) {
+        if table.eq_ignore_ascii_case(&self.in_front) {
+            row.kind = IN_FRONT.to_string();
+            row.selected = false;
+            return;
+        }
+        let Some((name, trail)) = self.candidate(table) else {
+            return;
+        };
+        let added = self.added.contains(name);
+        row.selected = added || self.cursor.as_ref() == Some(name);
+        row.kind = match (added, trail) {
+            (true, Some(trail)) => format!("{ADDED} \u{b7} {trail}"),
+            (true, None) => ADDED.to_string(),
+            (false, Some(trail)) => trail.clone(),
+            (false, None) => String::new(),
+        };
+    }
+}
+
 /// What a click on an overridden spine asked for. The document cannot act on it: the window owns
 /// what the canvas holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3785,6 +3848,12 @@ pub enum SpineAsk {
 }
 
 impl ProtocolDoc {
+    /// Take the candidate table whose row was clicked this frame while the
+    /// spine picks, if one was.
+    pub fn take_spine_pick_click(&mut self) -> Option<String> {
+        self.spine_pick_click.take()
+    }
+
     /// Take what a reader asked of the overridden spine this frame, if anything.
     pub fn take_spine_ask(&mut self) -> Option<SpineAsk> {
         self.spine_ask.take()
@@ -3805,6 +3874,8 @@ impl ProtocolDoc {
             graph_pick: false,
             spine_override: None,
             spine_ask: None,
+            spine_pick: None,
+            spine_pick_click: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -3826,6 +3897,8 @@ impl ProtocolDoc {
             graph_pick: false,
             spine_override: None,
             spine_ask: None,
+            spine_pick: None,
+            spine_pick_click: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -4113,6 +4186,34 @@ impl Item<ProtocolDoc> for OutlinePane {
             }
             None => doc.model.spine_with_joins(),
         };
+        // While the spine picks a table for an operation, a row stands for a
+        // table when it is the table's own asset row: under an override, the
+        // row the model's table opens from.
+        let picking = doc.spine_pick.clone();
+        let table_of = |row: &SpineRow| -> Option<String> {
+            match &overridden {
+                Some(o) => o.tables.table(row).map(str::to_string),
+                None => (row.role == SpineRole::Asset).then(|| row.label.clone()),
+            }
+        };
+        let pick_table = |row: &SpineRow| -> Option<String> {
+            let pick = picking.as_ref()?;
+            let table = table_of(row)?;
+            (table.eq_ignore_ascii_case(&pick.in_front) || pick.candidate(&table).is_some())
+                .then_some(table)
+        };
+        let mut spine = spine;
+        if let Some(pick) = &picking {
+            for row in &mut spine.rows {
+                if let Some(table) = pick_table(row) {
+                    pick.dress(row, &table);
+                } else {
+                    row.selected = false;
+                }
+            }
+        }
+        let spine = spine;
+        let mut pick_clicked: Option<String> = None;
         let columns = doc.model.column_rows();
         let spine_caption = match &overridden {
             Some(o) => o.caption.clone(),
@@ -4172,6 +4273,13 @@ impl Item<ProtocolDoc> for OutlinePane {
                         None => holds.shows(row),
                     },
                     senses_click: &|row| match &overridden {
+                        // While the spine picks, a table the operation can read is the
+                        // one kind of row that answers a click.
+                        _ if picking.is_some() => pick_table(row).is_some_and(|table| {
+                            picking
+                                .as_ref()
+                                .is_some_and(|pick| pick.candidate(&table).is_some())
+                        }),
                         // The table already in the grid is not a control: a click on it would
                         // reopen the rows it is showing.
                         Some(o) => {
@@ -4182,12 +4290,20 @@ impl Item<ProtocolDoc> for OutlinePane {
                         }
                         None => default_senses_click(row),
                     },
+                    muted: &|row| picking.is_some() && pick_table(row).is_none(),
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
                 drawn = listed.rows;
                 curves = listed.curves;
-                if overridden.is_some() {
+                if let Some(pick) = &picking {
+                    // A click puts the cursor on the table: Enter takes it.
+                    pick_clicked = listed
+                        .clicked
+                        .and_then(|i| spine.rows.get(i))
+                        .and_then(&pick_table)
+                        .and_then(|table| pick.candidate(&table).map(|(name, _)| name.clone()));
+                } else if overridden.is_some() {
                     if let (Some(row), Some(o)) =
                         (listed.clicked.and_then(|i| spine.rows.get(i)), &overridden)
                     {
@@ -4255,6 +4371,10 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.spine_ask = ask;
             cx.request_repaint();
         }
+        if pick_clicked.is_some() {
+            doc.spine_pick_click = pick_clicked;
+            cx.request_repaint();
+        }
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
@@ -4305,6 +4425,9 @@ pub struct SpineListStyle<'a> {
     pub shows: &'a dyn Fn(&SpineRow) -> bool,
     /// Which rows are controls; a row that is not senses hover only.
     pub senses_click: &'a dyn Fn(&SpineRow) -> bool,
+    /// Which rows are named in the muted ink: none, but while the spine picks
+    /// a table for an operation, when each row that is not a table is.
+    pub muted: &'a dyn Fn(&SpineRow) -> bool,
 }
 
 /// The rule the outline pane uses for which spine rows are controls: an asset
@@ -4360,7 +4483,7 @@ pub(crate) fn spine_list_ui(
             ui,
             row,
             (style.shows)(row),
-            (style.senses_click)(row),
+            ((style.senses_click)(row), (style.muted)(row)),
             gutter,
             mode,
         );
@@ -4404,6 +4527,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
         chip: None,
         control: false,
         struck: false,
+        muted: false,
     };
     std::iter::once(heading)
         .chain(shown.rows.iter().map(|row| SpineRowDrawn {
@@ -4421,6 +4545,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
             chip: None,
             control: true,
             struck: false,
+            muted: false,
         }))
         .collect()
 }
@@ -4472,6 +4597,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         chip: None,
         control: false,
         struck: false,
+        muted: false,
     }
 }
 
@@ -4591,6 +4717,7 @@ fn spine_head_row(
             }),
             control: false,
             struck: false,
+            muted: false,
         },
         response.clicked(),
     )
@@ -4632,7 +4759,7 @@ fn spine_row(
     ui: &mut egui::Ui,
     row: &SpineRow,
     on_canvas: bool,
-    senses_click: bool,
+    (senses_click, muted): (bool, bool),
     gutter: f32,
     mode: Mode,
 ) -> (SpineRowDrawn, egui::Response) {
@@ -4725,7 +4852,12 @@ fn spine_row(
     // A step removed and not yet saved stays on the spine until the Save that
     // takes it out of the folder, so it is drawn as going rather than gone: its
     // name in the secondary ink with a rule through it, in the same ink.
-    let ink = if row.struck {
+    //
+    // While the spine picks a table, a row that is not one is drawn in the
+    // muted ink, so the tables are what the eye lands on.
+    let ink = if muted {
+        chrome::colour(sem.text.muted)
+    } else if row.struck {
         chrome::colour(sem.text.secondary)
     } else {
         chrome::colour(sem.text.primary)
@@ -4768,6 +4900,7 @@ fn spine_row(
             chip: None,
             control: sense.senses_click(),
             struck: row.struck,
+            muted,
         },
         response,
     )
@@ -4904,6 +5037,7 @@ fn outline_row(
             chip: None,
             control: sense.senses_click(),
             struck: false,
+            muted: false,
         },
         response,
         chips,
@@ -7704,7 +7838,17 @@ steps:
         };
         let mut drawn = None;
         let out = ctx.run_ui(raw, |ui| {
-            drawn = Some(spine_row(ui, row, on_canvas, default_senses_click(row), 0.0, mode).0);
+            drawn = Some(
+                spine_row(
+                    ui,
+                    row,
+                    on_canvas,
+                    (default_senses_click(row), false),
+                    0.0,
+                    mode,
+                )
+                .0,
+            );
         });
         let rects = out
             .shapes

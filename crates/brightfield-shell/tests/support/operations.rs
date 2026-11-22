@@ -101,6 +101,21 @@ impl OpWindow {
         Self::open_in(std::rc::Rc::new(tmp), fixture)
     }
 
+    /// [`Self::on_copy_of`], with `prepare` run on the folder before the window
+    /// opens it: how a test records steps into the Protocol first.
+    pub fn on_copy_prepared(fixture: &str, prepare: impl FnOnce(&Path)) -> Self {
+        let tmp = tempfile::Builder::new()
+            .prefix("bf-operation-")
+            .tempdir()
+            .expect("a temp folder for the fixture");
+        let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(fixture);
+        std::fs::copy(&from, tmp.path().join(fixture)).expect("the fixture copies");
+        prepare(tmp.path());
+        Self::open_in(std::rc::Rc::new(tmp), fixture)
+    }
+
     /// A window over the chart spec `examples/<fixture>`, with a live session
     /// behind it and no Protocol of its own: its Save has no spec to write.
     pub fn on_live_chart(fixture: &str) -> Self {

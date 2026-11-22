@@ -786,6 +786,8 @@ A part no built operation starts from senses nothing, so no header gesture does 
 
 ### Task 8: The spine picks a table for an operation
 
+> **Built.** `docs/operation-forms.md`, under "The spine's pick", is the reference for Tasks 18 and 19 where it differs from the interfaces below: the candidates stay in the spine's order, `SpinePick::add` and `put_cursor_on` answer whether they acted, `would_take` reads what a take would hand over, and `Begin::model` is filled for an operation that started from the spine.
+
 **Files:**
 - Create: `crates/brightfield-shell/src/spine_pick.rs`
 - Modify: `crates/brightfield-shell/src/lib.rs` (`pub mod spine_pick;`)
@@ -831,7 +833,7 @@ The verbs, all `CommandTier::View`, `Drives::Navigation`, in `BindingContext::Sp
 
 Take hands the tables and their columns to `begin` through `Begin::taken`. Esc gives the keyboard back to the grid and keeps nothing.
 
-- [ ] **Step 1: Write the failing tests** in `spine_pick.rs`. The spec local to the test is `Start::Spine { role: "other" }`, single and list. The folder is a copy of the housing sample with a step `by_age` (summarise-rows by `house_age`) and a step `top` (limit-rows 10), both recorded through `record_step`.
+- [x] **Step 1: Write the failing tests** in `spine_pick.rs`. The spec local to the test is `Start::Spine { role: "other" }`, single and list. The folder is a copy of the housing sample with a step `by_age` (summarise-rows by `house_age`) and a step `top` (limit-rows 10), both recorded through `record_step`.
 
 ```rust
 #[test] fn the_spine_marks_the_table_in_front_and_starts_on_the_best_candidate() {}
@@ -845,10 +847,10 @@ Take hands the tables and their columns to `begin` through `Begin::taken`. Esc g
 ```
 
 And in `registry.rs`: `the_spine_pick_context_moves_adds_takes_and_backs_out`.
-- [ ] **Step 2: Run them to see them fail.** Run: `cargo test -p brightfield-keys` then `cargo test -p brightfield-shell --test spine_pick`. Expected: FAIL.
-- [ ] **Step 3: Implement** the keys, then `spine_pick.rs`, the spine's rows and the host's spine start.
-- [ ] **Step 4: Run.** `cargo test -p brightfield-keys` then `cargo test -p brightfield-shell --test spine_pick --test navigator_spine --test operation_start`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -m "Pick the table an operation reads in the spine, one or a list, related tables first"`, then `--step comment-citations`.
+- [x] **Step 2: Run them to see them fail.** Run: `cargo test -p brightfield-keys` then `cargo test -p brightfield-shell --test spine_pick`. Expected: FAIL.
+- [x] **Step 3: Implement** the keys, then `spine_pick.rs`, the spine's rows and the host's spine start.
+- [x] **Step 4: Run.** `cargo test -p brightfield-keys` then `cargo test -p brightfield-shell --test spine_pick --test navigator_spine --test operation_start`. Expected: PASS.
+- [x] **Step 5: Commit.** `git commit -m "Pick the table an operation reads in the spine, one or a list, related tables first"`, then `--step comment-citations`.
 
 ### Every operation task (9 to 19) follows these steps
 
