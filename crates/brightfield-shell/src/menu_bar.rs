@@ -2,16 +2,16 @@
 //! [`brightfield_keys::menu_bar`] with its title, its key, and the sentence it
 //! says when the window cannot take it now.
 //!
-//! The window publishes the rows as each frame ends ([`MenuState`]), and a
+//! The window publishes the rows late in each frame ([`MenuState`]), and a
 //! host's menus read them from there: the native bar on a thread of its own
 //! turn, the menus drawn in the window on the frame after. A command chosen
 //! from a menu goes back to the window on the open queue
 //! ([`crate::open_queue::OpenQueue::ask_verb`]).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use brightfield_keys::{
-    availability, item_title, items_without_native, keys_label, menu_bar, registry, Availability,
+    availability, items_without_native, keys_label, menu_bar, registry, Availability,
     BindingContext, KeyPlatform, Menu, MenuItem, Situation, VerbEntry,
 };
 
@@ -44,39 +44,89 @@ fn menu_key(verb: &VerbEntry) -> Option<&'static str> {
         .map(|b| b.keystrokes)
 }
 
+/// What stands over the window when a menu is read or a command chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sheet {
+    /// Nothing that waits on an answer: no overlay, or one of the pickers.
+    None,
+    /// A sheet that waits on an answer: Preferences, the sources browser and
+    /// the like.
+    Up,
+    /// The question a close asks over unsaved work.
+    CloseQuestion,
+}
+
+impl Sheet {
+    /// Whether the sheet stops `longname` from a menu. A sheet stops the
+    /// commands its own keys would not reach: Quit's key and Save's are read
+    /// under a sheet, so their menu items stay live there, and Save stands
+    /// down under the close question, which asks about saving itself.
+    #[must_use]
+    pub fn stops(self, longname: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::Up => !matches!(longname, "quit" | "save-protocol"),
+            Self::CloseQuestion => longname != "quit",
+        }
+    }
+}
+
+/// The part of a row that is the command list's and does not move with what
+/// the window holds, with the command's registry entry. Built once.
+fn fixed_rows() -> &'static [(MenuRow, Option<VerbEntry>)] {
+    static ROWS: OnceLock<Vec<(MenuRow, Option<VerbEntry>)>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        let reg = registry();
+        let mut rows = Vec::new();
+        for menu in menu_bar() {
+            for item in &menu.items {
+                let MenuItem::Command { longname, asks } = *item else {
+                    continue;
+                };
+                let verb = reg.iter().find(|v| v.longname == longname).cloned();
+                let label = verb.as_ref().map_or(longname, |v| v.label);
+                rows.push((
+                    MenuRow {
+                        menu: menu.title,
+                        longname,
+                        title: if asks {
+                            format!("{label}…")
+                        } else {
+                            label.to_owned()
+                        },
+                        keys: verb.as_ref().and_then(menu_key),
+                        missing: None,
+                    },
+                    verb,
+                ));
+            }
+        }
+        rows
+    })
+}
+
 /// Every command of the menu bar, in the bar's order, read against
-/// `situation`. With `sheet_up`, each row says [`SHEET_UP`].
+/// `situation`. A row `sheet` stops says [`SHEET_UP`].
 ///
 /// A row's place in this list is the tag a native menu item carries, so the
 /// list's order is the bar's and does not depend on `situation`.
 #[must_use]
-pub fn menu_rows(situation: &Situation, sheet_up: bool) -> Vec<MenuRow> {
-    let reg = registry();
-    let mut rows = Vec::new();
-    for menu in menu_bar() {
-        for item in &menu.items {
-            let MenuItem::Command { longname, asks } = *item else {
-                continue;
-            };
-            let verb = reg.iter().find(|v| v.longname == longname);
-            let missing = if sheet_up {
+pub fn menu_rows(situation: &Situation, sheet: Sheet) -> Vec<MenuRow> {
+    fixed_rows()
+        .iter()
+        .map(|(row, verb)| MenuRow {
+            missing: if sheet.stops(row.longname) {
                 Some(SHEET_UP.to_owned())
             } else {
-                verb.and_then(|v| match availability(v, situation) {
-                    Availability::Available => None,
-                    Availability::Missing(sentence) => Some(sentence),
-                })
-            };
-            rows.push(MenuRow {
-                menu: menu.title,
-                longname,
-                title: item_title(longname, asks),
-                keys: verb.and_then(menu_key),
-                missing,
-            });
-        }
-    }
-    rows
+                verb.as_ref()
+                    .and_then(|v| match availability(v, situation) {
+                        Availability::Available => None,
+                        Availability::Missing(sentence) => Some(sentence),
+                    })
+            },
+            ..row.clone()
+        })
+        .collect()
 }
 
 /// The rows the window last published, shared by clone with whatever draws
@@ -85,9 +135,12 @@ pub fn menu_rows(situation: &Situation, sheet_up: bool) -> Vec<MenuRow> {
 pub struct MenuState(Arc<Mutex<Vec<MenuRow>>>);
 
 impl MenuState {
-    /// Replace the rows with `rows`.
+    /// Replace the rows with `rows`, where they differ from the ones held.
     pub fn publish(&self, rows: Vec<MenuRow>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = rows;
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if *held != rows {
+            *held = rows;
+        }
     }
 
     /// The rows last published. Empty before the window's first frame.
@@ -206,8 +259,8 @@ mod tests {
 
     #[test]
     fn the_rows_are_the_bars_commands_in_order_whatever_the_window_holds() {
-        let nothing = menu_rows(&Situation::default(), false);
-        let sheet = menu_rows(&Situation::default(), true);
+        let nothing = menu_rows(&Situation::default(), Sheet::None);
+        let sheet = menu_rows(&Situation::default(), Sheet::Up);
         let names = |rows: &[MenuRow]| rows.iter().map(|r| r.longname).collect::<Vec<_>>();
         assert_eq!(names(&nothing), names(&sheet));
         let commands: usize = menu_bar()
@@ -219,16 +272,36 @@ mod tests {
         assert_eq!(nothing[0].menu, "Brightfield");
     }
 
+    /// A sheet greys the rows its keys would not reach: Quit's key, and
+    /// Save's outside the close question, are read under a sheet.
     #[test]
-    fn a_sheet_greys_every_row_with_one_sentence() {
-        for row in menu_rows(&Situation::default(), true) {
-            assert_eq!(row.missing.as_deref(), Some(SHEET_UP), "{}", row.longname);
+    fn a_sheet_greys_each_row_but_the_two_whose_keys_it_leaves() {
+        let holding_work = Situation {
+            conditions: vec![brightfield_keys::Condition::UnsavedWork],
+            ..Situation::default()
+        };
+        for (sheet, live) in [
+            (Sheet::Up, &["quit", "save-protocol"][..]),
+            (Sheet::CloseQuestion, &["quit"][..]),
+        ] {
+            for row in menu_rows(&holding_work, sheet) {
+                if live.contains(&row.longname) {
+                    assert_eq!(row.missing, None, "{} under {sheet:?}", row.longname);
+                } else {
+                    assert_eq!(
+                        row.missing.as_deref(),
+                        Some(SHEET_UP),
+                        "{} under {sheet:?}",
+                        row.longname
+                    );
+                }
+            }
         }
     }
 
     #[test]
     fn a_row_shows_the_global_key_where_the_command_has_one() {
-        let rows = menu_rows(&Situation::default(), false);
+        let rows = menu_rows(&Situation::default(), Sheet::None);
         let row = |name: &str| {
             rows.iter()
                 .find(|r| r.longname == name)
@@ -249,7 +322,7 @@ mod tests {
     fn the_state_hands_back_what_was_published() {
         let state = MenuState::default();
         assert!(state.rows().is_empty());
-        let rows = menu_rows(&Situation::default(), false);
+        let rows = menu_rows(&Situation::default(), Sheet::None);
         state.clone().publish(rows.clone());
         assert_eq!(state.rows(), rows);
     }

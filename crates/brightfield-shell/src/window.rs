@@ -8554,21 +8554,24 @@ impl MeridianApp {
         }
     }
 
-    /// **Whether a sheet over the window waits on an answer**: an overlay that
-    /// is not one of the three pickers (the palette, the help sheet, the node
-    /// jump). While one is up the menus are greyed and a command chosen from
-    /// one is dropped.
-    fn sheet_is_up(&self) -> bool {
-        !matches!(
-            self.overlay,
-            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_))
-        )
+    /// **What stands over the window, as the menus read it**: a sheet that
+    /// waits on an answer is an overlay that is not one of the three pickers
+    /// (the palette, the help sheet, the node jump). While one is up the
+    /// menus are greyed and a command chosen from one is dropped, but for the
+    /// commands [`crate::menu_bar::Sheet::stops`] leaves live.
+    fn sheet(&self) -> crate::menu_bar::Sheet {
+        use crate::menu_bar::Sheet;
+        match self.overlay {
+            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_)) => Sheet::None,
+            Some(Overlay::CloseQuestion(_)) => Sheet::CloseQuestion,
+            Some(_) => Sheet::Up,
+        }
     }
 
     /// The menu bar's rows, read against what the window holds now.
     #[must_use]
     pub fn menu_rows(&self) -> Vec<crate::menu_bar::MenuRow> {
-        crate::menu_bar::menu_rows(&self.situation(), self.sheet_is_up())
+        crate::menu_bar::menu_rows(&self.situation(), self.sheet())
     }
 
     /// The rows the last frame published, shared by clone with whatever draws
@@ -8617,15 +8620,18 @@ impl MeridianApp {
     }
 
     /// **Take the commands chosen from a menu** off the open queue into the
-    /// frame's requests. One chosen while a sheet waits on an answer is
-    /// dropped; one chosen under a picker closes the picker first; one the
+    /// frame's requests. One a sheet stops is dropped; one chosen under a
+    /// picker closes the picker first; one the
     /// window cannot take now says its sentence in a toast and is not applied.
     fn take_menu_verbs(&mut self, requests: &mut Vec<Request>) {
         for longname in self.open_queue.take_verbs() {
-            if self.sheet_is_up() {
+            let sheet = self.sheet();
+            if sheet.stops(longname) {
                 continue;
             }
-            self.overlay = None;
+            if sheet == crate::menu_bar::Sheet::None {
+                self.overlay = None;
+            }
             match self.availability_of(longname) {
                 Some(brightfield_keys::Availability::Available) => {
                     requests.push(Request::Verb(Verb::new(longname)));
@@ -12132,7 +12138,7 @@ impl MeridianApp {
                         "filter-rows-at-cursor" | "sort-rows-at-cursor"
                     ) =>
                 {
-                    self.ask_grid_foot(ctx, verb.as_str());
+                    taken = self.ask_grid_foot(ctx, verb.as_str());
                 }
                 // set-channel hands the hero pane's keys to the shelf band, as
                 // `e` does with the pane focused.
@@ -12151,7 +12157,8 @@ impl MeridianApp {
                     if matches!(verb.as_str(), crate::protocol::REMOVE_STEP | "yank-address") =>
                 {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
-                    self.protocol
+                    taken = self
+                        .protocol
                         .doc
                         .model
                         .dispatch(verb.as_str(), canvas_node.as_ref());

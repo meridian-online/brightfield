@@ -7,11 +7,11 @@
 mod scenes;
 
 use brightfield_keys::{registry, Availability, BindingContext, Need, Selected, Situation};
-use brightfield_shell::menu_bar::{menu_rows, SHEET_UP};
+use brightfield_shell::menu_bar::{menu_rows, Sheet, SHEET_UP};
 
 #[test]
 fn every_menu_command_acts_where_it_is_available() {
-    for row in menu_rows(&Situation::default(), false) {
+    for row in menu_rows(&Situation::default(), Sheet::None) {
         let mut win = scenes::scene_for(row.longname, BindingContext::Global);
         win.choose(row.longname);
         assert!(
@@ -96,7 +96,13 @@ fn no_menu_command_acts_behind_a_sheet() {
     win.choose("open-preferences");
     assert_eq!(win.app.open_overlay(), Some("preferences"));
     for row in win.app.menu_rows() {
-        assert_eq!(row.missing.as_deref(), Some(SHEET_UP), "{}", row.longname);
+        // Quit's key and Save's are read under a sheet, so their items stay
+        // as the window reads them.
+        if matches!(row.longname, "quit" | "save-protocol") {
+            assert_ne!(row.missing.as_deref(), Some(SHEET_UP), "{}", row.longname);
+        } else {
+            assert_eq!(row.missing.as_deref(), Some(SHEET_UP), "{}", row.longname);
+        }
     }
     assert_eq!(
         win.app.menu_state().rows(),
@@ -106,6 +112,9 @@ fn no_menu_command_acts_behind_a_sheet() {
     win.choose("run-protocol");
     assert_eq!(win.applied, Vec::<&str>::new());
     assert_eq!(win.app.open_overlay(), Some("preferences"));
+    // Quit's key is read under a sheet, and so is its menu item.
+    win.choose("quit");
+    assert_eq!(win.applied, ["quit"]);
 }
 
 #[test]

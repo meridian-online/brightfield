@@ -29,7 +29,7 @@ use objc2::runtime::{AnyObject, NSObject, Sel};
 use objc2::{class, define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker};
 use objc2_foundation::NSString;
 
-use crate::menu_bar::{menu_rows, MenuRow, MenuState};
+use crate::menu_bar::{menu_rows, MenuRow, MenuState, Sheet};
 use crate::open_queue::OpenQueue;
 
 /// `NSEventModifierFlagShift`.
@@ -151,6 +151,14 @@ define_class!(
                     let Some(item) = item else {
                         continue;
                     };
+                    // An item this module made for a command sends the delegate's own
+                    // action. A separator, a window item and anything AppKit adds to
+                    // the menu (the window list, Help's search field) are left as
+                    // they are, whatever tag they carry.
+                    let action: Option<Sel> = msg_send![&*item, action];
+                    if action != Some(sel!(menuItemChosen:)) {
+                        continue;
+                    }
                     let tag: isize = msg_send![&*item, tag];
                     let Some(row) = usize::try_from(tag).ok().and_then(|tag| rows.get(tag)) else {
                         continue;
@@ -213,6 +221,44 @@ impl MenuDelegate {
     }
 }
 
+/// One item of a menu as `install` builds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Planned {
+    /// A rule between groups.
+    Separator,
+    /// A window item AppKit answers.
+    Native(NativeItem),
+    /// A command, with its tag: its place in [`crate::menu_bar::menu_rows`].
+    Command(usize),
+}
+
+/// The menus `install` builds, each with its title and items: the menus after
+/// the first, which is the app menu winit makes. A command's tag is its place
+/// among the menus' commands counted from the app menu's, which is its place
+/// in `menu_rows` (`each_planned_command_is_tagged_with_its_row`).
+fn plan(menus: &[Menu]) -> Vec<(&'static str, Vec<Planned>)> {
+    let mut tag = 0_usize;
+    let mut planned = Vec::new();
+    for (at, menu) in menus.iter().enumerate() {
+        let items = menu
+            .items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Separator => Planned::Separator,
+                MenuItem::Native(which) => Planned::Native(*which),
+                MenuItem::Command { .. } => {
+                    tag += 1;
+                    Planned::Command(tag - 1)
+                }
+            })
+            .collect();
+        if at > 0 {
+            planned.push((menu.title, items));
+        }
+    }
+    planned
+}
+
 /// Whether the menus have been built, so a second call builds no second set.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -232,7 +278,7 @@ pub fn install(
     }
     // The titles and keys are the command list's and do not move with what the
     // window holds, so they are read once, against nothing held.
-    let rows = menu_rows(&Situation::default(), false);
+    let rows = menu_rows(&Situation::default(), Sheet::None);
     let names: Vec<&'static str> = rows.iter().map(|row| row.longname).collect();
     // SAFETY: `sharedApplication` and `mainMenu` are NSApplication's, called on the main thread.
     let (app, bar) = unsafe {
@@ -247,20 +293,7 @@ pub fn install(
         return false;
     };
     let delegate = MenuDelegate::new(queue, state, names);
-    // A command's tag is its place among the menus' commands, counted from
-    // the app menu's, which is its place in `menu_rows`
-    // (`the_first_menu_after_the_app_menu_starts_past_the_app_menus_commands`).
-    let mut tag = 0_usize;
-    for (at, menu) in menus.iter().enumerate() {
-        let commands = menu
-            .items
-            .iter()
-            .filter(|item| matches!(item, MenuItem::Command { .. }))
-            .count();
-        if at == 0 {
-            tag += commands;
-            continue;
-        }
+    for (menu_title, items) in plan(menus) {
         // SAFETY: NSMenu's and NSMenuItem's `new`, `setTitle:`, `setAutoenablesItems:`,
         // `setDelegate:`, `addItem:`, `setSubmenu:`, `separatorItem`, `setAction:`, `setTarget:`,
         // `setTag:`, `setKeyEquivalent:` and `setKeyEquivalentModifierMask:`, and NSApplication's
@@ -269,39 +302,35 @@ pub fn install(
         // delegate, which a menu and an item hold without retaining, is kept for the life of the
         // process below.
         unsafe {
-            let title = NSString::from_str(menu.title);
+            let title = NSString::from_str(menu_title);
             let native: Option<Retained<AnyObject>> = msg_send![class!(NSMenu), new];
             let holder: Option<Retained<AnyObject>> = msg_send![class!(NSMenuItem), new];
             let (Some(native), Some(holder)) = (native, holder) else {
-                tag += commands;
                 continue;
             };
             let () = msg_send![&*native, setTitle: &*title];
             let () = msg_send![&*native, setAutoenablesItems: false];
             let () = msg_send![&*native, setDelegate: &*delegate];
-            for item in &menu.items {
+            for item in items {
                 let entry: Option<Retained<AnyObject>> = match item {
-                    MenuItem::Separator => msg_send![class!(NSMenuItem), separatorItem],
-                    MenuItem::Native(_) | MenuItem::Command { .. } => {
+                    Planned::Separator => msg_send![class!(NSMenuItem), separatorItem],
+                    Planned::Native(_) | Planned::Command(_) => {
                         msg_send![class!(NSMenuItem), new]
                     }
                 };
                 let Some(entry) = entry else {
-                    if matches!(item, MenuItem::Command { .. }) {
-                        tag += 1;
-                    }
                     continue;
                 };
                 match item {
-                    MenuItem::Separator => {}
-                    MenuItem::Native(which) => {
-                        let (words, action) = native_item(*which);
+                    Planned::Separator => {}
+                    Planned::Native(which) => {
+                        let (words, action) = native_item(which);
                         let words = NSString::from_str(words);
                         let () = msg_send![&*entry, setTitle: &*words];
                         let () = msg_send![&*entry, setAction: action];
                         let () = msg_send![&*entry, setTag: NO_COMMAND];
                     }
-                    MenuItem::Command { .. } => {
+                    Planned::Command(tag) => {
                         if let Some(row) = rows.get(tag) {
                             let words = NSString::from_str(&native_title(row));
                             let () = msg_send![&*entry, setTitle: &*words];
@@ -314,7 +343,6 @@ pub fn install(
                         let () = msg_send![&*entry, setAction: sel!(menuItemChosen:)];
                         let () = msg_send![&*entry, setTarget: &*delegate];
                         let () = msg_send![&*entry, setTag: tag.cast_signed()];
-                        tag += 1;
                     }
                 }
                 let () = msg_send![&*native, addItem: &*entry];
@@ -322,7 +350,7 @@ pub fn install(
             let () = msg_send![&*holder, setTitle: &*title];
             let () = msg_send![&*holder, setSubmenu: &*native];
             let () = msg_send![&*bar, addItem: &*holder];
-            match menu.title {
+            match menu_title {
                 "Window" => {
                     let () = msg_send![&*app, setWindowsMenu: &*native];
                 }
@@ -351,7 +379,7 @@ mod tests {
     }
 
     fn row(longname: &str) -> MenuRow {
-        menu_rows(&Situation::default(), false)
+        menu_rows(&Situation::default(), Sheet::None)
             .into_iter()
             .find(|r| r.longname == longname)
             .unwrap_or_else(|| panic!("{longname} is on no menu"))
@@ -411,7 +439,7 @@ mod tests {
 
     #[test]
     fn choosing_an_item_queues_its_verb() {
-        let rows = menu_rows(&Situation::default(), false);
+        let rows = menu_rows(&Situation::default(), Sheet::None);
         let names: Vec<&'static str> = rows.iter().map(|r| r.longname).collect();
         let run = names
             .iter()
@@ -425,18 +453,39 @@ mod tests {
         assert_eq!(queue.take_verbs(), ["run-protocol"]);
     }
 
-    /// The tags `install` gives the items count the app menu's commands first,
-    /// so a tag is a row's place in `menu_rows`.
+    /// The tags `install` gives the items count the app menu's commands first
+    /// and pass over the Window menu's native items, so a tag is its command's
+    /// place in `menu_rows`.
     #[test]
-    fn the_first_menu_after_the_app_menu_starts_past_the_app_menus_commands() {
+    fn each_planned_command_is_tagged_with_its_row() {
         let menus = brightfield_keys::menu_bar();
-        let rows = menu_rows(&Situation::default(), false);
+        let rows = menu_rows(&Situation::default(), Sheet::None);
+        let planned = plan(&menus);
+        assert_eq!(
+            planned.iter().map(|(title, _)| *title).collect::<Vec<_>>(),
+            ["File", "Edit", "View", "Protocol", "Data", "Window", "Help"]
+        );
+        let mut seen = 0;
+        for ((title, items), menu) in planned.iter().zip(&menus[1..]) {
+            assert_eq!(items.len(), menu.items.len(), "{title}");
+            for (item, source) in items.iter().zip(&menu.items) {
+                match (item, source) {
+                    (Planned::Command(tag), MenuItem::Command { longname, .. }) => {
+                        seen += 1;
+                        assert_eq!(rows[*tag].longname, *longname, "{title}");
+                        assert_eq!(rows[*tag].menu, *title);
+                    }
+                    (Planned::Separator, MenuItem::Separator) => {}
+                    (Planned::Native(a), MenuItem::Native(b)) => assert_eq!(a, b),
+                    other => panic!("{title} plans {other:?}"),
+                }
+            }
+        }
         let app_commands = menus[0]
             .items
             .iter()
             .filter(|item| matches!(item, MenuItem::Command { .. }))
             .count();
-        assert_eq!(rows[app_commands].menu, menus[1].title);
-        assert_eq!(rows[app_commands - 1].menu, menus[0].title);
+        assert_eq!(seen + app_commands, rows.len());
     }
 }
