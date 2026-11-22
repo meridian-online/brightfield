@@ -15541,14 +15541,16 @@ impl MeridianApp {
         // The steps the step reads, and theirs, back to the load, in the
         // order the manifest makes them.
         let chain = crate::generated::preview_chain(generated, &step.name)?;
-        let fields = match step.effect {
+        let fields = match &step.effect {
             StepEffect::Operation(KnownOperation::FilterRows) => {
                 [step.argument.clone(), String::new()]
             }
             StepEffect::Operation(KnownOperation::SortRows) => {
                 [String::new(), step.argument.clone()]
             }
-            StepEffect::Sql => [String::new(), String::new()],
+            // Another operation's step shows no field: the foot row writes a
+            // condition or an order, and this step is neither.
+            StepEffect::Sql | StepEffect::Generated(_) => [String::new(), String::new()],
         };
         Some(crate::data_grid::PreviewRequest {
             step: step.name.clone(),

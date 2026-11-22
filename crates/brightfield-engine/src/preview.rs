@@ -39,6 +39,19 @@
 //! no more: it is there to prompt the next question, and must not pass for the
 //! step's rows or their range. Counting the last step's rows is a read of its
 //! own, [`preview_row_count_stoppable`], on the same terms.
+//!
+//! **A generated step runs as arc wrote it.** For the operations Brightfield
+//! does not rebuild as a condition or an order, the step's model is run whole
+//! ([`PreviewOp::Model`]): several statements for some operations, which make
+//! the step's table and then alter it inside a transaction. A model is not held
+//! to one read-only query as a typed statement is, and it does not need to be.
+//! It runs once the connection is shut and locked, so whatever it makes, alters
+//! or drops is in the preview's own in-memory database and goes with it, and a
+//! statement that reaches for a file is refused
+//! (`a_model_cannot_reach_outside_the_preview` in `tests/preview_model.rs`).
+//! The read then asks that a table of the step's name exists, and refuses a
+//! model that left no such table. A model's page is read in the order its rows were
+//! made, as a statement's is.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -106,6 +119,9 @@ pub enum PreviewOp {
     /// (`a_statement_that_is_not_one_read_only_query_is_refused_before_anything_runs`
     /// in `tests/preview_read.rs`).
     Statement(String),
+    /// arc's model for a generated step, run as written once the preview's
+    /// access is shut; it makes the step's table.
+    Model(String),
 }
 
 /// **A switch that stops a stoppable preview read**, shared between the read
@@ -302,7 +318,9 @@ pub fn preview_first_page_stoppable(
                     crate::ordered_window_sql(&rows_sql, order, width, 0, limit)
                 }
                 // The table keeps the order the statement made its rows in.
-                Some((_, PreviewOp::Statement(_))) => format!("{rows_sql} LIMIT {limit}"),
+                Some((_, PreviewOp::Statement(_) | PreviewOp::Model(_))) => {
+                    format!("{rows_sql} LIMIT {limit}")
+                }
                 _ => crate::unordered_window_sql(&rows_sql, 0, limit),
             };
             let mut statement = conn.prepare(&sql).map_err(refused)?;
@@ -426,8 +444,16 @@ fn with_chain<T>(
                 // comment that would swallow it.
                 format!("CREATE TABLE {} AS\n{sql}", quote(name))
             }
+            // arc's model names the table it makes and the tables it reads.
+            PreviewOp::Model(model) => model.clone(),
         };
         conn.execute_batch(&create).map_err(refused)?;
+        if matches!(op, PreviewOp::Model(_)) {
+            made_its_table(&conn, name).map_err(|e| match e {
+                Some(e) => refused(e),
+                None => PreviewRefusal::Engine(no_table_of_its_name(name)),
+            })?;
+        }
         previous = name;
     }
 
@@ -523,6 +549,28 @@ impl Drop for Watchdog {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// What a read says of a model that ran and left no table named for its step.
+fn no_table_of_its_name(step: &str) -> String {
+    format!("{step}: arc's model made no table of its name")
+}
+
+/// Whether the connection holds a table named `step`: `Err(None)` when it
+/// holds no such table, and `Err(Some(_))` when DuckDB could not be asked.
+fn made_its_table(conn: &Connection, step: &str) -> Result<(), Option<duckdb::Error>> {
+    let held: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND table_name = ?",
+            [step],
+            |r| r.get(0),
+        )
+        .map_err(Some)?;
+    if held > 0 {
+        Ok(())
+    } else {
+        Err(None)
     }
 }
 

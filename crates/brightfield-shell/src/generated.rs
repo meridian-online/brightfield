@@ -15,8 +15,17 @@
 //! message naming the step: brightfield will not show a step as one effect
 //! when its text says something else.
 //!
+//! **A step of another operation is read by its header and the table it
+//! makes** ([`parse_any_generated`]). arc writes one template per operation,
+//! and some are several statements, so brightfield does not read each back
+//! into its values. It reads the operation's long name and the tables the step
+//! reads from the header, checks that the model makes the step's own table,
+//! and keeps the model as written. The preview then runs that model
+//! ([`brightfield_engine::PreviewOp::Model`]), so the rows shown are the ones
+//! arc's SQL makes and not brightfield's reading of it.
+//!
 //! **What opens this way**: a folder whose first step is a data-file load and
-//! whose other steps are each a generated `filter-rows` or `sort-rows`, or a
+//! whose other steps are each a step arc generated for an operation, or a
 //! SQL step in the shape `arc sql record` writes ([`parse_sql_step`]): a
 //! first line `CREATE OR REPLACE TABLE "<step>" AS` and then one query that
 //! reads rows. Each step reads only tables the load or an earlier step makes.
@@ -112,10 +121,13 @@ impl KnownOperation {
 
 /// What a step does to make its table: an operation arc generated, or a SQL
 /// statement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepEffect {
     /// A `filter-rows` or `sort-rows` arc generated, on the one table it reads.
     Operation(KnownOperation),
+    /// A step arc generated for another operation, by its long name. Its
+    /// argument is the model as arc wrote it.
+    Generated(String),
     /// A statement, which reads the tables it names.
     Sql,
 }
@@ -133,7 +145,8 @@ pub struct GeneratedStep {
     /// Every table the step reads, in the order it names them. An operation
     /// reads its [`Self::on`] alone.
     pub reads: Vec<String>,
-    /// An operation's condition or ordering, or a statement, as written.
+    /// A `filter-rows` condition or a `sort-rows` ordering, another
+    /// operation's whole model, or a statement, as written.
     pub argument: String,
 }
 
@@ -223,11 +236,28 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
             "step {step_name:?} is not a generated step: its model does not open with `{HEADER}`"
         ));
     };
-    let Some((long, on)) = said.trim_start().split_once(" on ") else {
-        return refuse("its header does not say `<operation> on <table>`");
+    let said = said.trim();
+    let (long, tables) = match said.split_once(" on ") {
+        Some((long, tables)) => (long, Some(tables)),
+        None => (said, None),
     };
+    let is_long_name = !long.is_empty()
+        && long
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !is_long_name {
+        return refuse("its header does not say `<operation> on <table>`");
+    }
     let Some(operation) = KnownOperation::from_long_name(long) else {
-        return refuse(&format!("{long:?} is not an operation brightfield reads"));
+        // arc lists the tables a step reads after ` on `, a comma and a space
+        // between them, and writes no table for an operation that reads no table.
+        let tables: Vec<String> = tables
+            .map(|t| t.split(", ").map(str::to_string).collect())
+            .unwrap_or_default();
+        return parse_any_generated(step_name, long, &tables, &model_sql);
+    };
+    let Some(on) = tables else {
+        return refuse("its header does not say `<operation> on <table>`");
     };
     let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
     if lines.next() != Some(want_create.as_str()) {
@@ -311,6 +341,48 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
         on: on.to_string(),
         reads: vec![on.to_string()],
         argument: argument.to_string(),
+    })
+}
+
+/// Read the model arc generated for the step `step_name` by the operation
+/// `long_name`, which is neither `filter-rows` nor `sort-rows`, reading
+/// `tables` as its header lists them.
+///
+/// The model is kept as written and is not read back into the operation's
+/// values. What is checked is that it makes the step's own table: the line
+/// `CREATE OR REPLACE TABLE "<step_name>" AS` comes second, after the header,
+/// or third, after `BEGIN TRANSACTION;`, which is where arc's templates put it.
+/// The step reads `tables`, and is on the first of them, or on no table for an
+/// operation that reads no table.
+///
+/// # Errors
+///
+/// A message naming the step, when the model does not make its table there
+/// (`a_generated_model_edited_away_from_its_step_is_refused_naming_it` in
+/// `tests/generated_any_operation.rs`).
+pub fn parse_any_generated(
+    step_name: &str,
+    long_name: &str,
+    tables: &[String],
+    model_sql: &str,
+) -> Result<GeneratedStep, String> {
+    let model_sql = model_sql.replace("\r\n", "\n");
+    let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
+    let mut lines = model_sql.lines().skip(1);
+    let second = lines.next();
+    let makes_it = second == Some(want_create.as_str())
+        || (second == Some("BEGIN TRANSACTION;") && lines.next() == Some(want_create.as_str()));
+    if !makes_it {
+        return Err(format!(
+            "step {step_name:?} carries the generated header but its model does not make {step_name:?}"
+        ));
+    }
+    Ok(GeneratedStep {
+        name: step_name.to_string(),
+        effect: StepEffect::Generated(long_name.to_string()),
+        on: tables.first().cloned().unwrap_or_default(),
+        reads: tables.to_vec(),
+        argument: model_sql,
     })
 }
 
@@ -449,7 +521,7 @@ fn chain_of(
     for i in indices {
         let s = &steps[i];
         let in_line = s.on.to_lowercase() == previous.to_lowercase();
-        let op = match s.effect {
+        let op = match &s.effect {
             StepEffect::Operation(operation) if !in_line => PreviewOp::Statement(format!(
                 "SELECT *\nFROM {}\n{}{}\n",
                 quoted(&s.on),
@@ -463,6 +535,9 @@ fn chain_of(
                 PreviewOp::OrderBy(s.argument.clone())
             }
             StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
+            // arc's model names the tables it reads, so it stands wherever
+            // it falls in the chain.
+            StepEffect::Generated(_) => PreviewOp::Model(s.argument.clone()),
         };
         chain.push((s.name.clone(), op));
         previous = &s.name;

@@ -234,7 +234,7 @@ fn a_folder_of_recorded_sql_steps_reads_with_what_each_reads() {
     let read: Vec<(&str, StepEffect, Vec<String>)> = found
         .steps
         .iter()
-        .map(|s| (s.name.as_str(), s.effect, s.reads.clone()))
+        .map(|s| (s.name.as_str(), s.effect.clone(), s.reads.clone()))
         .collect();
     assert_eq!(
         read,
