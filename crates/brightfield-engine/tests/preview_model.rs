@@ -139,3 +139,17 @@ fn a_model_that_makes_no_table_of_its_name_is_refused() {
         PreviewRefusal::Engine("named: arc's model made no table of its name".to_owned())
     );
 }
+
+#[test]
+fn a_step_that_is_not_previewed_refuses_in_its_own_words() {
+    let dir = TempDir::new("not-previewed");
+    let why =
+        "Brightfield previews a local CSV or Parquet file; Run reads https://example.com/x.csv.";
+    let chain = [
+        ("remote".to_owned(), PreviewOp::NotPreviewed(why.to_owned())),
+        ("kept".to_owned(), PreviewOp::Where("a > 1".to_owned())),
+    ];
+    let refused = preview_first_page(&dir.csv(), FileReader::Csv, "t", &chain, 10)
+        .expect_err("the step is not previewed");
+    assert_eq!(refused, PreviewRefusal::Engine(why.to_owned()));
+}

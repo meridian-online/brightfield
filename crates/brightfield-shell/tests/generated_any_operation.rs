@@ -378,3 +378,106 @@ fn a_generated_model_edited_away_from_its_step_is_refused_naming_it() {
     assert!(err.contains("step \"r\""), "{err}");
     assert!(err.contains("does not make \"r\""), "{err}");
 }
+
+#[test]
+fn a_table_whose_name_holds_a_comma_is_read_as_one_table() {
+    let dir = folder("comma");
+    let d = dir.path();
+    record(
+        d,
+        "s, j",
+        "hide-column",
+        ROOT,
+        &[],
+        &[("column", "latitude")],
+    );
+    record(
+        d,
+        "c",
+        "hide-column",
+        "s, j",
+        &[],
+        &[("column", "longitude")],
+    );
+    let protocol = read(d);
+    let c = protocol.steps.iter().find(|s| s.name == "c").expect("c");
+    // The header reads `hide-column on s, j`, and steps `s` and `j` both exist.
+    assert_eq!(c.reads, ["s, j"]);
+    assert_eq!(c.on, "s, j");
+    let chain = preview_chain(&protocol, "c").expect("c is in the folder");
+    let names: Vec<&str> = chain.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["s, j", "c"]);
+    let page =
+        preview_first_page(&protocol.data, FileReader::Csv, ROOT, &chain, 10).expect("c previews");
+    let got = columns(&page);
+    assert!(!got.contains(&"latitude".to_string()), "{got:?}");
+    assert!(!got.contains(&"longitude".to_string()), "{got:?}");
+}
+
+#[test]
+fn a_step_that_reads_a_local_file_previews_and_one_that_reads_a_url_says_run_reads_it() {
+    let dir = folder("read-file");
+    let d = dir.path();
+    std::fs::write(d.join("extra.csv"), "house_age,label\n33,old\n37,older\n")
+        .expect("the second file writes");
+    let read_file = |name: &str, path: &str| {
+        let request = StepRequest {
+            long_name: "read-file".to_string(),
+            on: None,
+            reads: Vec::new(),
+            args: pairs(&[("path", path)]),
+        };
+        operation::record_step(&runner(), d, name, &request)
+            .unwrap_or_else(|e| panic!("arc records {name}: {e}"));
+    };
+    read_file("extra", "extra.csv");
+    record(
+        d,
+        "je",
+        "join-tables",
+        ROOT,
+        &["extra"],
+        &[("using", "house_age")],
+    );
+    read_file("remote", "https://example.com/x.csv");
+    record(
+        d,
+        "jr",
+        "join-tables",
+        ROOT,
+        &["remote"],
+        &[("using", "house_age")],
+    );
+
+    let protocol = read(d);
+    let extra = protocol
+        .steps
+        .iter()
+        .find(|s| s.name == "extra")
+        .expect("extra");
+    assert_eq!(extra.effect, StepEffect::Generated("read-file".to_string()));
+    assert!(extra.reads.is_empty());
+    assert_eq!(extra.on, "");
+
+    let preview = |step: &str| {
+        let chain = preview_chain(&protocol, step).expect("the step is in the folder");
+        preview_first_page(&protocol.data, FileReader::Csv, ROOT, &chain, 10)
+    };
+    // The file is read against the Protocol's folder, and a step that reads
+    // its table previews through it.
+    assert_eq!(
+        columns(&preview("extra").expect("extra previews")),
+        ["house_age", "label"]
+    );
+    let joined = columns(&preview("je").expect("je previews"));
+    assert!(joined.contains(&"extra_label".to_string()), "{joined:?}");
+
+    let why =
+        "Brightfield previews a local CSV or Parquet file; Run reads https://example.com/x.csv.";
+    for step in ["remote", "jr"] {
+        match preview(step) {
+            Err(brightfield_engine::PreviewRefusal::Engine(said)) => assert_eq!(said, why),
+            other => panic!("{step}: expected the sentence, got {other:?}"),
+        }
+    }
+}

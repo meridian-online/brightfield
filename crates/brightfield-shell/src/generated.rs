@@ -10,10 +10,12 @@
 //! the step's own name on the `CREATE` line, which that command does not see.
 //! `parses_a_model_arc_actually_wrote` holds the parser to what arc writes.
 //!
-//! A model that carries the header but departs from the template (a hand edit
-//! under the header, a different table in the `CREATE`) is refused with a
-//! message naming the step: brightfield will not show a step as one effect
-//! when its text says something else.
+//! A `filter-rows` or `sort-rows` model that carries the header but departs
+//! from the template (a hand edit under the header, a different table in the
+//! `CREATE`) is refused with a message naming the step: brightfield will not
+//! show a step as a condition or an order when its text says something else.
+//! Another operation's model is checked for the table it makes and for no
+//! more, since its preview runs the model as it is written.
 //!
 //! **A step of another operation is read by its header and the table it
 //! makes** ([`parse_any_generated`]). arc writes one template per operation,
@@ -139,11 +141,11 @@ pub struct GeneratedStep {
     /// The step's name, which is also the table it makes.
     pub name: String,
     pub effect: StepEffect,
-    /// The table the step reads: an operation's one table, or the first a
-    /// statement reads (empty when it reads none).
+    /// The table the step is on: the first it reads, and empty when it reads
+    /// no table.
     pub on: String,
-    /// Every table the step reads, in the order it names them. An operation
-    /// reads its [`Self::on`] alone.
+    /// Each table the step reads, in order: a filter's or a sort's one table,
+    /// the tables another operation's header lists, or those a statement names.
     pub reads: Vec<String>,
     /// A `filter-rows` condition or a `sort-rows` ordering, another
     /// operation's whole model, or a statement, as written.
@@ -448,7 +450,12 @@ pub fn preview_chain(
 ) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
     let target = index_of(&protocol.steps, step)?;
     let needed = with_what_they_read(&protocol.steps, [target]);
-    Some(chain_of(&protocol.root_table, &protocol.steps, needed))
+    Some(chain_of(
+        &protocol.root_table,
+        &protocol.steps,
+        needed,
+        Some(&protocol.dir),
+    ))
 }
 
 /// **The steps a statement reading `tables` is read after**: of `steps`,
@@ -466,7 +473,66 @@ pub fn preview_chain_reading(
     tables: &[String],
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     let read = tables.iter().filter_map(|t| index_of(steps, t));
-    chain_of(root_table, steps, with_what_they_read(steps, read))
+    chain_of(root_table, steps, with_what_they_read(steps, read), None)
+}
+
+/// [`preview_chain_reading`] for a Protocol in the folder `dir`, which a
+/// `read-file` step's relative path is read against.
+#[must_use]
+pub fn preview_chain_reading_in(
+    dir: &Path,
+    root_table: &str,
+    steps: &[GeneratedStep],
+    tables: &[String],
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    let read = tables.iter().filter_map(|t| index_of(steps, t));
+    chain_of(
+        root_table,
+        steps,
+        with_what_they_read(steps, read),
+        Some(dir),
+    )
+}
+
+/// The path a `read-file` model reads: the text between the quotes of its
+/// `FROM '<path>';` line, a doubled quote inside read as one.
+fn read_file_path(model: &str) -> Option<String> {
+    let spelled = model
+        .lines()
+        .find_map(|line| line.strip_prefix("FROM '"))?
+        .trim_end()
+        .strip_suffix("';")?;
+    Some(spelled.replace("''", "'"))
+}
+
+/// **How a `read-file` step previews**: a local CSV or Parquet file is loaded
+/// as a further root, its path read against `dir` when it is relative
+/// ([`brightfield_engine::PreviewOp::ReadFile`]). A URL, a glob or a file of
+/// another kind is left to a run, and the preview says so: the preview's
+/// connection is shut to the network, and the reader for another format is not
+/// one the preview loads with.
+fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engine::PreviewOp {
+    use brightfield_engine::{FileReader, PreviewOp};
+    let Some(spelled) = read_file_path(model) else {
+        return PreviewOp::NotPreviewed(
+            "Brightfield could not find the file this step reads in its model; Run reads it."
+                .to_string(),
+        );
+    };
+    let local = !spelled.contains("://") && !spelled.contains(['*', '?', '[']);
+    let path = Path::new(&spelled);
+    match FileReader::for_path(path).filter(|_| local) {
+        Some(reader) => PreviewOp::ReadFile {
+            path: match dir {
+                Some(dir) if path.is_relative() => dir.join(path),
+                _ => path.to_path_buf(),
+            },
+            reader,
+        },
+        None => PreviewOp::NotPreviewed(format!(
+            "Brightfield previews a local CSV or Parquet file; Run reads {spelled}."
+        )),
+    }
 }
 
 /// The index of the step of `steps` named `name`, in any case.
@@ -502,7 +568,8 @@ fn with_what_they_read(
 }
 
 /// The steps of `steps`, which follow the load of `root_table`, at
-/// `indices`, in the order given, as a chain the engine previews.
+/// `indices`, in the order given, as a chain the engine previews. `dir` is the
+/// Protocol's folder, when it is known.
 ///
 /// The engine runs an operation on the table made just before it in the
 /// chain. An operation whose own table is another, because it branches off a
@@ -514,6 +581,7 @@ fn chain_of(
     root_table: &str,
     steps: &[GeneratedStep],
     indices: impl IntoIterator<Item = usize>,
+    dir: Option<&Path>,
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     use brightfield_engine::PreviewOp;
     let mut previous = root_table;
@@ -537,6 +605,9 @@ fn chain_of(
             StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
             // arc's model names the tables it reads, so it stands wherever
             // it falls in the chain.
+            StepEffect::Generated(long_name) if long_name == "read-file" => {
+                read_file_op(&s.argument, dir)
+            }
             StepEffect::Generated(_) => PreviewOp::Model(s.argument.clone()),
         };
         chain.push((s.name.clone(), op));
@@ -739,11 +810,25 @@ fn read_steps<'a>(
                 step.name
             ));
         };
-        let parsed = if has_header(&model) {
+        let mut parsed = if has_header(&model) {
             parse_generated(&step.name, &model)?
         } else {
             sql.unwrap_or_else(|| parse_sql_step(&step.name, &model))?
         };
+        // arc writes a header's tables bare, a comma and a space between them,
+        // so a table whose own name holds those reads as two. The model
+        // settles it: arc spells such a name in quotes there. When the header's
+        // text read as one name is a table made, and the model spells it, the
+        // step reads that one table
+        // (`a_table_whose_name_holds_a_comma_is_read_as_one_table`). A header
+        // of three names or more, two of them one table, is not settled here.
+        if matches!(parsed.effect, StepEffect::Generated(_)) && parsed.reads.len() > 1 {
+            let whole = parsed.reads.join(", ");
+            if made.contains(&whole.to_lowercase()) && parsed.argument.contains(&quoted(&whole)) {
+                parsed.on.clone_from(&whole);
+                parsed.reads = vec![whole];
+            }
+        }
         // DuckDB resolves a table name without regard to case.
         if let Some(table) = parsed
             .reads
@@ -1052,10 +1137,57 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_operation_in_the_header_is_refused() {
+    fn another_operation_in_the_header_is_read_by_the_table_it_makes() {
         let text = FILTER.replace("filter-rows", "join-rows");
-        let err = parse_generated("x", &text).expect_err("join-rows is not read");
-        assert!(err.contains("join-rows"), "{err}");
+        let s = parse_generated("x", &text).expect("the model makes x");
+        assert_eq!(s.effect, StepEffect::Generated("join-rows".to_string()));
+        assert_eq!(s.reads, ["california_housing"]);
+        assert_eq!(s.on, "california_housing");
+        assert_eq!(s.argument, text);
+        // The same model under another step's name does not make that step.
+        let err = parse_generated("y", &text).expect_err("the model makes x, not y");
+        assert!(err.contains("does not make \"y\""), "{err}");
+    }
+
+    #[test]
+    fn a_header_that_names_no_operation_is_refused() {
+        let text = FILTER.replace("filter-rows", "Join Rows");
+        let err = parse_generated("x", &text).expect_err("Join Rows is no long name");
+        assert!(
+            err.contains("does not say `<operation> on <table>`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_read_file_step_previews_a_local_csv_or_parquet_and_leaves_the_rest_to_a_run() {
+        use brightfield_engine::{FileReader, PreviewOp};
+        let model = |path: &str| {
+            format!("-- generated: read-file\nCREATE OR REPLACE TABLE \"f\" AS\nSELECT *\nFROM '{path}';\n")
+        };
+        let dir = Path::new("/protocols/p");
+        assert_eq!(
+            read_file_op(&model("data/it''s.csv"), Some(dir)),
+            PreviewOp::ReadFile {
+                path: dir.join("data/it's.csv"),
+                reader: FileReader::Csv,
+            }
+        );
+        assert_eq!(
+            read_file_op(&model("/abs/x.parquet"), Some(dir)),
+            PreviewOp::ReadFile {
+                path: PathBuf::from("/abs/x.parquet"),
+                reader: FileReader::Parquet,
+            }
+        );
+        for other in ["https://example.com/x.csv", "data/*.csv", "x.json"] {
+            assert_eq!(
+                read_file_op(&model(other), Some(dir)),
+                PreviewOp::NotPreviewed(format!(
+                    "Brightfield previews a local CSV or Parquet file; Run reads {other}."
+                )),
+            );
+        }
     }
 
     fn taken(names: &[&str]) -> BTreeSet<String> {

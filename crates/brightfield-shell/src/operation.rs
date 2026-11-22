@@ -484,6 +484,28 @@ pub fn record_step(
     name: &str,
     request: &StepRequest,
 ) -> Result<Recorded, String> {
+    record_step_with_history(runner, dir, name, request, None)
+}
+
+/// The variable arc reads the folder of its history snapshots from, in place
+/// of the one under the home folder.
+const HISTORY_DIR_ENV: &str = "ARCFORM_HISTORY_DIR";
+
+/// [`record_step`], with arc's history snapshots of the Protocol kept under
+/// `history` when one is given, in place of the folder under the home folder
+/// arc keeps them in. A recording into a folder that is thrown away gives a
+/// folder inside it, so its snapshots go with it.
+///
+/// # Errors
+///
+/// As [`record_step`].
+pub(crate) fn record_step_with_history(
+    runner: &Runner,
+    dir: &Path,
+    name: &str,
+    request: &StepRequest,
+    history: Option<&Path>,
+) -> Result<Recorded, String> {
     let reads: Vec<String> = request
         .reads
         .iter()
@@ -511,7 +533,8 @@ pub fn record_step(
     }
     // No `--dir`: the child stands in `dir`, and arc's default is its working
     // directory. Passing `dir` too would resolve a relative one twice.
-    let out = arc_with_args(runner, dir, &argv);
+    let env: Vec<(&str, &Path)> = history.map(|h| (HISTORY_DIR_ENV, h)).into_iter().collect();
+    let out = crate::run::arc_with_args_and_env(runner, dir, &argv, &env);
     if out.succeeded {
         Ok(Recorded {
             said: out.stdout.trim().to_string(),

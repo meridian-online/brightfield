@@ -38,6 +38,7 @@ pub mod append_rows;
 pub mod cast_column;
 pub mod dedupe_rows;
 pub mod derive_column;
+pub mod draft;
 pub mod fill_nulls;
 pub mod filter_rows;
 pub mod hide_column;

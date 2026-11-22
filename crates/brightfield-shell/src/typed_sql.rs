@@ -212,7 +212,10 @@ impl TypedSource {
     /// file loads under a name of its own, the session's raw rows' name unless the root table or
     /// a step of `chain` already has it, and the root table is made from it, cast, as the first
     /// step.
-    fn read_over(&self, chain: Vec<(String, PreviewOp)>) -> (String, Vec<(String, PreviewOp)>) {
+    pub(crate) fn read_over(
+        &self,
+        chain: Vec<(String, PreviewOp)>,
+    ) -> (String, Vec<(String, PreviewOp)>) {
         if self.casts.is_empty() {
             return (self.root_table.clone(), chain);
         }
@@ -236,8 +239,23 @@ impl TypedSource {
         (rows, cast)
     }
 
+    /// The steps a read of `tables` is read after, in order: of [`Self::steps`], those that make
+    /// one of `tables`, and the steps those read. A `read-file` step's relative path is read
+    /// against the data file's folder, which is the Protocol's.
+    pub(crate) fn chain_reading(&self, tables: &[String]) -> Vec<(String, PreviewOp)> {
+        match self.data.parent() {
+            Some(dir) => crate::generated::preview_chain_reading_in(
+                dir,
+                &self.root_table,
+                &self.steps,
+                tables,
+            ),
+            None => crate::generated::preview_chain_reading(&self.root_table, &self.steps, tables),
+        }
+    }
+
     /// The columns the casts keep each cast column's text under, which the applied grid hides.
-    fn raw_columns(&self) -> std::collections::BTreeSet<String> {
+    pub(crate) fn raw_columns(&self) -> std::collections::BTreeSet<String> {
         self.casts
             .iter()
             .map(|(column, _)| crate::flat_cast::raw_name(column))
@@ -543,11 +561,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         return None;
     }
     let mut chain = match &parsed {
-        Ok(reading) => crate::generated::preview_chain_reading(
-            &source.root_table,
-            &source.steps,
-            &reading.tables,
-        ),
+        Ok(reading) => source.chain_reading(&reading.tables),
         Err(_) => Vec::new(),
     };
     chain.push((
