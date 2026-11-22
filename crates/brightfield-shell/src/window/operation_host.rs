@@ -71,6 +71,11 @@ fn static_key(key: &str) -> &'static str {
 /// whose database changes as it runs, is not copied on each frame.
 const COPY_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// What an operation that reads a second table of a model says while a run
+/// this window started is writing the model's database.
+pub const PICK_AFTER_THE_RUN: &str =
+    "The Protocol is being run: pick a table once the run has ended.";
+
 /// The stable id of the status band's line while the spine picks a table.
 pub const SPINE_PICK_STATUS_ID: &str = "spine-pick";
 
@@ -1096,6 +1101,16 @@ impl MeridianApp {
             .collect()
     }
 
+    /// Whether a run this window started is writing the database of the model
+    /// whose table the grid holds. arc runs each step in a process of its own,
+    /// so the database is free between two steps, and a read that opened it
+    /// then would hold the lock the next step needs and fail the run. Nothing
+    /// here opens the database while this is true.
+    fn model_database_is_being_run(&self) -> bool {
+        self.model_protocol_beside_the_grid()
+            .is_some_and(|protocol| self.runs_folder(&protocol.dir))
+    }
+
     /// [`Self::model_file_roots`], without each table whose grid copy the
     /// folder lacks or holds from before the Protocol's database last changed:
     /// what a read made off the frame, which cannot write a copy, may load.
@@ -1113,7 +1128,8 @@ impl MeridianApp {
     /// each from its grid copy. A copy the folder lacks, or one older than the
     /// Protocol's database, is written now: a step that reads a model's table
     /// may have been kept in an earlier session, and a run since may have
-    /// replaced the table's rows. A copy that could not be written is tried
+    /// replaced the table's rows. No copy is written while a run this window
+    /// started is writing that database. A copy that could not be written is tried
     /// again after [`COPY_AGAIN_AFTER`], and until then the preview says what
     /// DuckDB says of the file.
     pub(super) fn chain_over_model_tables(
@@ -1130,6 +1146,7 @@ impl MeridianApp {
         let Some(protocol) = self.model_protocol_beside_the_grid() else {
             return chain;
         };
+        let running = self.model_database_is_being_run();
         for (table, op) in &chain {
             let brightfield_engine::PreviewOp::ReadFile { path, .. } = op else {
                 continue;
@@ -1138,6 +1155,14 @@ impl MeridianApp {
                 .iter()
                 .any(|(name, copy)| name == table && copy == path);
             if !ours || crate::own_files::grid_copy_is_current(protocol, table) {
+                continue;
+            }
+            // The copy waits for a run under way to end: the preview shows the rows it
+            // has until then, and a frame is asked for to look again.
+            if running {
+                self.operation
+                    .copy_due
+                    .set(Some(std::time::Instant::now() + COPY_AGAIN_AFTER));
                 continue;
             }
             let mut tried = self.operation.copies_tried.borrow_mut();
@@ -1173,6 +1198,12 @@ impl MeridianApp {
         description: &OperationDescription,
         cx: &OperationContext,
     ) -> bool {
+        // A model's tables are read from the Protocol's database, which a run under way
+        // is writing.
+        if self.model_database_is_being_run() {
+            self.say_operation(ctx, PICK_AFTER_THE_RUN.to_string());
+            return false;
+        }
         let front = cx.in_front.clone().unwrap_or_default();
         let tables = self.pick_tables(cx);
         let copies = self.model_protocol_beside_the_grid().cloned();
@@ -1303,6 +1334,10 @@ impl MeridianApp {
             })
             .collect();
         let (spec, start, column) = (picking.spec, picking.start, picking.column.clone());
+        if !from_model.is_empty() && self.model_database_is_being_run() {
+            self.say_operation(ctx, PICK_AFTER_THE_RUN.to_string());
+            return;
+        }
         // A model's table is read from a copy of its rows, written afresh now for the
         // tables taken and no other, as opening a table's grid writes its own.
         if let Some(protocol) = self.model_protocol_beside_the_grid().cloned() {

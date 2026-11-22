@@ -240,8 +240,8 @@ pub struct TypedSource {
     /// `share` as the fraction the applied grid's `where` reads, not the file's `45%`.
     pub casts: Vec<(String, String)>,
     /// Tables no step makes, each a Parquet file loaded beside the data file
-    /// under the table's name: the tables of the Protocol's model the spine
-    /// picked for an operation, read from their grid copies.
+    /// under the table's name by a read that names it: the other tables of
+    /// the model the grid's table belongs to, read from their grid copies.
     pub file_roots: Vec<(String, PathBuf)>,
 }
 
