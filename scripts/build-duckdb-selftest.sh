@@ -9,7 +9,9 @@
 #   1. the shell's `--version` is exactly what the pinned release prints, which
 #      arc compares with its table of known DuckDB release commits;
 #   2. the seven built-in extensions are loaded and statically linked, read
-#      from `duckdb_extensions()`, in the shell and so in the library it loads;
+#      from `duckdb_extensions()`, in the shell and so in the library it loads,
+#      and a database opened read-only is read, which a FineType that panics
+#      when its macros are refused would abort;
 #   3. no `.duckdb_extension` file is anywhere in the output, and nothing is
 #      written to an empty extension directory and HOME while the shell runs;
 #   4. an extension outside the seven cannot be installed with the network
@@ -81,6 +83,19 @@ if [ "$probe" = "true|POINT (1 2)|true" ]; then
   pass "autocomplete, spatial and FineType answer in the shell"
 else
   fail "a built-in extension's function did not answer: ${probe}"
+fi
+# A database opened read-only still opens. FineType is compiled in, so its
+# entry point runs on every open, and it registers two table macros with a
+# CREATE that a read-only database refuses. A FineType that panics on that
+# refusal aborts the shell here (exit 134), as it would abort arc, which opens
+# a run's database read-only to measure its tables.
+duck "${SCRATCH}/read-only.duckdb" -c "CREATE TABLE t AS SELECT 42 AS answer;" > /dev/null 2>&1 || true
+status=0
+read_only=$(duck -readonly "${SCRATCH}/read-only.duckdb" -c "SELECT answer, ft_version() IS NOT NULL FROM t;" 2>&1) || status=$?
+if [ "$status" = 0 ] && [ "$read_only" = "42|true" ]; then
+  pass "a database opened read-only is read, and FineType answers there"
+else
+  fail "a database opened read-only: exit ${status}, output: ${read_only}"
 fi
 
 # 3. No extension files.
