@@ -92,6 +92,9 @@ pub struct DraftReads {
     shown: Option<DraftAnswer>,
     refusal: Option<String>,
     read_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Stopped when the reads are dropped: it ends the open, if the table is
+    /// still loading, and tells the worker to read no more.
+    over: PreviewStop,
 }
 
 impl std::fmt::Debug for DraftReads {
@@ -139,10 +142,12 @@ impl DraftReads {
         let (asks, asked) = channel::<Ask>();
         let (tell, told) = channel::<Told>();
         let hooks = PreviewHooks::default();
+        let over = PreviewStop::default();
+        let dropped = over.clone();
         let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = read_count.clone();
         std::thread::spawn(move || {
-            let mut warm = hooks.read_inside(|| open(&source, &upstream_of, file_limit));
+            let mut warm = hooks.read_inside(|| open(&source, &upstream_of, file_limit, &dropped));
             while let Ok(mut ask) = asked.recv() {
                 // The newest request waiting is the one read; the ones before
                 // it are for text since changed.
@@ -152,6 +157,11 @@ impl DraftReads {
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => return,
                     }
+                }
+                // The reads were dropped while this request waited: no arc
+                // child is started for a draft that is gone.
+                if dropped.is_stopped() {
+                    return;
                 }
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let answer = hooks.read_inside(|| read(&source, &mut warm, &ask));
@@ -172,6 +182,7 @@ impl DraftReads {
             shown: None,
             refusal: None,
             read_count,
+            over,
         }
     }
 
@@ -267,18 +278,31 @@ impl DraftReads {
 
 impl Drop for DraftReads {
     fn drop(&mut self) {
-        // The read under way is of no more use; the worker ends when it finds
-        // the channel shut.
+        // The open and the read under way are of no more use, and the gate
+        // they hold is another preview's to take
+        // (`dropping_the_reads_ends_the_work_under_way` in
+        // `tests/operation_reads.rs`).
+        self.over.stop();
         if let Some((_, _, stop)) = &self.asked {
             stop.stop();
         }
     }
 }
 
+/// What a draft that reads a local CSV or Parquet file says in place of rows.
+pub const READ_WHEN_KEPT: &str = "The file's rows are read once the step is kept.";
+
 /// Open the warm connection over `source` and the steps that make `tables`.
-fn open(source: &TypedSource, tables: &[String], file_limit: u64) -> Warm {
+fn open(source: &TypedSource, tables: &[String], file_limit: u64, stop: &PreviewStop) -> Warm {
     let (root, upstream) = source.read_over(source.chain_reading(tables));
-    match WarmPreview::open(&source.data, source.reader, &root, &upstream, file_limit) {
+    match WarmPreview::open_stoppable(
+        &source.data,
+        source.reader,
+        &root,
+        &upstream,
+        file_limit,
+        stop,
+    ) {
         Ok(warm) => Warm::Open(warm),
         Err(why @ (PreviewRefusal::TooLarge { .. } | PreviewRefusal::TookTooLong { .. })) => {
             Warm::Unread(why.to_string())
@@ -324,6 +348,16 @@ fn read(
         columns: Vec::new(),
         rows: Vec::new(),
     };
+    // A draft that reads a file makes its table from that file, which the
+    // warm connection, shut since it opened, cannot reach. It answers with
+    // arc's model and no rows, and says when the rows are read.
+    if ask.request.long_name == "read-file" {
+        let why = match crate::generated::read_file_op(&model.model, source.data.parent()) {
+            PreviewOp::NotPreviewed(why) => why,
+            _ => READ_WHEN_KEPT.to_string(),
+        };
+        return answer(empty(), 0, 0, Vec::new(), Some(why));
+    }
     let warm = match warm {
         Warm::Open(warm) => warm,
         Warm::Unread(why) => return answer(empty(), 0, 0, Vec::new(), Some(why.clone())),

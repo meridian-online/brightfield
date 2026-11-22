@@ -580,6 +580,9 @@ pub struct WarmPage {
 pub struct WarmPreview {
     conn: Connection,
     root_table: String,
+    /// The tables the open made, case folded: the root and each step of the
+    /// upstream chain. A draft may read them and may not be named for one.
+    made: Vec<String>,
     bytes: u64,
     /// The table the last read made, dropped before the next.
     drafted: Option<String>,
@@ -609,10 +612,38 @@ impl WarmPreview {
         upstream: &[(String, PreviewOp)],
         file_limit: u64,
     ) -> Result<Self, PreviewRefusal> {
+        Self::open_stoppable(
+            data,
+            reader,
+            root_table,
+            upstream,
+            file_limit,
+            &PreviewStop::default(),
+        )
+    }
+
+    /// [`WarmPreview::open`] that also ends when `stop` is stopped, as
+    /// [`PreviewRefusal::Superseded`]: a draft dropped while its table is
+    /// still loading lets go of the load
+    /// (`an_open_that_is_stopped_ends_as_superseded` in
+    /// `tests/warm_preview.rs`).
+    ///
+    /// # Errors
+    ///
+    /// As [`WarmPreview::open`], and [`PreviewRefusal::Superseded`] for an open
+    /// stopped through `stop`.
+    pub fn open_stoppable(
+        data: &Path,
+        reader: FileReader,
+        root_table: &str,
+        upstream: &[(String, PreviewOp)],
+        file_limit: u64,
+        stop: &PreviewStop,
+    ) -> Result<Self, PreviewRefusal> {
         let bytes = size_within(data, file_limit)?;
         let conn = Connection::open_in_memory().map_err(|e| refusal(&e.to_string(), bytes))?;
         {
-            let watch = Watchdog::start(&conn, PREVIEW_DEADLINE, PreviewStop::default());
+            let watch = Watchdog::start(&conn, PREVIEW_DEADLINE, stop.clone());
             let refused = |e: duckdb::Error| {
                 watch
                     .refusal(PREVIEW_DEADLINE)
@@ -630,9 +661,14 @@ impl WarmPreview {
                 return Err(why);
             }
         }
+        let made = std::iter::once(root_table)
+            .chain(upstream.iter().map(|(name, _)| name.as_str()))
+            .map(str::to_lowercase)
+            .collect();
         Ok(Self {
             conn,
             root_table: root_table.to_owned(),
+            made,
             bytes,
             drafted: None,
         })
@@ -647,6 +683,10 @@ impl WarmPreview {
     /// `on`, or the root table when `on` is `None`. A read that fails inside a
     /// transaction arc's model opened has that transaction rolled back, so the
     /// next read starts clean.
+    ///
+    /// A step named for a table the open made, in any case, is refused before
+    /// a table is dropped: making it would replace a table the draft's later
+    /// reads stand on.
     ///
     /// # Errors
     ///
@@ -691,6 +731,11 @@ impl WarmPreview {
             return Err(PreviewRefusal::Engine(
                 "a file is read when the preview opens, and not after".to_owned(),
             ));
+        }
+        if self.made.contains(&name.to_lowercase()) {
+            return Err(PreviewRefusal::Engine(format!(
+                "{name} is a table this step reads from, so the step cannot be previewed under that name"
+            )));
         }
         if let Some(last) = self.drafted.take() {
             self.conn

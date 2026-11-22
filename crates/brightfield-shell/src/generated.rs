@@ -508,10 +508,11 @@ fn read_file_path(model: &str) -> Option<String> {
 /// **How a `read-file` step previews**: a local CSV or Parquet file is loaded
 /// as a further root, its path read against `dir` when it is relative
 /// ([`brightfield_engine::PreviewOp::ReadFile`]). A URL, a glob or a file of
-/// another kind is left to a run, and the preview says so: the preview's
+/// another kind, or a path from the home folder (`~`), is left to a run, and
+/// the preview says so: the preview's
 /// connection is shut to the network, and the reader for another format is not
 /// one the preview loads with.
-fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engine::PreviewOp {
+pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engine::PreviewOp {
     use brightfield_engine::{FileReader, PreviewOp};
     let Some(spelled) = read_file_path(model) else {
         return PreviewOp::NotPreviewed(
@@ -519,7 +520,10 @@ fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engine::PreviewO
                 .to_string(),
         );
     };
-    let local = !spelled.contains("://") && !spelled.contains(['*', '?', '[']);
+    // A path that opens with `~` is DuckDB's to expand at a run, and is not
+    // a path inside the Protocol's folder.
+    let local =
+        !spelled.contains("://") && !spelled.contains(['*', '?', '[']) && !spelled.starts_with('~');
     let path = Path::new(&spelled);
     match FileReader::for_path(path).filter(|_| local) {
         Some(reader) => PreviewOp::ReadFile {
@@ -1006,13 +1010,31 @@ pub fn sql_step_name_for(
     column: Option<&str>,
     taken: &BTreeSet<String>,
 ) -> String {
-    let table = match slug(read_table.unwrap_or("")) {
+    effect_step_name("sql", read_table, column, true, taken)
+}
+
+/// **A name for a step by what it did**: `<table>_<word>_by_<column>` when
+/// `with_by` is set, `<table>_<word>_<column>` when it is not, and
+/// `<table>_<word>` with no column, with a numeric suffix when the name is
+/// taken, in any case. A missing or empty table is `table`. The parts are
+/// slugged, so arc's step-name check admits the name
+/// (`an_operations_step_is_named_by_its_word_and_its_column`).
+#[must_use]
+pub fn effect_step_name(
+    word: &str,
+    table: Option<&str>,
+    column: Option<&str>,
+    with_by: bool,
+    taken: &BTreeSet<String>,
+) -> String {
+    let table = match slug(table.unwrap_or("")) {
         s if s.is_empty() => "table".to_string(),
         s => s,
     };
     let base = match column.map(slug) {
-        Some(col) if !col.is_empty() => format!("{table}_sql_by_{col}"),
-        _ => format!("{table}_sql"),
+        Some(col) if !col.is_empty() && with_by => format!("{table}_{word}_by_{col}"),
+        Some(col) if !col.is_empty() => format!("{table}_{word}_{col}"),
+        _ => format!("{table}_{word}"),
     };
     free_name(base, taken)
 }
@@ -1150,6 +1172,42 @@ mod tests {
     }
 
     #[test]
+    fn an_operations_step_is_named_by_its_word_and_its_column() {
+        let none = BTreeSet::new();
+        assert_eq!(
+            effect_step_name("without", Some("housing"), Some("house_age"), false, &none),
+            "housing_without_house_age"
+        );
+        assert_eq!(
+            effect_step_name(
+                "deduped",
+                Some("housing"),
+                Some("median income"),
+                true,
+                &none
+            ),
+            "housing_deduped_by_median_income"
+        );
+        assert_eq!(
+            effect_step_name("appended", Some("housing"), None, false, &none),
+            "housing_appended"
+        );
+        assert_eq!(
+            effect_step_name("first", None, Some("--"), true, &none),
+            "table_first"
+        );
+        let taken = taken(&["housing_appended", "Housing_Appended_2"]);
+        assert_eq!(
+            effect_step_name("appended", Some("housing"), None, false, &taken),
+            "housing_appended_3"
+        );
+        assert_eq!(
+            sql_step_name_for(Some("housing"), Some("house_age"), &none),
+            "housing_sql_by_house_age"
+        );
+    }
+
+    #[test]
     fn a_header_that_names_no_operation_is_refused() {
         let text = FILTER.replace("filter-rows", "Join Rows");
         let err = parse_generated("x", &text).expect_err("Join Rows is no long name");
@@ -1180,7 +1238,12 @@ mod tests {
                 reader: FileReader::Parquet,
             }
         );
-        for other in ["https://example.com/x.csv", "data/*.csv", "x.json"] {
+        for other in [
+            "https://example.com/x.csv",
+            "data/*.csv",
+            "x.json",
+            "~/data/x.csv",
+        ] {
             assert_eq!(
                 read_file_op(&model(other), Some(dir)),
                 PreviewOp::NotPreviewed(format!(

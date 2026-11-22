@@ -494,12 +494,15 @@ const HISTORY_DIR_ENV: &str = "ARCFORM_HISTORY_DIR";
 /// [`record_step`], with arc's history snapshots of the Protocol kept under
 /// `history` when one is given, in place of the folder under the home folder
 /// arc keeps them in. A recording into a folder that is thrown away gives a
-/// folder inside it, so its snapshots go with it.
+/// folder inside it, so its snapshots go with it
+/// (`a_recording_keeps_its_history_where_it_is_told` in
+/// `tests/operation_descriptions.rs`).
 ///
 /// # Errors
 ///
 /// As [`record_step`].
-pub(crate) fn record_step_with_history(
+#[doc(hidden)]
+pub fn record_step_with_history(
     runner: &Runner,
     dir: &Path,
     name: &str,

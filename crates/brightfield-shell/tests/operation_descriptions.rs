@@ -323,3 +323,26 @@ fn arcs_notes_are_kept_when_it_records() {
     assert!(!recorded.notes[0].starts_with("note: "));
     assert!(!recorded.said.contains("note: "), "{}", recorded.said);
 }
+
+#[test]
+fn a_recording_keeps_its_history_where_it_is_told() {
+    let dir = two_tables("history");
+    let history = dir.path().join("history");
+    let hide = StepRequest {
+        long_name: "hide-column".to_string(),
+        on: Some("housing".to_string()),
+        reads: Vec::new(),
+        args: pairs(&[("column", "rooms")]),
+    };
+    operation::record_step_with_history(&runner(), dir.path(), "h", &hide, Some(&history))
+        .expect("arc records the step");
+    // arc wrote its snapshots of the manifest under the folder it was given.
+    let snapshots: Vec<PathBuf> = snapshot(&history)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        !snapshots.is_empty(),
+        "arc kept no snapshot under {history:?}"
+    );
+}

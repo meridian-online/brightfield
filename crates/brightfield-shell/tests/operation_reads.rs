@@ -314,3 +314,49 @@ fn a_preview_too_large_still_answers_with_arcs_model() {
     assert!(unread.contains("too large to preview"), "{unread}");
     assert!(reads.refusal().is_none());
 }
+
+#[test]
+fn a_draft_that_reads_a_file_answers_with_arcs_model_and_says_when_it_is_read() {
+    use brightfield_shell::operation_ui::reads::READ_WHEN_KEPT;
+    let dir = TempDir::new("read-file");
+    let mut reads = DraftReads::start(source(&dir), Vec::new(), || {});
+    let local = request("read-file", &[], &[("path", "extra.csv")]);
+    reads.edit("extra", local.clone());
+    settle(&mut reads);
+    let answer = reads.current().expect("the draft is answered");
+    assert_eq!(answer.model.model, recorded_model("extra", &local));
+    assert!(answer.page.rows.is_empty());
+    assert_eq!(answer.unread.as_deref(), Some(READ_WHEN_KEPT));
+
+    let remote = request("read-file", &[], &[("path", "https://example.com/x.csv")]);
+    reads.edit("extra", remote);
+    settle(&mut reads);
+    let answer = reads.current().expect("the draft is answered");
+    assert_eq!(
+        answer.unread.as_deref(),
+        Some("Brightfield previews a local CSV or Parquet file; Run reads https://example.com/x.csv.")
+    );
+    assert!(reads.refusal().is_none());
+}
+
+#[test]
+fn dropping_the_reads_ends_the_work_under_way() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let dir = TempDir::new("dropped");
+    let woken = Arc::new(AtomicUsize::new(0));
+    let counter = woken.clone();
+    let mut first = DraftReads::start(source(&dir), vec![ROOT.to_string()], move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    first.edit("h", hide());
+    drop(first);
+    // A second draft's reads share the first's gate, and are answered: the
+    // first let go of it.
+    let mut second = reads(&dir);
+    second.edit("h", hide());
+    settle(&mut second);
+    assert!(second.current().is_some());
+    // The first asked arc for no model and sent no answer.
+    assert_eq!(woken.load(Ordering::SeqCst), 0);
+}

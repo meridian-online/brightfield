@@ -1832,8 +1832,10 @@ enum PreviewShown {
 }
 
 /// What a read is kept under: the rows asked for, the data file as it stood
-/// when it was read (so a file changed on disk is read again), and the size
-/// limit it was read under.
+/// when it was read (so a file changed on disk is read again), each further
+/// file a step of the chain loads as it stood then, for the same reason
+/// (`a_second_file_changed_on_disk_is_read_again`), and the size limit it was
+/// read under.
 #[derive(Clone, Debug, PartialEq)]
 struct PreviewKey {
     step: String,
@@ -1842,6 +1844,10 @@ struct PreviewKey {
     chain: Vec<(String, brightfield_engine::PreviewOp)>,
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
+    /// The modified time and length of each file a
+    /// [`brightfield_engine::PreviewOp::ReadFile`] of the chain loads, in the
+    /// chain's order; `None` for one that is not there.
+    further: Vec<Option<(Option<std::time::SystemTime>, u64)>>,
     limit: u64,
     shown: Shown,
 }
@@ -1849,6 +1855,18 @@ struct PreviewKey {
 impl PreviewKey {
     fn of(request: &PreviewRequest, limit: u64) -> Self {
         let meta = std::fs::metadata(&request.data).ok();
+        let further = request
+            .chain
+            .iter()
+            .filter_map(|(_, op)| match op {
+                brightfield_engine::PreviewOp::ReadFile { path, .. } => Some(
+                    std::fs::metadata(path)
+                        .ok()
+                        .map(|m| (m.modified().ok(), m.len())),
+                ),
+                _ => None,
+            })
+            .collect();
         Self {
             step: request.step.clone(),
             data: request.data.clone(),
@@ -1856,6 +1874,7 @@ impl PreviewKey {
             chain: request.chain.clone(),
             modified: meta.as_ref().and_then(|m| m.modified().ok()),
             len: meta.map(|m| m.len()),
+            further,
             limit,
             shown: request.shown.clone(),
         }
@@ -2135,6 +2154,7 @@ impl GridPreview {
             chain: Vec::new(),
             modified: None,
             len: None,
+            further: Vec::new(),
             limit: 0,
             shown: Shown::new(),
         };

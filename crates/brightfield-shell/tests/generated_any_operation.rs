@@ -481,3 +481,38 @@ fn a_step_that_reads_a_local_file_previews_and_one_that_reads_a_url_says_run_rea
         }
     }
 }
+
+#[test]
+fn a_second_file_changed_on_disk_is_read_again() {
+    let dir = folder("second-file");
+    let d = dir.path();
+    let extra = d.join("extra.csv");
+    std::fs::write(&extra, "house_age,label\n33,old\n").expect("the second file writes");
+    let request = StepRequest {
+        long_name: "read-file".to_string(),
+        on: None,
+        reads: Vec::new(),
+        args: pairs(&[("path", "extra.csv")]),
+    };
+    operation::record_step(&runner(), d, "extra", &request).expect("arc records extra");
+
+    let manifest = d.join("arcform.yaml");
+    let boot =
+        Boot::open(&manifest.to_string_lossy(), Flow::Vertical, None).expect("the folder opens");
+    let mut win = Window::over(boot);
+    let rows = |win: &Window| {
+        win.app
+            .chart_doc()
+            .grid_preview()
+            .and_then(|p| p.page())
+            .map(|page| page.rows.len())
+    };
+    win.click_grid_under("extra");
+    assert_eq!(rows(&win), Some(1));
+
+    // The file gains a row while another step's grid is in front.
+    win.click_grid_under("h");
+    std::fs::write(&extra, "house_age,label\n33,old\n37,older\n").expect("the rewrite");
+    win.click_grid_under("extra");
+    assert_eq!(rows(&win), Some(2));
+}

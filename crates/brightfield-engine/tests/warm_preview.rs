@@ -246,3 +246,47 @@ fn a_draft_cannot_reach_outside_the_preview() {
         .expect("a read after a stopped one reads");
     assert_eq!(page.rows, 2);
 }
+
+#[test]
+fn a_draft_named_for_a_table_it_stands_on_is_refused_and_drops_no_table() {
+    let dir = TempDir::new("named");
+    let data = dir.file("t.csv", "a,c\n1,x\n2,y\n");
+    let upstream = [("kept".to_owned(), PreviewOp::Where("a > 1".to_owned()))];
+    let mut warm = open(&data, &upstream);
+    let stop = PreviewStop::default();
+    for name in ["t", "T", "Kept"] {
+        let as_is = model(&format!(
+            "CREATE OR REPLACE TABLE \"{name}\" AS\nSELECT *\nFROM t;\n"
+        ));
+        let refused = warm
+            .read(name, Some("t"), &as_is, 10, &stop)
+            .expect_err("the name is a table the open made");
+        assert!(engine(refused).contains("cannot be previewed under that name"));
+    }
+    // Both tables are still there for a draft under a free name.
+    let both = model(
+        "CREATE OR REPLACE TABLE \"d\" AS\nSELECT * FROM t\nUNION ALL\nSELECT * FROM kept;\n",
+    );
+    let page = warm
+        .read("d", Some("t"), &both, 10, &stop)
+        .expect("a free name reads");
+    assert_eq!((page.rows, page.rows_in), (3, 2));
+}
+
+#[test]
+fn an_open_that_is_stopped_ends_as_superseded() {
+    let dir = TempDir::new("stopped-open");
+    let data = dir.file("t.csv", "a,c\n1,x\n2,y\n");
+    let stop = PreviewStop::default();
+    stop.stop();
+    let refused = WarmPreview::open_stoppable(
+        &data,
+        FileReader::Csv,
+        "t",
+        &[],
+        PREVIEW_FILE_LIMIT_BYTES,
+        &stop,
+    )
+    .expect_err("the open was stopped before it began");
+    assert_eq!(refused, PreviewRefusal::Superseded);
+}
