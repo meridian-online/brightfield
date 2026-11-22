@@ -283,7 +283,8 @@ fn each_table_says_whether_it_shares_the_cursors_column() {
     assert_eq!(table_row(&win, "top").kind, "shares house_age");
     assert_eq!(cursor(&win), "by_age", "the first of the two");
 
-    // With the cursor on a column `by_age` lacks, `top` says it shares it and `by_age` says nothing.
+    // The cursor on `latitude`, which `top` holds and `by_age` lacks: the row of `top` says it
+    // shares the column, and the row of `by_age` trails an empty string.
     let mut win = window();
     assert!(start(&mut win, &JOIN_LIKE, "latitude"), "{:?}", win.said());
     assert_eq!(table_row(&win, "by_age").kind, "");
