@@ -968,6 +968,26 @@ fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
         win.frame(Vec::new());
     }
     assert!(copy.is_file(), "the copy was not written again");
+    // A copy from before the Protocol's database last changed is not current either, and is
+    // written again as a missing one is.
+    let protocol = win.pane().protocol.clone();
+    assert!(brightfield_shell::own_files::grid_copy_is_current(
+        &protocol,
+        &under.table
+    ));
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .and_then(|file| file.set_modified(std::time::SystemTime::UNIX_EPOCH))
+        .expect("the copy's time is set back");
+    assert!(!brightfield_shell::own_files::grid_copy_is_current(
+        &protocol,
+        &under.table
+    ));
+    assert!(!brightfield_shell::own_files::grid_copy_is_current(
+        &protocol,
+        "no_such_table"
+    ));
     let page = win
         .app
         .chart_doc()

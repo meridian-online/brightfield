@@ -10103,13 +10103,10 @@ impl MeridianApp {
             shown: self.charts.doc.column_facts().shown().clone(),
             casts: source.casts.clone(),
             // A table of the model is made by no step of the chain: a read that names one
-            // loads it from its grid copy, where the folder holds one. The spine writes the
-            // copy of each table an operation takes.
-            file_roots: self
-                .model_file_roots()
-                .into_iter()
-                .filter(|(_, copy)| copy.is_file())
-                .collect(),
+            // loads it from its grid copy, where the folder holds one written since the
+            // Protocol's database last changed. The spine writes the copy of each table an
+            // operation takes.
+            file_roots: self.current_model_file_roots(),
         })
     }
 

@@ -66,6 +66,11 @@ fn static_key(key: &str) -> &'static str {
     leaked
 }
 
+/// How long a grid copy that was not current when a preview asked for it is
+/// left before it is written again: long enough that a Protocol being run,
+/// whose database changes as it runs, is not copied on each frame.
+const COPY_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The stable id of the status band's line while the spine picks a table.
 pub const SPINE_PICK_STATUS_ID: &str = "spine-pick";
 
@@ -165,10 +170,10 @@ pub(super) struct OperationHost {
     began_over: Option<CanvasHolds>,
     /// The spine's ask for the operation's table, while one is open.
     picking: Option<Picking>,
-    /// The grid copies of the model's tables that could not be written for a
-    /// step's preview, so a preview asked for on each frame does not try the
-    /// same copy on each.
-    copies_refused: std::cell::RefCell<BTreeSet<std::path::PathBuf>>,
+    /// When each grid copy of a model's table was last written, or tried, for
+    /// a step's preview: a preview is asked for on each frame, and a copy that
+    /// cannot be written is tried again only after [`COPY_AGAIN_AFTER`].
+    copies_tried: std::cell::RefCell<BTreeMap<std::path::PathBuf, std::time::Instant>>,
 }
 
 impl OperationHost {
@@ -181,7 +186,7 @@ impl OperationHost {
             answers: 0,
             began_over: None,
             picking: None,
-            copies_refused: std::cell::RefCell::new(BTreeSet::new()),
+            copies_tried: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 }
@@ -1082,12 +1087,26 @@ impl MeridianApp {
             .collect()
     }
 
+    /// [`Self::model_file_roots`], without each table whose grid copy the
+    /// folder lacks or holds from before the Protocol's database last changed:
+    /// what a read made off the frame, which cannot write a copy, may load.
+    pub(super) fn current_model_file_roots(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(protocol) = self.model_protocol_beside_the_grid() else {
+            return Vec::new();
+        };
+        self.model_file_roots()
+            .into_iter()
+            .filter(|(table, _)| crate::own_files::grid_copy_is_current(protocol, table))
+            .collect()
+    }
+
     /// **`chain`, with the model's tables its steps read loaded ahead of it**,
-    /// each from its grid copy, which is written now when the folder holds
-    /// none: a step that reads a model's table may have been kept in an
-    /// earlier session, or from another table's grid. A copy that cannot be
-    /// written is not tried again, and the preview says what DuckDB says of
-    /// the missing file.
+    /// each from its grid copy. A copy the folder lacks, or one older than the
+    /// Protocol's database, is written now: a step that reads a model's table
+    /// may have been kept in an earlier session, and a run since may have
+    /// replaced the table's rows. A copy that could not be written is tried
+    /// again after [`COPY_AGAIN_AFTER`], and until then the preview says what
+    /// DuckDB says of the file.
     pub(super) fn chain_over_model_tables(
         &self,
         root_table: &str,
@@ -1109,15 +1128,20 @@ impl MeridianApp {
             let ours = roots
                 .iter()
                 .any(|(name, copy)| name == table && copy == path);
-            if !ours || path.is_file() || self.operation.copies_refused.borrow().contains(path) {
+            if !ours || crate::own_files::grid_copy_is_current(protocol, table) {
                 continue;
             }
-            if crate::own_files::grid_copy(protocol, table).is_err() {
-                self.operation
-                    .copies_refused
-                    .borrow_mut()
-                    .insert(path.clone());
+            let mut tried = self.operation.copies_tried.borrow_mut();
+            if tried
+                .get(path)
+                .is_some_and(|at| at.elapsed() < COPY_AGAIN_AFTER)
+            {
+                continue;
             }
+            tried.insert(path.clone(), std::time::Instant::now());
+            drop(tried);
+            // A refusal leaves the copy as it was, and the preview says what it finds.
+            let _ = crate::own_files::grid_copy(protocol, table);
         }
         chain
     }

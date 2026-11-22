@@ -1621,6 +1621,22 @@ pub fn grid_copy_path(p: &OwnProtocol, name: &str) -> PathBuf {
         .join(format!("{name}.parquet"))
 }
 
+/// Whether the folder holds a copy of the silver table `name` written since the Protocol's
+/// database last changed: a copy older than the database may hold rows a run has since replaced,
+/// and a preview that reads it would disagree with what a run makes. A copy is taken as current
+/// when the database's time cannot be read, since there is then no run to have replaced it.
+#[must_use]
+pub fn grid_copy_is_current(p: &OwnProtocol, name: &str) -> bool {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let Some(copied) = modified(&grid_copy_path(p, name)) else {
+        return false;
+    };
+    arc::spec::protocol_db_path(&p.dir)
+        .ok()
+        .and_then(|db| modified(&db))
+        .is_none_or(|database| copied >= database)
+}
+
 /// The columns [`grid_copy`] would write for the silver table `name`, read from the Protocol's
 /// database with no row copied.
 ///
