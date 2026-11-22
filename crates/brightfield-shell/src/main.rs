@@ -465,6 +465,19 @@ impl BrightfieldApp {
                     if tried >= MENU_QUIT_TRIES {
                         self.app.say_menu_quit_unrouted(false);
                     }
+                    // The main menu is there, so the command list's menus go beside the app
+                    // menu, read from the rows each frame publishes.
+                    let built = objc2::MainThreadMarker::new().is_some_and(|main_thread| {
+                        brightfield_shell::mac_menu::install(
+                            main_thread,
+                            &brightfield_keys::menu_bar(),
+                            queue.clone(),
+                            self.app.menu_state(),
+                        )
+                    });
+                    if !built {
+                        eprintln!("the menu bar's menus were not built: no main menu to add to");
+                    }
                 } else {
                     let tried = tried.saturating_add(1);
                     if tried < MENU_QUIT_TRIES {
