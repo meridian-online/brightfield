@@ -7,6 +7,7 @@
 //! about the framework.
 
 use crate::altitude::Altitude;
+use crate::availability::{ColumnKind, Condition, Need, Requirement, Selected};
 
 /// A framework-free keystroke descriptor. Carries NO framework types (the
 /// standing framework-free rule): a shell adapter builds its own binding form
@@ -186,6 +187,16 @@ impl ReservedReason {
 pub struct VerbEntry {
     /// Stable kebab-case canonical name, e.g. `cycle-colour-scheme`.
     pub longname: &'static str,
+    /// The command's name as a menu, the palette and a sentence write it:
+    /// sentence case, the action in a few words, no trailing punctuation, and
+    /// its own in the registry
+    /// (`every_verb_has_a_unique_label_in_sentence_case`).
+    pub label: &'static str,
+    /// The inputs the command needs before it can act, in the order they are
+    /// asked for, each with the sentence said when it is missing. Empty for a
+    /// command that acts wherever its keys are held. Read by
+    /// [`crate::availability::availability`].
+    pub needs: &'static [Requirement],
     /// Framework-free keystroke descriptors; EMPTY for reserved (palette-only) verbs.
     pub binding_specs: Vec<BindingSpec>,
     /// The altitudes at which the verb is meaningful (`no mark in v1`). The SAME
@@ -240,6 +251,71 @@ impl VerbEntry {
 
 const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 
+// The needs the commands declare. A list shared by several commands is named
+// once here, so the commands that share it say one sentence.
+
+const A_PROTOCOL: Requirement = Requirement::of(Need::Selected(Selected::Protocol));
+const A_CHART: Requirement = Requirement::of(Need::Selected(Selected::Chart));
+const THE_SHELF: Requirement = Requirement::of(Need::Condition(Condition::ShelfDrawn));
+
+const NEEDS_HOME: &[Requirement] = &[Requirement::new(
+    Need::Selected(Selected::Protocol),
+    "You are on the front door already.",
+)];
+const NEEDS_PROTOCOL: &[Requirement] = &[A_PROTOCOL];
+const NEEDS_UNSAVED_WORK: &[Requirement] =
+    &[Requirement::of(Need::Condition(Condition::UnsavedWork))];
+const NEEDS_OWN_PROTOCOL: &[Requirement] =
+    &[Requirement::of(Need::Condition(Condition::ProtocolSource))];
+const NEEDS_RUN: &[Requirement] = &[
+    Requirement::of(Need::Condition(Condition::ProtocolSource)),
+    Requirement::of(Need::Condition(Condition::Trusted)),
+];
+const NEEDS_UNTRUST: &[Requirement] = &[
+    A_PROTOCOL,
+    Requirement::new(
+        Need::Condition(Condition::Trusted),
+        "This Protocol is not trusted.",
+    ),
+];
+const NEEDS_FILE_TO_RELOAD: &[Requirement] =
+    &[Requirement::of(Need::Condition(Condition::FileToReload))];
+const NEEDS_PICTURE: &[Requirement] = &[Requirement::new(
+    Need::Selected(Selected::Chart),
+    "Open a chart to copy or export it as a picture.",
+)];
+const NEEDS_ROWS: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Rows))];
+const NEEDS_GRAPH: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Graph))];
+const NEEDS_CHART: &[Requirement] = &[A_CHART];
+const NEEDS_SELECTION: &[Requirement] = &[
+    A_CHART,
+    Requirement::of(Need::Condition(Condition::SelectionHeld)),
+];
+const NEEDS_SHELF: &[Requirement] = &[A_CHART, THE_SHELF];
+const NEEDS_EDIT_TO_TAKE_BACK: &[Requirement] = &[
+    A_CHART,
+    Requirement::of(Need::Condition(Condition::EditToTakeBack)),
+];
+const NEEDS_ASSET: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Asset))];
+const NEEDS_STEP: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Step))];
+const NEEDS_TAKES_SOURCES: &[Requirement] = &[
+    A_PROTOCOL,
+    Requirement::of(Need::Condition(Condition::TakesSources)),
+];
+const NEEDS_TWO_SOURCES: &[Requirement] = &[Requirement::new(
+    Need::Sources(2),
+    "Organising joins needs a Protocol of two sources or more.",
+)];
+const NEEDS_COLUMN_FOR_SHELF: &[Requirement] = &[
+    A_CHART,
+    THE_SHELF,
+    Requirement::of(Need::Column(ColumnKind::Any)),
+];
+const NEEDS_GRID_CELL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::GridCell))];
+const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Model))];
+const NEEDS_MODEL_TABLE: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelTable))];
+const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelJoin))];
+
 /// Build the v1 command registry: each verb, built or reserved, as data.
 ///
 /// This is the sole verb-metadata input to [`keymap_bindings`], [`palette_corpus`],
@@ -289,6 +365,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // no focused plot for them to move.
         VerbEntry {
             longname: "dive-in",
+            label: "Dive in",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -300,6 +378,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "pop-out",
+            label: "Pop out",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -311,6 +391,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-next-sibling",
+            label: "Next plot",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -322,6 +404,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-prev-sibling",
+            label: "Previous plot",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -333,6 +417,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "toggle-focus",
+            label: "Switch between canvas and editor",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -344,6 +430,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-jump",
+            label: "Jump to node",
+            needs: NEEDS_GRAPH,
             tier: CommandTier::View,
             binding_specs: vec![ws("/")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -356,6 +444,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- palette + help ----
         VerbEntry {
             longname: "open-palette",
+            label: "Command palette",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![ws("space"), global("cmd-shift-p")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -367,6 +457,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "open-help",
+            label: "Keyboard shortcuts",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![ws("?")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -379,6 +471,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- runtime verbs ----
         VerbEntry {
             longname: "clear-selection",
+            label: "Clear selection",
+            needs: NEEDS_SELECTION,
             tier: CommandTier::View,
             binding_specs: vec![ws("escape")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -391,6 +485,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- navigating the frame: pan, zoom, axis lock, reset ----
         VerbEntry {
             longname: "pan-left",
+            label: "Pan left",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("left")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -402,6 +498,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "pan-right",
+            label: "Pan right",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("right")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -413,6 +511,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "pan-up",
+            label: "Pan up",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("up")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -424,6 +524,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "pan-down",
+            label: "Pan down",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("down")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -435,6 +537,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "zoom-in",
+            label: "Zoom in",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("=")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -446,6 +550,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "zoom-out",
+            label: "Zoom out",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("-")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -457,6 +563,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "cycle-axis-lock",
+            label: "Cycle axis lock",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("x")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -468,6 +576,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "reset-extent",
+            label: "Full extent",
+            needs: NEEDS_CHART,
             tier: CommandTier::View,
             binding_specs: vec![ws("0")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -479,6 +589,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "reload-spec",
+            label: "Reload spec",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -490,6 +602,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "reload-data",
+            label: "Reload data",
+            needs: NEEDS_FILE_TO_RELOAD,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-r")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -501,6 +615,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "open-home",
+            label: "Home",
+            needs: NEEDS_HOME,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-h")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -514,6 +630,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // and from a focused text field, as Cmd+O does in every Mac app; no text field reads it.
         VerbEntry {
             longname: "open",
+            label: "Open",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-o")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -528,6 +646,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // Protocol is kept at once and writes no step, so View, as open is.
         VerbEntry {
             longname: "new-protocol",
+            label: "New Protocol",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-n")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -541,6 +661,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // no text field reads it. It writes no step, so View, as open is.
         VerbEntry {
             longname: "open-preferences",
+            label: "Preferences",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-,")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -555,6 +677,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // reaches the window's same handler; the binding is the route where no menu takes it.
         VerbEntry {
             longname: "quit",
+            label: "Quit Brightfield",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-q")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -569,6 +693,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      workspace shell can perform it. ----
         VerbEntry {
             longname: "toggle-presentation",
+            label: "Presentation mode",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -580,6 +706,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "save-spec",
+            label: "Save the spec",
+            needs: NEEDS_OWN_PROTOCOL,
             tier: CommandTier::View,
             binding_specs: vec![editor("cmd-s")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -595,6 +723,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // field that does not read the chord, as Cmd+S does in every Mac app.
         VerbEntry {
             longname: "save-protocol",
+            label: "Save",
+            needs: NEEDS_UNSAVED_WORK,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-s")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -611,6 +741,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // kept at once and writes no step, so View, as save-protocol is.
         VerbEntry {
             longname: "rename-protocol",
+            label: "Rename",
+            needs: NEEDS_PROTOCOL,
             tier: CommandTier::View,
             binding_specs: vec![global("f2")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -627,6 +759,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // finger lands on by accident: cmd-shift-u, u for untrust. Global, as rename-protocol is.
         VerbEntry {
             longname: "untrust-protocol",
+            label: "Stop trusting",
+            needs: NEEDS_UNTRUST,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-u")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -643,6 +777,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // canvas as well as from the strip.
         VerbEntry {
             longname: "run-protocol",
+            label: "Run",
+            needs: NEEDS_RUN,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-enter")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -657,6 +793,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // Global, as run-protocol is, so a chord reaches it from any pane.
         VerbEntry {
             longname: "copy-chart-picture",
+            label: "Copy chart as picture",
+            needs: NEEDS_PICTURE,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-c")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -668,6 +806,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "export-chart-picture",
+            label: "Export chart as picture",
+            needs: NEEDS_PICTURE,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-e")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -681,6 +821,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      chart can be edited from the keys ----
         VerbEntry {
             longname: "cycle-colour-scheme",
+            label: "Cycle colour scheme",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: vec![View],
@@ -691,16 +833,18 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: None,
         },
         // ---- reserved: needs a keyboard data-target (f / g f / t / set-param) ----
-        reserved("filter-view", vec![View], ReservedReason::NeedsKeyboardTarget, "Filter to the focused view's selection (needs a keyboard target)"),
-        reserved("cross-filter-all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
-        reserved("toggle-point-select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
-        reserved("set-param", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
+        reserved("filter-view", "Filter view", vec![View], ReservedReason::NeedsKeyboardTarget, "Filter to the focused view's selection (needs a keyboard target)"),
+        reserved("cross-filter-all", "Cross-filter all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
+        reserved("toggle-point-select", "Point select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
+        reserved("set-param", "Set parameter", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
         // ---- durable structural edits: set-channel at View, undo at
         //      Dashboard+View, both built. The mark verbs (change, add, remove)
         //      are reserved until the chart can be edited from the keys. All
         //      Data-tier: each writes the durable protocol document. ----
         VerbEntry {
             longname: "change-mark-type",
+            label: "Change mark type",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: Vec::new(),
             scope_applicability: vec![View],
@@ -712,6 +856,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "add-mark",
+            label: "Add mark",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: Vec::new(),
             scope_applicability: vec![View],
@@ -723,6 +869,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "set-channel",
+            label: "Go to shelf",
+            needs: NEEDS_SHELF,
             tier: CommandTier::Data,
             binding_specs: vec![ws("e")],
             scope_applicability: vec![View],
@@ -734,6 +882,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "remove-mark",
+            label: "Remove mark",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: Vec::new(),
             scope_applicability: vec![View],
@@ -750,6 +900,8 @@ pub fn registry() -> Vec<VerbEntry> {
             // mistaken for a mere view change and cross a durable-write barrier —
             // exactly the misclassification the tier taxonomy exists to prevent.
             longname: "undo",
+            label: "Undo",
+            needs: NEEDS_EDIT_TO_TAKE_BACK,
             tier: CommandTier::Data,
             binding_specs: vec![ws("u"), shelf("u"), shelf("cmd-z")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -764,6 +916,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      verb that names an asset is Data-tier (logged by dotted address). ----
         VerbEntry {
             longname: "protocol-producer",
+            label: "Go to producer",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("h")],
             scope_applicability: vec![Protocol],
@@ -775,6 +929,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "protocol-consumer",
+            label: "Go to consumer",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("l")],
             scope_applicability: vec![Protocol],
@@ -786,6 +942,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "protocol-sibling-next",
+            label: "Next sibling",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("j")],
             scope_applicability: vec![Protocol],
@@ -797,6 +955,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "protocol-sibling-prev",
+            label: "Previous sibling",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("k")],
             scope_applicability: vec![Protocol],
@@ -808,6 +968,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "toggle-fold",
+            label: "Fold or unfold",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("z a")],
             scope_applicability: vec![Protocol],
@@ -819,6 +981,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "protocol-drill-in",
+            label: "Drill in",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("enter")],
             scope_applicability: vec![Protocol],
@@ -830,6 +994,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "protocol-drill-out",
+            label: "Drill out",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![proto("escape")],
             scope_applicability: vec![Protocol],
@@ -841,6 +1007,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "open-steps-sheet",
+            label: "Steps sheet",
+            needs: NEEDS_GRAPH,
             tier: CommandTier::View,
             binding_specs: vec![proto("shift-s")],
             scope_applicability: vec![Protocol],
@@ -852,6 +1020,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "yank-address",
+            label: "Copy address",
+            needs: NEEDS_ASSET,
             tier: CommandTier::Data,
             binding_specs: vec![proto("y")],
             scope_applicability: vec![Protocol],
@@ -866,6 +1036,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // The window decides whether it may go: a load or a step later steps read is refused.
         VerbEntry {
             longname: "remove-step",
+            label: "Remove step",
+            needs: NEEDS_STEP,
             tier: CommandTier::Data,
             binding_specs: vec![proto("d d")],
             scope_applicability: vec![Protocol],
@@ -879,6 +1051,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // nothing, so View; the add the browser then makes is its own Data verb.
         VerbEntry {
             longname: "open-sources-browser",
+            label: "Add sources",
+            needs: NEEDS_TAKES_SOURCES,
             tier: CommandTier::View,
             binding_specs: vec![proto("shift-a")],
             scope_applicability: vec![Protocol],
@@ -893,6 +1067,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // so View; the Keep and Drop it applies are the model's own edits.
         VerbEntry {
             longname: "organise-joins",
+            label: "Organise joins",
+            needs: NEEDS_TWO_SOURCES,
             tier: CommandTier::View,
             binding_specs: vec![proto("o")],
             scope_applicability: vec![Protocol],
@@ -909,6 +1085,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      as it is. Data-tier: each sets a channel, as `set-channel` does. ----
         VerbEntry {
             longname: "put-column-on-x",
+            label: "Put column on x",
+            needs: NEEDS_COLUMN_FOR_SHELF,
             tier: CommandTier::Data,
             binding_specs: vec![proto("z x")],
             scope_applicability: vec![Protocol],
@@ -920,6 +1098,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "put-column-on-y",
+            label: "Put column on y",
+            needs: NEEDS_COLUMN_FOR_SHELF,
             tier: CommandTier::Data,
             binding_specs: vec![proto("z y")],
             scope_applicability: vec![Protocol],
@@ -931,6 +1111,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "put-column-on-colour",
+            label: "Put column on colour",
+            needs: NEEDS_COLUMN_FOR_SHELF,
             tier: CommandTier::Data,
             binding_specs: vec![proto("z c")],
             scope_applicability: vec![Protocol],
@@ -948,6 +1130,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      View-tier; keeping a choice sets a channel, so it is Data-tier. ----
         VerbEntry {
             longname: "go-to-mark-cell",
+            label: "Go to mark cell",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("m")],
             scope_applicability: vec![View],
@@ -959,6 +1143,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "go-to-x-cell",
+            label: "Go to x cell",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("x")],
             scope_applicability: vec![View],
@@ -970,6 +1156,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "go-to-y-cell",
+            label: "Go to y cell",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("y")],
             scope_applicability: vec![View],
@@ -981,6 +1169,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "go-to-colour-cell",
+            label: "Go to colour cell",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("c")],
             scope_applicability: vec![View],
@@ -992,6 +1182,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-shelf-next-row",
+            label: "Next shelf row",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("j"), shelf("down")],
             scope_applicability: vec![View],
@@ -1003,6 +1195,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-shelf-prev-row",
+            label: "Previous shelf row",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("k"), shelf("up")],
             scope_applicability: vec![View],
@@ -1014,6 +1208,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-shelf-left",
+            label: "Shelf cell left",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("h"), shelf("left")],
             scope_applicability: vec![View],
@@ -1025,6 +1221,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-shelf-right",
+            label: "Shelf cell right",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("l"), shelf("right")],
             scope_applicability: vec![View],
@@ -1036,6 +1234,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "set-shelf-setting-to-auto",
+            label: "Set to auto",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: vec![shelf("backspace")],
             scope_applicability: vec![View],
@@ -1047,6 +1247,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "narrow-shelf-list",
+            label: "Narrow the list",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("/")],
             scope_applicability: vec![View],
@@ -1058,6 +1260,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "turn-shelf-list",
+            label: "Turn the list",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("tab")],
             scope_applicability: vec![View],
@@ -1069,6 +1273,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "keep-shelf-choice",
+            label: "Keep choice",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: vec![shelf("enter")],
             scope_applicability: vec![View],
@@ -1080,6 +1286,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "back-out-of-shelf",
+            label: "Back out of shelf",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![shelf("escape")],
             scope_applicability: vec![View],
@@ -1096,6 +1304,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      looking, and moving it changes no data. ----
         VerbEntry {
             longname: "move-cursor-down",
+            label: "Cursor down",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![grid("j"), grid("down")],
             scope_applicability: vec![View],
@@ -1107,6 +1317,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-cursor-up",
+            label: "Cursor up",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![grid("k"), grid("up")],
             scope_applicability: vec![View],
@@ -1118,6 +1330,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-cursor-left",
+            label: "Cursor left",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![grid("h"), grid("left")],
             scope_applicability: vec![View],
@@ -1129,6 +1343,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-cursor-right",
+            label: "Cursor right",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![grid("l"), grid("right")],
             scope_applicability: vec![View],
@@ -1144,6 +1360,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      a Save records it. ----
         VerbEntry {
             longname: "filter-rows-at-cursor",
+            label: "Filter rows",
+            needs: NEEDS_GRID_CELL,
             tier: CommandTier::View,
             binding_specs: vec![grid("w")],
             scope_applicability: vec![View],
@@ -1155,6 +1373,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "sort-rows-at-cursor",
+            label: "Sort rows",
+            needs: NEEDS_GRID_CELL,
             tier: CommandTier::View,
             binding_specs: vec![grid("o")],
             scope_applicability: vec![View],
@@ -1171,6 +1391,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      context, apart from the Workspace's clear-selection on Esc. ----
         VerbEntry {
             longname: "move-version-cursor-down",
+            label: "Older version",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![versions("j"), versions("down")],
             scope_applicability: vec![View],
@@ -1182,6 +1404,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-version-cursor-up",
+            label: "Newer version",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![versions("k"), versions("up")],
             scope_applicability: vec![View],
@@ -1193,6 +1417,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "step-back-to-version",
+            label: "Step back to version",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: vec![versions("enter")],
             scope_applicability: vec![View],
@@ -1204,6 +1430,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "return-to-now",
+            label: "Return to now",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![versions("escape")],
             scope_applicability: vec![View],
@@ -1231,6 +1459,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // surfaces it addresses are not a bounded set of peers.
         VerbEntry {
             longname: "toggle-outline-rail",
+            label: "Go to spine",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-b")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -1242,6 +1472,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "toggle-inspector-rail",
+            label: "Inspector rail",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: vec![Protocol],
@@ -1257,6 +1489,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // be a verb reaching into a view that does not have the pane.
         VerbEntry {
             longname: "toggle-controls-rail",
+            label: "Controls rail",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -1273,6 +1507,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // chart file it lists is the Protocol's.
         VerbEntry {
             longname: "open-chart-versions",
+            label: "Chart versions",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: vec![Protocol],
@@ -1290,6 +1526,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // because they report a run of the Protocol.
         VerbEntry {
             longname: "open-run-log",
+            label: "Run log",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: vec![Protocol],
@@ -1301,6 +1539,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "open-run-quality",
+            label: "Run quality",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: vec![Protocol],
@@ -1318,6 +1558,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // the window, and it is the toggle both spots' item specs name.
         VerbEntry {
             longname: "move-grid",
+            label: "Move grid",
+            needs: NEEDS_ROWS,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-j")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -1334,6 +1576,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // itself stays reachable by pointer when the gallery flag is set.
         VerbEntry {
             longname: "toggle-gallery",
+            label: "Design gallery",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
@@ -1353,6 +1597,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      or the graph. ----
         VerbEntry {
             longname: "cycle-model-view",
+            label: "Next model view",
+            needs: NEEDS_MODEL,
             tier: CommandTier::View,
             binding_specs: vec![ws("v")],
             scope_applicability: vec![Model],
@@ -1364,6 +1610,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "show-model-diagram",
+            label: "Model as diagram",
+            needs: NEEDS_MODEL,
             tier: CommandTier::View,
             binding_specs: vec![ws("1")],
             scope_applicability: vec![Model],
@@ -1375,6 +1623,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "show-model-list",
+            label: "Model as list",
+            needs: NEEDS_MODEL,
             tier: CommandTier::View,
             binding_specs: vec![ws("2")],
             scope_applicability: vec![Model],
@@ -1386,6 +1636,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "show-model-file",
+            label: "Model as Ossie file",
+            needs: NEEDS_MODEL,
             tier: CommandTier::View,
             binding_specs: vec![ws("3")],
             scope_applicability: vec![Model],
@@ -1406,6 +1658,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      chart holds (d, a, c, x) or of the verb beside it (z). ----
         VerbEntry {
             longname: "keep-join",
+            label: "Keep join",
+            needs: NEEDS_MODEL_JOIN,
             tier: CommandTier::Data,
             binding_specs: vec![ws("y")],
             scope_applicability: vec![Model],
@@ -1417,6 +1671,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "drop-join",
+            label: "Drop join",
+            needs: NEEDS_MODEL_JOIN,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-d")],
             scope_applicability: vec![Model],
@@ -1428,6 +1684,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "add-join",
+            label: "Add join",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-a")],
             scope_applicability: vec![Model],
@@ -1439,6 +1697,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "change-join-keys",
+            label: "Change join keys",
+            needs: NEEDS_MODEL_JOIN,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-c")],
             scope_applicability: vec![Model],
@@ -1450,6 +1710,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "set-role",
+            label: "Set role",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("r")],
             scope_applicability: vec![Model],
@@ -1461,6 +1723,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "fold-table",
+            label: "Fold table",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("z")],
             scope_applicability: vec![Model],
@@ -1472,6 +1736,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "unfold-table",
+            label: "Unfold table",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-z")],
             scope_applicability: vec![Model],
@@ -1483,6 +1749,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "leave-out-table",
+            label: "Leave table out",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-x")],
             scope_applicability: vec![Model],
@@ -1494,6 +1762,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "include-table",
+            label: "Include table",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("i")],
             scope_applicability: vec![Model],
@@ -1505,6 +1775,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "retype-column",
+            label: "Retype column",
+            needs: NEEDS_MODEL_TABLE,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-t")],
             scope_applicability: vec![Model],
@@ -1520,6 +1792,8 @@ pub fn registry() -> Vec<VerbEntry> {
         // role key beside it.
         VerbEntry {
             longname: "rediscover-model",
+            label: "Rediscover",
+            needs: NEEDS_MODEL,
             tier: CommandTier::Data,
             binding_specs: vec![ws("shift-r")],
             scope_applicability: vec![Model],
@@ -1540,6 +1814,8 @@ pub fn registry() -> Vec<VerbEntry> {
         //      in the Protocol at once, with no Save. ----
         VerbEntry {
             longname: "move-browser-cursor-down",
+            label: "Browser cursor down",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("j"), browser("down")],
             scope_applicability: vec![Browser],
@@ -1551,6 +1827,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "move-browser-cursor-up",
+            label: "Browser cursor up",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("k"), browser("up")],
             scope_applicability: vec![Browser],
@@ -1562,6 +1840,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "go-up-a-folder",
+            label: "Up a folder",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("h"), browser("left")],
             scope_applicability: vec![Browser],
@@ -1573,6 +1853,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "go-in-or-add",
+            label: "Go in or add",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: vec![browser("l"), browser("right"), browser("enter")],
             scope_applicability: vec![Browser],
@@ -1584,6 +1866,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "add-sources",
+            label: "Add what is highlighted",
+            needs: &[],
             tier: CommandTier::Data,
             binding_specs: vec![browser("a")],
             scope_applicability: vec![Browser],
@@ -1595,6 +1879,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "mark-or-accept",
+            label: "Mark or accept",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("space")],
             scope_applicability: vec![Browser],
@@ -1606,6 +1892,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "next-browser-pane",
+            label: "Next browser pane",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("tab")],
             scope_applicability: vec![Browser],
@@ -1617,6 +1905,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "type-glob",
+            label: "Type a glob",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("/")],
             scope_applicability: vec![Browser],
@@ -1628,6 +1918,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "fill-browser-with-preview",
+            label: "Fill with preview",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("g t")],
             scope_applicability: vec![Browser],
@@ -1639,6 +1931,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "switch-folder-preview",
+            label: "Switch folder preview",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("v")],
             scope_applicability: vec![Browser],
@@ -1650,6 +1944,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "close-sources-browser",
+            label: "Close the browser",
+            needs: &[],
             tier: CommandTier::View,
             binding_specs: vec![browser("escape")],
             scope_applicability: vec![Browser],
@@ -1665,12 +1961,15 @@ pub fn registry() -> Vec<VerbEntry> {
 /// Construct a reserved (unbound, palette-visible) verb entry.
 fn reserved(
     longname: &'static str,
+    label: &'static str,
     scope_applicability: Vec<Altitude>,
     reason: ReservedReason,
     help: &'static str,
 ) -> VerbEntry {
     VerbEntry {
         longname,
+        label,
+        needs: &[],
         // Every reserved verb here needs a keyboard data-target — i.e. a dotted
         // address to act on — so each is a Data-tier command by construction.
         tier: CommandTier::Data,
@@ -2651,5 +2950,73 @@ mod tests {
             .all(|r| r.reserved_reason.is_none() && !r.keys.is_empty()));
         assert_eq!(rows.len(), reg.iter().filter(|v| !v.is_reserved()).count());
         assert!(rows.len() < reg.len(), "the registry reserves no verb");
+    }
+
+    #[test]
+    fn every_verb_has_a_unique_label_in_sentence_case() {
+        let reg = registry();
+        let mut seen = std::collections::HashSet::new();
+        for v in &reg {
+            let first = v.label.chars().next();
+            assert!(
+                first.is_some_and(char::is_uppercase),
+                "{}'s label {:?} does not open with a capital",
+                v.longname,
+                v.label
+            );
+            assert!(
+                !v.label.ends_with(['.', '…', ' ']) && !v.label.contains('{'),
+                "{}'s label {:?} is punctuated",
+                v.longname,
+                v.label
+            );
+            // Sentence case: after the first word, a capital opens a name
+            // (Protocol, Brightfield, Ossie) and nothing else.
+            for word in v.label.split(' ').skip(1) {
+                assert!(
+                    !word.starts_with(char::is_uppercase)
+                        || ["Protocol", "Brightfield", "Ossie"].contains(&word),
+                    "{}'s label {:?} is in title case",
+                    v.longname,
+                    v.label
+                );
+            }
+            assert!(seen.insert(v.label), "two verbs are labelled {:?}", v.label);
+        }
+    }
+
+    #[test]
+    fn every_declared_sentence_reads_as_a_sentence() {
+        let mut sentences = 0;
+        for v in registry() {
+            for requirement in v.needs {
+                sentences += 1;
+                let sentence = requirement.sentence(v.label);
+                assert!(
+                    sentence.ends_with('.') && !sentence.contains('{'),
+                    "{} says {sentence:?}",
+                    v.longname
+                );
+                assert!(
+                    sentence.starts_with(char::is_uppercase),
+                    "{} says {sentence:?}",
+                    v.longname
+                );
+            }
+        }
+        assert!(sentences > 0, "no verb declares a need");
+    }
+
+    #[test]
+    fn a_reserved_verb_declares_no_need() {
+        // A reserved verb says its reason, the feature it waits on; a need is
+        // an input a built command lacks.
+        for v in registry().iter().filter(|v| v.is_reserved()) {
+            assert!(
+                v.needs.is_empty(),
+                "reserved {} declares a need",
+                v.longname
+            );
+        }
     }
 }
