@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
+use brightfield_keys::{Availability, BindingContext, Condition, Need, Selected};
 use brightfield_protocol::layout::Flow;
+use brightfield_render::model_scene::Selection;
+use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::pipeline::live_spec;
@@ -23,6 +26,7 @@ use brightfield_shell::run::Runner;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::PaneKey;
 
 /// The test binary's scratch folder, with the directories a window reads
 /// pointed into it.
@@ -86,6 +90,9 @@ pub struct Window {
     /// The commands the frames asked the platform to carry out, oldest first:
     /// where a clipboard write shows.
     pub commands: Vec<egui::OutputCommand>,
+    /// The verbs a key performed since the last [`Window::press`] began, in
+    /// the order their handlers took them.
+    pub answered: Vec<&'static str>,
     /// The frame clock, at sixty frames a second, so a toast a test reads does
     /// not age out within it.
     time: f64,
@@ -101,6 +108,7 @@ impl Window {
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             commands: Vec::new(),
+            answered: Vec::new(),
             time: 0.0,
         };
         win.settle();
@@ -110,16 +118,33 @@ impl Window {
     /// Run one frame for each list of events.
     pub fn run(&mut self, frames: Vec<Vec<egui::Event>>) {
         for events in frames {
-            self.time += 1.0 / 60.0;
-            let raw = egui::RawInput {
-                screen_rect: Some(self.screen),
-                time: Some(self.time),
-                events,
-                ..Default::default()
-            };
-            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
-            self.commands.extend(out.platform_output.commands);
+            self.frame(egui::Modifiers::NONE, events);
         }
+    }
+
+    /// Run one frame over `events` with `modifiers` held as the frame begins.
+    pub fn frame(&mut self, modifiers: egui::Modifiers, events: Vec<egui::Event>) {
+        self.time += 1.0 / 60.0;
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            time: Some(self.time),
+            modifiers,
+            events,
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        self.commands.extend(out.platform_output.commands);
+        self.answered.extend_from_slice(self.app.keys_answered());
+    }
+
+    /// Press a binding's keystrokes as a keyboard brings them, a frame a
+    /// stroke, then settle. [`Window::answered`] holds what they performed.
+    pub fn press(&mut self, keystrokes: &'static str) {
+        self.answered.clear();
+        for (modifiers, events) in events_for(keystrokes) {
+            self.frame(modifiers, events);
+        }
+        self.settle();
     }
 
     /// Two frames with no input.
@@ -163,6 +188,246 @@ impl Window {
             .map(|n| format!("{}: {}", n.title, n.body.clone().unwrap_or_default()))
             .collect::<Vec<_>>()
             .join("; ")
+    }
+}
+
+/// The egui key a registry key token names.
+fn egui_key(token: &str) -> egui::Key {
+    let named = match token {
+        "space" => Some(egui::Key::Space),
+        "escape" => Some(egui::Key::Escape),
+        "enter" => Some(egui::Key::Enter),
+        "tab" => Some(egui::Key::Tab),
+        "backspace" => Some(egui::Key::Backspace),
+        "delete" => Some(egui::Key::Delete),
+        "left" => Some(egui::Key::ArrowLeft),
+        "right" => Some(egui::Key::ArrowRight),
+        "up" => Some(egui::Key::ArrowUp),
+        "down" => Some(egui::Key::ArrowDown),
+        "home" => Some(egui::Key::Home),
+        "end" => Some(egui::Key::End),
+        "pageup" => Some(egui::Key::PageUp),
+        "pagedown" => Some(egui::Key::PageDown),
+        _ => egui::Key::from_name(token).or_else(|| egui::Key::from_name(&token.to_uppercase())),
+    };
+    named.unwrap_or_else(|| panic!("no egui key for the registry's `{token}`"))
+}
+
+/// The frames a keyboard brings for a binding's keystrokes: one a stroke, each
+/// with its key event and, for a printable stroke with no command, control or
+/// alt held, the text it types. The modifiers are the frame's as well as the
+/// event's, which the copy chord's handler reads.
+pub fn events_for(keystrokes: &'static str) -> Vec<(egui::Modifiers, Vec<egui::Event>)> {
+    brightfield_keys::parse_keystrokes(keystrokes)
+        .into_iter()
+        .map(|stroke| {
+            let mut modifiers = egui::Modifiers::NONE;
+            if stroke.command {
+                modifiers |= egui::Modifiers::COMMAND;
+                if cfg!(target_os = "macos") {
+                    modifiers |= egui::Modifiers::MAC_CMD;
+                }
+            }
+            if stroke.control {
+                modifiers |= egui::Modifiers::CTRL;
+            }
+            if stroke.alt {
+                modifiers |= egui::Modifiers::ALT;
+            }
+            if stroke.shift {
+                modifiers |= egui::Modifiers::SHIFT;
+            }
+            let mut events = vec![chord(modifiers, egui_key(stroke.key))];
+            let typed = !(stroke.command || stroke.control || stroke.alt);
+            let text = match stroke.key {
+                "space" => Some(" ".to_owned()),
+                key if key.chars().count() == 1 => Some(if stroke.shift {
+                    key.to_uppercase()
+                } else {
+                    key.to_owned()
+                }),
+                _ => None,
+            };
+            if let (true, Some(text)) = (typed, text) {
+                events.push(egui::Event::Text(text));
+            }
+            (modifiers, events)
+        })
+        .collect()
+}
+
+/// **Put the window where `need` is met**, where a key or a call can: a
+/// selection applied, a column kept, a table or a join selected in the model.
+/// A need the scene itself meets or does not is left as it stands. Answers
+/// whether the window now meets the need, as far as this arranged it.
+pub fn arrange(win: &mut Window, need: Need) -> bool {
+    match need {
+        Need::Sources(_) | Need::Column(_) | Need::Grant(_) => true,
+        Need::Selected(selected) => match selected {
+            Selected::ModelTable => {
+                let Some(pane) = win.app.model_pane_mut() else {
+                    return false;
+                };
+                let Some(card) = pane.layout().cards.first() else {
+                    return false;
+                };
+                let dataset = card.dataset.clone();
+                pane.focus.selected = Some(Selection::Dataset(dataset));
+                true
+            }
+            Selected::ModelJoin => {
+                let Some(pane) = win.app.model_pane_mut() else {
+                    return false;
+                };
+                let Some(edge) = pane.layout().edges.first() else {
+                    return false;
+                };
+                let relationship = edge.relationship.clone();
+                pane.focus.selected = Some(Selection::Relationship(relationship));
+                true
+            }
+            Selected::Protocol
+            | Selected::Graph
+            | Selected::Chart
+            | Selected::Rows
+            | Selected::GridCell
+            | Selected::Asset
+            | Selected::Step
+            | Selected::Model => true,
+        },
+        Need::Condition(condition) => match condition {
+            Condition::SelectionHeld => hold_a_selection(win),
+            Condition::EditToTakeBack | Condition::UnsavedWork => keep_a_column(win),
+            Condition::ProtocolToRun
+            | Condition::ProtocolToSave
+            | Condition::Trusted
+            | Condition::TakesSources
+            | Condition::FileToReload
+            | Condition::ShelfDrawn => true,
+        },
+    }
+}
+
+/// Apply a selection to the first plot of a chart with a live session.
+fn hold_a_selection(win: &mut Window) -> bool {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::SqlPredicate;
+    use brightfield_spec::analysis::ComponentPath;
+
+    if win.app.chart_doc().selection_active() {
+        return true;
+    }
+    if win.app.front_door_is_live() || !win.app.chart_doc().is_live() {
+        return false;
+    }
+    win.app
+        .chart_doc_mut()
+        .apply_interaction(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: ComponentPath("root/hconcat[0]".to_string()),
+            predicate: SqlPredicate::Expr("1 = 1".to_string()),
+        })
+        && win.app.chart_doc().selection_active()
+}
+
+/// Keep another column on x from the shelf, by its keys, and hand the keys
+/// back to the pane: `e`, `x`, a step of the list's cursor, `Enter`, then
+/// `Esc` until the band lets go.
+fn keep_a_column(win: &mut Window) -> bool {
+    if win.app.chart_doc().last_shelf_edit().is_some() {
+        return true;
+    }
+    if win.app.front_door_is_live()
+        || win.app.shelf_band().is_none()
+        || !win.app.focus_pane(PaneKey::new(CHART))
+    {
+        return false;
+    }
+    win.settle();
+    let cursor = |win: &Window| {
+        win.app
+            .protocol_model()
+            .column_list()
+            .and_then(|list| list.cursor().map(str::to_owned))
+    };
+    win.press("e");
+    win.press("x");
+    let opened_on = cursor(win);
+    for step in ["j", "k"] {
+        if cursor(win) != opened_on {
+            break;
+        }
+        win.press(step);
+    }
+    if cursor(win).is_none() || cursor(win) == opened_on {
+        return false;
+    }
+    win.press("enter");
+    for _ in 0..4 {
+        if !win.app.shelf_holds_keys() {
+            break;
+        }
+        win.press("escape");
+    }
+    win.app.chart_doc().last_shelf_edit().is_some()
+}
+
+/// **A window in which `longname` can act**: the first of the scenes in which,
+/// once each of the command's needs is arranged, the window reads it available.
+/// Panics naming the command when no scene does.
+pub fn scene_for(longname: &'static str) -> Window {
+    let reg = brightfield_keys::registry();
+    let verb = reg
+        .iter()
+        .find(|v| v.longname == longname)
+        .unwrap_or_else(|| panic!("{longname} is not in the registry"));
+    let mut scenes: Vec<fn() -> Window> = vec![door, data_file, crosswalk, own_files, || {
+        live_chart("crossfilter.yaml")
+    }];
+    // The scene a need names is tried first, which saves opening the ones
+    // before it; the order decides nothing else, since a scene is taken on
+    // what the window reads.
+    let first = verb.needs.iter().find_map(|r| match r.need {
+        Need::Selected(Selected::Graph) => Some(2),
+        Need::Selected(Selected::Model | Selected::ModelTable | Selected::ModelJoin) => Some(3),
+        Need::Condition(Condition::SelectionHeld) => Some(4),
+        _ => None,
+    });
+    if let Some(first) = first {
+        scenes.swap(0, first);
+    }
+    let mut said = Vec::new();
+    for scene in scenes {
+        let mut win = scene();
+        for requirement in verb.needs {
+            arrange(&mut win, requirement.need);
+        }
+        win.settle();
+        match win.app.availability_of(longname) {
+            Some(Availability::Available) => return win,
+            other => said.push(format!("{other:?}")),
+        }
+    }
+    panic!("no scene makes {longname} available: {}", said.join("; "));
+}
+
+/// **Give the keys to where `context`'s bindings are read**, in a window
+/// [`scene_for`] chose for `longname`. Global keys are read wherever the keys
+/// are; the Workspace's are the canvas's, so the hero's pane takes focus when a
+/// chart holds the canvas.
+pub fn hold_keys(win: &mut Window, context: BindingContext, _longname: &'static str) {
+    match context {
+        BindingContext::Global => {}
+        BindingContext::Workspace => {
+            let chart = !win.app.front_door_is_live()
+                && !win.app.graph_on_canvas()
+                && win.app.model_pane().is_none();
+            if chart {
+                win.app.focus_pane(PaneKey::new(CHART));
+                win.settle();
+            }
+        }
+        other => panic!("{other:?} is not a context this support holds the keys for"),
     }
 }
 

@@ -618,6 +618,10 @@ pub const RENAME_PROTOCOL: &str = "rename-protocol";
 
 /// The `untrust-protocol` verb's longname: the registry's, spelled once here for the window.
 pub const UNTRUST_PROTOCOL: &str = "untrust-protocol";
+/// The verb that reads the open Protocol's data file again.
+pub const RELOAD_DATA: &str = "reload-data";
+/// The verb that lets go of the chart's selection.
+pub const CLEAR_SELECTION: &str = "clear-selection";
 
 /// The `copy-chart-picture` verb's longname — the registry's, spelled once here
 /// for the window's dispatch, its key and the palette.
@@ -2480,7 +2484,8 @@ fn new_protocol_body(ui: &mut egui::Ui, sheet: &mut NewProtocolSheet) -> bool {
 /// the registry declares — the shell may not invent bindings any more than it
 /// may invent verbs.
 struct OverlayKeys {
-    palette: Option<&'static str>,
+    /// Each key `open-palette` is bound to, the bare one and the chord.
+    palette: Vec<&'static str>,
     help: Option<&'static str>,
     jump: Option<&'static str>,
 }
@@ -2494,7 +2499,11 @@ impl OverlayKeys {
                 .and_then(brightfield_keys::VerbEntry::primary_key)
         };
         Self {
-            palette: primary("open-palette"),
+            palette: reg
+                .iter()
+                .find(|v| v.longname == "open-palette")
+                .map(|v| v.binding_specs.iter().map(|b| b.keystrokes).collect())
+                .unwrap_or_default(),
             help: primary("open-help"),
             jump: primary("focus-jump"),
         }
@@ -2886,6 +2895,15 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-shift-h" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
+        "cmd-shift-p" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::P))
+        }
+        "cmd-shift-u" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::U))
+        }
+        "cmd-shift-r" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R))
+        }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
@@ -2972,6 +2990,23 @@ fn consume_unshifted(i: &mut egui::InputState, key: egui::Key) -> bool {
         )
     });
     i.events.len() != before
+}
+
+/// The egui key the registry's `clear-selection` is bound to. Read off the
+/// registry as [`shelf_entry_key`] reads its key; a token this does not map is
+/// a key that clears no selection.
+fn clear_selection_egui_key() -> Option<egui::Key> {
+    static TOKEN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    let token = *TOKEN.get_or_init(|| {
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == CLEAR_SELECTION)
+            .and_then(brightfield_keys::VerbEntry::primary_key)
+    });
+    match token? {
+        "escape" => Some(egui::Key::Escape),
+        _ => None,
+    }
 }
 
 /// The egui key the registry's `set-channel` is bound to, which hands the
@@ -3930,6 +3965,14 @@ pub struct MeridianApp {
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
+    /// The verbs a key performed on the frame being drawn, or the last one
+    /// drawn: what [`Self::keys_answered`] hands a test that asks whether a key
+    /// the help lists reached a handler.
+    keys_answered: Vec<&'static str>,
+    /// `untrust-protocol`'s key, off the registry.
+    untrust_binding: Option<&'static str>,
+    /// `reload-data`'s key, off the registry.
+    reload_binding: Option<&'static str>,
 }
 
 impl MeridianApp {
@@ -4380,6 +4423,15 @@ impl MeridianApp {
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
             keyboard_held: false,
+            keys_answered: Vec::new(),
+            untrust_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == UNTRUST_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            reload_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == RELOAD_DATA)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -6567,6 +6619,7 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.keys_answered.clear();
         self.open_queue.wake_with(&ctx);
         // Files dropped on the front door open as the picker's choice does, the files of one drop
         // together as one Protocol. Dropped on an open Protocol, they are added to it as sources,
@@ -6845,6 +6898,8 @@ impl MeridianApp {
         // The Versions panel's keys, on the same terms: with the panel focused
         // its keys are the cursor's, the step back's and the way back to now.
         self.versions_keys(&ctx, graph_on_canvas);
+        // Esc lets go of a held selection, ahead of the way back to the tiles.
+        self.clear_selection_key(&ctx, graph_on_canvas);
         // Esc back to every panel tile, from a panel opened from one.
         self.tile_back_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
@@ -8218,6 +8273,9 @@ impl MeridianApp {
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
         self.rename_key(&ctx);
+        // ⌘⇧U and ⌘⇧R, which reopen the Protocol as a rename does.
+        self.untrust_key(&ctx);
+        self.reload_key(&ctx);
         self.browser_key(&ctx);
         self.new_protocol_key(&ctx);
         self.preferences_key(&ctx);
@@ -8383,16 +8441,27 @@ impl MeridianApp {
             return;
         }
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
-        if self.model.as_ref().is_some_and(ModelDoc::shown) && pressed(self.overlay_keys.palette) {
-            self.open_model_palette();
-        } else if graph_on_canvas && pressed(self.overlay_keys.palette) {
-            self.open_protocol_palette();
-        } else if !graph_on_canvas && pressed(self.overlay_keys.palette) {
-            self.open_chart_palette();
+        // Each of `open-palette`'s keys is read, so a frame carrying two of
+        // them leaves neither for a later handler.
+        let mut palette = false;
+        for token in &self.overlay_keys.palette {
+            palette |= consume_token(ctx, token);
+        }
+        if palette {
+            if self.model.as_ref().is_some_and(ModelDoc::shown) {
+                self.open_model_palette();
+            } else if graph_on_canvas {
+                self.open_protocol_palette();
+            } else {
+                self.open_chart_palette();
+            }
+            self.answered("open-palette");
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
+            self.answered("focus-jump");
         } else if pressed(self.overlay_keys.help) {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+            self.answered("open-help");
         }
     }
 
@@ -8411,8 +8480,23 @@ impl MeridianApp {
             return;
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered("open-home");
             self.leave(ctx, Leaving::Home);
         }
+    }
+
+    /// **Note that a key performed `verb` this frame**, where its handler took
+    /// the key.
+    fn answered(&mut self, verb: &'static str) {
+        self.keys_answered.push(verb);
+    }
+
+    /// The verbs a key performed on the last frame drawn, in the order their
+    /// handlers took them. A verb is here when a handler took its key, whether
+    /// or not the verb then found work to do.
+    #[must_use]
+    pub fn keys_answered(&self) -> &[&'static str] {
+        &self.keys_answered
     }
 
     /// Ask for the picker if the registry's `open` keystroke was pressed this frame and no overlay
@@ -8427,6 +8511,7 @@ impl MeridianApp {
         }
         if self.open_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.pick_requested = true;
+            self.answered(OPEN_VERB);
         }
     }
 
@@ -8441,6 +8526,7 @@ impl MeridianApp {
             return;
         }
         if self.save_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(SAVE_PROTOCOL);
             self.save_everything(ctx);
         }
     }
@@ -8450,6 +8536,7 @@ impl MeridianApp {
     /// and reaches here by the open queue instead; this is the key where no menu takes it.
     fn quit_key(&mut self, ctx: &egui::Context) {
         if self.quit_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(QUIT);
             self.leave(ctx, Leaving::Quit);
         }
     }
@@ -8493,6 +8580,7 @@ impl MeridianApp {
             .navigator_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(NAVIGATOR_TOGGLE);
             self.toggle_navigator_focus(ctx);
         }
     }
@@ -8504,6 +8592,7 @@ impl MeridianApp {
             return;
         }
         if self.run_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(RUN_PROTOCOL);
             self.run_protocol(ctx);
         }
     }
@@ -8518,6 +8607,7 @@ impl MeridianApp {
         }
         for (token, longname) in self.picture_bindings {
             if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.answered(longname);
                 self.chart_picture(ctx, longname);
             }
         }
@@ -8530,6 +8620,7 @@ impl MeridianApp {
             return;
         }
         if self.grid_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::data_grid::MOVE_GRID);
             self.move_grid();
             ctx.request_repaint();
         }
@@ -8583,8 +8674,11 @@ impl MeridianApp {
         {
             return;
         }
-        if self.undo_binding.is_some_and(|t| consume_token(ctx, t)) && self.shelf_undo() {
-            ctx.request_repaint();
+        if self.undo_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::shelf::UNDO);
+            if self.shelf_undo() {
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -8645,8 +8739,11 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.nav_bindings.clone() {
-            if consume_token(ctx, token) && navigation_verb(&mut self.charts.doc, longname) {
-                ctx.request_repaint();
+            if consume_token(ctx, token) {
+                self.answered(longname);
+                if navigation_verb(&mut self.charts.doc, longname) {
+                    ctx.request_repaint();
+                }
             }
         }
     }
@@ -8750,6 +8847,7 @@ impl MeridianApp {
             } else if shelf_entry_key() == Some(*key) {
                 self.charts.shelf.holds = true;
                 owned = true;
+                self.answered("set-channel");
             }
         }
         // A frame with no key for the list still carries what the pointer
@@ -9448,6 +9546,7 @@ impl MeridianApp {
             }
         }
         for longname in pressed {
+            self.answered(longname);
             self.perform_model_verb(ctx, longname);
         }
     }
@@ -11794,7 +11893,7 @@ impl MeridianApp {
                 // this intercept the graph-on-canvas arm below would forward
                 // it to `model.dispatch`, which silently no-ops an unknown
                 // verb.
-                Request::Verb(verb) if verb.as_str() == "reload-data" => {
+                Request::Verb(verb) if verb.as_str() == RELOAD_DATA => {
                     self.reload_data_file(ctx);
                 }
                 // move-grid is the window's too: the grid's two spots are a
@@ -11889,7 +11988,7 @@ impl MeridianApp {
                         .dispatch(verb.as_str(), canvas_node.as_ref());
                 }
                 Request::Verb(verb) => {
-                    if verb.as_str() == "clear-selection" {
+                    if verb.as_str() == CLEAR_SELECTION {
                         self.charts.doc.clear_selection();
                         ctx.request_repaint();
                     } else if verb.as_str() == "save-spec" {
@@ -13835,6 +13934,7 @@ impl MeridianApp {
             return;
         }
         if self.browser_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::protocol::OPEN_SOURCES_BROWSER);
             self.open_sources_browser(ctx);
         }
     }
@@ -14276,6 +14376,7 @@ impl MeridianApp {
             .new_protocol_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(NEW_PROTOCOL);
             self.ask_new_protocol();
             ctx.request_repaint();
         }
@@ -14290,7 +14391,60 @@ impl MeridianApp {
             .preferences_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(OPEN_PREFERENCES);
             self.open_preferences();
+            ctx.request_repaint();
+        }
+    }
+
+    /// Stop trusting the open Protocol if the registry's `untrust-protocol`
+    /// keystroke is down this frame. Gated as [`Self::rename_key`] is: no
+    /// overlay may own the keyboard.
+    fn untrust_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.untrust_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(UNTRUST_PROTOCOL);
+            self.untrust_open_protocol(ctx);
+        }
+    }
+
+    /// Read the open Protocol's data file again if the registry's
+    /// `reload-data` keystroke is down this frame, on the same gate.
+    fn reload_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.reload_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(RELOAD_DATA);
+            self.reload_data_file(ctx);
+        }
+    }
+
+    /// **Esc lets go of the chart's selection**, the rung of the Esc ladder
+    /// above [`Self::tile_back_key`]: an overlay, a field holding the keyboard
+    /// and the shelf each take the key first.
+    ///
+    /// Taken with a chart on the canvas and a selection held. A widget that
+    /// held the keyboard at the end of the last frame takes this Esc as its
+    /// way out, as [`Self::tile_back_key`] says.
+    fn clear_selection_key(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas
+            || !self.charts.doc.selection_active()
+            || self.keyboard_held
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.shelf_holds_keys()
+        {
+            return;
+        }
+        let Some(key) = clear_selection_egui_key() else {
+            return;
+        };
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+            self.answered(CLEAR_SELECTION);
+            self.charts.doc.clear_selection();
             ctx.request_repaint();
         }
     }
@@ -14651,6 +14805,7 @@ impl MeridianApp {
         if !self.rename_binding.is_some_and(|t| consume_token(ctx, t)) {
             return;
         }
+        self.answered(RENAME_PROTOCOL);
         if self.front_door_is_live() {
             if let Some((id, in_tree)) = self.door_hovered.clone() {
                 self.open_door_rename(&id, in_tree);
@@ -21307,14 +21462,20 @@ mod tests {
                 .find(|v| v.longname == name)
                 .and_then(brightfield_keys::VerbEntry::primary_key)
         };
-        assert_eq!(keys.palette, primary("open-palette"));
+        assert_eq!(keys.palette.first().copied(), primary("open-palette"));
+        assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
         // …and every token an opener binds today is one `consume_token` can
-        // map to a key, so none of the three is silently unwired.
-        for token in [keys.palette, keys.help, keys.jump].into_iter().flatten() {
+        // map to a key, so none of them is silently unwired.
+        let tokens = keys
+            .palette
+            .iter()
+            .copied()
+            .chain([keys.help, keys.jump].into_iter().flatten());
+        for token in tokens {
             assert!(
-                matches!(token, "space" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );

@@ -1008,3 +1008,32 @@ fn a_selection_that_only_highlights_leaves_the_count_as_it_is() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **Esc with a field of the foot row open is the field's**: it puts the field
+/// back and the chart keeps its selection. The next Esc, with no field open,
+/// is the selection's.
+#[test]
+fn esc_with_the_foot_field_open_keeps_the_selection() {
+    let mut win = Window::housing();
+    win.select(SqlPredicate::Expr("house_age > 20".to_string()));
+    assert!(win.doc().selection_active(), "the selection is held");
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::W);
+    assert!(win.doc().grid_foot().holds_keys(), "`w` opened the field");
+
+    win.key(egui::Key::Escape);
+    assert!(
+        !win.doc().grid_foot().holds_keys(),
+        "Esc put the field back"
+    );
+    assert!(
+        win.doc().selection_active(),
+        "the Esc that put the field back let go of the selection too"
+    );
+
+    win.key(egui::Key::Escape);
+    assert!(
+        !win.doc().selection_active(),
+        "Esc with no field open kept the selection"
+    );
+}
