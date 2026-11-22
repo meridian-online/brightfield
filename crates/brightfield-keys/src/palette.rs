@@ -124,7 +124,7 @@ mod tests {
     use crate::registry::registry;
 
     #[test]
-    fn query_colour_finds_cycle_colour_scheme_with_its_key() {
+    fn query_colour_finds_cycle_colour_scheme_flagged_and_keyless() {
         // Not "ranks first": the shelf's `go-to-colour-cell` also names colour, and
         // `fuzzy_score` matches each query letter at its first occurrence, so a name
         // whose first `c` opens the word outscores `cycle-colour-scheme`, whose
@@ -137,8 +137,10 @@ mod tests {
             .iter()
             .find(|c| c.longname == "cycle-colour-scheme")
             .expect("a colour query finds the colour preview verb");
-        assert!(hit.enabled);
-        assert_eq!(hit.primary_key, Some("c"));
+        // Reserved: listed with its reason, with no key and not to be run.
+        assert!(!hit.enabled);
+        assert_eq!(hit.reserved_reason, Some(ReservedReason::NeedsChartEditing));
+        assert_eq!(hit.primary_key, None);
     }
 
     #[test]
@@ -182,20 +184,20 @@ mod tests {
             "not frequency-ordered: {freqs:?}"
         );
 
-        // Recency breaks ties: two freq-5 nav verbs; recording one lifts it above
-        // its equal-frequency peers.
-        recency.record("focus-prev-sibling");
+        // Recency breaks ties: the two zooms have one frequency, and by name
+        // zoom-in comes first. Recording zoom-out lifts it above its peer.
+        assert_eq!(
+            frequency_of(&reg, "zoom-out"),
+            frequency_of(&reg, "zoom-in")
+        );
+        let position = |ranked: &[PaletteCandidate], name: &str| {
+            ranked.iter().position(|c| c.longname == name).unwrap()
+        };
+        assert!(position(&ranked, "zoom-in") < position(&ranked, "zoom-out"));
+        recency.record("zoom-out");
         let ranked2 = palette_filter(&reg, Altitude::View, "", &recency);
-        let pos_prev = ranked2
-            .iter()
-            .position(|c| c.longname == "focus-prev-sibling")
-            .unwrap();
-        let pos_next = ranked2
-            .iter()
-            .position(|c| c.longname == "focus-next-sibling")
-            .unwrap();
         assert!(
-            pos_prev < pos_next,
+            position(&ranked2, "zoom-out") < position(&ranked2, "zoom-in"),
             "recorded verb should rank above its equal-frequency peer"
         );
     }

@@ -173,9 +173,9 @@ mod tests {
     fn g_on_a_structural_or_non_runtime_verb_is_rejected() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
-        // Presentation is not a runtime verb.
+        // Opening the palette is not a runtime verb.
         let res = resolve_scope(
-            &verb("toggle-presentation"),
+            &verb("open-palette"),
             ctx(&focused, Altitude::View, &root),
             true,
         );
@@ -186,7 +186,7 @@ mod tests {
         // A structural (SpecEdit) verb under g is likewise rejected — it is
         // Built but not runtime-dispatch, so not g-broadcast eligible.
         let res2 = resolve_scope(
-            &verb("change-mark-type"),
+            &verb("set-channel"),
             ctx(&focused, Altitude::View, &root),
             true,
         );
@@ -200,9 +200,9 @@ mod tests {
     fn bare_verb_off_its_altitude_is_rejected_with_reason() {
         let focused = ComponentPath("root".into());
         let root = ComponentPath("root".into());
-        // cycle-colour-scheme is view-only; at the dashboard altitude it rejects.
+        // go-to-x-cell is view-only; at the dashboard altitude it rejects.
         let res = resolve_scope(
-            &verb("cycle-colour-scheme"),
+            &verb("go-to-x-cell"),
             ctx(&focused, Altitude::Dashboard, &root),
             false,
         );

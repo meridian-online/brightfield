@@ -36,26 +36,26 @@ pub enum BindingContext {
     /// Shelf-scoped: fires only while a chart's shelf holds focus. A distinct
     /// context, as the Protocol panel's is, so the shelf's `h`/`l`/`m`/`x`/`y`/`c`
     /// (the cell or value beside, and a jump to a channel's cell) never collide
-    /// with the chart grammar's pop-out, dive-in, mark, axis-lock and colour
-    /// bindings.
+    /// with the chart grammar's axis-lock binding on `x`, or with the keys its
+    /// reserved plot-focus, mark and colour verbs held.
     Shelf,
     /// Grid-scoped: fires only while the table's grid holds focus. A distinct
     /// context, as the shelf's is, so the grid's `h`/`j`/`k`/`l` and arrows
     /// (the cell beside the cursor) never collide with the chart grammar's
-    /// pop-out, dive-in and pan bindings.
+    /// pan bindings on the arrows.
     Grid,
     /// Versions-scoped: fires while the ledger's Versions panel holds focus. A
     /// distinct context, as the grid's is, so the panel's `j`/`k`, arrows,
     /// `Enter` and `Esc` (the cursor's row, the step back and the way back to
-    /// now) are kept apart from the chart grammar's sibling-focus, dive-in and
-    /// clear-selection bindings on the same keys
+    /// now) are kept apart from the chart grammar's clear-selection binding on
+    /// `Esc`
     /// (`the_versions_context_moves_the_cursor_steps_back_and_returns_to_now`).
     Versions,
     /// Browser-scoped: fires while the sources browser is open and none of its
     /// text fields holds the keys. A distinct context, as the grid's is, so the
     /// browser's yazi keys (`h` up a folder, `l` and `Enter` into it or add the
     /// file, `Space` to mark, `a` to add) never collide with the chart grammar's
-    /// pop-out, dive-in, palette and add-mark bindings on the same keys
+    /// palette binding on `Space`
     /// (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`).
     Browser,
     /// Global (`context = None`): fires from any focus (palette twin, focus
@@ -88,8 +88,6 @@ pub enum Drives {
     Presentation,
     /// Palette / help meta-surfaces.
     PaletteMeta,
-    /// The transient colour-scheme preview.
-    ColourPreview,
     /// A structural spec edit that writes the durable protocol document:
     /// change-mark-type / add-mark / set-channel / remove-mark / undo. NOT
     /// `g`-broadcast eligible (that is runtime-dispatch only, `scope::g_eligible`).
@@ -132,11 +130,10 @@ impl CommandTier {
 /// Lifecycle status of a verb in this card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerbStatus {
-    /// Wired this card (a live binding).
+    /// Wired: a live binding that a handler answers.
     Built,
-    /// `c` = cycle-colour-scheme: wired but transient / non-durable.
-    Preview,
-    /// Shown greyed in the palette, unbound — deferred to a follow-up card.
+    /// Listed flagged in the palette and unbound, until the feature behind it
+    /// is built.
     Reserved,
 }
 
@@ -160,6 +157,13 @@ pub enum ReservedReason {
     /// control with no registered command behind it is exactly how a palette
     /// and a keymap drift apart from what the UI offers.
     NeedsWorkspaceShell,
+    /// The chart's mark verbs and its colour-scheme cycle — need a way to edit
+    /// the chart from the keys. The shell answers none of them: the one chart
+    /// edit it performs from the keys is the shelf's, reached by `set-channel`.
+    NeedsChartEditing,
+    /// The moves between a chart's plots (in, out, next, previous) — need a
+    /// focus that sits on one plot. The shell keeps none.
+    NeedsPlotFocus,
 }
 
 impl ReservedReason {
@@ -171,6 +175,8 @@ impl ReservedReason {
             ReservedReason::NeedsCommandLog => "needs command log",
             ReservedReason::NeedsKeyboardTarget => "needs a keyboard target",
             ReservedReason::NeedsWorkspaceShell => "needs the workspace shell",
+            ReservedReason::NeedsChartEditing => "needs editing the chart from the keys",
+            ReservedReason::NeedsPlotFocus => "needs a focus that moves between a chart's plots",
         }
     }
 }
@@ -234,7 +240,7 @@ impl VerbEntry {
 
 const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 
-/// Build the v1 command registry: every verb (built, preview, reserved) as data.
+/// Build the v1 command registry: each verb, built or reserved, as data.
 ///
 /// This is the sole verb-metadata input to [`keymap_bindings`], [`palette_corpus`],
 /// and [`help_sheet`].
@@ -279,60 +285,62 @@ pub fn registry() -> Vec<VerbEntry> {
 
     vec![
         // ---- navigation ----
+        // The four moves between a chart's plots are reserved: the shell keeps
+        // no focused plot for them to move.
         VerbEntry {
             longname: "dive-in",
             tier: CommandTier::View,
-            binding_specs: vec![ws("l"), ws("enter")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Navigation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsPlotFocus),
             help: "Dive into the focused container (stops at a view)",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right/in (ranger, miller-columns)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "pop-out",
             tier: CommandTier::View,
-            binding_specs: vec![ws("h"), ws("q")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Navigation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsPlotFocus),
             help: "Pop focus out to the parent",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left/out (ranger, miller-columns)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "focus-next-sibling",
             tier: CommandTier::View,
-            binding_specs: vec![ws("j"), ws("tab")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Navigation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsPlotFocus),
             help: "Move focus to the next sibling view",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row j = down/next (vim)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "focus-prev-sibling",
             tier: CommandTier::View,
-            binding_specs: vec![ws("k"), ws("shift-tab")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Navigation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsPlotFocus),
             help: "Move focus to the previous sibling view",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row k = up/prev (vim)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "toggle-focus",
             tier: CommandTier::View,
-            binding_specs: vec![global("cmd-e")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Navigation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
             help: "Toggle focus between the canvas and the editor",
-            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 3, motor_note: "cmd-e = editor swap; free of gpui-component Input's chord set" }),
+            scores: None,
         },
         VerbEntry {
             longname: "focus-jump",
@@ -472,13 +480,13 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "reload-spec",
             tier: CommandTier::View,
-            binding_specs: vec![global("cmd-r")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::RuntimeDispatch,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
             help: "Reload the spec from disk (guards unsaved editor edits)",
-            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "cmd-r = reload (browser); bare r NOT bound (dirty-guard)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "reload-data",
@@ -556,18 +564,19 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Quit Brightfield, asking first about anything not saved",
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "cmd-q = quit (universal Mac convention); global, asks the close question over a draft" }),
         },
-        // ---- presentation + save: shipped fixed points, sourced here so
-        //      the registry is the single binding source ----
+        // ---- presentation + save: sourced here so the registry is the
+        //      single binding source. Presentation is reserved until the
+        //      workspace shell can perform it. ----
         VerbEntry {
             longname: "toggle-presentation",
             tier: CommandTier::View,
-            binding_specs: vec![ws("p")],
+            binding_specs: Vec::new(),
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Presentation,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
             help: "Toggle presentation mode (hide authoring chrome)",
-            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "p = present (shipped fixed point)" }),
+            scores: None,
         },
         VerbEntry {
             longname: "save-spec",
@@ -668,48 +677,49 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Export the chart under the pointer as a PNG picture",
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 4, motor_note: "cmd-shift-e = export (Figma); cmd-e is taken by toggle-focus" }),
         },
-        // ---- colour preview: transient, view-scoped ----
+        // ---- colour preview: transient, view-scoped, and reserved until the
+        //      chart can be edited from the keys ----
         VerbEntry {
             longname: "cycle-colour-scheme",
             tier: CommandTier::View,
-            binding_specs: vec![ws("c")],
+            binding_specs: Vec::new(),
             scope_applicability: vec![View],
-            drives: D::ColourPreview,
-            status: VerbStatus::Preview,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsChartEditing),
             help: "Cycle the focused view's sequential colour scheme (transient preview)",
-            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "c = colour (mnemonic); view-scoped, no write" }),
+            scores: None,
         },
         // ---- reserved: needs a keyboard data-target (f / g f / t / set-param) ----
         reserved("filter-view", vec![View], ReservedReason::NeedsKeyboardTarget, "Filter to the focused view's selection (needs a keyboard target)"),
         reserved("cross-filter-all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
         reserved("toggle-point-select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
         reserved("set-param", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
-        // ---- durable structural edits: m/a/e/d at View, undo at
-        //      Dashboard+View. Flipped Reserved -> Built — the ChartEdit spine
-        //      + Session::reload_spec seam now back them. All Data-tier: each
-        //      writes the durable protocol document. ----
+        // ---- durable structural edits: set-channel at View, undo at
+        //      Dashboard+View, both built. The mark verbs (change, add, remove)
+        //      are reserved until the chart can be edited from the keys. All
+        //      Data-tier: each writes the durable protocol document. ----
         VerbEntry {
             longname: "change-mark-type",
             tier: CommandTier::Data,
-            binding_specs: vec![ws("m")],
+            binding_specs: Vec::new(),
             scope_applicability: vec![View],
-            drives: D::SpecEdit,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsChartEditing),
             help: "Change the focused view's mark type (dot -> bar), applied live",
-            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "m = mark/morph; bare, view-scoped structural edit" }),
+            scores: None,
         },
         VerbEntry {
             longname: "add-mark",
             tier: CommandTier::Data,
-            binding_specs: vec![ws("a")],
+            binding_specs: Vec::new(),
             scope_applicability: vec![View],
-            drives: D::SpecEdit,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsChartEditing),
             help: "Add a mark to the focused view (prompts for a kind), applied live",
-            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "a = add/append (vim insert family); argument overlay picks the kind" }),
+            scores: None,
         },
         VerbEntry {
             longname: "set-channel",
@@ -725,13 +735,13 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "remove-mark",
             tier: CommandTier::Data,
-            binding_specs: vec![ws("d")],
+            binding_specs: Vec::new(),
             scope_applicability: vec![View],
-            drives: D::SpecEdit,
-            status: VerbStatus::Built,
-            reserved_reason: None,
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsChartEditing),
             help: "Remove the focused view's primary mark, applied live",
-            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "d = delete (vim); refused if it would empty the plot" }),
+            scores: None,
         },
         VerbEntry {
             // Data-tier: undo rewrites the durable protocol document (it pops the
@@ -1081,8 +1091,8 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         // ---- the grid's cursor: one cell of the table, so a row and a column at
         //      once, moved a cell at a time. These resolve in the Grid context,
-        //      apart from the Workspace's dive-in, pop-out and pan bindings on
-        //      the same keys. View-tier: the cursor is where the analyst is
+        //      apart from the Workspace's pan bindings on the arrows.
+        //      View-tier: the cursor is where the analyst is
         //      looking, and moving it changes no data. ----
         VerbEntry {
             longname: "move-cursor-down",
@@ -1158,8 +1168,7 @@ pub fn registry() -> Vec<VerbEntry> {
         //      chart's saved versions. The chart is drawn as the version under
         //      the cursor; Enter steps the chart back to it as an unsaved edit,
         //      and Esc draws the chart as it was. These resolve in the Versions
-        //      context, apart from the Workspace's sibling focus, dive-in and
-        //      clear-selection on the same keys. ----
+        //      context, apart from the Workspace's clear-selection on Esc. ----
         VerbEntry {
             longname: "move-version-cursor-down",
             tier: CommandTier::View,
@@ -1745,21 +1754,24 @@ pub fn palette_corpus(reg: &[VerbEntry]) -> Vec<PaletteEntry> {
 pub struct HelpRow {
     /// The verb.
     pub longname: &'static str,
-    /// Every bound keystroke (empty for reserved).
+    /// The verb's bound keystrokes, its primary key first.
     pub keys: Vec<&'static str>,
     /// One-line help.
     pub help: &'static str,
     /// The altitudes the verb applies at (the grouping key).
     pub altitudes: Vec<Altitude>,
-    /// If reserved, the bucket it is flagged with.
+    /// The bucket a reserved verb is flagged with. The sheet lists built verbs,
+    /// so its rows carry none (`the_help_sheet_lists_built_verbs_only`).
     pub reserved_reason: Option<ReservedReason>,
 }
 
-/// The help sheet: every verb with its keys, help, scope, and (if
-/// reserved) its bucket.
+/// The help sheet: each built verb with its keys, help and scope. A reserved
+/// verb has no key to show and no handler to answer one, so it is left to the
+/// palette, which lists it flagged.
 #[must_use]
 pub fn help_sheet(reg: &[VerbEntry]) -> Vec<HelpRow> {
     reg.iter()
+        .filter(|v| !v.is_reserved())
         .map(|v| HelpRow {
             longname: v.longname,
             keys: v.binding_specs.iter().map(|b| b.keystrokes).collect(),
@@ -1897,10 +1909,51 @@ mod tests {
                 "open-chart-versions",
                 "open-run-log",
                 "open-run-quality",
+                "reload-spec",
                 "toggle-controls-rail",
+                "toggle-focus",
                 "toggle-gallery",
-                "toggle-inspector-rail"
+                "toggle-inspector-rail",
+                "toggle-presentation"
             ]
+        );
+        // The chart verbs the window has no handler for: the mark edits and the
+        // colour cycle wait on editing the chart from the keys, and the moves
+        // between plots on a focus that sits on one.
+        let bucket = |reason: ReservedReason| {
+            let mut names: Vec<&str> = reg
+                .iter()
+                .filter(|v| v.reserved_reason == Some(reason))
+                .map(|v| v.longname)
+                .collect();
+            names.sort_unstable();
+            names
+        };
+        assert_eq!(
+            bucket(ReservedReason::NeedsChartEditing),
+            [
+                "add-mark",
+                "change-mark-type",
+                "cycle-colour-scheme",
+                "remove-mark"
+            ]
+        );
+        assert_eq!(
+            bucket(ReservedReason::NeedsPlotFocus),
+            [
+                "dive-in",
+                "focus-next-sibling",
+                "focus-prev-sibling",
+                "pop-out"
+            ]
+        );
+        assert_eq!(
+            ReservedReason::NeedsChartEditing.reason(),
+            "needs editing the chart from the keys"
+        );
+        assert_eq!(
+            ReservedReason::NeedsPlotFocus.reason(),
+            "needs a focus that moves between a chart's plots"
         );
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {
@@ -2203,9 +2256,10 @@ mod tests {
         let keys = keymap_bindings(&reg);
         let corpus = palette_corpus(&reg);
         let help = help_sheet(&reg);
-        // Palette + help enumerate every verb (reserved included).
+        // The palette enumerates the whole registry, reserved verbs included;
+        // the help sheet the built ones.
         assert_eq!(corpus.len(), reg.len());
-        assert_eq!(help.len(), reg.len());
+        assert_eq!(help.len(), reg.iter().filter(|v| !v.is_reserved()).count());
         // The keymap contains only bound verbs' keystrokes.
         let bound_count: usize = reg.iter().map(|v| v.binding_specs.len()).sum();
         assert_eq!(keys.len(), bound_count);
@@ -2589,14 +2643,13 @@ mod tests {
     }
 
     #[test]
-    fn cycle_colour_scheme_is_view_only_preview() {
+    fn the_help_sheet_lists_built_verbs_only() {
         let reg = registry();
-        let c = reg
+        let rows = help_sheet(&reg);
+        assert!(rows
             .iter()
-            .find(|v| v.longname == "cycle-colour-scheme")
-            .unwrap();
-        assert_eq!(c.status, VerbStatus::Preview);
-        assert_eq!(c.scope_applicability, vec![Altitude::View]);
-        assert!(!c.applies_at(Altitude::Dashboard));
+            .all(|r| r.reserved_reason.is_none() && !r.keys.is_empty()));
+        assert_eq!(rows.len(), reg.iter().filter(|v| !v.is_reserved()).count());
+        assert!(rows.len() < reg.len(), "the registry reserves no verb");
     }
 }

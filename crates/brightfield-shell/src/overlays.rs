@@ -331,8 +331,9 @@ struct HelpLine {
     row: HelpRow,
 }
 
-/// The keyboard help sheet: every verb with its keys and help, grouped by the
-/// altitudes it applies at, filterable, read-only. Enter dismisses — there is
+/// The keyboard help sheet: each built verb with its keys and help, grouped by
+/// the altitudes it applies at, filterable, read-only. A reserved verb has no
+/// key and is left to the palette. Enter dismisses — there is
 /// nothing to run from a reference sheet.
 pub struct HelpSheet {
     lines: Vec<HelpLine>,
@@ -340,7 +341,7 @@ pub struct HelpSheet {
 }
 
 impl HelpSheet {
-    /// The sheet over the whole registry, grouped by altitude set in a fixed
+    /// The sheet over the registry's built verbs, grouped by altitude set in a fixed
     /// reading order (dashboard-and-view rows first, protocol rows after),
     /// registry order within a group.
     #[must_use]
@@ -1285,8 +1286,8 @@ mod tests {
         );
         assert!(
             !names.contains(&"change-mark-type"),
-            "change-mark-type awaits the editing bridge — it must not leak \
-             onto the chart palette: {names:?}"
+            "change-mark-type is reserved until the chart can be edited from \
+             the keys — it must not leak onto the chart palette: {names:?}"
         );
     }
 
@@ -1376,10 +1377,16 @@ mod tests {
     // -- HelpSheet ----------------------------------------------------------
 
     #[test]
-    fn the_sheet_covers_the_whole_registry_and_reads_in_groups() {
+    fn the_sheet_covers_the_built_verbs_and_reads_in_groups() {
         let mut sheet = HelpSheet::new();
         sheet.update_query("");
-        assert_eq!(sheet.match_count(), registry().len());
+        let built = registry().iter().filter(|v| !v.is_reserved()).count();
+        assert_eq!(sheet.match_count(), built);
+        // A row with no key would list a command no key reaches.
+        for i in 0..sheet.match_count() {
+            let row = sheet.row(i);
+            assert!(row.keystroke.is_some(), "{} shows no key", row.label);
+        }
         // Headers appear exactly at group changes, and every group appears
         // exactly once — grouping is contiguous, not interleaved.
         let mut seen = Vec::new();
@@ -1400,7 +1407,7 @@ mod tests {
     fn the_sheet_filters_without_losing_its_grouping() {
         let mut sheet = HelpSheet::new();
         sheet.update_query("drill");
-        let full = registry().len();
+        let full = registry().iter().filter(|v| !v.is_reserved()).count();
         let hits = sheet.match_count();
         assert!(hits > 0, "nothing matched a real verb fragment");
         assert!(

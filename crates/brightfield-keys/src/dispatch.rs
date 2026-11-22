@@ -31,13 +31,11 @@ pub enum DispatchContext {
     GridFocused,
     /// The ledger's Versions panel holds focus — its cursor is on a version's
     /// row, and its grammar resolves here, isolated from the chart canvas's
-    /// bare verbs, so `Enter` steps the chart back rather than dives in and
-    /// `Esc` returns to now rather than clears a selection.
+    /// bare verbs, so `Esc` returns to now rather than clears a selection.
     VersionsFocused,
     /// The sources browser is open and its text fields do not hold the keys —
     /// its grammar resolves here, isolated from the chart canvas's bare verbs,
-    /// so `Space` marks a file rather than opens the palette and `a` adds a
-    /// source rather than a mark.
+    /// so `Space` marks a file rather than opens the palette.
     BrowserFocused,
 }
 
@@ -50,12 +48,12 @@ pub enum DispatchContext {
 /// - an Editor binding resolves only when the editor is focused;
 /// - a Protocol binding resolves only when the protocol panel is focused;
 /// - a Shelf binding resolves only when a shelf is focused, so `h` and `l` are
-///   the cell beside there, `pop-out` and `dive-in` under the canvas, and
-///   `protocol-producer` and `protocol-consumer` under the protocol panel;
+///   the cell beside there, nothing under the canvas, and `protocol-producer`
+///   and `protocol-consumer` under the protocol panel;
 /// - a Grid binding resolves only when the grid is focused, so `h` and `l`
 ///   move its cursor there and the arrows pan the chart only elsewhere;
 /// - a Versions binding resolves when the Versions panel is focused, so
-///   `Enter` steps the chart back there and dives in on the canvas
+///   `Enter` steps the chart back there and does nothing on the canvas
 ///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`);
 /// - a Browser binding resolves when the sources browser is focused, so
 ///   `Space` marks a file there and opens the palette on the canvas
@@ -140,13 +138,13 @@ mod tests {
     #[test]
     fn global_bindings_resolve_from_both_workspace_and_editor() {
         let t = table();
-        // toggle-focus (cmd-e) is Global — fires from both contexts.
+        // open (cmd-o) is Global — fires from both contexts.
         assert!(t
-            .resolves("cmd-e", DispatchContext::CanvasFocused)
-            .contains(&"toggle-focus"));
+            .resolves("cmd-o", DispatchContext::CanvasFocused)
+            .contains(&"open"));
         assert!(t
-            .resolves("cmd-e", DispatchContext::EditorFocused)
-            .contains(&"toggle-focus"));
+            .resolves("cmd-o", DispatchContext::EditorFocused)
+            .contains(&"open"));
     }
 
     #[test]
@@ -185,13 +183,13 @@ mod tests {
     #[test]
     fn plot_focus_resolves_a_bare_verb() {
         let t = table();
-        // A canvas-focused bare verb (p) resolves.
+        // A canvas-focused bare verb (=) resolves.
         assert!(t
-            .resolves("p", DispatchContext::CanvasFocused)
-            .contains(&"toggle-presentation"));
+            .resolves("=", DispatchContext::CanvasFocused)
+            .contains(&"zoom-in"));
         assert!(t
-            .resolves("c", DispatchContext::CanvasFocused)
-            .contains(&"cycle-colour-scheme"));
+            .resolves("x", DispatchContext::CanvasFocused)
+            .contains(&"cycle-axis-lock"));
     }
 
     #[test]
@@ -207,14 +205,10 @@ mod tests {
             t.resolves("l", DispatchContext::ShelfFocused),
             vec!["move-shelf-right"]
         );
-        assert_eq!(
-            t.resolves("h", DispatchContext::CanvasFocused),
-            vec!["pop-out"]
-        );
-        assert_eq!(
-            t.resolves("l", DispatchContext::CanvasFocused),
-            vec!["dive-in"]
-        );
+        // The canvas binds neither: the moves between a chart's plots are
+        // reserved.
+        assert!(t.resolves("h", DispatchContext::CanvasFocused).is_empty());
+        assert!(t.resolves("l", DispatchContext::CanvasFocused).is_empty());
         assert_eq!(
             t.resolves("h", DispatchContext::ProtocolFocused),
             vec!["protocol-producer"]
@@ -253,10 +247,7 @@ mod tests {
             t.resolves("left", DispatchContext::CanvasFocused),
             vec!["pan-left"]
         );
-        assert_eq!(
-            t.resolves("l", DispatchContext::CanvasFocused),
-            vec!["dive-in"]
-        );
+        assert!(t.resolves("l", DispatchContext::CanvasFocused).is_empty());
         // And the zoom, axis-lock and reset keys resolve to nothing there.
         for keys in ["=", "-", "x", "0"] {
             assert!(
@@ -270,8 +261,8 @@ mod tests {
     fn the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere() {
         let t = table();
         // Exact vectors: a Workspace binding leaking into the panel's dispatch
-        // context would add a second verb, and Enter would both step the chart
-        // back and dive into the focused container.
+        // context would add a second verb, and Esc would both return to now
+        // and clear the chart's selection.
         for (keys, verb) in [
             ("j", "move-version-cursor-down"),
             ("down", "move-version-cursor-down"),
@@ -287,9 +278,12 @@ mod tests {
             );
         }
         assert_eq!(
-            t.resolves("enter", DispatchContext::CanvasFocused),
-            vec!["dive-in"]
+            t.resolves("escape", DispatchContext::CanvasFocused),
+            vec!["clear-selection"]
         );
+        assert!(t
+            .resolves("enter", DispatchContext::CanvasFocused)
+            .is_empty());
         assert!(t.resolves("enter", DispatchContext::GridFocused).is_empty());
     }
 
@@ -370,10 +364,7 @@ mod tests {
             t.resolves("space", DispatchContext::CanvasFocused),
             vec!["open-palette"]
         );
-        assert_eq!(
-            t.resolves("a", DispatchContext::CanvasFocused),
-            vec!["add-mark"]
-        );
+        assert!(t.resolves("a", DispatchContext::CanvasFocused).is_empty());
     }
 
     #[test]
@@ -451,11 +442,11 @@ mod tests {
     }
 
     #[test]
-    fn toggle_chord_is_unshadowed() {
+    fn the_open_chord_is_unshadowed() {
         let bound = keymap_bindings(&registry());
-        // Exactly one binding claims cmd-e, and it is the focus toggle.
-        let claimers: Vec<_> = bound.iter().filter(|b| b.keystrokes == "cmd-e").collect();
+        // Exactly one binding claims cmd-o, and it is open.
+        let claimers: Vec<_> = bound.iter().filter(|b| b.keystrokes == "cmd-o").collect();
         assert_eq!(claimers.len(), 1);
-        assert_eq!(claimers[0].longname, "toggle-focus");
+        assert_eq!(claimers[0].longname, "open");
     }
 }
