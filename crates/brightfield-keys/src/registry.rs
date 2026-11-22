@@ -273,6 +273,7 @@ const NEEDS_RUN: &[Requirement] = &[
 ];
 const NEEDS_UNTRUST: &[Requirement] = &[
     A_PROTOCOL,
+    Requirement::of(Need::Condition(Condition::ProtocolFolder)),
     Requirement::new(
         Need::Condition(Condition::Trusted),
         "This Protocol is not trusted.",

@@ -87,6 +87,9 @@ pub enum Condition {
     /// The window holds something Save the spec writes: a Protocol made from a
     /// data file or a folder, or a panel open from its tile.
     ProtocolToSave,
+    /// The Protocol is a folder on disk, as one opened or made is. A shipped
+    /// start and a chart spec have no folder.
+    ProtocolFolder,
     /// The Protocol is trusted.
     Trusted,
     /// The Protocol is one Brightfield made, which sources can be added to.
@@ -150,6 +153,9 @@ impl Need {
             Need::Condition(Condition::ProtocolToSave) => {
                 "{command} needs a Protocol to save: open a data file or a folder, or open a \
                  panel from its tile."
+            }
+            Need::Condition(Condition::ProtocolFolder) => {
+                "{command} needs a Protocol opened from a folder."
             }
             Need::Condition(Condition::Trusted) => {
                 "{command} needs the Protocol trusted: trust it from the band over its canvas."

@@ -105,6 +105,17 @@ fn the_crosswalk_puts_its_graph_on_the_canvas() {
         win.app.availability_of("focus-jump"),
         Some(Availability::Available)
     );
+    // A shipped start has no folder to stop trusting.
+    assert_eq!(
+        win.app.availability_of("untrust-protocol"),
+        Some(Availability::Missing(
+            "Stop trusting needs a Protocol opened from a folder.".to_owned()
+        ))
+    );
+    assert_eq!(
+        scenes::data_file().app.availability_of("untrust-protocol"),
+        Some(Availability::Available)
+    );
 }
 
 #[test]

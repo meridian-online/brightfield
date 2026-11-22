@@ -300,6 +300,7 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             Condition::EditToTakeBack | Condition::UnsavedWork => keep_a_column(win),
             Condition::ProtocolToRun
             | Condition::ProtocolToSave
+            | Condition::ProtocolFolder
             | Condition::Trusted
             | Condition::TakesSources
             | Condition::FileToReload

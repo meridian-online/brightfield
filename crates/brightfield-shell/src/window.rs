@@ -8425,8 +8425,8 @@ impl MeridianApp {
     ///
     /// The palette opens either way, but the candidate list differs: with the
     /// graph on the canvas, `Altitude::Protocol`'s registry scope dispatches
-    /// through the model, less the rows that would put the Outline's column on
-    /// a chart the graph hides — [`Self::open_protocol_palette`]. With a chart
+    /// through the model, with the rows that would put the Outline's column on
+    /// a chart the graph hides greyed — [`Self::open_protocol_palette`]. With a chart
     /// there, most `Altitude::View` verbs have no handler in this
     /// shell yet — the editing bridge that would let `add-mark`,
     /// `set-channel` and the rest apply a `ChartEdit` is not landed — so
@@ -9636,9 +9636,9 @@ impl MeridianApp {
         )));
     }
 
-    /// **Whether this window has a Protocol for Save to write** — what the
-    /// chart palette is built from, and the same question
-    /// [`Self::save_protocol`] answers by returning `None`.
+    /// **Whether this window has a Protocol for Save to write** — one of the
+    /// facts [`Self::situation`] reads what Save and Run can act on from, and
+    /// the same question [`Self::save_protocol`] answers by returning `None`.
     ///
     /// The inspector rail does not read it: that rail draws the *editor's*
     /// Save entry, which is a different write under the same verb name, so it
@@ -9646,7 +9646,8 @@ impl MeridianApp {
     ///
     /// True for a window a data file opened, false for one over a chart spec,
     /// a shipped start or the front door. Asked of the live document rather
-    /// than cached, so going Home takes the row away with the document.
+    /// than cached, so going Home greys the palette's row with the document
+    /// gone.
     #[must_use]
     pub fn has_protocol_to_save(&self) -> bool {
         self.protocol.doc.model.source().is_some()
@@ -9745,8 +9746,14 @@ impl MeridianApp {
             Condition::FileToReload,
         );
         when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        when(
+            self.held_protocol_dir().is_some(),
+            Condition::ProtocolFolder,
+        );
 
-        let sources = model_pane.map_or_else(
+        // Counted from the model the window holds, on the canvas or waiting
+        // behind a table's grid, as `open_organise_joins` reads it.
+        let sources = self.model.as_ref().map_or_else(
             || usize::from(self.has_protocol_to_save()),
             |pane| pane.doc.model.datasets.len(),
         );
@@ -17023,7 +17030,7 @@ impl MeridianApp {
                 Severity::Info,
                 declared_sentence(
                     UNTRUST_PROTOCOL,
-                    brightfield_keys::Need::Selected(brightfield_keys::Selected::Protocol),
+                    brightfield_keys::Need::Condition(brightfield_keys::Condition::ProtocolFolder),
                 ),
             ));
             return false;
@@ -21245,7 +21252,7 @@ mod tests {
             (COPY_CHART_PICTURE, Need::Selected(Selected::Chart)),
             (EXPORT_CHART_PICTURE, Need::Selected(Selected::Chart)),
             (UNTRUST_PROTOCOL, Need::Condition(Condition::Trusted)),
-            (UNTRUST_PROTOCOL, Need::Selected(Selected::Protocol)),
+            (UNTRUST_PROTOCOL, Need::Condition(Condition::ProtocolFolder)),
         ];
         // The model pane's reshape verbs: three act on a join, the rest on a
         // table.
