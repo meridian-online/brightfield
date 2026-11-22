@@ -539,13 +539,19 @@ pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engin
     }
 }
 
-/// **`chain`, with each file of `roots` loaded as a table ahead of it**: how a
-/// table of the Protocol's model the spine picked for an operation, which no
-/// step of the chain makes, is there for a preview to read. Each root is a
-/// Parquet file Brightfield wrote, loaded from its path as given, so the rules
-/// for a path an analyst typed into a `read-file` step ([`read_file_op`]) do
-/// not apply to it. A root the chain already makes, or named as `root_table`
-/// is, is left out.
+/// **`chain`, with each file of `roots` it reads loaded as a table ahead of
+/// it**: how a table of the Protocol's model the spine picked for an operation,
+/// which no step of the chain makes, is there for a preview to read. Each root
+/// is a Parquet file Brightfield wrote, loaded from its path as given, so the
+/// rules for a path an analyst typed into a `read-file` step ([`read_file_op`])
+/// do not apply to it.
+///
+/// A root is read when `tables`, the tables the read itself names, holds it,
+/// or when a step of `chain` reads it, as `steps` says each step does. A root
+/// the read does not use is not loaded, so a chain that reads no root is
+/// handed back as it came
+/// (`a_picked_table_is_loaded_for_the_reads_that_name_it`). A root the chain
+/// already makes, or named as `root_table` is, is left out too.
 ///
 /// The engine runs a `where` or an `order by` on the table made just before
 /// it, which for the first step of `chain` was `root_table` and would now be
@@ -553,23 +559,27 @@ pub(crate) fn read_file_op(model: &str, dir: Option<&Path>) -> brightfield_engin
 /// that arc's template is, as a step that branches off an earlier table is.
 pub(crate) fn with_file_roots(
     root_table: &str,
+    steps: &[GeneratedStep],
     mut chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    tables: &[String],
     roots: &[(String, PathBuf)],
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     use brightfield_engine::{FileReader, PreviewOp};
-    let made = |name: &str| {
-        name.eq_ignore_ascii_case(root_table)
-            || chain
-                .iter()
-                .any(|(step, _)| step.eq_ignore_ascii_case(name))
-    };
+    let named = |names: &[String], name: &str| names.iter().any(|n| n.eq_ignore_ascii_case(name));
     let mut loaded: Vec<(String, PreviewOp)> = Vec::new();
     for (name, path) in roots {
-        if made(name)
-            || loaded
+        let made = name.eq_ignore_ascii_case(root_table)
+            || chain
                 .iter()
-                .any(|(held, _)| held.eq_ignore_ascii_case(name))
-        {
+                .any(|(step, _)| step.eq_ignore_ascii_case(name));
+        let read = named(tables, name)
+            || chain.iter().any(|(step, _)| {
+                index_of(steps, step).is_some_and(|at| named(&steps[at].reads, name))
+            });
+        let held = loaded
+            .iter()
+            .any(|(held, _)| held.eq_ignore_ascii_case(name));
+        if made || !read || held {
             continue;
         }
         loaded.push((
@@ -1153,10 +1163,11 @@ mod tests {
     use super::*;
 
     /// A table the spine picked is loaded from its path as given, brackets and
-    /// all, ahead of the chain; a first `where` is rewritten over the root
-    /// table, since the table made just before it is now the last root.
+    /// all, ahead of a chain that reads it, and not ahead of one that does not.
+    /// A first `where` is rewritten over the root table, since the table made
+    /// just before it is now the last root.
     #[test]
-    fn a_picked_table_is_loaded_ahead_of_the_chain_from_its_path_as_given() {
+    fn a_picked_table_is_loaded_for_the_reads_that_name_it() {
         use brightfield_engine::{FileReader, PreviewOp};
         let path = PathBuf::from("/data/Sales [2026]/.grid/stores.parquet");
         let roots = vec![
@@ -1164,67 +1175,82 @@ mod tests {
             // The root table and a table the chain makes are not loaded over.
             ("housing".to_string(), PathBuf::from("/x/housing.parquet")),
             ("OLD".to_string(), PathBuf::from("/x/old.parquet")),
+            // A table picked earlier that this read does not name.
+            (
+                "customers".to_string(),
+                PathBuf::from("/x/customers.parquet"),
+            ),
         ];
+        let step = |name: &str, reads: &[&str]| GeneratedStep {
+            name: name.to_string(),
+            effect: StepEffect::Sql,
+            on: reads.first().map(|r| (*r).to_string()).unwrap_or_default(),
+            reads: reads.iter().map(|r| (*r).to_string()).collect(),
+            argument: String::new(),
+        };
+        let steps = [
+            step("old", &["housing"]),
+            step("older", &["old"]),
+            step("joined", &["older", "Stores"]),
+        ];
+        let filter =
+            |name: &str, over: &str| (name.to_string(), PreviewOp::Where(over.to_string()));
         let chain = vec![
-            (
-                "old".to_string(),
-                PreviewOp::Where("house_age > 30".to_string()),
-            ),
-            (
-                "older".to_string(),
-                PreviewOp::Where("house_age > 40".to_string()),
-            ),
+            filter("old", "house_age > 30"),
+            filter("older", "house_age > 40"),
         ];
-        let with = with_file_roots("housing", chain.clone(), &roots);
+        let all = |tables: &[&str], chain: &[(String, PreviewOp)]| {
+            let tables: Vec<String> = tables.iter().map(|t| (*t).to_string()).collect();
+            with_file_roots("housing", &steps, chain.to_vec(), &tables, &roots)
+        };
+        let stores = (
+            "stores".to_string(),
+            PreviewOp::ReadFile {
+                path,
+                reader: FileReader::Parquet,
+            },
+        );
+        let over_housing =
+            |clause: &str| PreviewOp::Statement(format!("SELECT *\nFROM \"housing\"\n{clause}\n"));
+
+        // A read that names no picked table gets the chain it had before any pick, its
+        // first `where` as it was, though it names the root and a table the chain makes.
+        assert_eq!(all(&["older"], &chain), chain);
+        assert_eq!(all(&["housing", "old"], &chain), chain);
+        assert_eq!(all(&[], &[]), []);
+
+        // A read that names one, in any case, gets that one and no other.
         assert_eq!(
-            with,
+            all(&["STORES"], &chain),
             vec![
-                (
-                    "stores".to_string(),
-                    PreviewOp::ReadFile {
-                        path,
-                        reader: FileReader::Parquet
-                    }
-                ),
-                (
-                    "old".to_string(),
-                    PreviewOp::Statement(
-                        "SELECT *\nFROM \"housing\"\nWHERE house_age > 30\n".to_string()
-                    )
-                ),
+                stores.clone(),
+                ("old".to_string(), over_housing("WHERE house_age > 30")),
                 // The second filter still follows the first.
                 chain[1].clone(),
             ]
         );
-        // An order is rewritten the same way, and a statement is left as written.
-        let ordered = with_file_roots(
-            "housing",
-            vec![(
-                "s".to_string(),
-                PreviewOp::OrderBy("house_age DESC".to_string()),
-            )],
-            &roots[..1],
-        );
+        // So does a chain one of whose steps reads it, as a kept join's does.
+        let mut through = chain.clone();
+        through.push(("joined".to_string(), PreviewOp::Model("m".to_string())));
+        let with = all(&["joined"], &through);
+        assert_eq!(with[0], stores);
+        assert_eq!(with.len(), 4);
+        assert!(!with.iter().any(|(name, _)| name == "customers"));
+
+        // An order is rewritten as a `where` is, and a statement is left as written.
+        let ordered = vec![(
+            "old".to_string(),
+            PreviewOp::OrderBy("house_age DESC".to_string()),
+        )];
         assert_eq!(
-            ordered[1].1,
-            PreviewOp::Statement(
-                "SELECT *\nFROM \"housing\"\nORDER BY house_age DESC\n".to_string()
-            )
+            all(&["stores"], &ordered)[1].1,
+            over_housing("ORDER BY house_age DESC")
         );
         let statement = vec![(
             "q".to_string(),
             PreviewOp::Statement("SELECT 1".to_string()),
         )];
-        assert_eq!(
-            with_file_roots("housing", statement.clone(), &roots[..1])[1],
-            statement[0]
-        );
-        // With no root to load, the chain is as it was.
-        assert_eq!(with_file_roots("housing", chain.clone(), &[]), chain);
-        assert_eq!(
-            with_file_roots("housing", chain.clone(), &roots[1..]),
-            chain
-        );
+        assert_eq!(all(&["stores"], &statement)[1], statement[0]);
     }
 
     /// A folder recorded with one SQL step after the load is read with that

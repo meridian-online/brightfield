@@ -10527,7 +10527,13 @@ impl MeridianApp {
             let Some(chain) = crate::generated::preview_chain(generated, &step.name) else {
                 continue;
             };
-            let chain = crate::generated::with_file_roots(&source.name, chain, &picked);
+            let chain = crate::generated::with_file_roots(
+                &source.name,
+                &generated.steps,
+                chain,
+                &[],
+                &picked,
+            );
             if self
                 .typed_counts
                 .iter()
@@ -10579,8 +10585,9 @@ impl MeridianApp {
         let picked = self.picked_model_tables();
         for (name, chain, rows) in landed {
             let current = self.protocol.doc.model.generated().and_then(|g| {
-                crate::generated::preview_chain(g, &name)
-                    .map(|chain| crate::generated::with_file_roots(&g.root_table, chain, &picked))
+                crate::generated::preview_chain(g, &name).map(|chain| {
+                    crate::generated::with_file_roots(&g.root_table, &g.steps, chain, &[], &picked)
+                })
             });
             if current.as_ref() == Some(&chain) {
                 self.charts.doc.set_typed_rows(&name, rows);
@@ -15841,7 +15848,9 @@ impl MeridianApp {
         // order the manifest makes them.
         let chain = crate::generated::with_file_roots(
             &generated.root_table,
+            &generated.steps,
             crate::generated::preview_chain(generated, &step.name)?,
+            &[],
             &self.picked_model_tables(),
         );
         let fields = match &step.effect {

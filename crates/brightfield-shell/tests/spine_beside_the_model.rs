@@ -893,7 +893,7 @@ fn over_a_joins_rows_the_spine_offers_no_model_table() {
         let said = win.app.operation_said().unwrap_or_default().to_string();
         if !said.starts_with("Reading arc's description") {
             assert!(win.app.spine_pick().is_none());
-            assert!(!said.is_empty(), "nothing was said");
+            assert_eq!(said, "Join tables needs a second table in the Protocol.");
             break;
         }
         assert!(

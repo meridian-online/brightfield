@@ -280,8 +280,8 @@ impl TypedSource {
 
     /// The steps a read of `tables` is read after, in order: of [`Self::steps`], those that make
     /// one of `tables`, and the steps those read. A `read-file` step's relative path is read
-    /// against the data file's folder, which is the Protocol's. Each of [`Self::file_roots`] is
-    /// loaded ahead of them.
+    /// against the data file's folder, which is the Protocol's. Each of [`Self::file_roots`] that
+    /// `tables` or one of those steps reads is loaded ahead of them.
     pub(crate) fn chain_reading(&self, tables: &[String]) -> Vec<(String, PreviewOp)> {
         let chain = match self.data.parent() {
             Some(dir) => crate::generated::preview_chain_reading_in(
@@ -292,7 +292,13 @@ impl TypedSource {
             ),
             None => crate::generated::preview_chain_reading(&self.root_table, &self.steps, tables),
         };
-        crate::generated::with_file_roots(&self.root_table, chain, &self.file_roots)
+        crate::generated::with_file_roots(
+            &self.root_table,
+            &self.steps,
+            chain,
+            tables,
+            &self.file_roots,
+        )
     }
 
     /// The columns the casts keep each cast column's text under, which the applied grid hides.
