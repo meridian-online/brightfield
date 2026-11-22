@@ -21208,9 +21208,7 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
 // ---------------------------------------------------------------------------
 
 mod operation_host;
-pub use operation_host::{
-    NO_DUPLICATE_ROWS, OPERATION_STATUS_ID, PICK_AFTER_THE_RUN, SPINE_PICK_STATUS_ID,
-};
+pub use operation_host::{NO_DUPLICATE_ROWS, OPERATION_STATUS_ID, PICK_AFTER_THE_RUN};
 
 #[cfg(test)]
 mod tests {

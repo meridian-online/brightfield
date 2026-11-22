@@ -1105,9 +1105,10 @@ impl MeridianApp {
     /// whose table the grid holds. arc runs each step in a process of its own,
     /// so the database is free between two steps, and a read that opened it
     /// then would hold the lock the next step needs and fail the run. While this
-    /// is true no grid copy is written and no pick opens
+    /// is true the spine opens no pick
     /// (`a_pick_over_a_models_tables_waits_for_the_run_to_end` in
-    /// `tests/spine_beside_the_model.rs`).
+    /// `tests/spine_beside_the_model.rs`). A take copies no table then, and a
+    /// step's preview writes no grid copy.
     fn model_database_is_being_run(&self) -> bool {
         self.model_protocol_beside_the_grid()
             .is_some_and(|protocol| self.runs_folder(&protocol.dir))
