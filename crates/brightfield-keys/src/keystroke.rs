@@ -31,6 +31,19 @@ pub enum KeyPlatform {
     Other,
 }
 
+impl KeyPlatform {
+    /// The platform this build runs on: [`KeyPlatform::Mac`] on macOS and
+    /// [`KeyPlatform::Other`] elsewhere.
+    #[must_use]
+    pub const fn host() -> Self {
+        if cfg!(target_os = "macos") {
+            KeyPlatform::Mac
+        } else {
+            KeyPlatform::Other
+        }
+    }
+}
+
 /// Every key name a binding may use
 /// (`every_registry_binding_parses_to_a_known_key`).
 pub const KEY_NAMES: &[&str] = &[

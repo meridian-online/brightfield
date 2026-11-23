@@ -176,6 +176,7 @@ pub mod remote;
 pub mod rename;
 pub mod representation;
 pub mod resample;
+pub mod ribbon;
 pub mod run;
 pub mod shelf;
 pub mod shelf_edit;

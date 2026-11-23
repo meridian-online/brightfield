@@ -110,6 +110,8 @@ pub fn menu_bar() -> Vec<Menu> {
                 acts("show-model-file"),
                 Separator,
                 acts("open-steps-sheet"),
+                Separator,
+                acts("toggle-ribbon"),
             ],
         },
         Menu {

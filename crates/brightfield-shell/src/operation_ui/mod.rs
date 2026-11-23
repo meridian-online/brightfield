@@ -92,16 +92,9 @@ impl std::fmt::Debug for OperationUi {
     }
 }
 
-/// The stage of the work an operation belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stage {
-    /// Bringing data in.
-    BringIn,
-    /// Shaping one table.
-    Shape,
-    /// Relating tables.
-    Model,
-}
+/// The stage of the work an operation belongs to: the ribbon's, so a form is
+/// filed under the tab of the same name.
+pub use brightfield_keys::ribbon::Stage;
 
 /// A place an operation begins from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -26,6 +26,7 @@ pub mod menus;
 pub mod operations;
 pub mod palette;
 pub mod registry;
+pub mod ribbon;
 pub mod scope;
 
 pub use altitude::Altitude;
