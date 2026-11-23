@@ -276,7 +276,7 @@ fn a_folder_of_two_tables_opens_the_model() {
     assert!(win.app.own_protocol().is_none(), "the model pane holds it");
 }
 
-/// The window and its header name the open Protocol as the locator band's Name field does, not the
+/// The window and its header name the open Protocol as the title band's Name field does, not the
 /// data file the grid reads, and a folder opened after a file re-titles the OS window rather than
 /// leaving the file's Protocol named there.
 #[test]

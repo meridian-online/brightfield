@@ -1,6 +1,7 @@
 //! The unified title band: it leaves the window's own controls their corner on macOS, where the
-//! window draws under a hidden title bar; its empty stretch moves the window when dragged and zooms
-//! it when double-clicked, as a title bar does; and it keeps the open Protocol's name and the
+//! window draws under a hidden title bar; there its empty stretch moves the window when dragged and
+//! zooms it when double-clicked, as a title bar does, and elsewhere it leaves both to the window's
+//! own title bar; and it keeps the open Protocol's name and the
 //! folder it is kept in, which used to sit in the locator band below it.
 
 #[path = "support/scenes.rs"]
@@ -64,6 +65,26 @@ fn the_title_band_leaves_the_window_controls_their_corner() {
     assert!(mark.left() >= WINDOW_CONTROLS_INSET, "{mark:?}");
 }
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn where_the_window_keeps_its_title_bar_the_band_moves_nothing() {
+    let mut win = scenes::data_file();
+    let at = on_the_stretch(&win);
+    win.viewport_commands.clear();
+    win.run(vec![
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+        vec![egui::Event::PointerMoved(at + egui::vec2(40.0, 4.0))],
+        vec![button(at + egui::vec2(40.0, 4.0), false)],
+        vec![button(at + egui::vec2(40.0, 4.0), true)],
+        vec![button(at + egui::vec2(40.0, 4.0), false)],
+    ]);
+    assert!(
+        !started_a_drag(&win) && !zoomed(&win),
+        "{:?}",
+        win.viewport_commands
+    );
+}
+
 #[test]
 fn the_inset_is_the_window_controls_corner_on_macos_and_nothing_elsewhere() {
     let inset = brightfield_shell::title_band::controls_inset();
@@ -75,6 +96,7 @@ fn the_inset_is_the_window_controls_corner_on_macos_and_nothing_elsewhere() {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_drag_on_the_title_bands_empty_stretch_moves_the_window() {
     let mut win = scenes::data_file();
@@ -94,6 +116,7 @@ fn a_drag_on_the_title_bands_empty_stretch_moves_the_window() {
     assert!(!zoomed(&win), "a drag is not a zoom");
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_double_click_on_the_title_bands_empty_stretch_zooms_the_window() {
     let mut win = scenes::data_file();

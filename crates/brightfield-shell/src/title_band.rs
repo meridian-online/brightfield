@@ -9,12 +9,19 @@
 
 use brightfield_workbench::arrangement::WINDOW_CONTROLS_INSET;
 
+/// Whether the title band stands in for the window's title bar: on macOS, where `main.rs` hides
+/// the title bar and draws the window's content under it.
+#[must_use]
+pub fn replaces_the_title_bar() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// How far the band's first control stands from the window's left edge: clear of the close,
 /// minimise and zoom buttons on macOS, and nothing on a platform that draws them outside the
 /// window's content.
 #[must_use]
 pub fn controls_inset() -> f32 {
-    if cfg!(target_os = "macos") {
+    if replaces_the_title_bar() {
         WINDOW_CONTROLS_INSET
     } else {
         0.0
@@ -27,8 +34,11 @@ pub fn controls_inset() -> f32 {
 /// Call it after the band's controls are drawn, with a rect that overlaps none of them: egui gives
 /// a press to the last widget that senses the point under it. `salt` tells apart the band's
 /// stretches.
+///
+/// Only where the band replaces the title bar, which is macOS: elsewhere the window keeps its
+/// native title bar, which moves and zooms it, and the band leaves those to it.
 pub fn drag_and_zoom(ui: &egui::Ui, salt: &str, rect: egui::Rect) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+    if !replaces_the_title_bar() || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
     let response = ui.interact(

@@ -12164,9 +12164,10 @@ impl MeridianApp {
                 }
                 bar.placed = Some(placed);
             }
-            // What no control took moves the window and zooms it, as a title bar would: the
-            // corner left of the mark, and the stretch between the name and the band's right
-            // end. Sensed once the controls beside it are drawn, so none of them is covered.
+            // On macOS, where the band stands in for the title bar, what no control took moves
+            // the window and zooms it: the corner left of the mark, and the stretch between the
+            // name and the band's right end. Sensed once the controls beside it are drawn, so
+            // none of them is covered.
             crate::title_band::drag_and_zoom(
                 ui,
                 "corner",
@@ -15541,7 +15542,7 @@ impl MeridianApp {
     }
 
     /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
-    /// open the locator band's name field. No overlay may own the keyboard.
+    /// open the title band's name field. No overlay may own the keyboard.
     fn rename_key(&mut self, ctx: &egui::Context) {
         if self.overlay.is_some() {
             return;
@@ -19733,7 +19734,7 @@ fn first_error_line(log: &str) -> &str {
 }
 
 /// The Protocol folder a front-door row's id names, when it names one the window would rename: an
-/// own-files Protocol on disk, of one source or of a model, as the locator band's name field
+/// own-files Protocol on disk, of one source or of a model, as the title band's name field
 /// renames. A row is remembered by the Protocol's `arcform.yaml`, or by its folder.
 fn door_row_dir(id: &str) -> Option<PathBuf> {
     let path = std::path::Path::new(id);
