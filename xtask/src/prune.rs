@@ -1,11 +1,14 @@
 //! Keeping the gate's shared target directory to what a later run reuses.
 //!
 //! The pull-request gate and the nightly build into one target directory so
-//! that third-party dependencies compile once. The workspace's own crates
-//! cannot be reused: cargo hashes a path package's location into its artifact
-//! names, and each run builds from a new worktree, so every run adds a full
-//! set of workspace artifacts (on macOS each test binary keeps its object
-//! files for debug info) that no later run reads. The incremental directory is
+//! that third-party dependencies compile once. The tree's own crates cannot
+//! be reused: cargo hashes a path package's location into its artifact names,
+//! and each run builds from a new worktree, so every run adds a full set of
+//! artifacts for the workspace's members, for the vendored packages the tree
+//! patches in by path, and for every registry crate built on one of those,
+//! since a dependency's hash is mixed into its dependents' (on macOS each test
+//! binary also keeps its object files for debug info). No later run reads
+//! them. The incremental directory is
 //! the same: its state belongs to crates that will not be compiled again.
 //! [`prune`] removes both after a run, under the gate lock, and keeps the
 //! third-party artifacts, as
@@ -19,7 +22,8 @@ use std::process::Stdio;
 
 use crate::steps::Ctx;
 
-/// The names the workspace's own artifacts carry in a target directory.
+/// The names the tree's own artifacts carry in a target directory: those of
+/// its path packages and of every package that depends on one.
 #[derive(Debug, Default, PartialEq)]
 pub struct Workspace {
     /// Package names, as `.fingerprint/` and `build/` name their entries.
@@ -29,15 +33,48 @@ pub struct Workspace {
     crates: BTreeSet<String>,
 }
 
-/// The workspace's names from `cargo metadata --no-deps` output.
+/// The tree's names from `cargo metadata` output with its dependencies: the
+/// packages with no `source`, which are those at a local path, and every
+/// package whose resolved dependencies reach one, directly or through others.
 pub fn workspace_from_metadata(metadata_json: &str) -> Result<Workspace, String> {
     let metadata: serde_json::Value = serde_json::from_str(metadata_json)
         .map_err(|e| format!("cargo metadata did not print JSON: {e}"))?;
     let packages = metadata["packages"]
         .as_array()
         .ok_or("cargo metadata printed no packages array")?;
+    let nodes = metadata["resolve"]["nodes"]
+        .as_array()
+        .ok_or("cargo metadata printed no resolve graph")?;
+    let id = |value: &serde_json::Value| value["id"].as_str().map(str::to_owned);
+    let mut own: BTreeSet<String> = packages
+        .iter()
+        .filter(|package| package["source"].is_null())
+        .filter_map(id)
+        .collect();
+    loop {
+        let reached: Vec<String> = nodes
+            .iter()
+            .filter(|node| {
+                node["dependencies"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|dep| own.contains(dep))
+            })
+            .filter_map(id)
+            .filter(|node| !own.contains(node))
+            .collect();
+        if reached.is_empty() {
+            break;
+        }
+        own.extend(reached);
+    }
     let mut workspace = Workspace::default();
     for package in packages {
+        if !id(package).is_some_and(|id| own.contains(&id)) {
+            continue;
+        }
         if let Some(name) = package["name"].as_str() {
             workspace.packages.insert(name.to_owned());
         }
@@ -48,12 +85,13 @@ pub fn workspace_from_metadata(metadata_json: &str) -> Result<Workspace, String>
         }
     }
     if workspace.packages.is_empty() {
-        return Err("cargo metadata listed no workspace packages".to_owned());
+        return Err("cargo metadata listed no package at a local path".to_owned());
     }
     Ok(workspace)
 }
 
-/// The workspace of the tree at `root`, read with its own cargo.
+/// The names of the tree at `root`, read with its own cargo from its lock
+/// file, offline, since the run that built it has every dependency already.
 pub fn workspace_of(root: &Path) -> Result<Workspace, String> {
     let ctx = Ctx {
         root: root.to_path_buf(),
@@ -62,13 +100,13 @@ pub fn workspace_of(root: &Path) -> Result<Workspace, String> {
     };
     let output = ctx
         .command("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .args(["metadata", "--locked", "--offline", "--format-version", "1"])
         .stderr(Stdio::inherit())
         .output()
         .map_err(|e| format!("could not start cargo metadata: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "`cargo metadata --no-deps` exited with {}",
+            "`cargo metadata --locked --offline` exited with {}",
             output.status
         ));
     }
@@ -282,12 +320,35 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    const METADATA: &str = r#"{"packages":[
-        {"name":"brightfield-spec","targets":[
-            {"name":"brightfield_spec","kind":["lib"]},
-            {"name":"gallery-gate","kind":["test"]}]},
-        {"name":"xtask","targets":[{"name":"xtask","kind":["bin"]}]}
-    ]}"#;
+    const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+    /// Two members, a vendored package patched in by path, a registry crate
+    /// built on it, one built on that, and two that reach no path package.
+    fn metadata() -> String {
+        format!(
+            r#"{{"packages":[
+            {{"id":"spec","name":"brightfield-spec","source":null,"targets":[
+                {{"name":"brightfield_spec","kind":["lib"]}},
+                {{"name":"gallery-gate","kind":["test"]}}]}},
+            {{"id":"xtask","name":"xtask","source":null,"targets":[{{"name":"xtask","kind":["bin"]}}]}},
+            {{"id":"sys","name":"libduckdb-sys","source":null,"targets":[
+                {{"name":"libduckdb_sys","kind":["lib"]}},
+                {{"name":"build-script-build","kind":["custom-build"]}}]}},
+            {{"id":"duckdb","name":"duckdb","source":"{REGISTRY}","targets":[{{"name":"duckdb","kind":["lib"]}}]}},
+            {{"id":"arcform","name":"arcform","source":"{REGISTRY}","targets":[{{"name":"arcform","kind":["lib"]}}]}},
+            {{"id":"serde","name":"serde","source":"{REGISTRY}","targets":[{{"name":"serde","kind":["lib"]}}]}},
+            {{"id":"libc","name":"libc","source":"{REGISTRY}","targets":[{{"name":"libc","kind":["lib"]}}]}}
+            ],"resolve":{{"nodes":[
+            {{"id":"spec","dependencies":["arcform","serde"]}},
+            {{"id":"xtask","dependencies":["serde"]}},
+            {{"id":"sys","dependencies":["libc"]}},
+            {{"id":"duckdb","dependencies":["sys","libc"]}},
+            {{"id":"arcform","dependencies":["duckdb","serde"]}},
+            {{"id":"serde","dependencies":[]}},
+            {{"id":"libc","dependencies":[]}}
+            ]}}}}"#
+        )
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gate-prune-{tag}-{}", std::process::id()));
@@ -302,18 +363,35 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_names_are_its_packages_and_its_targets_crate_names() {
-        let workspace = workspace_from_metadata(METADATA).unwrap();
+    fn the_names_are_the_path_packages_and_every_crate_built_on_one() {
+        let workspace = workspace_from_metadata(&metadata()).unwrap();
         assert_eq!(
             workspace.packages,
-            ["brightfield-spec", "xtask"].map(String::from).into()
+            [
+                "arcform",
+                "brightfield-spec",
+                "duckdb",
+                "libduckdb-sys",
+                "xtask"
+            ]
+            .map(String::from)
+            .into()
         );
         assert_eq!(
             workspace.crates,
-            ["brightfield_spec", "gallery_gate", "xtask"]
-                .map(String::from)
-                .into()
+            [
+                "arcform",
+                "brightfield_spec",
+                "build_script_build",
+                "duckdb",
+                "gallery_gate",
+                "libduckdb_sys",
+                "xtask"
+            ]
+            .map(String::from)
+            .into()
         );
+        assert!(workspace_from_metadata(r#"{"packages":[],"resolve":{"nodes":[]}}"#).is_err());
         assert!(workspace_from_metadata(r#"{"packages":[]}"#).is_err());
         assert!(workspace_from_metadata("not json").is_err());
     }
@@ -344,7 +422,7 @@ mod tests {
     #[test]
     fn a_prune_removes_the_workspaces_artifacts_and_keeps_third_party_ones() {
         let target = scratch("target");
-        let workspace = workspace_from_metadata(METADATA).unwrap();
+        let workspace = workspace_from_metadata(&metadata()).unwrap();
         let (ours, theirs) = ("0123456789abcdef", "fedcba9876543210");
         let removed = [
             format!("debug/deps/libbrightfield_spec-{ours}.rlib"),
@@ -354,6 +432,10 @@ mod tests {
             format!("debug/deps/gallery_gate-{ours}.dSYM/Contents/Info.plist"),
             format!("debug/.fingerprint/brightfield-spec-{ours}/lib-brightfield_spec"),
             format!("debug/build/brightfield-spec-{ours}/output"),
+            format!("debug/build/libduckdb-sys-{ours}/out/libduckdb.a"),
+            format!("debug/deps/liblibduckdb_sys-{ours}.rlib"),
+            format!("debug/deps/libduckdb-{ours}.rlib"),
+            format!("debug/.fingerprint/arcform-{ours}/lib-arcform"),
             "debug/incremental/brightfield_spec-1abc2def/s-x/dep-graph.bin".to_owned(),
             format!("release/deps/xtask-{ours}"),
             format!("aarch64-apple-darwin/debug/deps/xtask-{ours}"),
@@ -364,7 +446,7 @@ mod tests {
             format!("debug/.fingerprint/serde-{theirs}/lib-serde"),
             format!("release/.fingerprint/serde-{theirs}/lib-serde"),
             format!("aarch64-apple-darwin/debug/.fingerprint/serde-{theirs}/lib-serde"),
-            format!("debug/build/duckdb-{theirs}/output"),
+            format!("debug/build/libc-{theirs}/output"),
             "debug/brightfield-shell".to_owned(),
             "debug/xtask".to_owned(),
             "tmp/some-test/scratch".to_owned(),
@@ -383,10 +465,10 @@ mod tests {
             assert!(target.join(path).exists(), "{path} should be kept");
         }
         assert!(pruned.failed.is_empty(), "{:?}", pruned.failed);
-        // The ten files, the .dSYM, fingerprint and build directories each
-        // counted once with their contents, and the incremental entry.
-        assert_eq!(pruned.entries, 10);
-        assert_eq!(pruned.bytes, 100);
+        // The fourteen files, the .dSYM, fingerprint and build directories
+        // each counted once with their contents, and the incremental entry.
+        assert_eq!(pruned.entries, 14);
+        assert_eq!(pruned.bytes, 140);
         assert_eq!(prune(&target, &workspace), Pruned::default());
         fs::remove_dir_all(&target).unwrap();
     }
