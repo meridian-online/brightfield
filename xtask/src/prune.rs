@@ -223,9 +223,9 @@ fn profile_dirs(target: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Remove the tree's own artifacts and the incremental state from every
-/// profile directory under `target`, keeping the third-party crates built on no path package. Hold
-/// the gate lock while calling it, since a running build reads what it
-/// removes.
+/// profile directory under `target`, keeping the third-party crates built on
+/// no path package. Hold the gate lock while calling it, since a running
+/// build reads what it removes.
 pub fn prune(target: &Path, workspace: &Workspace) -> Pruned {
     let mut pruned = Pruned::default();
     for profile in profile_dirs(target) {
