@@ -11,7 +11,9 @@
 #   2. the seven built-in extensions are loaded and statically linked, read
 #      from `duckdb_extensions()`, in the shell and so in the library it loads,
 #      and a database opened read-only is read, which a FineType that panics
-#      when its macros are refused would abort;
+#      when its macros are refused would abort; FineType's two table macros
+#      answer on a database opened read-write and on one opened read-only, and
+#      the database holds neither afterwards;
 #   3. no `.duckdb_extension` file is anywhere in the output, and nothing is
 #      written to an empty extension directory and HOME while the shell runs;
 #   4. an extension outside the seven cannot be installed with the network
@@ -96,6 +98,32 @@ if [ "$status" = 0 ] && [ "$read_only" = "42|true" ]; then
   pass "a database opened read-only is read, and FineType answers there"
 else
   fail "a database opened read-only: exit ${status}, output: ${read_only}"
+fi
+# FineType's two table macros answer however the database was opened, and are
+# written into none. The entry point registers them in DuckDB's system catalog;
+# a FineType left to CREATE them itself would write both into the read-write
+# database here and have neither in a database it could not write. The
+# read-only database is one the macros were never stored in, since the shell
+# above created it. ft_validate is run. ft_profile is only planned, with
+# EXPLAIN, which binds the macro and its SQL without running it: run, it would
+# fetch FineType's model over the network into HOME.
+MACRO_CALLS="SELECT count(*) FROM ft_validate('t', '{\"properties\": {\"answer\": {\"type\": \"integer\"}}}'); EXPLAIN FROM ft_profile('t');"
+STORED_MACROS="SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('ft_validate', 'ft_profile') AND function_type = 'table_macro' AND (NOT internal OR database_name = current_database());"
+for mode in read-write read-only; do
+  flag=(); [ "$mode" = read-only ] && flag=(-readonly)
+  status=0
+  answered=$(duck ${flag[@]+"${flag[@]}"} "${SCRATCH}/read-only.duckdb" -c "$MACRO_CALLS" 2>&1) || status=$?
+  if [ "$status" = 0 ] && [ "$(printf '%s\n' "$answered" | head -1)" = "1" ]; then
+    pass "ft_validate answers and ft_profile binds, as table macros, on a database opened ${mode}"
+  else
+    fail "FineType's table macros on a database opened ${mode}: exit ${status}, output: $(printf '%s' "$answered" | head -5)"
+  fi
+done
+stored=$(duck -readonly "${SCRATCH}/read-only.duckdb" -c "$STORED_MACROS" 2>&1) || true
+if [ "$stored" = "0" ]; then
+  pass "the database holds neither macro after being opened read-write"
+else
+  fail "the database holds FineType's table macros, or the query failed: ${stored}"
 fi
 
 # 3. No extension files.

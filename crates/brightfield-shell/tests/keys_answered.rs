@@ -68,8 +68,10 @@ fn every_editor_key_is_answered() {
     sweep(BindingContext::Editor);
 }
 
-/// The contexts the sweeps above cover, one a test.
-const SWEPT: [BindingContext; 8] = [
+/// The contexts the sweeps cover, one a test: the eight above, and the
+/// spine's pick, swept beside its own tests where a pick can be opened
+/// (`tests/spine_pick.rs`, `every_spine_pick_key_is_answered`).
+const SWEPT: [BindingContext; 9] = [
     BindingContext::Global,
     BindingContext::Workspace,
     BindingContext::Protocol,
@@ -78,6 +80,7 @@ const SWEPT: [BindingContext; 8] = [
     BindingContext::Versions,
     BindingContext::Browser,
     BindingContext::Editor,
+    BindingContext::SpinePick,
 ];
 
 #[test]

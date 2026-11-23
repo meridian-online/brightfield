@@ -181,6 +181,7 @@ pub mod shelf;
 pub mod shelf_edit;
 pub mod sources_browser;
 pub mod sources_browser_view;
+pub mod spine_pick;
 mod sql_ident;
 pub mod starts;
 pub mod startup;

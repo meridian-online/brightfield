@@ -74,7 +74,7 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// These are the verbs that mean the same over whichever window. The two that
 /// act on the Protocol behind the chart, Save and Run, are in the private
 /// `PROTOCOL_CHART_VERBS`, and [`chart_palette_verbs`] is the two lists
-/// together. A row whose command is missing an input here is listed greyed
+/// with each built operation's verb after them. A row whose command is missing an input here is listed greyed
 /// with the sentence it declares, from the situation the window gives the
 /// palette ([`CommandPalette::with_situation`]).
 pub const CHART_PALETTE_VERBS: &[&str] = &[

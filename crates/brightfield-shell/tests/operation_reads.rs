@@ -101,6 +101,7 @@ fn source(dir: &TempDir) -> TypedSource {
         runner: Some(runner()),
         shown: Default::default(),
         casts: Vec::new(),
+        file_roots: Vec::new(),
     }
 }
 

@@ -6969,6 +6969,9 @@ impl MeridianApp {
                 i.events = rest;
             });
         }
+        // The spine's pick, ahead of every other handler: while the spine picks a table for
+        // an operation, its five keys are the pick's.
+        self.spine_pick_keys(&ctx);
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
         // …after an operation being made, whose Enter keeps it and whose Esc drops it.
@@ -7346,6 +7349,7 @@ impl MeridianApp {
                                 chip_live: false,
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
+                                muted: &|_| false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -10576,6 +10580,11 @@ impl MeridianApp {
             runner: self.runner.clone(),
             shown: self.charts.doc.column_facts().shown().clone(),
             casts: source.casts.clone(),
+            // A table of the model is made by no step of the chain: a read that names one
+            // loads it from its grid copy, where the folder holds one written since the
+            // Protocol's database last changed. The spine writes the copy of each table an
+            // operation takes.
+            file_roots: self.current_model_file_roots(),
         })
     }
 
@@ -10996,6 +11005,8 @@ impl MeridianApp {
             let Some(chain) = crate::generated::preview_chain(generated, &step.name) else {
                 continue;
             };
+            // A kept step may read a table of the model, which its chain loads.
+            let chain = self.chain_over_model_tables(&source.name, &generated.steps, chain);
             if self
                 .typed_counts
                 .iter()
@@ -11014,6 +11025,8 @@ impl MeridianApp {
                     runner: None,
                     shown: crate::data_grid::Shown::new(),
                     casts: source.casts.clone(),
+                    // The chain handed over already loads the tables the spine picked.
+                    file_roots: Vec::new(),
                 },
                 chain.clone(),
                 move || wake.request_repaint(),
@@ -11043,12 +11056,10 @@ impl MeridianApp {
                 Err(TryRecvError::Empty) => true,
             });
         for (name, chain, rows) in landed {
-            let current = self
-                .protocol
-                .doc
-                .model
-                .generated()
-                .and_then(|g| crate::generated::preview_chain(g, &name));
+            let current = self.protocol.doc.model.generated().and_then(|g| {
+                crate::generated::preview_chain(g, &name)
+                    .map(|chain| self.chain_over_model_tables(&g.root_table, &g.steps, chain))
+            });
             if current.as_ref() == Some(&chain) {
                 self.charts.doc.set_typed_rows(&name, rows);
                 self.protocol.doc.model.set_typed_rows(&name, rows);
@@ -16495,7 +16506,11 @@ impl MeridianApp {
             .find(|s| s.name.to_lowercase() == label)?;
         // The steps the step reads, and theirs, back to the load, in the
         // order the manifest makes them.
-        let chain = crate::generated::preview_chain(generated, &step.name)?;
+        let chain = self.chain_over_model_tables(
+            &generated.root_table,
+            &generated.steps,
+            crate::generated::preview_chain(generated, &step.name)?,
+        );
         let fields = match &step.effect {
             StepEffect::Operation(KnownOperation::FilterRows) => {
                 [step.argument.clone(), String::new()]
@@ -21875,7 +21890,7 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
 // ---------------------------------------------------------------------------
 
 mod operation_host;
-pub use operation_host::{NO_DUPLICATE_ROWS, OPERATION_STATUS_ID};
+pub use operation_host::{NO_DUPLICATE_ROWS, OPERATION_STATUS_ID, PICK_AFTER_THE_RUN};
 
 #[cfg(test)]
 mod tests {

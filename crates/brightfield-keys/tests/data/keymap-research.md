@@ -194,6 +194,26 @@ it is. The step back is **Data**-tier, since Save writes it and `u` takes it bac
 | `step-back-to-version` | `enter` | 3 / 4 / 5 | enter = take the row under the cursor (the shelf's keep, telescope, fzf); a Data verb, since Save writes it; `u` takes it back |
 | `return-to-now` | `escape` | 4 / 4 / 5 | esc = back out one level (the Esc ladder), as the shelf's `back-out-of-shelf`; writes nothing |
 
+### The spine's pick — the table an operation reads, in a key context of its own
+
+An operation that reads a second table, as a join does, asks for it in the spine: the spine lists the
+tables the operation can read, with a cursor on the likeliest. `Enter` takes the table under the cursor
+and begins the operation with it; an operation that reads a list, as an append does, adds tables with
+`Space` and takes them in the order they were added. `Esc` gives the keys back to the grid and begins
+nothing. It takes the Versions panel's precedent: a key context of its own (`SpinePick`), so `j`, `k`,
+the arrows, `Space`, `Enter` and `Esc` never reach the Protocol panel's sibling focus or the Workspace's
+`open-palette`, `dive-in` and `clear-selection` on the same keys. yazi and the sources browser mark a
+row on the same `Space`. All five are **View**-tier: the pick records nothing, and the operation it
+begins is kept by its own `Enter`.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `pick-next-table` | `j` · `down` | 3 / 4 / 5 | home-row `j` = down (vim, lazygit); the arrow is its twin; agrees with the grid's, the Versions panel's and the Protocol panel's `j` |
+| `pick-previous-table` | `k` · `up` | 3 / 4 / 5 | home-row `k` = up (vim, lazygit); the arrow is its twin; agrees with the grid's, the Versions panel's and the Protocol panel's `k` |
+| `add-table-to-pick` | `space` | 2 / 4 / 5 | space = mark the row under the cursor (yazi, ranger, the sources browser's mark); writes nothing |
+| `take-picked-table` | `enter` | 3 / 4 / 5 | enter = take the row under the cursor (the Versions panel's step back, telescope, fzf); a View verb, since the operation it begins is kept by its own Enter |
+| `back-out-of-pick` | `escape` | 3 / 4 / 5 | esc = back out one level (the Esc ladder), as the Versions panel's `return-to-now`; writes nothing |
+
 ### The model pane — the tables an open found, shown three ways, at an altitude of its own
 
 A folder, workbook or database opens into a model pane: the tables it found and the joins between them,

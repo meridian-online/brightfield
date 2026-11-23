@@ -204,10 +204,23 @@ tag_commit=$(git ls-remote "$FINETYPE_URL" "refs/tags/${FINETYPE_TAG}^{}" "refs/
 [ "$tag_commit" = "$FINETYPE_COMMIT" ] \
   || fail "FineType ${FINETYPE_TAG} names ${tag_commit:-nothing}, not the pinned ${FINETYPE_COMMIT}; move FINETYPE_COMMIT with the pin"
 
+# FineType's two table macros move from its Rust, which can only CREATE them in
+# the database being opened, to the C++ entry point, which registers them in
+# DuckDB's system catalog (scripts/duckdb-managed/finetype/move-table-macros.py
+# says why). The script reads their SQL out of FineType's source into a header
+# the entry point is compiled with, and makes FineType's own registration do
+# nothing. That one function is the only change to FineType's files; it is
+# reapplied to a clean copy each build and refuses a source it does not match.
+FINETYPE_GENERATED="${OUT}/src/finetype-generated"
+mkdir -p "$FINETYPE_GENERATED"
+git -C "$FINETYPE_SRC" checkout -q -- crates/finetype-duckdb/src/lib.rs
+python3 "${CONFIG_DIR}/finetype/move-table-macros.py" \
+  "${FINETYPE_SRC}/crates/finetype-duckdb/src/lib.rs" "${FINETYPE_GENERATED}/finetype_table_macros.hpp"
+
 say "building FineType ${FINETYPE_TAG} as a static library"
 # crates/finetype-duckdb declares crate-type cdylib, the loadable extension;
 # `cargo rustc --crate-type staticlib` builds the same crate as an archive
-# instead, with nothing in FineType's own files changed. It builds with the
+# instead, with FineType's manifest unchanged. It builds with the
 # toolchain FineType's own rust-toolchain.toml pins, the one FineType is tested
 # on: run from `cargo xtask`, this script inherits rustup's RUSTUP_TOOLCHAIN for
 # Brightfield's toolchain, which would take precedence over FineType's file, so
@@ -243,7 +256,7 @@ say "building DuckDB ${DUCKDB_VERSION_PIN} with its extensions (${JOBS} jobs)"
   # Some of vcpkg's ports at this commit still declare a CMake minimum below 3.5,
   # which CMake 4 refuses without this.
   export CMAKE_POLICY_VERSION_MINIMUM=3.5
-  export EXTRA_CMAKE_VARIABLES="-DBRIGHTFIELD_FINETYPE_STATICLIB=${FINETYPE_LIB} -DBRIGHTFIELD_FINETYPE_VERSION=${FINETYPE_TAG} -DBUILD_UNITTESTS=0 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DVCPKG_HOST_TRIPLET=arm64-osx-brightfield -DVCPKG_OVERLAY_TRIPLETS=${CONFIG_DIR}/triplets"
+  export EXTRA_CMAKE_VARIABLES="-DBRIGHTFIELD_FINETYPE_STATICLIB=${FINETYPE_LIB} -DBRIGHTFIELD_FINETYPE_VERSION=${FINETYPE_TAG} -DBRIGHTFIELD_FINETYPE_GENERATED_DIR=${FINETYPE_GENERATED} -DBUILD_UNITTESTS=0 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DVCPKG_HOST_TRIPLET=arm64-osx-brightfield -DVCPKG_OVERLAY_TRIPLETS=${CONFIG_DIR}/triplets"
   make release >&2
 )
 

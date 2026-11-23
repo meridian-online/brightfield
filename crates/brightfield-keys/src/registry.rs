@@ -59,6 +59,14 @@ pub enum BindingContext {
     /// palette binding on `Space`
     /// (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`).
     Browser,
+    /// Spine-pick-scoped: fires while the spine picks a table for an operation.
+    /// A distinct context, as the Versions panel's is, so the pick's `j`/`k`,
+    /// arrows, `Space`, `Enter` and `Esc` (the cursor's table, a table added to
+    /// a list, the take and the way back to the grid) are kept apart from the
+    /// Protocol panel's sibling focus, and from the Workspace's palette,
+    /// dive-in and clear-selection on the same keys
+    /// (`the_spine_pick_context_moves_adds_takes_and_backs_out`).
+    SpinePick,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -364,6 +372,10 @@ pub fn registry() -> Vec<VerbEntry> {
     let browser = |k: &'static str| BindingSpec {
         keystrokes: k,
         context: BindingContext::Browser,
+    };
+    let pick = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::SpinePick,
     };
 
     let mut verbs = vec![
@@ -1448,6 +1460,78 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Draw the chart as it was before the Versions panel's cursor moved",
             scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "esc = back out one level (the Esc ladder), as the shelf's back-out-of-shelf; writes nothing" }),
         },
+        // ---- the spine's pick: while an operation asks for a second table,
+        //      the spine lists the tables it can read, with a cursor on one.
+        //      Enter takes the table under the cursor, or the tables Space
+        //      added when the operation reads a list, and Esc gives the keys
+        //      back to the grid. These resolve in the SpinePick context, apart
+        //      from the Protocol panel's and the Workspace's verbs on the same
+        //      keys. ----
+        VerbEntry {
+            longname: "pick-next-table",
+            label: "Next table",
+            needs: &[],
+            tier: CommandTier::View,
+            binding_specs: vec![pick("j"), pick("down")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the next table the operation can read, while the spine picks one; stops at the last",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "home-row j = down (vim, lazygit); the arrow is its twin; agrees with the grid's, the Versions panel's and the Protocol panel's j" }),
+        },
+        VerbEntry {
+            longname: "pick-previous-table",
+            label: "Previous table",
+            needs: &[],
+            tier: CommandTier::View,
+            binding_specs: vec![pick("k"), pick("up")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the previous table the operation can read, while the spine picks one; stops at the first",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "home-row k = up (vim, lazygit); the arrow is its twin; agrees with the grid's, the Versions panel's and the Protocol panel's k" }),
+        },
+        VerbEntry {
+            longname: "add-table-to-pick",
+            label: "Add table to the pick",
+            needs: &[],
+            tier: CommandTier::View,
+            binding_specs: vec![pick("space")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Add the table under the cursor to the tables an operation reads as a list, or take it off; an operation that reads one table says so",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 5, motor_note: "space = mark the row under the cursor (yazi, ranger, the sources browser's mark); writes nothing" }),
+        },
+        VerbEntry {
+            longname: "take-picked-table",
+            label: "Take the picked table",
+            needs: &[],
+            tier: CommandTier::View,
+            binding_specs: vec![pick("enter")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Begin the operation with the table under the cursor, or with the tables added, in the order they were added",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "enter = take the row under the cursor (the Versions panel's step back, telescope, fzf); a View verb, since the operation it begins is kept by its own Enter" }),
+        },
+        VerbEntry {
+            longname: "back-out-of-pick",
+            label: "Back out of the pick",
+            needs: &[],
+            tier: CommandTier::View,
+            binding_specs: vec![pick("escape")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Give the keys back to the grid and begin no operation",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "esc = back out one level (the Esc ladder), as the Versions panel's return-to-now; writes nothing" }),
+        },
         // ---- pane toggles: the show/hide verbs the item registries name.
         //      Reserved rather than bound: the pane toggles cannot be performed
         //      until the workspace shell owns the window and its layout, and a
@@ -2385,6 +2469,11 @@ mod tests {
             "move-version-cursor-up",
             "step-back-to-version",
             "return-to-now",
+            "pick-next-table",
+            "pick-previous-table",
+            "add-table-to-pick",
+            "take-picked-table",
+            "back-out-of-pick",
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
@@ -2755,6 +2844,49 @@ mod tests {
             .filter(|b| b.context == BindingContext::Versions)
             .count();
         assert_eq!(in_versions_count, expected.len(), "Versions bindings");
+    }
+
+    #[test]
+    fn the_spine_pick_context_moves_adds_takes_and_backs_out() {
+        let reg = registry();
+        let bound = keymap_bindings(&reg);
+        let in_pick = |keys: &str| -> Vec<&'static str> {
+            bound
+                .iter()
+                .filter(|b| b.context == BindingContext::SpinePick && b.keystrokes == keys)
+                .map(|b| b.longname)
+                .collect()
+        };
+        let expected = [
+            ("j", "pick-next-table"),
+            ("down", "pick-next-table"),
+            ("k", "pick-previous-table"),
+            ("up", "pick-previous-table"),
+            ("space", "add-table-to-pick"),
+            ("enter", "take-picked-table"),
+            ("escape", "back-out-of-pick"),
+        ];
+        for (keys, longname) in expected {
+            assert_eq!(in_pick(keys), vec![longname], "SpinePick context, `{keys}`");
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert!(!verb.help.is_empty(), "{longname} has no help line");
+            // The pick begins an operation and records nothing: the operation's
+            // own Enter keeps its step, and Save writes it.
+            assert_eq!(verb.tier, CommandTier::View, "{longname}'s tier");
+            assert_eq!(verb.drives, Drives::Navigation, "{longname} drives");
+            let scores = verb
+                .scores
+                .as_ref()
+                .unwrap_or_else(|| panic!("{longname} has no scores"));
+            for score in [scores.frequency, scores.mnemonic, scores.convention] {
+                assert!((1..=5).contains(&score), "{longname} score {score}");
+            }
+        }
+        let in_pick_count = bound
+            .iter()
+            .filter(|b| b.context == BindingContext::SpinePick)
+            .count();
+        assert_eq!(in_pick_count, expected.len(), "SpinePick bindings");
     }
 
     /// The sources browser's table of keys, each row bound in the Browser

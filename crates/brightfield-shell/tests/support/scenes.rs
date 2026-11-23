@@ -554,7 +554,8 @@ pub fn scene_for(longname: &'static str, context: BindingContext) -> Window {
         | BindingContext::Grid
         | BindingContext::Versions
         | BindingContext::Browser
-        | BindingContext::Editor => Some(1),
+        | BindingContext::Editor
+        | BindingContext::SpinePick => Some(1),
     });
     if let Some(first) = first {
         scenes.swap(0, first);
@@ -640,6 +641,11 @@ pub fn hold_keys(win: &mut Window, context: BindingContext, longname: &'static s
             win.settle();
             win.press("shift-a");
         }
+        // The spine's pick is open while an operation asks for a second table,
+        // which the scenes here start none of: its keys are swept beside the
+        // pick's own tests (`tests/spine_pick.rs`,
+        // `every_spine_pick_key_is_answered`).
+        BindingContext::SpinePick => {}
         // The Editor's: the ledger turned to the editor and a click in its text.
         BindingContext::Editor => {
             if let Some(name) = win.app.rail_name_rect(LEDGER_RAIL, EDITOR_AT) {
