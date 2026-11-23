@@ -5,7 +5,7 @@
 //! be reused: cargo hashes a path package's location into its artifact names,
 //! and each run builds from a new worktree, so every run adds a full set of
 //! artifacts for the workspace's members, for the vendored packages the tree
-//! patches in by path, and for every registry crate built on one of those,
+//! patches in by path, and for every third-party crate built on one of those,
 //! since a dependency's hash is mixed into its dependents' (on macOS each test
 //! binary also keeps its object files for debug info). No later run reads
 //! them. The incremental directory is
