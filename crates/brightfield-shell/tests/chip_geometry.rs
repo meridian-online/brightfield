@@ -372,7 +372,7 @@ const CHIP_CENSUS: [(&str, usize, usize); 4] = [
     // (specimen id, pills, keycaps)
     ("key-chip", 0, 3),
     ("modal-chrome", 0, 1),
-    ("picker", 0, 7),
+    ("picker", 0, 3),
     ("status-pill", 3, 0),
 ];
 

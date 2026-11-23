@@ -14,7 +14,9 @@
 //!
 //! - [`CommandPalette`] — query + ranked corpus:
 //!   `brightfield_keys::palette_filter` over the registry at one altitude,
-//!   frequency/recency-ordered on an empty query. A reserved verb the palette
+//!   read on an empty query under the ribbon's stage headings, in the
+//!   ribbon's order, and by frequency then recency within each; a typed
+//!   query ranks by match with no headings. A reserved verb the palette
 //!   lists is flagged and refuses to run, as the corpus says; the chart's
 //!   palette is an allow-list of built verbs and lists none.
 //! - [`ArgPrompt`] — the step-wise argument collection for the two
@@ -39,9 +41,10 @@
 //! and applies a `ChartEdit`, which this shell does not carry yet.
 
 use brightfield_keys::fuzzy::fuzzy_score;
+use brightfield_keys::ribbon::Stage;
 use brightfield_keys::{
-    palette_filter, registry, Altitude, HelpRow, PaletteCandidate, RecencyCounter, Situation,
-    VerbEntry,
+    keys_label, palette_filter, registry, Altitude, HelpRow, KeyPlatform, PaletteCandidate,
+    RecencyCounter, Situation, VerbEntry,
 };
 use brightfield_model::arg_collector::{ArgCollector, ArgOutcome};
 use brightfield_spec::edit::ChartEdit;
@@ -157,9 +160,31 @@ pub fn protocol_palette_verbs() -> Vec<&'static str> {
         .collect()
 }
 
+/// The stage of the work the palette lists `longname` under: a built
+/// operation's own, else the stage whose ribbon tab lists it. A form joins its
+/// stage when it is built, with no list naming it here.
+#[must_use]
+pub fn stage_of_verb(longname: &str) -> Option<Stage> {
+    crate::operation_ui::by_verb(longname)
+        .map(|ui| ui.stage)
+        .or_else(|| brightfield_keys::ribbon::stage_of(longname))
+}
+
+/// The heading of the rows on an empty query that belong to no stage.
+pub const OTHER_HEADING: &str = "Other";
+
+/// Where `longname`'s heading reads on an empty query: the stages in their
+/// tabs' order, then the rows of no stage.
+fn stage_rank(longname: &str) -> usize {
+    stage_of_verb(longname)
+        .and_then(|stage| Stage::ALL.iter().position(|&s| s == stage))
+        .unwrap_or(Stage::ALL.len())
+}
+
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
-/// over longname + help, ranked by score (non-empty query) or frequency then
-/// per-session recency (empty query). Reserved verbs are included, flagged,
+/// over longname + help, ranked by score (non-empty query), or on an empty
+/// query read under the stage headings in the ribbon's order, by frequency
+/// then per-session recency within each. Reserved verbs are included, flagged,
 /// and refuse to run — never hidden. So is a verb missing an input in the
 /// situation the palette was given, with the sentence it declares.
 pub struct CommandPalette {
@@ -168,6 +193,10 @@ pub struct CommandPalette {
     recency: RecencyCounter,
     situation: Option<Situation>,
     matches: Vec<PaletteCandidate>,
+    /// Whether the rows read under stage headings: an empty query, with at
+    /// least one row that belongs to a stage. A list with none would carry
+    /// one "Other" heading that tells nothing apart.
+    grouped: bool,
     hint: Option<PickerHint>,
     picked: Option<&'static str>,
 }
@@ -184,6 +213,7 @@ impl CommandPalette {
             recency,
             situation: None,
             matches: Vec::new(),
+            grouped: false,
             hint: None,
             picked: None,
         }
@@ -206,6 +236,7 @@ impl CommandPalette {
             recency,
             situation: None,
             matches: Vec::new(),
+            grouped: false,
             hint: None,
             picked: None,
         }
@@ -277,6 +308,17 @@ impl PickerDelegate for CommandPalette {
             &self.recency,
             self.situation.as_ref(),
         );
+        // The filter has ordered an empty query by frequency then recency, and
+        // a stable sort keeps that order within each stage. A greyed row keeps
+        // its place among its stage's rows.
+        self.grouped = query.is_empty()
+            && self
+                .matches
+                .iter()
+                .any(|c| stage_of_verb(c.longname).is_some());
+        if self.grouped {
+            self.matches.sort_by_key(|c| stage_rank(c.longname));
+        }
         self.hint = None;
     }
 
@@ -294,9 +336,23 @@ impl PickerDelegate for CommandPalette {
             (None, None) => row.detail(c.help),
         };
         if let Some(key) = c.primary_key {
-            row = row.keystroke(key);
+            row = row.keystroke(keys_label(key, KeyPlatform::host()));
         }
         row
+    }
+
+    fn header_before(&self, index: usize) -> Option<String> {
+        if !self.grouped {
+            return None;
+        }
+        let rank = stage_rank(self.matches[index].longname);
+        let opens = index == 0 || stage_rank(self.matches[index - 1].longname) != rank;
+        opens.then(|| {
+            Stage::ALL
+                .get(rank)
+                .map_or(OTHER_HEADING, |stage| stage.label())
+                .to_owned()
+        })
     }
 
     fn confirm(&mut self, index: Option<usize>, _query: &str) -> PickerOutcome {
@@ -422,7 +478,7 @@ impl PickerDelegate for HelpSheet {
             None => row.detail(line.row.help),
         };
         if let Some(key) = line.row.keys.first() {
-            row = row.keystroke(*key);
+            row = row.keystroke(keys_label(key, KeyPlatform::host()));
         }
         row
     }
@@ -1214,6 +1270,105 @@ mod tests {
         p
     }
 
+    fn chart_palette() -> CommandPalette {
+        let allow = chart_palette_verbs();
+        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+        p.update_query("");
+        p
+    }
+
+    /// The heading a row reads under on an empty query.
+    fn stage_heading(longname: &str) -> &'static str {
+        stage_of_verb(longname).map_or(OTHER_HEADING, Stage::label)
+    }
+
+    /// The headings `p` draws, in order, after checking that the first row
+    /// opens one and that every row reads under the heading of its own stage.
+    fn headings(p: &CommandPalette) -> Vec<String> {
+        assert!(p.match_count() > 0 && p.header_before(0).is_some());
+        let mut drawn = Vec::new();
+        let mut under = String::new();
+        for i in 0..p.match_count() {
+            if let Some(h) = p.header_before(i) {
+                under.clone_from(&h);
+                drawn.push(h);
+            }
+            let longname = p.candidate(i).unwrap().longname;
+            assert_eq!(stage_heading(longname), under, "{longname}");
+        }
+        drawn
+    }
+
+    /// A palette lists the stages its rows have, so neither the window's
+    /// palette nor the chart's draws all four: each draws its own, in the
+    /// ribbon's order, once each, and the rows of no stage last.
+    #[test]
+    fn the_empty_palette_reads_in_stage_order_under_each_stages_name() {
+        let order: Vec<&str> = Stage::ALL
+            .iter()
+            .map(|s| s.label())
+            .chain([OTHER_HEADING])
+            .collect();
+        for (p, expected) in [
+            (
+                palette_at(Altitude::Protocol),
+                vec!["Bring in", "Model", "Other"],
+            ),
+            (chart_palette(), vec!["Shape", "Publish", "Other"]),
+        ] {
+            let drawn = headings(&p);
+            let ranks: Vec<usize> = drawn
+                .iter()
+                .map(|h| order.iter().position(|o| o == h).unwrap())
+                .collect();
+            assert!(ranks.windows(2).all(|w| w[0] < w[1]), "{drawn:?}");
+            assert_eq!(drawn, expected);
+        }
+    }
+
+    #[test]
+    fn a_built_form_reads_under_its_own_stage() {
+        for ui in crate::operation_ui::built() {
+            assert_eq!(stage_of_verb(ui.verb), Some(ui.stage), "{}", ui.verb);
+        }
+        assert_eq!(
+            stage_of_verb(brightfield_keys::ribbon::SHOW_SHAPE_TAB),
+            brightfield_keys::ribbon::stage_of(brightfield_keys::ribbon::SHOW_SHAPE_TAB)
+        );
+    }
+
+    #[test]
+    fn a_typed_query_ranks_by_match_and_draws_no_headers() {
+        let mut p = chart_palette();
+        p.update_query("zoom");
+        assert!(p.match_count() > 0);
+        assert!((0..p.match_count()).all(|i| p.header_before(i).is_none()));
+        let scores: Vec<i32> = (0..p.match_count())
+            .map(|i| p.candidate(i).unwrap().score)
+            .collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "ranked by match: {scores:?}"
+        );
+    }
+
+    #[test]
+    fn the_palette_shows_keys_as_keycaps() {
+        let p = chart_palette();
+        let mut seen = 0;
+        for i in 0..p.match_count() {
+            let c = p.candidate(i).unwrap();
+            assert_eq!(
+                p.row(i).keystroke,
+                c.primary_key.map(|k| keys_label(k, KeyPlatform::host())),
+                "{}",
+                c.longname
+            );
+            seen += usize::from(c.primary_key.is_some());
+        }
+        assert!(seen > 0, "some row has a key");
+    }
+
     #[test]
     fn the_palette_scopes_to_its_altitude() {
         let mut protocol = palette_at(Altitude::Protocol);
@@ -1234,7 +1389,10 @@ mod tests {
         p.update_query("steps");
         let top = p.row(0);
         assert_eq!(top.label, "open-steps-sheet");
-        assert_eq!(top.keystroke.as_deref(), Some("shift-s"));
+        assert_eq!(
+            top.keystroke,
+            Some(keys_label("shift-s", KeyPlatform::host()))
+        );
         assert!(top.detail.is_some());
     }
 
@@ -1454,6 +1612,19 @@ mod tests {
         }
         assert!(seen.len() > 1, "one group means grouping proved nothing");
         assert!(!sheet.confirmable(), "a reference sheet runs nothing");
+    }
+
+    /// The sheet and the palette show a binding the same way, as a keycap.
+    #[test]
+    fn the_sheet_shows_keys_as_the_palette_does() {
+        let mut sheet = HelpSheet::new();
+        sheet.update_query("open-steps-sheet");
+        let mut palette = palette_at(Altitude::Protocol);
+        palette.update_query("open-steps-sheet");
+        let keycap = Some(keys_label("shift-s", KeyPlatform::host()));
+        assert_eq!(sheet.row(0).label, "open-steps-sheet");
+        assert_eq!(sheet.row(0).keystroke, keycap);
+        assert_eq!(palette.row(0).keystroke, keycap);
     }
 
     #[test]
