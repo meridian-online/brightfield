@@ -7,8 +7,10 @@
 //! set of workspace artifacts (on macOS each test binary keeps its object
 //! files for debug info) that no later run reads. The incremental directory is
 //! the same: its state belongs to crates that will not be compiled again.
-//! [`prune`] removes both after a run, under the gate lock, so only the
-//! third-party artifacts persist.
+//! [`prune`] removes both after a run, under the gate lock, and keeps the
+//! third-party artifacts, as
+//! `a_prune_removes_the_workspaces_artifacts_and_keeps_third_party_ones`
+//! checks.
 
 use std::collections::BTreeSet;
 use std::fs;
