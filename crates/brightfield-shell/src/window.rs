@@ -2913,6 +2913,13 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R))
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
+        // The ribbon's keys: ⌥ and the tab's initial.
+        "alt-b" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::B)),
+        "alt-s" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::S)),
+        "alt-m" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::M)),
+        "alt-p" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::P)),
+        "alt-c" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::C)),
+        "alt-r" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
@@ -3942,6 +3949,11 @@ pub struct MeridianApp {
     /// The `copy-chart-picture` and `export-chart-picture` keystroke tokens,
     /// read off the registry at boot — same rule as [`Self::home_binding`].
     picture_bindings: [(Option<&'static str>, &'static str); 2],
+    /// The ribbon's tab and collapse, which its six verbs move.
+    ribbon: crate::ribbon::RibbonState,
+    /// The ribbon verbs' keystroke tokens, read off the registry at boot, each
+    /// with its verb.
+    ribbon_bindings: [(Option<&'static str>, &'static str); 6],
     /// A picture the export verb drew, waiting for the save dialog after the
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
     /// where [`Self::dialogs_allowed`] says a person is there to answer it.
@@ -4469,6 +4481,14 @@ impl MeridianApp {
                 .find(|v| v.longname == crate::shelf::UNDO)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             picture_bindings: [COPY_CHART_PICTURE, EXPORT_CHART_PICTURE].map(|longname| {
+                let key = brightfield_keys::registry()
+                    .iter()
+                    .find(|v| v.longname == longname)
+                    .and_then(brightfield_keys::VerbEntry::primary_key);
+                (key, longname)
+            }),
+            ribbon: crate::ribbon::RibbonState::default(),
+            ribbon_bindings: brightfield_keys::ribbon::RIBBON_VERBS.map(|longname| {
                 let key = brightfield_keys::registry()
                     .iter()
                     .find(|v| v.longname == longname)
@@ -7002,6 +7022,8 @@ impl MeridianApp {
         self.grid_key(&ctx);
         // The run, on the same gate and for the same reason.
         self.run_key(&ctx);
+        // The ribbon's tabs and collapse, on the same gate.
+        self.ribbon_keys(&ctx);
         // The picture verbs, on the same gate, where a chart holds the canvas.
         self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
@@ -8882,6 +8904,45 @@ impl MeridianApp {
             self.answered(RUN_PROTOCOL);
             self.run_protocol(ctx);
         }
+    }
+
+    /// Select a ribbon tab, or collapse or open the ribbon, if one of the
+    /// ribbon verbs' keystrokes is down this frame. Gated exactly as
+    /// [`Self::home_key`] is, so ⌥ typed into a text field stays the field's.
+    /// The key is taken wherever it fires; the ribbon moves only where the verb
+    /// is available, over an open Protocol.
+    fn ribbon_keys(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.ribbon_bindings {
+            if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.answered(longname);
+                self.perform_ribbon_verb(ctx, longname);
+            }
+        }
+    }
+
+    /// Move the ribbon by `verb` where it is available. Answers whether it
+    /// moved.
+    fn perform_ribbon_verb(&mut self, ctx: &egui::Context, verb: &str) -> bool {
+        if !matches!(
+            self.availability_of(verb),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        let moved = self.ribbon.perform(verb);
+        if moved {
+            ctx.request_repaint();
+        }
+        moved
+    }
+
+    /// The ribbon's selected tab and collapse.
+    #[must_use]
+    pub fn ribbon(&self) -> crate::ribbon::RibbonState {
+        self.ribbon
     }
 
     /// Copy or export the chart under the pointer if the registry's
@@ -12447,6 +12508,13 @@ impl MeridianApp {
                 // which either document's model can do to itself.
                 Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
                     self.run_protocol(ctx);
+                }
+                // The ribbon's verbs are the window's: the ribbon is chrome, which
+                // neither document's model draws.
+                Request::Verb(verb)
+                    if brightfield_keys::ribbon::RIBBON_VERBS.contains(&verb.as_str()) =>
+                {
+                    taken = self.perform_ribbon_verb(ctx, verb.as_str());
                 }
                 // save-protocol is the window's for the same reason: the editor raises it after
                 // saving its buffer, and what it writes is the Protocol's, not either document's.

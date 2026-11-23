@@ -328,6 +328,8 @@ const NEEDS_COLUMN_FOR_SHELF: &[Requirement] = &[
 ];
 const NEEDS_GRID_CELL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::GridCell))];
 const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Model))];
+// The ribbon is drawn only over an open Protocol: the front door has none.
+const NEEDS_RIBBON: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_MODEL_TABLE: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelTable))];
 const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelJoin))];
 
@@ -1561,6 +1563,88 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Move focus to the protocol spine, or back where it came from",
             scores: Some(Scores { frequency: 4, mnemonic: 2, convention: 5, motor_note: "cmd-b = the left dock (Zed workspace::ToggleLeftDock, VS Code toggleSidebarVisibility); round-trip focus, never a numeric" }),
         },
+        // The ribbon's tabs and its collapse. Each is ⌥ and the tab's initial,
+        // so the keys are learnt as the tabs are read; the contextual tab takes
+        // C, and the collapse R. A tab is a motion, so only the collapse is on
+        // a menu.
+        VerbEntry {
+            longname: "show-bring-in-tab",
+            label: "Bring in tab",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-b")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the ribbon's Bring in tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
+        VerbEntry {
+            longname: "show-shape-tab",
+            label: "Shape tab",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-s")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the ribbon's Shape tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
+        VerbEntry {
+            longname: "show-model-tab",
+            label: "Model tab",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-m")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the ribbon's Model tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
+        VerbEntry {
+            longname: "show-publish-tab",
+            label: "Publish tab",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-p")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the ribbon's Publish tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
+        VerbEntry {
+            longname: "show-context-tab",
+            label: "Contextual tab",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-c")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the ribbon's tab for what the canvas holds",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
+        VerbEntry {
+            longname: "toggle-ribbon",
+            label: "Toggle ribbon",
+            needs: NEEDS_RIBBON,
+            tier: CommandTier::View,
+            binding_specs: vec![global("alt-r")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Collapse the ribbon to its tabs, or open it again",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+        },
         VerbEntry {
             longname: "toggle-inspector-rail",
             label: "Inspector rail",
@@ -2475,6 +2559,12 @@ mod tests {
             "take-picked-table",
             "back-out-of-pick",
             "toggle-outline-rail",
+            "show-bring-in-tab",
+            "show-shape-tab",
+            "show-model-tab",
+            "show-publish-tab",
+            "show-context-tab",
+            "toggle-ribbon",
             "toggle-inspector-rail",
             "toggle-controls-rail",
             "open-chart-versions",
@@ -3033,7 +3123,12 @@ mod tests {
             .collect();
         assert_eq!(in_workspace, ["cycle-model-view"]);
         // The model's verbs stay at the model altitude, and h j k l are not theirs.
-        for v in &at_model {
+        // The ribbon's verbs are the window's, at every altitude the ribbon is
+        // drawn over, the model's among them.
+        for v in at_model
+            .iter()
+            .filter(|v| !crate::ribbon::RIBBON_VERBS.contains(&v.longname))
+        {
             assert_eq!(
                 v.scope_applicability,
                 vec![Altitude::Model],

@@ -701,6 +701,28 @@ fn every_chart_palette_candidate_actually_dispatches() {
                 );
                 let _ = std::fs::remove_dir_all(&dir);
             }
+            verb if brightfield_keys::ribbon::RIBBON_VERBS.contains(&verb) => {
+                let dir = save_fixture_dir();
+                let csv = dir.join("harbour.csv");
+                std::fs::write(&csv, "station,reading\nnorth,12\nsouth,31\n")
+                    .expect("the fixture writes");
+                let mut win = Window::open(
+                    Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens"),
+                );
+                win.settle();
+                // Away from the tab the verb selects first, so choosing it is
+                // seen to move the ribbon.
+                let away = if verb == "show-context-tab" {
+                    "show-model-tab"
+                } else {
+                    "show-context-tab"
+                };
+                confirm_chart_verb(&mut win, away);
+                let before = win.app.ribbon();
+                confirm_chart_verb(&mut win, verb);
+                assert_ne!(win.app.ribbon(), before, "{verb} did not move the ribbon");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             other => panic!(
                 "{other} is listed on the chart palette with no dispatch proof in \
                  this sweep — add a case above before adding it to CHART_PALETTE_VERBS"
