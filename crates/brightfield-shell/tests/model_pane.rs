@@ -353,10 +353,12 @@ fn palette_lists_three_views() {
         assert!(helps.contains(&wanted), "{wanted:?} in {helps:?}");
     }
     assert!(rows.iter().any(|r| r == "cycle-model-view"), "{rows:?}");
-    // Every row the palette offers is one of the pane's own verbs.
+    // Every row the palette offers is one of the pane's own verbs, or the
+    // ribbon's, which the window offers wherever the ribbon is drawn.
     assert!(
         rows.iter()
-            .all(|r| brightfield_shell::model_pane::is_model_verb(r)),
+            .all(|r| brightfield_shell::model_pane::is_model_verb(r)
+                || brightfield_keys::ribbon::RIBBON_VERBS.contains(&r.as_str())),
         "{rows:?}"
     );
 }

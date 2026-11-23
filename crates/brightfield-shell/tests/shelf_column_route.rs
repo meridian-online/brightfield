@@ -1217,6 +1217,21 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} opened no Preferences sheet"
                 );
             }
+            verb if brightfield_keys::ribbon::RIBBON_VERBS.contains(&verb) => {
+                let mut at = Window::fixture();
+                at.graph_to_canvas();
+                // Away from the tab the verb selects first, so choosing it is
+                // seen to move the ribbon.
+                let away = if verb == "show-context-tab" {
+                    "show-model-tab"
+                } else {
+                    "show-context-tab"
+                };
+                at.confirm(away);
+                let before = at.app.ribbon();
+                at.confirm(verb);
+                assert_ne!(at.app.ribbon(), before, "{verb} did not move the ribbon");
+            }
             other => panic!(
                 "{other} is offered enabled on the Protocol palette with no proof here that \
                  choosing it does something"

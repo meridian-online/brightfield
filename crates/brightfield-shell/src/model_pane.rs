@@ -134,7 +134,9 @@ impl ModelView {
 }
 
 /// The verbs the model pane's palette offers: every verb the registry scopes to the model
-/// altitude, in the registry's order. Each of them changes the view when chosen.
+/// altitude, in the registry's order. Each of the pane's own changes the view or
+/// the model when chosen; the ribbon's, which the window offers wherever the
+/// ribbon is drawn, move the ribbon.
 #[must_use]
 pub fn model_palette_verbs() -> Vec<&'static str> {
     brightfield_keys::registry()

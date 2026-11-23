@@ -125,7 +125,10 @@ pub fn is_statement(text: &str) -> bool {
 }
 
 /// The verbs the chart palette lists, in declaration order — what the
-/// restricted palette is built from.
+/// restricted palette is built from. The ribbon's verbs come after the
+/// operations', and are apart from [`CHART_PALETTE_VERBS`] for the reason
+/// `PROTOCOL_CHART_VERBS` is: the inspector rail reads that list for pane
+/// entries, and the ribbon is the window's, not a pane's.
 #[must_use]
 pub fn chart_palette_verbs() -> Vec<&'static str> {
     let operations: Vec<&'static str> = crate::operation_ui::built().map(|ui| ui.verb).collect();
@@ -133,6 +136,7 @@ pub fn chart_palette_verbs() -> Vec<&'static str> {
         .iter()
         .chain(PROTOCOL_CHART_VERBS)
         .chain(&operations)
+        .chain(&brightfield_keys::ribbon::RIBBON_VERBS)
         .copied()
         .collect()
 }
