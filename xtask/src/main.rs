@@ -30,6 +30,7 @@ mod gate;
 mod isolate;
 mod nightly;
 mod nightly_status;
+mod prune;
 mod runner;
 mod shard;
 mod steps;
@@ -51,6 +52,7 @@ usage:
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs
   cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status
+  cargo xtask gate --prune       take the gate lock and prune the workspace's own artifacts from the gate's shared target directory, as every run does when it ends
   cargo xtask nightly --sha <sha> [--trial]
                                  run the full gate with the nightly-only steps on this tree, whose head is the 40-character <sha>,
                                  and post the nightly-gate and nightly-network statuses; --trial raises and clears no Kata flag";
@@ -67,6 +69,8 @@ enum Invocation {
     One(String),
     List,
     Gate(u64),
+    /// Take the gate lock and prune its shared target directory.
+    GatePrune,
     /// The nightly gate on `sha`, this tree's head; a `trial` touches no flag.
     Nightly {
         sha: String,
@@ -104,6 +108,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         ["ci", single] if single.starts_with("--step=") => {
             Ok(Invocation::One(single["--step=".len()..].to_owned()))
         }
+        ["gate", "--prune"] => Ok(Invocation::GatePrune),
         ["gate", n] => n
             .parse()
             .map(Invocation::Gate)
@@ -136,6 +141,7 @@ fn main() -> ExitCode {
     };
     match invocation {
         Invocation::Gate(pr) => gate::run(pr),
+        Invocation::GatePrune => gate::prune_now(),
         Invocation::Nightly { sha, trial } => nightly::run(&sha, trial),
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
@@ -271,6 +277,7 @@ mod tests {
     #[test]
     fn the_command_line_reads_a_gate_run() {
         assert_eq!(parse(&words("gate 431")), Ok(Invocation::Gate(431)));
+        assert_eq!(parse(&words("gate --prune")), Ok(Invocation::GatePrune));
         assert!(parse(&words("gate")).is_err());
         assert!(parse(&words("gate x")).is_err());
     }

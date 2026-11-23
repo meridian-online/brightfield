@@ -330,6 +330,11 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         }
     };
     drop(scratch);
+    crate::prune::after_run(
+        &gate_dir.join("target"),
+        crate::prune::workspace_of(&root),
+        say,
+    );
     let (mut gate, network) = statuses_of(verdict.as_ref(), took);
     let report_text = fs::read_to_string(&log).unwrap_or_else(|e| {
         say(&format!("cannot read {}: {e}", log.display()));
