@@ -478,7 +478,7 @@ impl PickerDelegate for HelpSheet {
             None => row.detail(line.row.help),
         };
         if let Some(key) = line.row.keys.first() {
-            row = row.keystroke(*key);
+            row = row.keystroke(keys_label(key, KeyPlatform::host()));
         }
         row
     }
@@ -1612,6 +1612,19 @@ mod tests {
         }
         assert!(seen.len() > 1, "one group means grouping proved nothing");
         assert!(!sheet.confirmable(), "a reference sheet runs nothing");
+    }
+
+    /// The sheet and the palette show a binding the same way, as a keycap.
+    #[test]
+    fn the_sheet_shows_keys_as_the_palette_does() {
+        let mut sheet = HelpSheet::new();
+        sheet.update_query("open-steps-sheet");
+        let mut palette = palette_at(Altitude::Protocol);
+        palette.update_query("open-steps-sheet");
+        let keycap = Some(keys_label("shift-s", KeyPlatform::host()));
+        assert_eq!(sheet.row(0).label, "open-steps-sheet");
+        assert_eq!(sheet.row(0).keystroke, keycap);
+        assert_eq!(palette.row(0).keystroke, keycap);
     }
 
     #[test]
