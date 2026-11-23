@@ -371,13 +371,14 @@ fn an_operation_the_column_cannot_take_is_greyed_in_the_menu_with_its_sentence()
 
 #[test]
 fn a_part_no_operation_starts_from_senses_nothing() {
-    // The built operations start from no header: no part and no cell is sensed.
+    // The built operations start from no part of a header: hiding a column starts from
+    // its menu alone, so each cell is sensed for the menu and no part is.
     let mut win = OpWindow::on_copy_of(WITH_NULLS);
     let table = win.table();
     win.show_grid_of(&table);
     let drawn = win.app.chart_doc().header_drawn().clone();
     assert!(
-        drawn.parts.is_empty() && drawn.cells.is_empty(),
+        drawn.parts.is_empty() && !drawn.cells.is_empty(),
         "{drawn:?}"
     );
     assert_eq!(drawn.new_column, None);

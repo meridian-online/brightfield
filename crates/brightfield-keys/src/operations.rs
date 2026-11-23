@@ -73,7 +73,7 @@ fn entry(
 }
 
 // ---- hide-column ----
-const HIDE_COLUMN_BUILT: bool = false;
+const HIDE_COLUMN_BUILT: bool = true;
 fn hide_column() -> VerbEntry {
     entry(
         "hide-column",
