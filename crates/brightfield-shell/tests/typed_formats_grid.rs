@@ -338,6 +338,7 @@ fn typed_answer(
         runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
         shown: facts.shown().clone(),
         casts: opened.protocol.casts.clone(),
+        file_roots: Vec::new(),
     };
     let mut reads = TypedReads::new(source, TYPED_PAUSE, || {});
     reads.edit(&statement(&opened.protocol.name), Instant::now());

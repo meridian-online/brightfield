@@ -639,3 +639,499 @@ fn every_table_of_the_retail_model_opens_from_its_row() {
 fn every_table_of_a_protocol_with_no_saved_model_opens_from_its_row() {
     every_table_opens_from_one_row(Window::over_own_files());
 }
+
+// ---- the spine picks a table for an operation, among the model's tables ----
+
+mod pick {
+    use std::cell::RefCell;
+
+    use brightfield_shell::operation_ui::{
+        Begin, By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start,
+    };
+
+    thread_local! {
+        /// The tables the last `begin` on this thread was handed, each with its columns.
+        pub static TAKEN: RefCell<Vec<(String, Vec<String>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn begin_join(b: &Begin<'_>) -> Result<Draft, String> {
+        TAKEN.with(|taken| *taken.borrow_mut() = b.taken.to_vec());
+        let mut draft = Draft::empty("join-tables");
+        draft.on = b.table.map(str::to_string);
+        draft.reads = b
+            .taken
+            .iter()
+            .map(|(table, _)| ("other".to_string(), table.clone()))
+            .collect();
+        draft.set("using", b.column.unwrap_or_default().to_string());
+        Ok(draft)
+    }
+
+    fn begin_append(b: &Begin<'_>) -> Result<Draft, String> {
+        let mut draft = Draft::empty("append-rows");
+        draft.on = b.table.map(str::to_string);
+        Ok(draft)
+    }
+
+    /// An operation that reads a list of other tables, as appending rows does.
+    pub static APPEND_LIKE: OperationUi = OperationUi {
+        long_name: "append-rows",
+        verb: "append-rows",
+        stage: Stage::Model,
+        icon: "row-insert-bottom",
+        starts: &[Start::Spine { role: "other" }],
+        menu_words: "Append rows",
+        needs: &[Need::AnotherTable],
+        begin: begin_append,
+        keeps: Keeps::OnEnter,
+        field: None,
+        form: None,
+        name: NameRule {
+            word: "appended",
+            from: By::Nothing,
+            with_by: false,
+        },
+    };
+
+    /// An operation that reads one other table, as joining two tables does.
+    pub static JOIN_LIKE: OperationUi = OperationUi {
+        long_name: "join-tables",
+        verb: "join-tables",
+        stage: Stage::Model,
+        icon: "arrows-join",
+        starts: &[Start::Spine { role: "other" }],
+        menu_words: "Join tables",
+        // What a built join declares: the pick's tables are the ones this need is checked
+        // against, so it is met by the model's other tables.
+        needs: &[Need::Rows, Need::AnotherTable],
+        begin: begin_join,
+        keeps: Keeps::OnEnter,
+        field: None,
+        form: None,
+        name: NameRule {
+            word: "joined",
+            from: By::Nothing,
+            with_by: false,
+        },
+    };
+}
+
+/// While the grid holds one of a model's tables, an operation that reads a second table picks it
+/// among the model's other tables: each the model joins to the one in front says `related`, the
+/// cursor starts on the first of them, and the table taken is handed over with the columns of its
+/// grid copy, which the operation's preview reads.
+#[test]
+fn the_spine_picks_among_the_models_tables_while_one_is_in_the_grid() {
+    use brightfield_shell::protocol::IN_FRONT;
+    use brightfield_workbench::PaneKey;
+
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+
+    // Start from the spine on `customer_id`, once arc's description has come.
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id"))
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    // The columns of each table's grid copy are read on a worker.
+    while win
+        .app
+        .spine_pick()
+        .is_some_and(|p| p.candidates().iter().any(|c| c.columns.is_none()))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the columns never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    win.frame(Vec::new());
+
+    // The candidates are the model's other tables that have rows to read.
+    let model = win.pane().model.clone();
+    let pick = win.app.spine_pick().expect("the pick is open").clone();
+    assert_eq!(pick.in_front(), "customers");
+    let candidates: Vec<&str> = pick.candidates().iter().map(|c| c.table.as_str()).collect();
+    assert!(!candidates.contains(&"customers"), "{candidates:?}");
+    assert!(candidates.contains(&"loyalty_visits"), "{candidates:?}");
+    // Each the model joins to `customers` says so, and no other does.
+    let joined = |table: &str| {
+        model.relationships.iter().any(|r| {
+            (r.from == table && r.to == "customers") || (r.from == "customers" && r.to == table)
+        })
+    };
+    for candidate in pick.candidates() {
+        assert_eq!(
+            candidate.related,
+            joined(&candidate.table),
+            "{}",
+            candidate.table
+        );
+        assert!(
+            candidate.columns.as_ref().is_some_and(|c| !c.is_empty()),
+            "{} has no columns",
+            candidate.table
+        );
+    }
+    let under = pick.under_cursor().expect("a candidate").clone();
+    assert!(under.related, "the cursor starts on {}", under.table);
+    // The rail says the same: the table in front, and `related` on the cursor's row.
+    assert_eq!(win.drawn_row("customers").kind, IN_FRONT);
+    let drawn = win.drawn_row(&under.table);
+    assert_eq!(drawn.kind, "related");
+    assert!(drawn.washed);
+
+    // Enter hands the table over with its columns, and the draft's preview reads it.
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+    let taken = pick::TAKEN.with(|taken| taken.borrow().clone());
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].0, under.table);
+    assert_eq!(Some(&taken[0].1), under.columns.as_ref());
+    assert!(taken[0].1.contains(&"customer_id".to_string()), "{taken:?}");
+    let making = win
+        .app
+        .making()
+        .unwrap_or_else(|| panic!("no draft: {:?}", win.app.operation_said()));
+    assert_eq!(
+        making.draft.reads,
+        [("other".to_string(), under.table.clone())]
+    );
+    assert!(win
+        .app
+        .finish_operation_reads(std::time::Duration::from_secs(60)));
+    let reads = win.app.draft_reads().expect("the draft is read");
+    assert_eq!(reads.refusal(), None);
+    let answer = reads.current().expect("the draft is answered");
+    assert_eq!(answer.unread, None);
+    let joined_rows = answer.rows;
+    assert!(joined_rows > 0, "the join of the two tables has rows");
+    // The copy of the table taken was written at the take, and of no other candidate.
+    let grid = win.pane().protocol.dir.join(".grid");
+    for candidate in pick.candidates() {
+        let copied = grid.join(format!("{}.parquet", candidate.table)).is_file();
+        assert_eq!(
+            copied,
+            candidate.table == under.table,
+            "{}",
+            candidate.table
+        );
+    }
+
+    // Enter keeps the draft, and the kept step reads the table taken too: its grid
+    // previews, and its rows are counted.
+    let enter = || egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    win.frame(vec![enter()]);
+    win.frame(Vec::new());
+    let kept = win.app.chart_doc().typed_steps().to_vec();
+    assert_eq!(kept.len(), 1, "{:?}", win.app.operation_said());
+    let name = kept[0].name.clone();
+    let counted = |win: &Window| win.app.chart_doc().typed_steps()[0].rows;
+    let previewing = |win: &Window| {
+        win.app
+            .chart_doc()
+            .grid_preview()
+            .is_none_or(|p| p.is_reading())
+    };
+    while counted(&win).is_none() || previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert_eq!(counted(&win), Some(joined_rows));
+    let page = win
+        .app
+        .chart_doc()
+        .grid_preview()
+        .and_then(|p| p.page())
+        .unwrap_or_else(|| panic!("the kept step's grid shows no page"));
+    assert!(!page.rows.is_empty(), "the kept step's grid shows no rows");
+
+    // Another operation started over the kept step's grid: the pick offers the tables the rail lists there,
+    // the model's, and no other: each candidate has a row of its own, named in the primary ink,
+    // and the cursor's is the one drawn selected. The kept step has no row on that rail and is
+    // no candidate.
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::APPEND_LIKE, from, None)
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the append"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    win.frame(Vec::new());
+    win.frame(Vec::new());
+    let again = win.app.spine_pick().expect("the pick opened again").clone();
+    let offered: Vec<&str> = again
+        .candidates()
+        .iter()
+        .map(|c| c.table.as_str())
+        .collect();
+    assert!(!offered.contains(&name.as_str()), "{offered:?}");
+    // The grid's own table is one of them now that a step of it is in front, and it is read
+    // as the loaded table is, with no copy to write.
+    let own = again.candidate("customers").expect("customers is offered");
+    assert_eq!(
+        own.source,
+        brightfield_shell::spine_pick::CandidateSource::Step
+    );
+    let selected = again.under_cursor().expect("a candidate").table.clone();
+    for candidate in again.candidates() {
+        let row = win.drawn_row(&candidate.table);
+        assert!(
+            !row.muted && row.control,
+            "{} has no row to pick",
+            candidate.table
+        );
+        assert_eq!(
+            row.washed,
+            candidate.table == selected,
+            "{}",
+            candidate.table
+        );
+    }
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+    assert_eq!(win.app.chart_doc().typed_steps().len(), 1);
+
+    // Save records the step through arc. Which tables its preview loads is read from the
+    // step, not from what this window picked: with the taken table's copy gone, as in a folder
+    // another session left, the saved step's grid writes the copy again and shows the join's rows.
+    let copy = grid.join(format!("{}.parquet", under.table));
+    std::fs::remove_file(&copy).expect("the copy written at the take is there");
+    win.app
+        .save_protocol(&ctx)
+        .expect("a Protocol to save")
+        .unwrap_or_else(|e| panic!("the Save records {name}: {e}"));
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty(),
+        "{name} is recorded"
+    );
+    win.frame(Vec::new());
+    while previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read again"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert!(copy.is_file(), "the copy was not written again");
+    // A copy from before the Protocol's database last changed is not current either. The next
+    // frame writes it again, and the grid reads the step again from the new copy.
+    let protocol = win.pane().protocol.clone();
+    let current = |table: &str| {
+        brightfield_shell::own_files::grid_copy_is_current(
+            &protocol,
+            table,
+            brightfield_shell::own_files::database_changed(&protocol),
+        )
+    };
+    assert!(current(&under.table));
+    assert!(!current("no_such_table"));
+    // The copy was written within the last two seconds, so the next write of it waits them out.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .and_then(|file| file.set_modified(std::time::SystemTime::UNIX_EPOCH))
+        .expect("the copy's time is set back");
+    assert!(!current(&under.table));
+    let reads_before = win.app.chart_doc().preview_reads_started();
+    win.frame(Vec::new());
+    assert!(
+        current(&under.table),
+        "the frame did not write the copy again"
+    );
+    win.frame(Vec::new());
+    while previewing(&win) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} was never read from the new copy"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        win.frame(Vec::new());
+    }
+    assert!(
+        win.app.chart_doc().preview_reads_started() > reads_before,
+        "the grid did not read the step again"
+    );
+    let page = win
+        .app
+        .chart_doc()
+        .grid_preview()
+        .and_then(|p| p.page())
+        .unwrap_or_else(|| panic!("the saved step's grid shows no page"));
+    assert!(!page.rows.is_empty(), "the saved step's grid shows no rows");
+}
+
+/// Over a join's rows the rail does not draw the model's spine, so an operation that reads a
+/// second table is told it needs one, and no pick opens over tables the rail does not list.
+#[test]
+fn over_a_joins_rows_the_spine_offers_no_model_table() {
+    let mut win = Window::over_fixture();
+    let join = win
+        .pane()
+        .model
+        .relationships
+        .iter()
+        .find(|r| !brightfield_ossie::is_proposal(r))
+        .map(|r| r.name.clone())
+        .expect("the written model makes a join");
+    win.app.perform_model_action(
+        &win.ctx.clone(),
+        ModelAction::OpenInGrid(brightfield_render::model_scene::Selection::Relationship(
+            join,
+        )),
+    );
+    win.frame(Vec::new());
+    win.frame(Vec::new());
+    assert!(
+        win.app.is_model_behind_grid(),
+        "the join's rows did not open"
+    );
+    assert_eq!(win.app.model_grid_table(), None);
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        assert!(!win
+            .app
+            .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, None));
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        if !said.starts_with("Reading arc's description") {
+            assert!(win.app.spine_pick().is_none());
+            assert_eq!(said, "Join tables needs a second table in the Protocol.");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+}
+
+/// While a run this window started is writing the model's database, the spine opens no pick over
+/// the model's tables, whose columns are read from that database, and says why. Once the run has
+/// landed the same start opens it.
+#[test]
+fn a_pick_over_a_models_tables_waits_for_the_run_to_end() {
+    use brightfield_shell::window::PICK_AFTER_THE_RUN;
+    use brightfield_workbench::PaneKey;
+
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    let ctx = win.ctx.clone();
+    let from = brightfield_shell::operation_ui::Start::Spine { role: "other" };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    // The pick opens once arc's description has come, and Esc closes it again.
+    while !win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id"))
+    {
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(said.starts_with("Reading arc's description"), "{said}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arc never described the join"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    assert!(win.app.spine_pick().is_some());
+    win.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    win.frame(Vec::new());
+    assert!(win.app.spine_pick().is_none());
+
+    // A run is under way from the moment it starts until a frame takes its landing.
+    assert!(win.app.run_protocol(&ctx), "the run started");
+    assert!(win.app.run_outstanding());
+    assert!(!win
+        .app
+        .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id")));
+    assert_eq!(win.app.operation_said(), Some(PICK_AFTER_THE_RUN));
+    assert!(win.app.spine_pick().is_none());
+
+    while win.app.run_outstanding() {
+        assert!(std::time::Instant::now() < deadline, "the run never landed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.frame(Vec::new());
+    }
+    // The grid is the table's again after the run, and the same start opens the pick.
+    win.frame(Vec::new());
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.frame(Vec::new());
+    assert!(
+        win.app
+            .start_operation_spec(&ctx, &pick::JOIN_LIKE, from, Some("customer_id")),
+        "{:?}",
+        win.app.operation_said()
+    );
+    assert!(win.app.spine_pick().is_some());
+}

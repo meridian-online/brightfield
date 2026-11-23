@@ -239,6 +239,10 @@ pub struct TypedSource {
     /// casts it. A read here makes the root table through the same casts, so a condition reads
     /// `share` as the fraction the applied grid's `where` reads, not the file's `45%`.
     pub casts: Vec<(String, String)>,
+    /// Tables no step makes, each a Parquet file loaded beside the data file
+    /// under the table's name by a read that names it: the other tables of
+    /// the model the grid's table belongs to, read from their grid copies.
+    pub file_roots: Vec<(String, PathBuf)>,
 }
 
 impl TypedSource {
@@ -276,9 +280,10 @@ impl TypedSource {
 
     /// The steps a read of `tables` is read after, in order: of [`Self::steps`], those that make
     /// one of `tables`, and the steps those read. A `read-file` step's relative path is read
-    /// against the data file's folder, which is the Protocol's.
+    /// against the data file's folder, which is the Protocol's. Each of [`Self::file_roots`] that
+    /// `tables` or one of those steps reads is loaded ahead of them.
     pub(crate) fn chain_reading(&self, tables: &[String]) -> Vec<(String, PreviewOp)> {
-        match self.data.parent() {
+        let chain = match self.data.parent() {
             Some(dir) => crate::generated::preview_chain_reading_in(
                 dir,
                 &self.root_table,
@@ -286,7 +291,14 @@ impl TypedSource {
                 tables,
             ),
             None => crate::generated::preview_chain_reading(&self.root_table, &self.steps, tables),
-        }
+        };
+        crate::generated::with_file_roots(
+            &self.root_table,
+            &self.steps,
+            chain,
+            tables,
+            &self.file_roots,
+        )
     }
 
     /// The columns the casts keep each cast column's text under, which the applied grid hides.
