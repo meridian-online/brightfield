@@ -1,9 +1,10 @@
 //! `hide-column` in the window: a direct action on a column.
 //!
 //! It starts from `-` with the grid's cursor on a cell, or from "Hide column"
-//! on a column header's menu. It asks nothing: its one value is the column it
-//! started on, given bare since arc takes it as a name, and the draft is kept
-//! as soon as arc admits it and DuckDB has run it ([`Keeps::AtOnce`]). The
+//! on a column header's menu. Its one value is the column it started on, given
+//! bare since arc takes it as a name, and the draft is kept as soon as arc
+//! admits it and DuckDB has run it ([`Keeps::AtOnce`],
+//! `hide_column_keeps_a_step_named_by_its_effect_and_save_records_arcs_model`). The
 //! step's table then comes to the front without the column, and the status
 //! band says what was hidden and the key that takes it back.
 
