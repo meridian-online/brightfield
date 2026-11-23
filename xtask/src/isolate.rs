@@ -122,7 +122,7 @@ pub enum Unready {
 /// environment: a fresh HOME and TMPDIR under `scratch_dir`, the real cargo
 /// and rustup homes under `home`, the persistent target directory under
 /// `gate_dir`, the DuckDB CLI the tree pins, and none of the variables
-/// `removed_from_child` names. With `open_analytics`, the real
+/// `removed_from_child` names, and incremental compilation off. With `open_analytics`, the real
 /// `open-analytics` checkout found from `invoking` too, for the nightly's
 /// report on it; without, the run gets no checkout, so a pull request's gate
 /// cannot come to depend on another repository's main.
@@ -183,6 +183,9 @@ pub fn isolated_ci(
         .env("CARGO_HOME", real("CARGO_HOME", ".cargo"))
         .env("RUSTUP_HOME", real("RUSTUP_HOME", ".rustup"))
         .env("CARGO_TARGET_DIR", gate_dir.join("target"))
+        // The workspace's crates rebuild in every run, from a new tree, so
+        // incremental state is never read again; see `prune`.
+        .env("CARGO_INCREMENTAL", "0")
         .env("ARC_DUCKDB_BIN", &engine);
     match &open_analytics {
         Some(dir) => command.env("OPEN_ANALYTICS_DIR", dir),

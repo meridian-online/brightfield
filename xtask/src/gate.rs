@@ -126,6 +126,13 @@ pub fn run(pr: u64) -> ExitCode {
         }
     };
 
+    let stale = crate::prune::remove_stale_gate_trees(&gate_dir.join("trees"), &root);
+    if stale > 0 {
+        say(&format!(
+            "removed {stale} worktrees killed gates left behind"
+        ));
+    }
+
     check_backstop();
 
     let (head, repository, branch) = match head_of(pr) {
@@ -163,7 +170,11 @@ pub fn run(pr: u64) -> ExitCode {
         &scratch,
         &tree,
     );
+    // Read before the drop removes the tree; the tree's own names, since a
+    // pull request may add a crate main does not have.
+    let workspace = crate::prune::first_workspace(&[&tree, &root]);
     drop(scratch);
+    crate::prune::after_run(&gate_dir.join("target"), workspace, say);
     let posted = match verdict {
         Ok(posted) => posted,
         Err(Stop::Unposted(e)) => {
@@ -185,6 +196,52 @@ pub fn run(pr: u64) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// Take the gate lock and prune the shared target directory and any worktree
+/// a killed gate left, as each run does when it ends, using this checkout's
+/// workspace.
+pub fn prune_now() -> ExitCode {
+    let root = crate::repo_root();
+    let Some(home) = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+    else {
+        say("HOME is not set, and the gate keeps its lock and target under it");
+        return ExitCode::FAILURE;
+    };
+    let gate_dir = home.join(".cache/meridian/gate");
+    if !gate_dir.is_dir() {
+        say(&format!(
+            "{} does not exist: nothing to prune",
+            gate_dir.display()
+        ));
+        return ExitCode::SUCCESS;
+    }
+    let _lock = match Lock::acquire(&gate_dir, Duration::from_secs(30), say) {
+        Ok(lock) => lock,
+        Err(e) => {
+            say(&e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let stale = crate::prune::remove_stale_gate_trees(&gate_dir.join("trees"), &root);
+    if stale > 0 {
+        say(&format!(
+            "removed {stale} worktrees killed gates left behind"
+        ));
+    }
+    match crate::prune::workspace_of(&root) {
+        Ok(workspace) => {
+            say(&crate::prune::prune(&gate_dir.join("target"), &workspace)
+                .line(&gate_dir.join("target")));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            say(&format!("cannot read this checkout's workspace: {e}"));
+            ExitCode::FAILURE
+        }
     }
 }
 
