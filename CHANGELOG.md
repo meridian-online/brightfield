@@ -8,6 +8,8 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 ## [Unreleased]
 
+- On macOS the window's title bar gives way to Brightfield's own title band: the close, minimise and zoom buttons sit at its left, the band moves the window when dragged and zooms it on a double-click, and the open Protocol's Name and Location fields move up into it from the locator band.
+
 ## [0.1.9] - 2026-11-21
 
 ### Added

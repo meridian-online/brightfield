@@ -1,4 +1,4 @@
-//! A Protocol renamed from the window, moved by the locator band's Location field, or moved in the
+//! A Protocol renamed from the window, moved by the title band's Location field, or moved in the
 //! Finder keeps running: its folder and its `name:` change together, arc's working database moves
 //! to the new path's key, the source paths written relative to the folder that leave it are
 //! rewritten, and the window, its Recents row and the chart's version history follow it. A rename
@@ -593,7 +593,7 @@ fn rename_is_kept_at_once() {
     let mut win = Window::opened("kept_at_once");
     assert!(!win.app.title().contains(UNSAVED_MARK));
 
-    // F2 opens the name field in the locator band, holding the Protocol's name.
+    // F2 opens the name field in the title band, holding the Protocol's name.
     win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
     win.settle();
     assert_eq!(
@@ -686,8 +686,10 @@ fn the_location_field_moves_it() {
 
     let field = win
         .app
-        .locator_location_rect()
-        .expect("the locator band drew the Location field");
+        .title_place_rects()
+        .expect("the title band drew the Location field")
+        .location
+        .expect("the Location field fits a wide window");
     win.click(field.center());
     assert_eq!(win.app.place_field(), Some(PlaceField::Location));
     win.type_over(&to.to_string_lossy());
@@ -1280,11 +1282,16 @@ fn a_door_rename_field_does_not_outlive_the_door() {
 fn the_location_field_reads_a_relative_path_from_where_the_protocol_is_and_offers_choose() {
     let mut win = Window::opened("relative_location");
     let old = win.dir().expect("a Protocol");
-    let field = win.app.locator_location_rect().expect("the Location field");
+    let field = win
+        .app
+        .title_place_rects()
+        .expect("the Location field")
+        .location
+        .expect("the Location field fits a wide window");
     win.click(field.center());
     assert_eq!(win.app.place_field(), Some(PlaceField::Location));
     assert!(
-        win.app.locator_choose_rect().is_some(),
+        win.app.title_place_rects().and_then(|p| p.choose).is_some(),
         "Choose… is beside the open field"
     );
     std::fs::create_dir_all(scratch().join("elsewhere").join("relative")).expect("a folder");

@@ -1275,6 +1275,16 @@ fn main() -> Result<(), String> {
     if let Some([x, y]) = layout.window.position {
         viewport = viewport.with_position([x, y]);
     }
+    // On macOS the window draws under a hidden title bar, and the title band takes its place:
+    // the close, minimise and zoom buttons float over the band's left corner, which the band
+    // leaves clear, and the band moves and zooms the window as the title bar did. The title is
+    // still set, below, because the Window menu and Mission Control read it.
+    if cfg!(target_os = "macos") {
+        viewport = viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
     let title = boot.title();
 
     // The live window rides eframe's wgpu device — the Vello canvases are built

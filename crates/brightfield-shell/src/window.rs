@@ -2224,6 +2224,8 @@ struct TopBar {
     menu_drawn: Vec<crate::menu_bar::DrawnRow>,
     /// The command chosen from those menus this frame.
     menu_choice: Option<&'static str>,
+    /// What the Protocol's name and Location fields did, on a frame that drew them.
+    placed: Option<PlaceDrawn>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -2627,7 +2629,7 @@ pub enum Move {
     Relocate(PathBuf),
 }
 
-/// Which of the locator band's two place fields is open for typing.
+/// Which of the title band's two place fields is open for typing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceField {
     /// The Protocol's name, which is its folder's name.
@@ -3829,10 +3831,10 @@ pub struct MeridianApp {
     /// A front-door row's new name, typed and entered, latched for after the frame with the row's
     /// id, for the reason `door_open_protocol` is.
     door_renamed: Option<(String, String)>,
-    /// The locator band's place field open for typing, when one is.
+    /// The title band's place field open for typing, when one is.
     place_edit: Option<PlaceEdit>,
-    /// Where the locator band drew the Protocol's name and Location fields on the last frame.
-    place_rects: Option<(egui::Rect, egui::Rect)>,
+    /// Where the title band drew the Protocol's name and Location fields on the last frame.
+    place_rects: Option<(Option<egui::Rect>, Option<egui::Rect>)>,
     /// A rename or move typed into a place field and entered, latched for after the frame.
     place_move: Option<Move>,
     /// Folders an open needs granted before it can go ahead, asked for after the frame, as the
@@ -5257,7 +5259,7 @@ impl MeridianApp {
             return self.crumb_line().join(" \u{203a} ");
         }
         // A Protocol of the analyst's own files, a folder's model or a Protocol New Protocol made
-        // is named as the locator band's Name field names it: its folder. The chart document's
+        // is named as the title band's Name field names it: its folder. The chart document's
         // title would name the data file the grid reads, which for a one-source Protocol is a copy
         // in its `.grid` folder, and that is not what the analyst opened or named.
         if let Some(dir) = self.open_protocol_dir() {
@@ -7168,6 +7170,20 @@ impl MeridianApp {
         if let Some(choice) = bar.menu_choice.take() {
             self.open_queue.ask_verb(choice);
         }
+        let placed = bar.placed.take();
+        self.place_rects = placed.as_ref().map(|p| p.rects);
+        self.choose_rect = placed.as_ref().and_then(|p| p.choose_rect);
+        if let Some(placed) = placed {
+            if placed.choose {
+                self.location_pick_requested = true;
+            }
+            if let Some(field) = placed.opened {
+                self.open_place_field(field);
+            }
+            if placed.entered.is_some() {
+                self.place_move = placed.entered;
+            }
+        }
 
         let canvas = plan.expect_region(arrangement::CANVAS);
 
@@ -7473,16 +7489,12 @@ impl MeridianApp {
                 .is_some_and(|tiles| tiles.selected().is_some())
                 || self.model_behind_grid();
             let mut crumb_back = false;
-            // The open Protocol's name and the folder it is in, each a field the band opens for
-            // typing: a rename and a move, both kept at once.
-            let place = self.open_protocol_dir();
-            let mut edit = self.place_edit.take().filter(|_| place.is_some());
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    let link = locator_band_ui(
+                    locator_band_ui(
                         ui,
                         &crumbs,
                         counts.as_deref(),
@@ -7490,31 +7502,13 @@ impl MeridianApp {
                         source_about.as_deref(),
                         crumb_link,
                         mode,
-                    );
-                    let placed = place
-                        .as_deref()
-                        .map(|dir| place_band_ui(ui, dir, source.as_deref(), &mut edit, mode));
-                    (link, placed)
+                    )
                 });
             self.regions.push((locator.id, drawn.response.rect));
-            let (link, placed) = drawn.inner;
+            let link = drawn.inner;
             self.crumb_link_rect = link.map(|(rect, _)| rect);
             if link.is_some_and(|(_, clicked)| clicked) {
                 crumb_back = true;
-            }
-            self.place_edit = edit;
-            self.place_rects = placed.as_ref().map(|p| p.rects);
-            self.choose_rect = placed.as_ref().and_then(|p| p.choose_rect);
-            if let Some(placed) = placed {
-                if placed.choose {
-                    self.location_pick_requested = true;
-                }
-                if let Some(field) = placed.opened {
-                    self.open_place_field(field);
-                }
-                if placed.entered.is_some() {
-                    self.place_move = placed.entered;
-                }
             }
 
             // The key-hint band belongs to a key grammar, so it is drawn where
@@ -12042,7 +12036,19 @@ impl MeridianApp {
         // open; a command chosen from a row a frame old is judged again as it
         // is taken off the queue.
         let menu_state = self.menu_state.clone();
+        // The open Protocol's name and the folder it is kept in, each a field the band opens for
+        // typing: a rename and a move, both kept at once. The front door has no Protocol open.
+        let place = if door { None } else { self.open_protocol_dir() };
+        let mut edit = self.place_edit.take().filter(|_| place.is_some());
+        let mode = self.mode;
+        let band = ui.max_rect();
         ui.horizontal_centered(|ui| {
+            // On macOS the window's close, minimise and zoom buttons sit over this corner.
+            let inset = crate::title_band::controls_inset();
+            if inset > 0.0 {
+                ui.add_space(inset);
+            }
+            let lead = ui.cursor().left();
             // The mark is the route home, and off the door it is the whole of
             // what stands left of the title. The word *Meridian* used to lead
             // the band and was spending the first thing a reader's eye lands
@@ -12116,7 +12122,9 @@ impl MeridianApp {
                 }
                 ui.add_space(spacing::SPACE_4);
             }
-            ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
+            let name = ui
+                .label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)))
+                .rect;
             // The renderer line is a developer diagnostic — a stranger's first
             // launch should not read "egui · Vello · wgpu 29". It appears only
             // under the devtools flag; the flow toggle is a real affordance and
@@ -12132,7 +12140,51 @@ impl MeridianApp {
                 renderer.as_deref(),
                 toggle.as_ref().map(|(t, _)| t.as_str()),
             );
-            if (renderer.is_some() || toggle.is_some()) && ui.available_width() >= wanted {
+            let group = (renderer.is_some() || toggle.is_some()) && ui.available_width() >= wanted;
+            // The Protocol's place stands at the band's right end, left of the right-hand group
+            // when that is drawn.
+            let mut end = ui.max_rect().right();
+            if group {
+                end -= wanted + spacing::SPACE_6;
+            }
+            let mut stretch_end = end;
+            if let Some(dir) = place.as_deref() {
+                let area = egui::Rect::from_min_max(
+                    egui::pos2(name.right() + spacing::SPACE_6, band.top()),
+                    egui::pos2(end, band.bottom()),
+                );
+                let placed = place_band_ui(ui, area, dir, &mut edit, mode);
+                if let Some(left) = [placed.rects.0, placed.rects.1]
+                    .into_iter()
+                    .flatten()
+                    .map(|r| r.left())
+                    .reduce(f32::min)
+                {
+                    stretch_end = left - spacing::SPACE_4;
+                }
+                bar.placed = Some(placed);
+            }
+            // On macOS, where the band stands in for the title bar, what no control took moves
+            // the window and zooms it: the corner left of the mark, and the stretch between the
+            // name and the band's right end. Sensed once the controls beside it are drawn, so
+            // none of them is covered.
+            crate::title_band::drag_and_zoom(
+                ui,
+                "corner",
+                egui::Rect::from_min_max(
+                    egui::pos2(band.left(), band.top()),
+                    egui::pos2(lead, band.bottom()),
+                ),
+            );
+            crate::title_band::drag_and_zoom(
+                ui,
+                "stretch",
+                egui::Rect::from_min_max(
+                    egui::pos2(name.right() + spacing::SPACE_2, band.top()),
+                    egui::pos2(stretch_end, band.bottom()),
+                ),
+            );
+            if group {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(renderer) = renderer {
                         ui.label(
@@ -12152,6 +12204,7 @@ impl MeridianApp {
                 });
             }
         });
+        self.place_edit = edit;
         bar
     }
 
@@ -12522,7 +12575,7 @@ impl MeridianApp {
                     self.save_everything(ctx);
                 }
                 // rename-protocol is the window's as F2 is: chosen from a palette, it opens the
-                // locator band's name field over the Protocol the window holds.
+                // title band's name field over the Protocol the window holds.
                 // new-protocol is the window's as Cmd+N is: chosen from a palette, it asks where.
                 Request::Verb(verb) if verb.as_str() == NEW_PROTOCOL => {
                     self.ask_new_protocol();
@@ -15022,24 +15075,16 @@ impl MeridianApp {
         self.place_edit.as_ref().map(|e| e.field)
     }
 
-    /// Where the locator band drew the Protocol's name on the last frame, the field F2 and a
-    /// click open.
+    /// Where the title band drew the Protocol's name and Location fields on the last frame, and
+    /// the Location field's Choose… button while that field is open: `None` on a frame that drew
+    /// no Protocol's place, as the front door does.
     #[must_use]
-    pub fn locator_name_rect(&self) -> Option<egui::Rect> {
-        self.place_rects.map(|(name, _)| name)
-    }
-
-    /// Where the Location field's Choose… button was drawn on the last frame, while the field is
-    /// open — a test hook.
-    #[must_use]
-    pub fn locator_choose_rect(&self) -> Option<egui::Rect> {
-        self.choose_rect
-    }
-
-    /// Where the locator band drew the Protocol's Location on the last frame.
-    #[must_use]
-    pub fn locator_location_rect(&self) -> Option<egui::Rect> {
-        self.place_rects.map(|(_, location)| location)
+    pub fn title_place_rects(&self) -> Option<TitlePlaceRects> {
+        self.place_rects.map(|(name, location)| TitlePlaceRects {
+            name,
+            location,
+            choose: self.choose_rect,
+        })
     }
 
     /// The front-door row whose name is open for typing, by its id — a test hook.
@@ -15497,7 +15542,7 @@ impl MeridianApp {
     }
 
     /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
-    /// open the locator band's name field. No overlay may own the keyboard.
+    /// open the title band's name field. No overlay may own the keyboard.
     fn rename_key(&mut self, ctx: &egui::Context) {
         if self.overlay.is_some() {
             return;
@@ -19689,7 +19734,7 @@ fn first_error_line(log: &str) -> &str {
 }
 
 /// The Protocol folder a front-door row's id names, when it names one the window would rename: an
-/// own-files Protocol on disk, of one source or of a model, as the locator band's name field
+/// own-files Protocol on disk, of one source or of a model, as the title band's name field
 /// renames. A row is remembered by the Protocol's `arcform.yaml`, or by its folder.
 fn door_row_dir(id: &str) -> Option<PathBuf> {
     let path = std::path::Path::new(id);
@@ -21724,10 +21769,25 @@ fn locator_band_ui(
     link
 }
 
-/// What the locator band's place fields did on a frame: where the name and the Location were
+/// Where the title band drew the open Protocol's place on the last frame
+/// ([`MeridianApp::title_place_rects`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TitlePlaceRects {
+    /// The Protocol's name, the field F2 and a click open: `None` when the window is too narrow
+    /// to draw it beside the subject.
+    pub name: Option<egui::Rect>,
+    /// The folder it is kept in, the field a click opens to move it: `None` when the window is
+    /// too narrow, which gives this field up before the name.
+    pub location: Option<egui::Rect>,
+    /// The Location field's Choose… button, while that field is open.
+    pub choose: Option<egui::Rect>,
+}
+
+/// What the title band's place fields did on a frame: where the name and the Location were
 /// drawn, which one a click opened, and the rename or move typed into one and entered.
 struct PlaceDrawn {
-    rects: (egui::Rect, egui::Rect),
+    /// The name's and the Location's rects, each `None` when it did not fit.
+    rects: (Option<egui::Rect>, Option<egui::Rect>),
     opened: Option<PlaceField>,
     entered: Option<Move>,
     /// Whether the Location field's Choose… button was clicked.
@@ -21739,29 +21799,38 @@ struct PlaceDrawn {
 /// How wide the Location field's Choose… button is.
 const CHOOSE_WIDTH: f32 = 72.0;
 
-/// The open Protocol's place, at the locator band's right, before the source note: its name and
-/// the folder it is in, each drawn as a link that opens a field for typing. The folder is named by
-/// its last part and its whole path is the tooltip, so a picture of the band is not a picture of
-/// one Mac's folders. Enter in a field enters it, and Esc or a click elsewhere closes it unchanged.
+/// The narrowest an open place field is squeezed to before the closed field beside it is given
+/// up to make room.
+const PLACE_FIELD_MIN_WIDTH: f32 = 96.0;
+
+/// The narrowest an open place field is drawn at all, once it is alone in the band.
+const PLACE_FIELD_FLOOR: f32 = 32.0;
+
+/// The open Protocol's place, at the right end of `rect` in the title band: its name and the
+/// folder it is in, each drawn as a link that opens a field for typing. The folder is named by its
+/// last part and its whole path is the tooltip, so a picture of the band is not a picture of one
+/// Mac's folders. Enter in a field enters it, and Esc or a click elsewhere closes it unchanged.
+///
+/// An open field and its Choose… button are a grid row tall, centred in `rect`, so they keep the
+/// height they had in the shorter band they used to sit in.
+///
+/// Nothing is drawn left of `rect`, which starts after the subject, so on a narrow window the
+/// fields never cover the mark and never take its clicks. When they do not fit, an open field is
+/// squeezed first, then a closed Location is given up, then a closed name; an open field alone is
+/// squeezed to what is left, and closed when even that is too little.
 fn place_band_ui(
     ui: &mut egui::Ui,
+    rect: egui::Rect,
     dir: &std::path::Path,
-    source: Option<&str>,
     edit: &mut Option<PlaceEdit>,
     mode: Mode,
 ) -> PlaceDrawn {
     let sem = semantic(mode.is_dark());
-    let rect = ui.max_rect();
-    let note_font = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
-    let mut right = rect.right() - spacing::SPACE_4;
-    if let Some(source) = source {
-        let width = ui
-            .painter()
-            .layout_no_wrap(source.to_owned(), note_font, egui::Color32::PLACEHOLDER)
-            .size()
-            .x;
-        right -= width + spacing::SPACE_6;
-    }
+    let field_band = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(rect.width(), spacing::ROW_GRID.min(rect.height())),
+    );
+    let mut right = rect.right();
     let parent = dir.parent();
     let fields = [
         (
@@ -21777,44 +21846,120 @@ fn place_band_ui(
             "Rename the Protocol and its folder".to_string(),
         ),
     ];
-    let mut rects = [egui::Rect::NOTHING; 2];
+    // Measure both fields before drawing either, so what does not fit is known first.
+    struct Laid {
+        field: PlaceField,
+        about: String,
+        label: std::sync::Arc<egui::Galley>,
+        value: std::sync::Arc<egui::Galley>,
+        editing: bool,
+        value_width: f32,
+        choose_width: f32,
+        shown: bool,
+    }
+    impl Laid {
+        fn width(&self) -> f32 {
+            self.label.size().x + spacing::SPACE_2 + self.value_width + self.choose_width
+        }
+    }
+    let mut laid: Vec<Laid> = fields
+        .into_iter()
+        .map(|(field, label, value, about)| {
+            let label = ui.painter().layout_no_wrap(
+                label.to_owned(),
+                ui_font(),
+                chrome::colour(sem.text.muted),
+            );
+            let value =
+                ui.painter()
+                    .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
+            let editing = edit.as_ref().is_some_and(|e| e.field == field);
+            let value_width = if editing {
+                match field {
+                    PlaceField::Name => 200.0,
+                    PlaceField::Location => 320.0,
+                }
+            } else {
+                value.size().x
+            };
+            // The Location field's Choose… button, beside it while it is open.
+            let choose_width = if editing && field == PlaceField::Location {
+                CHOOSE_WIDTH + spacing::SPACE_2
+            } else {
+                0.0
+            };
+            Laid {
+                field,
+                about,
+                label,
+                value,
+                editing,
+                value_width,
+                choose_width,
+                shown: true,
+            }
+        })
+        .collect();
+    let room = rect.width().max(0.0);
+    let needed = |laid: &[Laid]| {
+        let shown: Vec<f32> = laid.iter().filter(|l| l.shown).map(Laid::width).collect();
+        shown.iter().sum::<f32>() + spacing::SPACE_6 * shown.len().saturating_sub(1) as f32
+    };
+    // An open field gives up width first, down to a usable floor.
+    let over = needed(&laid) - room;
+    if over > 0.0 {
+        if let Some(open) = laid.iter_mut().find(|l| l.editing) {
+            open.value_width = (open.value_width - over).max(PLACE_FIELD_MIN_WIDTH);
+        }
+    }
+    // Then a closed field goes, the Location before the name.
+    for field in [PlaceField::Location, PlaceField::Name] {
+        if needed(&laid) > room {
+            if let Some(closed) = laid.iter_mut().find(|l| l.field == field && !l.editing) {
+                closed.shown = false;
+            }
+        }
+    }
+    // An open field alone takes what is left, or closes when that is too little to type in.
+    let mut closed = false;
+    let over = needed(&laid) - room;
+    if over > 0.0 {
+        if let Some(open) = laid.iter_mut().find(|l| l.shown && l.editing) {
+            open.value_width -= over;
+            if open.value_width < PLACE_FIELD_FLOOR {
+                open.shown = false;
+                closed = true;
+            }
+        }
+    }
+
+    let mut rects = [None; 2];
     let mut opened = None;
     let mut entered = None;
-    let mut closed = false;
     let mut choose = false;
     let mut choose_drawn = None;
-    for (at, (field, label, value, about)) in fields.into_iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            label.to_owned(),
-            ui_font(),
-            chrome::colour(sem.text.muted),
-        );
-        let value_galley =
-            ui.painter()
-                .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
-        let editing = edit.as_ref().is_some_and(|e| e.field == field);
-        let value_width = if editing {
-            match field {
-                PlaceField::Name => 200.0,
-                PlaceField::Location => 320.0,
-            }
-        } else {
-            value_galley.size().x
-        };
-        // The Location field's Choose… button, beside it while it is open.
-        let choose_width = if editing && field == PlaceField::Location {
-            CHOOSE_WIDTH + spacing::SPACE_2
-        } else {
-            0.0
-        };
-        let width = label_galley.size().x + spacing::SPACE_2 + value_width + choose_width;
+    for (at, laid) in laid.into_iter().enumerate() {
+        if !laid.shown {
+            continue;
+        }
+        let width = laid.width();
+        let Laid {
+            field,
+            about,
+            label: label_galley,
+            value: value_galley,
+            editing,
+            value_width,
+            choose_width,
+            ..
+        } = laid;
         let left = right - width;
         let y = rect.center().y;
         let whole = egui::Rect::from_min_max(
             egui::pos2(left, rect.top()),
             egui::pos2(right, rect.bottom()),
         );
-        rects[at] = whole;
+        rects[at] = Some(whole);
         ui.painter().galley(
             egui::pos2(left, y - label_galley.size().y / 2.0),
             label_galley.clone(),
@@ -21825,19 +21970,19 @@ fn place_band_ui(
             egui::Rect::from_min_size(
                 egui::pos2(
                     value_left + value_width + spacing::SPACE_2,
-                    rect.top() + spacing::SPACE_1,
+                    field_band.top(),
                 ),
-                egui::vec2(CHOOSE_WIDTH, rect.height() - spacing::SPACE_1 * 2.0),
+                egui::vec2(CHOOSE_WIDTH, field_band.height()),
             )
         });
         if let Some(at) = choose_rect {
             choose_drawn = Some(at);
         }
         if editing {
-            let id = ui.id().with(("locator-place-field", at));
+            let id = ui.id().with(("title-place-field", at));
             let field_rect = egui::Rect::from_min_size(
-                egui::pos2(value_left, rect.top() + spacing::SPACE_1),
-                egui::vec2(value_width, rect.height() - spacing::SPACE_1 * 2.0),
+                egui::pos2(value_left, field_band.top()),
+                egui::vec2(value_width, field_band.height()),
             );
             let open = edit.as_mut().expect("the field being edited");
             let output = egui::TextEdit::singleline(&mut open.text)
@@ -21886,11 +22031,7 @@ fn place_band_ui(
             let at_value = egui::pos2(value_left, y - value_galley.size().y / 2.0);
             let hit = egui::Rect::from_min_size(at_value, value_galley.size());
             let response = ui
-                .interact(
-                    hit,
-                    ui.id().with(("locator-place", at)),
-                    egui::Sense::click(),
-                )
+                .interact(hit, ui.id().with(("title-place", at)), egui::Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text(about);
             if response.hovered() {

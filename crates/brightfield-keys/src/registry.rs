@@ -755,7 +755,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Save the Protocol: record its draft steps and write its chart",
             scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal Mac convention); global, with the editor's save-spec layered over it while the editor holds the keys" }),
         },
-        // Rename the open Protocol, its folder and its name together: the locator band's name
+        // Rename the open Protocol, its folder and its name together: the title band's name
         // field, opened from the keyboard. F2 is rename in the Finder's neighbours (Windows
         // Explorer, VS Code and most file managers); cmd-r, the other candidate, is reload-spec.
         // Global, so it reaches from any pane; no text field reads a function key. A rename is
