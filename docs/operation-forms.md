@@ -38,7 +38,7 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 5. **Keeping.** Enter keeps the draft once each value arc requires is given and the reads hold arc's model for the draft as it stands. An operation that asks nothing is kept on its first answer. Esc drops the draft. A kept draft is an unsaved step; no file is written.
 6. **Saving.** ⌘S keeps an open draft first when Enter would, then records the kept steps through arc in the order they were made. A draft that cannot be kept stays open, saying why, and the rest is saved. A refusal from arc at Save leaves the step kept, with arc's words on a banner.
 
-Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name.
+Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name. An operation kept at once asks for nothing a correction could change, so over its own kept step it makes a new step that reads that one: a second hide hides another column.
 
 ## The spine's pick
 

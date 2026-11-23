@@ -487,9 +487,13 @@ impl MeridianApp {
         let column = column.or_else(|| front.cursor_column.clone());
 
         // A kept step of the same operation in front is corrected: the draft
-        // begins from what was kept, on the table that step is on.
+        // begins from what was kept, on the table that step is on. An operation
+        // kept at once asks for nothing a correction could change, so over its own
+        // step it makes a new step reading that one, as a second hide hides another
+        // column (`hide_column_over_a_hidden_columns_step_hides_another_from_it`).
         let corrects = self
             .typed_step_in_front()
+            .filter(|_| spec.keeps == Keeps::OnEnter)
             .filter(|step| {
                 step.operation
                     .as_ref()

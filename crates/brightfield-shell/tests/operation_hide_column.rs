@@ -125,6 +125,40 @@ fn hide_column_from_the_header_menu_keeps_the_same_step() {
 }
 
 #[test]
+fn hide_column_over_a_hidden_columns_step_hides_another_from_it() {
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    hide_with_key(&mut win, "house_age");
+    let first = format!("{}_without_house_age", win.table());
+    win.wait_for_preview();
+    // The first step's grid is in front with the cursor on it: `-` on `population` there.
+    let at = win
+        .grid_columns()
+        .iter()
+        .position(|c| c == "population")
+        .expect("the first step keeps population");
+    win.app.chart_doc_mut().grid_cursor =
+        Some(brightfield_shell::data_grid::GridCursor { row: 0, col: at });
+    win.settle();
+    win.press("-");
+    win.settle_reads();
+    let kept = win.kept();
+    assert_eq!(kept.len(), 2, "{:?} {:?}", win.said(), kept);
+    assert_eq!(kept[0].name, first);
+    assert_eq!(kept[1].name, format!("{first}_without_population"));
+    assert_eq!(
+        kept[1].operation.as_ref().and_then(|r| r.on.clone()),
+        Some(first.clone())
+    );
+    let said = win.said().unwrap_or_default();
+    assert!(said.starts_with("Hid population"), "{said}");
+    win.wait_for_preview();
+    let columns = win.grid_columns();
+    assert_eq!(columns.len(), 7, "{columns:?}");
+    assert!(!columns.contains(&"house_age".to_string()), "{columns:?}");
+    assert!(!columns.contains(&"population".to_string()), "{columns:?}");
+}
+
+#[test]
 fn hide_column_quotes_a_column_named_order() {
     let mut win = OpWindow::on_copy_of(WITH_NULLS);
     hide_with_key(&mut win, "order");
