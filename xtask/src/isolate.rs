@@ -183,8 +183,9 @@ pub fn isolated_ci(
         .env("CARGO_HOME", real("CARGO_HOME", ".cargo"))
         .env("RUSTUP_HOME", real("RUSTUP_HOME", ".rustup"))
         .env("CARGO_TARGET_DIR", gate_dir.join("target"))
-        // The workspace's crates rebuild in every run, from a new tree, so
-        // incremental state is never read again; see `prune`.
+        // With it on, each rebuild of a crate leaves its last build's object
+        // files behind in `deps`; the tree's crates rebuild in every run
+        // anyway, from a new checkout, so it saves no time. See `prune`.
         .env("CARGO_INCREMENTAL", "0")
         .env("ARC_DUCKDB_BIN", &engine);
     match &open_analytics {

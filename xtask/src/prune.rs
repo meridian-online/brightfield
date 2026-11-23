@@ -1,18 +1,18 @@
 //! Keeping the gate's shared target directory to what a later run reuses.
 //!
 //! The pull-request gate and the nightly build into one target directory so
-//! that third-party dependencies compile once. The tree's own crates cannot
-//! be reused: cargo hashes a path package's location into its artifact names,
-//! and each run builds from a new worktree, so every run adds a full set of
-//! artifacts for the workspace's members, for the vendored packages the tree
-//! patches in by path, and for every third-party crate built on one of those,
-//! since a dependency's hash is mixed into its dependents' (on macOS each test
-//! binary also keeps its object files for debug info). No later run reads
-//! them. The incremental directory is
-//! the same: its state belongs to crates that will not be compiled again.
-//! [`prune`] removes both after a run, under the gate lock, and keeps the
-//! third-party artifacts, as
-//! `a_prune_removes_the_workspaces_artifacts_and_keeps_third_party_ones`
+//! that third-party dependencies compile once. The tree's own crates gain
+//! nothing from it: each run checks out a new worktree, whose files all carry
+//! new modification times, so cargo rebuilds every path package, and with it
+//! every crate built on one (the vendored packages the tree patches in by
+//! path, and the third-party crates that depend on them). With incremental
+//! compilation on, each such rebuild left the previous build's object files
+//! in `deps`, named by codegen unit, and cargo never removes them; on macOS
+//! they are kept beside each binary for debug info. The incremental directory
+//! grows the same way. The gate now runs with incremental compilation off,
+//! and [`prune`] removes those crates' artifacts and the incremental state
+//! after a run, under the gate lock, keeping the other third-party artifacts,
+//! as `a_prune_removes_the_workspaces_artifacts_and_keeps_third_party_ones`
 //! checks.
 
 use std::collections::BTreeSet;
@@ -129,7 +129,7 @@ impl Pruned {
     pub fn line(&self, target: &Path) -> String {
         let gib = self.bytes as f64 / f64::from(1u32 << 30);
         let mut line = format!(
-            "pruned the workspace's own artifacts from {}: {} entries, {gib:.1} GiB",
+            "pruned the tree's own artifacts from {}: {} entries, {gib:.1} GiB",
             target.display(),
             self.entries
         );
@@ -160,7 +160,7 @@ fn unit_name(entry: &str) -> Option<&str> {
 }
 
 /// True when `entry`, in the profile directory's subdirectory `kind`, is the
-/// workspace's own and no later run reads it.
+/// tree's own and no later run reads it.
 fn is_workspace_artifact(workspace: &Workspace, kind: &str, entry: &str) -> bool {
     match kind {
         "incremental" => true,
@@ -222,8 +222,8 @@ fn profile_dirs(target: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Remove the workspace's own artifacts and the incremental state from every
-/// profile directory under `target`, keeping every third-party artifact. Hold
+/// Remove the tree's own artifacts and the incremental state from every
+/// profile directory under `target`, keeping the third-party crates built on no path package. Hold
 /// the gate lock while calling it, since a running build reads what it
 /// removes.
 pub fn prune(target: &Path, workspace: &Workspace) -> Pruned {
