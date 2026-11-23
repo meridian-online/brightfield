@@ -187,6 +187,7 @@ mod sql_ident;
 pub mod starts;
 pub mod startup;
 pub mod text_ink;
+pub mod title_band;
 pub mod trust;
 pub mod typed_card;
 pub mod typed_sql;

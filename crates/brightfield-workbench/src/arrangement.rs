@@ -114,6 +114,18 @@ use crate::item::ItemId;
 pub const TITLE_BAND_HEIGHT: f32 =
     meridian_design::spacing::ROW_GRID + 2.0 * meridian_design::spacing::SPACE_2;
 
+/// How far the title band's first control stands from the window's left edge on macOS, where
+/// the window's close, minimise and zoom buttons sit over the band's left end.
+///
+/// The window draws its content under a hidden title bar there, so those three buttons float over
+/// the band rather than above it. On a Mac running macOS 26 and later they end 69 points in, centred
+/// 16 points down, which is the middle of this band's 32. This clears them with a control gap to
+/// spare. Other platforms draw their window controls outside the window's content and use none of
+/// it.
+pub const WINDOW_CONTROLS_INSET: f32 = meridian_design::spacing::SPACE_9
+    + meridian_design::spacing::SPACE_7
+    + meridian_design::spacing::CONTROL_GAP;
+
 /// The locator band's height in logical points: the breadcrumb, and what the
 /// document on disk is doing.
 ///

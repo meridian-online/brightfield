@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// A known Protocol that reads the file being opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileProtocol {
-    /// The Protocol's name, as the door and the locator band name it: its folder's.
+    /// The Protocol's name, as the door and the title band name it: its folder's.
     pub name: String,
     /// The Protocol folder.
     pub dir: PathBuf,

@@ -92,6 +92,9 @@ pub struct Window {
     /// The commands the frames asked the platform to carry out, oldest first:
     /// where a clipboard write shows.
     pub commands: Vec<egui::OutputCommand>,
+    /// The commands the frames sent the window itself, oldest first: where a
+    /// drag that moves it or a double-click that zooms it shows.
+    pub viewport_commands: Vec<egui::ViewportCommand>,
     /// The verbs a key performed since the last [`Window::press`] began, in
     /// the order their handlers took them.
     pub answered: Vec<&'static str>,
@@ -118,6 +121,7 @@ impl Window {
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             commands: Vec::new(),
+            viewport_commands: Vec::new(),
             answered: Vec::new(),
             applied: Vec::new(),
             table: None,
@@ -146,6 +150,9 @@ impl Window {
         };
         let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
         self.commands.extend(out.platform_output.commands);
+        if let Some(root) = out.viewport_output.get(&egui::ViewportId::ROOT) {
+            self.viewport_commands.extend(root.commands.iter().cloned());
+        }
         self.answered.extend_from_slice(self.app.keys_answered());
         self.applied.extend_from_slice(self.app.verbs_applied());
     }
