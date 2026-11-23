@@ -38,7 +38,7 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 5. **Keeping.** Enter keeps the draft once each value arc requires is given and the reads hold arc's model for the draft as it stands. An operation that asks nothing is kept on its first answer. Esc drops the draft. A kept draft is an unsaved step; no file is written.
 6. **Saving.** ⌘S keeps an open draft first when Enter would, then records the kept steps through arc in the order they were made. A draft that cannot be kept stays open, saying why, and the rest is saved. A refusal from arc at Save leaves the step kept, with arc's words on a banner.
 
-Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name.
+Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name. An operation kept at once asks for nothing a correction could change, so over its own kept step it makes a new step that reads that one: a second hide hides another column.
 
 ## The spine's pick
 
@@ -63,7 +63,7 @@ Each of these is reversible, and each is the owner's to overturn.
 2. **The preview runs arc's own model on each edit.** arc's round trip, about 150 ms a call when this was built, is the floor until arc can render a model in-process.
 3. **Fade, don't clear.** While an edit fails, the grid keeps the last good rows faded. The rows are not faded while a newer edit is being read and has not been refused: the read takes about a tenth of a second, and a fade at each keystroke would flicker.
 4. **A preview states its own missing values**, as a line above its rows naming each column that has some with its count. The header band's counts are the loaded table's, which the operation may have changed. A coloured validity band in the preview's own header would need the rest of the column profile for rows that are not profiled, so the count is given as a number.
-5. **Direct actions keep at once.** An operation that asks nothing keeps its step as soon as arc admits it and DuckDB has run it. A dedupe that keeps every row keeps no step and says the table has no duplicate rows.
+5. **Direct actions keep at once.** An operation that asks nothing keeps its step as soon as arc admits it and DuckDB has run it, and the status band says what it did and that `remove-step`'s key on the spine takes it back: "Hid house_age · d d on the spine takes it back" for a hidden column, and "Kept" with the step's name in place of the first part for any other. A dedupe that keeps every row keeps no step and says the table has no duplicate rows. A refusal keeps nothing and leaves arc's or DuckDB's reason on the status band; there are no earlier rows to fade, since the action asked for nothing before it.
 6. **Names.** `<table>_<word>_by_<column>` for row operations and `<table>_<word>_<column>` for column operations, slugged, with `_2`, `_3` for a name taken. A name says only what that one step did, and is fixed when the draft is kept.
 7. **Keys** take VisiData's where it has one: `-` hide, `=` derive, `f` fill, `shift-f` summarise, `&` join. The rest are `shift-r` rename, `shift-t` cast, `shift-u` dedupe, `shift-l` limit and `shift-a` append.
 8. **An operation does not start over a `where` or `order by` that is applied and not recorded**, and says why: it would read the table, not the rows on screen.

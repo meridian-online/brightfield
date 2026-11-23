@@ -373,6 +373,10 @@ pub fn header_pass(
                     }
                 }
             });
+            // The cell senses a click, and the column's name it draws is the name a
+            // stranger reads it by.
+            doc.controls
+                .push(chrome::NamedControl::labelled(*cell, name.clone()));
             out.cells.push((name.clone(), *cell));
             for (part, at) in sensed {
                 out.parts.push((name.clone(), part, at));

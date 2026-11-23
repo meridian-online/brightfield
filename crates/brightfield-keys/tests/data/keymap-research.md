@@ -181,6 +181,14 @@ Under the table sits a band with a `where` field and an `order by` field. A key 
 | `filter-rows-at-cursor` | `w` | 4 / 5 / 3 | `w` = where, the clause the field writes; `o` beside it for order by |
 | `sort-rows-at-cursor` | `o` | 3 / 5 / 3 | `o` = order by, the clause the field writes; `w` beside it for where |
 
+### The operations started from the grid's cursor — arc's operations on the cursor's column
+
+Each of arcform's operations that reads the table in front has a key in the Grid context, which starts it on the cursor's column. Each is **View**-tier: starting it previews the result and keeps an unsaved step, and Save records the step through arc. A key joins the registry once its operation is built, and its row is added here with it.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `hide-column` | `-` | 3 / 4 / 4 | `-` is VisiData's hide; the Grid context keeps it apart from the Workspace's `-` zoom-out |
+
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 
 The ledger's Versions panel lists a chart's saved versions, newest first. With the panel focused, a

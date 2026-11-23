@@ -245,6 +245,8 @@ mod tests {
             ("right", "move-cursor-right"),
             ("w", "filter-rows-at-cursor"),
             ("o", "sort-rows-at-cursor"),
+            // The Workspace's zoom-out key hides the cursor's column in the grid.
+            ("-", "hide-column"),
         ] {
             assert_eq!(
                 t.resolves(keys, DispatchContext::GridFocused),
@@ -257,8 +259,8 @@ mod tests {
             vec!["pan-left"]
         );
         assert!(t.resolves("l", DispatchContext::CanvasFocused).is_empty());
-        // And the zoom, axis-lock and reset keys resolve to nothing there.
-        for keys in ["=", "-", "x", "0"] {
+        // And the zoom-in, axis-lock and reset keys resolve to nothing there.
+        for keys in ["=", "x", "0"] {
             assert!(
                 t.resolves(keys, DispatchContext::GridFocused).is_empty(),
                 "`{keys}` resolves with the grid focused"
