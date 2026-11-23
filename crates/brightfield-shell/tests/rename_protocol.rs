@@ -688,7 +688,8 @@ fn the_location_field_moves_it() {
         .app
         .title_place_rects()
         .expect("the title band drew the Location field")
-        .location;
+        .location
+        .expect("the Location field fits a wide window");
     win.click(field.center());
     assert_eq!(win.app.place_field(), Some(PlaceField::Location));
     win.type_over(&to.to_string_lossy());
@@ -1285,7 +1286,8 @@ fn the_location_field_reads_a_relative_path_from_where_the_protocol_is_and_offer
         .app
         .title_place_rects()
         .expect("the Location field")
-        .location;
+        .location
+        .expect("the Location field fits a wide window");
     win.click(field.center());
     assert_eq!(win.app.place_field(), Some(PlaceField::Location));
     assert!(

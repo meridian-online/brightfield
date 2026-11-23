@@ -21,7 +21,8 @@ fn on_the_stretch(win: &Window) -> egui::Pos2 {
         .app
         .title_place_rects()
         .expect("the title band drew the Protocol's place");
-    egui::pos2(place.name.left() - 24.0, band.center().y)
+    let name = place.name.expect("the name fits a wide window");
+    egui::pos2(name.left() - 24.0, band.center().y)
 }
 
 fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
@@ -119,7 +120,11 @@ fn a_double_click_on_the_title_bands_empty_stretch_zooms_the_window() {
 fn a_press_on_the_mark_or_the_name_field_moves_nothing() {
     let mut win = scenes::data_file();
     let mark = win.app.mark_rect().expect("the mark");
-    let name = win.app.title_place_rects().expect("the place").name;
+    let name = win
+        .app
+        .title_place_rects()
+        .and_then(|p| p.name)
+        .expect("the name field");
     for at in [mark.center(), name.right_center() - egui::vec2(4.0, 0.0)] {
         win.viewport_commands.clear();
         win.run(vec![
@@ -144,13 +149,15 @@ fn the_protocols_name_and_place_are_kept_in_the_title_band() {
         .title_place_rects()
         .expect("the title band drew the Protocol's place");
     for (what, rect) in [("name", place.name), ("location", place.location)] {
+        let rect = rect.unwrap_or_else(|| panic!("the {what} field fits a wide window"));
         assert!(
             band.contains_rect(rect),
             "the {what} field at {rect:?} lies outside the title band {band:?}"
         );
     }
+    let (name, location) = (place.name.unwrap(), place.location.unwrap());
     assert!(
-        place.location.left() >= place.name.right(),
+        location.left() >= name.right(),
         "the name reads before the folder it is kept in: {place:?}"
     );
 }
@@ -180,7 +187,40 @@ fn the_locator_band_keeps_the_crumbs_and_counts() {
     );
     let place = win.app.title_place_rects().expect("the place");
     assert!(
-        !locator.intersects(place.name) && !locator.intersects(place.location),
+        [place.name, place.location]
+            .into_iter()
+            .flatten()
+            .all(|rect| !locator.intersects(rect)),
         "the place fields left the locator band"
     );
+}
+
+#[test]
+fn on_a_narrow_window_the_place_fields_keep_off_the_mark() {
+    let mut win = scenes::data_file();
+    win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 820.0));
+    win.settle();
+    let mark = win.app.mark_rect().expect("the mark");
+    // Open the Location field, the widest the band draws, if it is still drawn; otherwise the
+    // name, through F2.
+    match win.app.title_place_rects().and_then(|p| p.location) {
+        Some(location) => win.click(location.right_center() - egui::vec2(4.0, 0.0)),
+        None => win.key(egui::Key::F2),
+    }
+    let place = win.app.title_place_rects().expect("the place");
+    let drawn: Vec<egui::Rect> = [place.name, place.location, place.choose]
+        .into_iter()
+        .flatten()
+        .collect();
+    assert!(!drawn.is_empty(), "an open field is drawn: {place:?}");
+    for rect in drawn {
+        assert!(
+            rect.left() > mark.right(),
+            "a place field at {rect:?} covers the mark at {mark:?}"
+        );
+    }
+    // The mark still takes its click: it goes home.
+    win.key(egui::Key::Escape);
+    win.click(mark.center());
+    assert!(win.app.front_door_is_live(), "the mark took the click home");
 }

@@ -3834,7 +3834,7 @@ pub struct MeridianApp {
     /// The title band's place field open for typing, when one is.
     place_edit: Option<PlaceEdit>,
     /// Where the title band drew the Protocol's name and Location fields on the last frame.
-    place_rects: Option<(egui::Rect, egui::Rect)>,
+    place_rects: Option<(Option<egui::Rect>, Option<egui::Rect>)>,
     /// A rename or move typed into a place field and entered, latched for after the frame.
     place_move: Option<Move>,
     /// Folders an open needs granted before it can go ahead, asked for after the frame, as the
@@ -12154,7 +12154,14 @@ impl MeridianApp {
                     egui::pos2(end, band.bottom()),
                 );
                 let placed = place_band_ui(ui, area, dir, &mut edit, mode);
-                stretch_end = placed.rects.0.left().min(placed.rects.1.left()) - spacing::SPACE_4;
+                if let Some(left) = [placed.rects.0, placed.rects.1]
+                    .into_iter()
+                    .flatten()
+                    .map(|r| r.left())
+                    .reduce(f32::min)
+                {
+                    stretch_end = left - spacing::SPACE_4;
+                }
                 bar.placed = Some(placed);
             }
             // What no control took moves the window and zooms it, as a title bar would: the
@@ -21765,10 +21772,12 @@ fn locator_band_ui(
 /// ([`MeridianApp::title_place_rects`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TitlePlaceRects {
-    /// The Protocol's name, the field F2 and a click open.
-    pub name: egui::Rect,
-    /// The folder it is kept in, the field a click opens to move it.
-    pub location: egui::Rect,
+    /// The Protocol's name, the field F2 and a click open: `None` when the window is too narrow
+    /// to draw it beside the subject.
+    pub name: Option<egui::Rect>,
+    /// The folder it is kept in, the field a click opens to move it: `None` when the window is
+    /// too narrow, which gives this field up before the name.
+    pub location: Option<egui::Rect>,
     /// The Location field's Choose… button, while that field is open.
     pub choose: Option<egui::Rect>,
 }
@@ -21776,7 +21785,8 @@ pub struct TitlePlaceRects {
 /// What the title band's place fields did on a frame: where the name and the Location were
 /// drawn, which one a click opened, and the rename or move typed into one and entered.
 struct PlaceDrawn {
-    rects: (egui::Rect, egui::Rect),
+    /// The name's and the Location's rects, each `None` when it did not fit.
+    rects: (Option<egui::Rect>, Option<egui::Rect>),
     opened: Option<PlaceField>,
     entered: Option<Move>,
     /// Whether the Location field's Choose… button was clicked.
@@ -21788,6 +21798,13 @@ struct PlaceDrawn {
 /// How wide the Location field's Choose… button is.
 const CHOOSE_WIDTH: f32 = 72.0;
 
+/// The narrowest an open place field is squeezed to before the closed field beside it is given
+/// up to make room.
+const PLACE_FIELD_MIN_WIDTH: f32 = 96.0;
+
+/// The narrowest an open place field is drawn at all, once it is alone in the band.
+const PLACE_FIELD_FLOOR: f32 = 32.0;
+
 /// The open Protocol's place, at the right end of `rect` in the title band: its name and the
 /// folder it is in, each drawn as a link that opens a field for typing. The folder is named by its
 /// last part and its whole path is the tooltip, so a picture of the band is not a picture of one
@@ -21795,6 +21812,11 @@ const CHOOSE_WIDTH: f32 = 72.0;
 ///
 /// An open field and its Choose… button are a grid row tall, centred in `rect`, so they keep the
 /// height they had in the shorter band they used to sit in.
+///
+/// Nothing is drawn left of `rect`, which starts after the subject, so on a narrow window the
+/// fields never cover the mark and never take its clicks. When they do not fit, an open field is
+/// squeezed first, then a closed Location is given up, then a closed name; an open field alone is
+/// squeezed to what is left, and closed when even that is too little.
 fn place_band_ui(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -21823,44 +21845,120 @@ fn place_band_ui(
             "Rename the Protocol and its folder".to_string(),
         ),
     ];
-    let mut rects = [egui::Rect::NOTHING; 2];
+    // Measure both fields before drawing either, so what does not fit is known first.
+    struct Laid {
+        field: PlaceField,
+        about: String,
+        label: std::sync::Arc<egui::Galley>,
+        value: std::sync::Arc<egui::Galley>,
+        editing: bool,
+        value_width: f32,
+        choose_width: f32,
+        shown: bool,
+    }
+    impl Laid {
+        fn width(&self) -> f32 {
+            self.label.size().x + spacing::SPACE_2 + self.value_width + self.choose_width
+        }
+    }
+    let mut laid: Vec<Laid> = fields
+        .into_iter()
+        .map(|(field, label, value, about)| {
+            let label = ui.painter().layout_no_wrap(
+                label.to_owned(),
+                ui_font(),
+                chrome::colour(sem.text.muted),
+            );
+            let value =
+                ui.painter()
+                    .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
+            let editing = edit.as_ref().is_some_and(|e| e.field == field);
+            let value_width = if editing {
+                match field {
+                    PlaceField::Name => 200.0,
+                    PlaceField::Location => 320.0,
+                }
+            } else {
+                value.size().x
+            };
+            // The Location field's Choose… button, beside it while it is open.
+            let choose_width = if editing && field == PlaceField::Location {
+                CHOOSE_WIDTH + spacing::SPACE_2
+            } else {
+                0.0
+            };
+            Laid {
+                field,
+                about,
+                label,
+                value,
+                editing,
+                value_width,
+                choose_width,
+                shown: true,
+            }
+        })
+        .collect();
+    let room = rect.width().max(0.0);
+    let needed = |laid: &[Laid]| {
+        let shown: Vec<f32> = laid.iter().filter(|l| l.shown).map(Laid::width).collect();
+        shown.iter().sum::<f32>() + spacing::SPACE_6 * shown.len().saturating_sub(1) as f32
+    };
+    // An open field gives up width first, down to a usable floor.
+    let over = needed(&laid) - room;
+    if over > 0.0 {
+        if let Some(open) = laid.iter_mut().find(|l| l.editing) {
+            open.value_width = (open.value_width - over).max(PLACE_FIELD_MIN_WIDTH);
+        }
+    }
+    // Then a closed field goes, the Location before the name.
+    for field in [PlaceField::Location, PlaceField::Name] {
+        if needed(&laid) > room {
+            if let Some(closed) = laid.iter_mut().find(|l| l.field == field && !l.editing) {
+                closed.shown = false;
+            }
+        }
+    }
+    // An open field alone takes what is left, or closes when that is too little to type in.
+    let mut closed = false;
+    let over = needed(&laid) - room;
+    if over > 0.0 {
+        if let Some(open) = laid.iter_mut().find(|l| l.shown && l.editing) {
+            open.value_width -= over;
+            if open.value_width < PLACE_FIELD_FLOOR {
+                open.shown = false;
+                closed = true;
+            }
+        }
+    }
+
+    let mut rects = [None; 2];
     let mut opened = None;
     let mut entered = None;
-    let mut closed = false;
     let mut choose = false;
     let mut choose_drawn = None;
-    for (at, (field, label, value, about)) in fields.into_iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            label.to_owned(),
-            ui_font(),
-            chrome::colour(sem.text.muted),
-        );
-        let value_galley =
-            ui.painter()
-                .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
-        let editing = edit.as_ref().is_some_and(|e| e.field == field);
-        let value_width = if editing {
-            match field {
-                PlaceField::Name => 200.0,
-                PlaceField::Location => 320.0,
-            }
-        } else {
-            value_galley.size().x
-        };
-        // The Location field's Choose… button, beside it while it is open.
-        let choose_width = if editing && field == PlaceField::Location {
-            CHOOSE_WIDTH + spacing::SPACE_2
-        } else {
-            0.0
-        };
-        let width = label_galley.size().x + spacing::SPACE_2 + value_width + choose_width;
+    for (at, laid) in laid.into_iter().enumerate() {
+        if !laid.shown {
+            continue;
+        }
+        let width = laid.width();
+        let Laid {
+            field,
+            about,
+            label: label_galley,
+            value: value_galley,
+            editing,
+            value_width,
+            choose_width,
+            ..
+        } = laid;
         let left = right - width;
         let y = rect.center().y;
         let whole = egui::Rect::from_min_max(
             egui::pos2(left, rect.top()),
             egui::pos2(right, rect.bottom()),
         );
-        rects[at] = whole;
+        rects[at] = Some(whole);
         ui.painter().galley(
             egui::pos2(left, y - label_galley.size().y / 2.0),
             label_galley.clone(),
