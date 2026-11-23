@@ -49,6 +49,25 @@ pub const OPERATION_STATUS_ID: &str = "operation";
 /// What an operation that removes duplicate rows says of a table that has no such rows.
 pub const NO_DUPLICATE_ROWS: &str = "The table has no duplicate rows, so no step was kept.";
 
+/// What the status band says once an operation that asks nothing has kept its
+/// step `name`: what it did, and the key that takes it back. Hiding a column
+/// says which column it hid; any other says the step it kept.
+fn kept_at_once_words(draft: &Draft, name: &str) -> String {
+    let done = match (draft.long_name, draft.value("column")) {
+        ("hide-column", Some(column)) => format!("Hid {column}"),
+        _ => format!("Kept {name}"),
+    };
+    let back = brightfield_keys::registry()
+        .iter()
+        .find(|entry| entry.longname == "remove-step")
+        .and_then(|entry| entry.primary_key())
+        .map_or_else(
+            || "Remove step".to_string(),
+            |key| format!("{key} on the spine"),
+        );
+    format!("{done} \u{b7} {back} takes it back")
+}
+
 /// A value's key as a `'static` name, which a [`Draft`] holds its keys as. A
 /// draft begun from a kept step's request takes its keys from arc's
 /// description, which is read at run time, so each distinct key is kept for
@@ -884,7 +903,10 @@ impl MeridianApp {
                 } else {
                     // A refusal to keep is on a banner; the action asked for no value, so
                     // there is no draft to leave open.
-                    self.keep_draft(ctx, answer.name, answer.request, answer.model.model);
+                    let done = kept_at_once_words(&making.draft, &answer.name);
+                    if self.keep_draft(ctx, answer.name, answer.request, answer.model.model) {
+                        self.say_operation(ctx, done);
+                    }
                 }
             }
             return;
