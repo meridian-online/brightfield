@@ -573,3 +573,51 @@ fn a_protocol_with_no_other_table_says_so_and_opens_no_pick() {
     assert!(win.app.spine_pick().is_none());
     assert_eq!(win.app.focused_pane(), Some(grid()));
 }
+
+/// Each key the registry lists for the spine's pick reaches the pick's
+/// handler: the window records the command the key performed.
+#[test]
+fn every_spine_pick_key_is_answered() {
+    use brightfield_keys::{registry, BindingContext};
+
+    let mut swept = 0;
+    for verb in registry().iter().filter(|v| !v.is_reserved()) {
+        for binding in verb
+            .binding_specs
+            .iter()
+            .filter(|b| b.context == BindingContext::SpinePick)
+        {
+            swept += 1;
+            let key = match binding.keystrokes {
+                "j" => egui::Key::J,
+                "k" => egui::Key::K,
+                "down" => egui::Key::ArrowDown,
+                "up" => egui::Key::ArrowUp,
+                "space" => egui::Key::Space,
+                "enter" => egui::Key::Enter,
+                "escape" => egui::Key::Escape,
+                other => panic!("no key here for the pick's `{other}`"),
+            };
+            let mut win = window();
+            assert!(start(&mut win, &JOIN_LIKE, "house_age"), "{:?}", win.said());
+            win.run(vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            assert!(
+                win.app.keys_answered().contains(&verb.longname),
+                "{} is listed for {} in the spine's pick and no handler took it: {:?}",
+                binding.keystrokes,
+                verb.longname,
+                win.app.keys_answered()
+            );
+        }
+    }
+    assert!(
+        swept > 0,
+        "no built command binds a key in the spine's pick"
+    );
+}

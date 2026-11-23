@@ -368,7 +368,8 @@ impl Window {
         );
     }
 
-    /// The rows the Protocol palette lists when `space` opens it, closed again after.
+    /// The rows the Protocol palette offers live when `space` opens it, closed again after: a
+    /// row greyed for a missing input is listed and is not offered.
     fn palette_rows(&mut self) -> Vec<String> {
         self.key(egui::Key::Space, egui::Modifiers::NONE);
         assert_eq!(
@@ -376,7 +377,19 @@ impl Window {
             Some("palette"),
             "space opened no palette"
         );
-        let rows = self.app.open_palette_rows();
+        let missing = self.app.open_palette_missing();
+        let rows: Vec<String> = self
+            .app
+            .open_palette_rows()
+            .into_iter()
+            .filter(|r| !missing.iter().any(|(greyed, _)| greyed == r))
+            .collect();
+        if let Some((_, sentence)) = missing.iter().find(|(greyed, _)| *greyed == "remove-step") {
+            assert_eq!(
+                sentence,
+                "Remove step needs a step selected on the spine that can be removed."
+            );
+        }
         self.key(egui::Key::Escape, egui::Modifiers::NONE);
         assert_eq!(
             self.app.open_overlay(),

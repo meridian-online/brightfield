@@ -1545,6 +1545,9 @@ pub struct ProtocolModel {
     /// canvas to keep the freshly-selected node in frame (see `request_frame`).
     frame_gen: u64,
     key_table: BTreeMap<String, &'static str>,
+    /// The verbs a key performed since the window last took them
+    /// ([`Self::take_keys_answered`]).
+    keys_answered: Vec<&'static str>,
 }
 
 impl ProtocolModel {
@@ -1634,6 +1637,7 @@ impl ProtocolModel {
             layout_gen: 0,
             frame_gen: 0,
             key_table: protocol_key_table(),
+            keys_answered: Vec::new(),
         };
         // Seed the nav's spatial geometry from the collapsed layout so the very
         // first keystroke moves along the drawn flow.
@@ -2746,7 +2750,7 @@ impl ProtocolModel {
         if !self.pending_z && key == egui::Key::A && mods.shift_only() {
             self.pending_d = false;
             if let Some(verb) = self.key_table.get("shift-a").copied() {
-                return self.dispatch(verb, None);
+                return self.key_dispatch(verb, None);
             }
             return false;
         }
@@ -2754,7 +2758,7 @@ impl ProtocolModel {
         if !self.pending_z && key == egui::Key::O && mods.is_none() {
             self.pending_d = false;
             if let Some(verb) = self.key_table.get("o").copied() {
-                return self.dispatch(verb, None);
+                return self.key_dispatch(verb, None);
             }
             return false;
         }
@@ -2765,7 +2769,7 @@ impl ProtocolModel {
             self.pending_z = false;
             if std::mem::take(&mut self.pending_d) {
                 if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
-                    self.dispatch(verb, None);
+                    self.key_dispatch(verb, None);
                 }
             } else {
                 self.pending_d = true;
@@ -2780,7 +2784,7 @@ impl ProtocolModel {
                 .filter(|v| put_column_channel(v).is_some() && mods.is_none());
             return match verb {
                 Some(verb) => {
-                    self.dispatch(verb, None);
+                    self.key_dispatch(verb, None);
                     true
                 }
                 None => false,
@@ -2896,6 +2900,7 @@ impl ProtocolModel {
         let mut out = std::mem::take(&mut self.list_reports);
         if let Some(list) = self.column_list.as_mut() {
             out.extend(list.feed_events(events));
+            self.keys_answered.append(&mut list.take_keys_answered());
         }
         out
     }
@@ -3075,7 +3080,7 @@ impl ProtocolModel {
         if self.pending_z {
             self.pending_z = false;
             if let Some(verb) = self.chord_verb(key) {
-                return self.dispatch(verb, canvas_node);
+                return self.key_dispatch(verb, canvas_node);
             }
             // Otherwise fall through and treat this key normally.
         }
@@ -3089,7 +3094,7 @@ impl ProtocolModel {
         if key == egui::Key::D && mods.is_none() {
             if std::mem::take(&mut self.pending_d) {
                 if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
-                    return self.dispatch(verb, canvas_node);
+                    return self.key_dispatch(verb, canvas_node);
                 }
                 return false;
             }
@@ -3113,9 +3118,25 @@ impl ProtocolModel {
             return false;
         };
         match self.key_table.get(token).copied() {
-            Some(verb) => self.dispatch(verb, canvas_node),
+            Some(verb) => self.key_dispatch(verb, canvas_node),
             None => false,
         }
+    }
+
+    /// [`Self::dispatch`] for a verb a key resolved to, noting the verb as the
+    /// one its key performed when the model has an arm for it.
+    fn key_dispatch(&mut self, verb: &'static str, canvas_node: Option<&AssetId>) -> bool {
+        let performed = self.perform(verb, canvas_node);
+        if performed.is_some() {
+            self.keys_answered.push(verb);
+        }
+        performed.unwrap_or(false)
+    }
+
+    /// The verbs a key performed since this was last called, the open column
+    /// list's among them, oldest first.
+    pub fn take_keys_answered(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.keys_answered)
     }
 
     /// Dispatch a resolved verb longname to the model action. Returns whether
@@ -3135,7 +3156,14 @@ impl ProtocolModel {
     /// the window's own `apply` for the one verb that reads it today,
     /// `yank-address` — see `ProtocolModel::yank`.
     pub fn dispatch(&mut self, verb: &str, canvas_node: Option<&AssetId>) -> bool {
-        match verb {
+        self.perform(verb, canvas_node).unwrap_or(false)
+    }
+
+    /// Perform `verb`, and answer whether state changed, or `None` for a verb
+    /// the model has no arm for. A caller that must tell "nothing changed" from
+    /// "not one of mine" reads the difference; [`Self::dispatch`] does not.
+    pub fn perform(&mut self, verb: &str, canvas_node: Option<&AssetId>) -> Option<bool> {
+        Some(match verb {
             "protocol-producer" => self.move_dir(Dir::Left), // h
             "protocol-consumer" => self.move_dir(Dir::Right), // l
             "protocol-sibling-next" => {
@@ -3172,11 +3200,8 @@ impl ProtocolModel {
                 self.organise_ask = true;
                 true
             }
-            other => match put_column_channel(other) {
-                Some(channel) => self.put_outline_column(channel),
-                None => false,
-            },
-        }
+            other => self.put_outline_column(put_column_channel(other)?),
+        })
     }
 
     /// Move the cursor one node in the pressed vim direction (resolved to the
@@ -6245,6 +6270,24 @@ mod tests {
     use super::*;
 
     const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
+
+    /// A verb the model has no arm for is not one of its own, which `perform`
+    /// tells from one of its own that left the model as it was.
+    #[test]
+    fn perform_answers_none_for_a_verb_it_has_no_arm_for() {
+        let mut m = model();
+        assert_eq!(m.perform("zoom-in", None), None);
+        assert_eq!(m.perform("no-such-verb", None), None);
+        assert!(m.perform("open-steps-sheet", None).is_some());
+        // No column under the Outline's cursor: the model's own verb, and
+        // nothing put.
+        assert_eq!(m.perform("put-column-on-x", None), Some(false));
+        assert!(!m.dispatch("zoom-in", None));
+        assert!(
+            m.take_keys_answered().is_empty(),
+            "a verb performed by a call is not one a key performed"
+        );
+    }
 
     fn model() -> ProtocolModel {
         let inputs = load_protocol_offline(EDGAR).expect("load edgar_gleif");

@@ -314,8 +314,8 @@ impl Window {
         self.settle();
         // The row is there BEFORE it is typed. What a window offers is a
         // property of that window's state, and the other half of that claim —
-        // that a chart-spec window is offered nothing — is
-        // `overlay_wiring.rs::a_chart_start_is_offered_no_save`.
+        // that a chart-spec window is offered a greyed row — is
+        // `overlay_wiring.rs::a_chart_start_greys_save_and_run_with_their_sentences`.
         let rows = self.app.open_palette_rows();
         assert!(
             rows.iter().any(|r| r == "save-spec"),
@@ -1385,14 +1385,15 @@ fn going_home_takes_the_save_offer_with_the_start() {
     let door_rows = win.app.open_palette_rows();
     assert!(
         door_rows.iter().any(|r| r == "clear-selection"),
-        "the door's palette lists nothing a chart window offers, so an \
-         absence in it proves nothing: {door_rows:?}"
+        "the door's palette lists nothing a chart window offers, so a \
+         greyed row in it proves nothing: {door_rows:?}"
     );
+    let door_missing = win.app.open_palette_missing();
     assert!(
-        !door_rows.iter().any(|r| r == "save-spec"),
-        "the front door offers a Save; the document it was true of was \
+        door_missing.iter().any(|(v, _)| *v == "save-spec"),
+        "the front door offers a live Save; the document it was true of was \
          emptied one gesture ago, and confirming it here does nothing: \
-         {door_rows:?}"
+         {door_missing:?}"
     );
     win.key(egui::Key::Escape);
 
@@ -1429,10 +1430,11 @@ fn going_home_takes_the_save_offer_with_the_start() {
         "the palette is missing the verbs every chart window offers, so this \
          is not the chart palette: {rows:?}"
     );
+    let missing = win.app.open_palette_missing();
     assert!(
-        !rows.iter().any(|r| r == "save-spec"),
-        "the Save offer outlived the document it was true of — confirming it \
-         here closes the palette and does nothing: {rows:?}"
+        missing.iter().any(|(v, _)| *v == "save-spec"),
+        "the live Save offer outlived the document it was true of — \
+         confirming it here closes the palette and does nothing: {missing:?}"
     );
     win.key(egui::Key::Escape);
 }

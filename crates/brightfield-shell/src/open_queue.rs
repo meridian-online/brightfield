@@ -222,6 +222,8 @@ pub struct OpenQueue {
     /// Whether the app has finished launching, by which the files the launch was asked to open
     /// are on the queue: see [`Self::awaiting_launch`].
     launched: Arc<AtomicBool>,
+    /// The commands chosen from a menu since the window last looked, oldest first.
+    verbs: Arc<Mutex<Vec<&'static str>>>,
     /// The window's context, once it has drawn, so a push can ask for a frame.
     wake: Arc<OnceLock<egui::Context>>,
 }
@@ -235,6 +237,7 @@ impl Default for OpenQueue {
             quit: Arc::default(),
             preferences: Arc::default(),
             launched: Arc::new(AtomicBool::new(true)),
+            verbs: Arc::default(),
             wake: Arc::default(),
         }
     }
@@ -331,6 +334,24 @@ impl OpenQueue {
     #[must_use]
     pub fn take_preferences(&self) -> bool {
         self.preferences.swap(false, Ordering::SeqCst)
+    }
+
+    /// Ask the window to perform the command `longname` on its next frame, as a menu item
+    /// chosen does. The window refuses one it cannot take, saying why.
+    pub fn ask_verb(&self, longname: &'static str) {
+        self.verbs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(longname);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The commands asked for since the last take, oldest first, clearing the asks.
+    #[must_use]
+    pub fn take_verbs(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.verbs.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Wake `ctx` on each later push. The first context given is kept.

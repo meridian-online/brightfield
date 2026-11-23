@@ -14,8 +14,9 @@
 //!
 //! - [`CommandPalette`] — query + ranked corpus:
 //!   `brightfield_keys::palette_filter` over the registry at one altitude,
-//!   frequency/recency-ordered on an empty query. Reserved verbs are shown
-//!   flagged and refuse to run, exactly as the corpus says.
+//!   frequency/recency-ordered on an empty query. A reserved verb the palette
+//!   lists is flagged and refuses to run, as the corpus says; the chart's
+//!   palette is an allow-list of built verbs and lists none.
 //! - [`ArgPrompt`] — the step-wise argument collection for the two
 //!   argument-taking verbs, driven by `brightfield_model::arg_collector`.
 //!   Enumerable steps read as a filtered pick list; a step with no
@@ -39,7 +40,8 @@
 
 use brightfield_keys::fuzzy::fuzzy_score;
 use brightfield_keys::{
-    palette_filter, registry, Altitude, HelpRow, PaletteCandidate, RecencyCounter, VerbEntry,
+    palette_filter, registry, Altitude, HelpRow, PaletteCandidate, RecencyCounter, Situation,
+    VerbEntry,
 };
 use brightfield_model::arg_collector::{ArgCollector, ArgOutcome};
 use brightfield_spec::edit::ChartEdit;
@@ -58,25 +60,23 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// not the public build, and doc links do not get to widen an API.)
 ///
 /// `Altitude::View` in the registry is deliberately broader than this: it
-/// also names verbs the chart view's editing bridge will wire later
-/// (`add-mark`, `set-channel`, ...) and meta verbs this shell handles
-/// elsewhere rather than through `MeridianApp::apply`
-/// (`open-help`, `toggle-focus`, `reload-spec`, `toggle-presentation`,
-/// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
+/// also names reserved verbs no handler answers yet (`add-mark`,
+/// `toggle-focus`, `reload-spec`, `toggle-presentation`,
+/// `cycle-colour-scheme`, ...) and meta verbs this shell handles elsewhere
+/// rather than through `MeridianApp::apply` (`open-help`, ...). Listing
 /// the raw altitude scope on the chart view would put rows in the palette
 /// that confirm and silently do nothing; this curated list is what keeps
-/// that from happening. `undo` takes back a column kept from the shelf, by key
-/// and by the status band, and is left off this list: the palette would offer it
-/// on a page with no column kept, where confirming it changes no state.
-/// `overlay_wiring.rs`'s dispatchability test walks
+/// that from happening. `overlay_wiring.rs`'s dispatchability test walks
 /// [`chart_palette_candidates`] (the SAME list the palette actually shows,
 /// not a hand-copied mirror of it) and proves each of these longnames
 /// changes real state when confirmed.
 ///
-/// This list is the part that does not depend on the window. A verb whose
-/// dispatch does — `save-spec`, which needs a Protocol to write — is in the
-/// private `SAVEABLE_CHART_VERBS` instead, and [`chart_offers`] is the one
-/// predicate that combines them.
+/// These are the verbs that mean the same over whichever window. The two that
+/// act on the Protocol behind the chart, Save and Run, are in the private
+/// `PROTOCOL_CHART_VERBS`, and [`chart_palette_verbs`] is the two lists
+/// with each built operation's verb after them. A row whose command is missing an input here is listed greyed
+/// with the sentence it declares, from the situation the window gives the
+/// palette ([`CommandPalette::with_situation`]).
 pub const CHART_PALETTE_VERBS: &[&str] = &[
     "clear-selection",
     "open-home",
@@ -93,52 +93,18 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
     crate::window::EXPORT_CHART_PICTURE,
 ];
 
-/// The verbs a chart window offers **only when it has a Protocol to save** —
-/// the ones whose dispatch depends on what this window is, not on which view
-/// is showing.
+/// The two chart palette verbs that act on the Protocol behind the chart:
+/// `save-spec` writes it (`MeridianApp::save_protocol`) and `run-protocol` runs
+/// what Save writes (`MeridianApp::run_protocol`). Each declares that it needs
+/// a Protocol to act on, so over a chart spec or a shipped start its row is
+/// greyed with that sentence
+/// (`the_chart_palette_greys_save_where_there_is_nothing_to_save`).
 ///
-/// `save-spec` writes the Protocol a data file opened as
-/// (`MeridianApp::save_protocol`). A window over a chart spec has none, and on
-/// such a window the verb reaches its handler, finds no source and returns —
-/// which is precisely the row this module's list exists to keep out of the
-/// palette. So it is not on the unconditional list; it is here, behind
-/// [`chart_offers`].
-///
-/// `run-protocol` is here for the same reason: what it runs is the spec Save
-/// writes (`MeridianApp::run_protocol`), so a window with no spec to save has
-/// no spec to run.
-///
-/// Each built operation's verb is offered on the same terms
-/// ([`crate::operation_ui::built`]): an operation is recorded into a Protocol,
-/// so a window with no Protocol to save lists no operation
-/// (`the_chart_palette_lists_built_operations_only_where_a_protocol_is_saved`
-/// in `tests/operation_start.rs`). Chosen, it starts the operation as its key
-/// does, or says on the status band what it needs.
-const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
-
-/// **Whether a chart window in this state offers `verb`** — what the chart
-/// palette is built from.
-///
-/// `saveable` is whether the window holds a Protocol with a spec behind it, as
-/// `MeridianApp::save_protocol` decides it: for a data file, yes; for a chart
-/// spec, a shipped start or the front door, no.
-///
-/// A predicate rather than a list, because the list could not express it: with
-/// `save-spec` on a static allow table the palette drew a Save row over four
-/// of the five shipped starts and over every `--spec` launch, and confirming
-/// it closed the palette and did nothing.
-///
-/// The inspector rail does not ask this. It draws a *pane's* toolbar entry,
-/// and the entry declared for `save-spec` is the editor's own buffer save —
-/// a different write under the same verb name — so it filters the verb out on
-/// any window (`inspector::dispatchable`).
-#[must_use]
-pub fn chart_offers(verb: &str, saveable: bool) -> bool {
-    CHART_PALETTE_VERBS.contains(&verb)
-        || (saveable
-            && (SAVEABLE_CHART_VERBS.contains(&verb)
-                || crate::operation_ui::by_verb(verb).is_some()))
-}
+/// They are apart from [`CHART_PALETTE_VERBS`] because the inspector rail reads
+/// that list for the pane entries it may draw, and the entry a pane declares
+/// for `save-spec` is the editor's own buffer save, a different write under the
+/// same verb name (`inspector::dispatchable`).
+const PROTOCOL_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
 
 /// **Whether `text` on the chart palette's query line is a statement** rather
 /// than a search: its first word, after leading whitespace, is `select`,
@@ -158,48 +124,45 @@ pub fn is_statement(text: &str) -> bool {
     })
 }
 
-/// Every verb a chart window in this state offers, in declaration order —
-/// what the restricted palette is built from.
+/// The verbs the chart palette lists, in declaration order — what the
+/// restricted palette is built from.
 #[must_use]
-pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
+pub fn chart_palette_verbs() -> Vec<&'static str> {
     let operations: Vec<&'static str> = crate::operation_ui::built().map(|ui| ui.verb).collect();
     CHART_PALETTE_VERBS
         .iter()
-        .chain(SAVEABLE_CHART_VERBS)
+        .chain(PROTOCOL_CHART_VERBS)
         .chain(&operations)
-        .filter(|v| chart_offers(v, saveable))
         .copied()
         .collect()
 }
 
-/// **The verbs the Protocol palette offers**, in the registry's order: the
-/// verbs the registry scopes to [`Altitude::Protocol`], with the three that put
-/// the Outline's column on a channel where `puts_column` says choosing one
-/// would put it — a column under the Outline's cursor and the hero drawn to put
-/// it on. A row that confirms and does nothing is the row this keeps out, as
-/// [`chart_palette_verbs`] keeps one out of the chart palette;
+/// **The verbs the Protocol palette lists**, in the registry's order: the
+/// verbs the registry scopes to [`Altitude::Protocol`]. One whose input is
+/// missing is listed greyed with its sentence: the three that put the
+/// Outline's column on a channel while the graph is on the canvas, and
+/// `remove-step` while no removable step is selected.
 /// `every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen`
-/// chooses each row it leaves in. `remove-step` is offered where `removes_step`
-/// says the selected asset's step can be removed, so a load is not offered it.
+/// chooses each row left enabled.
 #[must_use]
-pub fn protocol_palette_verbs(puts_column: bool, removes_step: bool) -> Vec<&'static str> {
+pub fn protocol_palette_verbs() -> Vec<&'static str> {
     registry()
         .iter()
         .filter(|v| v.applies_at(Altitude::Protocol))
         .map(|v| v.longname)
-        .filter(|v| puts_column || crate::protocol::put_column_channel(v).is_none())
-        .filter(|v| removes_step || *v != crate::protocol::REMOVE_STEP)
         .collect()
 }
 
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query) or frequency then
 /// per-session recency (empty query). Reserved verbs are included, flagged,
-/// and refuse to run — never hidden.
+/// and refuse to run — never hidden. So is a verb missing an input in the
+/// situation the palette was given, with the sentence it declares.
 pub struct CommandPalette {
     reg: Vec<VerbEntry>,
     altitude: Altitude,
     recency: RecencyCounter,
+    situation: Option<Situation>,
     matches: Vec<PaletteCandidate>,
     hint: Option<PickerHint>,
     picked: Option<&'static str>,
@@ -215,6 +178,7 @@ impl CommandPalette {
             reg: registry(),
             altitude,
             recency,
+            situation: None,
             matches: Vec::new(),
             hint: None,
             picked: None,
@@ -236,10 +200,20 @@ impl CommandPalette {
                 .collect(),
             altitude,
             recency,
+            situation: None,
             matches: Vec::new(),
             hint: None,
             picked: None,
         }
+    }
+
+    /// The same palette reading each row's declared needs against what the
+    /// window holds: a row with a need missing is greyed with its sentence and
+    /// refuses to run. Without a situation no need is read.
+    #[must_use]
+    pub fn with_situation(mut self, situation: Situation) -> Self {
+        self.situation = Some(situation);
+        self
     }
 
     /// The verb the user confirmed, surrendered once. The host dispatches it
@@ -269,18 +243,36 @@ impl CommandPalette {
 /// arm in the sweep is a gap the sweep itself refuses to pass over in
 /// silence — see `overlay_wiring.rs`.
 #[must_use]
-pub fn chart_palette_candidates(saveable: bool) -> Vec<&'static str> {
-    let allow = chart_palette_verbs(saveable);
+pub fn chart_palette_candidates() -> Vec<&'static str> {
+    chart_palette_rows(None)
+        .into_iter()
+        .map(|c| c.longname)
+        .collect()
+}
+
+/// The chart palette's rows under an empty query, read against `situation`
+/// when one is given.
+fn chart_palette_rows(situation: Option<Situation>) -> Vec<PaletteCandidate> {
+    let allow = chart_palette_verbs();
     let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+    if let Some(situation) = situation {
+        p = p.with_situation(situation);
+    }
     p.update_query("");
     (0..p.match_count())
-        .map(|i| p.candidate(i).unwrap().longname)
+        .filter_map(|i| p.candidate(i).cloned())
         .collect()
 }
 
 impl PickerDelegate for CommandPalette {
     fn update_query(&mut self, query: &str) {
-        self.matches = palette_filter(&self.reg, self.altitude, query, &self.recency);
+        self.matches = palette_filter(
+            &self.reg,
+            self.altitude,
+            query,
+            &self.recency,
+            self.situation.as_ref(),
+        );
         self.hint = None;
     }
 
@@ -291,9 +283,11 @@ impl PickerDelegate for CommandPalette {
     fn row(&self, index: usize) -> PickerRow {
         let c = &self.matches[index];
         let mut row = PickerRow::new(c.longname);
-        row = match c.reserved_reason {
-            Some(reason) => row.detail(format!("{} — {}", c.help, reason.reason())),
-            None => row.detail(c.help),
+        // The row stays drawn as a row: a greyed one reads by its detail.
+        row = match (c.reserved_reason, &c.missing) {
+            (Some(reason), _) => row.detail(format!("{} — {}", c.help, reason.reason())),
+            (None, Some(sentence)) => row.detail(format!("{} — {sentence}", c.help)),
+            (None, None) => row.detail(c.help),
         };
         if let Some(key) = c.primary_key {
             row = row.keystroke(key);
@@ -305,6 +299,10 @@ impl PickerDelegate for CommandPalette {
         let Some(c) = index.and_then(|i| self.matches.get(i)) else {
             return PickerOutcome::KeepOpen;
         };
+        if let Some(sentence) = &c.missing {
+            self.hint = Some(PickerHint::Error(sentence.clone()));
+            return PickerOutcome::KeepOpen;
+        }
         if !c.enabled {
             let reason = c
                 .reserved_reason
@@ -343,16 +341,17 @@ struct HelpLine {
     row: HelpRow,
 }
 
-/// The keyboard help sheet: every verb with its keys and help, grouped by the
-/// altitudes it applies at, filterable, read-only. Enter dismisses — there is
-/// nothing to run from a reference sheet.
+/// The keyboard help sheet: each built verb with its keys and help, grouped by
+/// the altitudes it applies at, filterable, read-only. A reserved verb has no
+/// key and is left out. Enter dismisses — there is nothing to run from a
+/// reference sheet.
 pub struct HelpSheet {
     lines: Vec<HelpLine>,
     matches: Vec<usize>,
 }
 
 impl HelpSheet {
-    /// The sheet over the whole registry, grouped by altitude set in a fixed
+    /// The sheet over the registry's built verbs, grouped by altitude set in a fixed
     /// reading order (dashboard-and-view rows first, protocol rows after),
     /// registry order within a group.
     #[must_use]
@@ -1278,13 +1277,13 @@ mod tests {
 
     #[test]
     fn the_chart_palette_lists_only_the_allowed_verbs() {
-        let names = chart_palette_candidates(false);
+        let names = chart_palette_candidates();
         assert!(!names.is_empty(), "the chart palette lists nothing");
+        let allowed = chart_palette_verbs();
         for name in &names {
             assert!(
-                chart_offers(name, false),
-                "{name} is listed on the chart palette for a window that \
-                 offers it nothing"
+                allowed.contains(name),
+                "{name} is listed on the chart palette and is not one of its verbs"
             );
         }
         // A verb genuinely applicable at `Altitude::View` but NOT wired to
@@ -1297,59 +1296,96 @@ mod tests {
         );
         assert!(
             !names.contains(&"change-mark-type"),
-            "change-mark-type awaits the editing bridge — it must not leak \
-             onto the chart palette: {names:?}"
+            "change-mark-type is reserved until the chart can be edited from \
+             the keys — it must not leak onto the chart palette: {names:?}"
         );
     }
 
-    /// **What a window offers is a property of that window.** A chart-spec
-    /// window is offered no Save; a window with a Protocol behind it is, and
-    /// the rest of the list is the same either way.
+    /// **What a window offers is a property of that window.** Over a chart
+    /// with no Protocol to act on, Save and Run are listed greyed, each with
+    /// the sentence it declares; over one with a Protocol they are live. No
+    /// other row moves with that.
     ///
-    /// The pair used to be one static list, so the palette drew a Save row
-    /// over four of the five shipped starts and over every `--spec` launch,
-    /// and confirming it closed the palette and did nothing.
+    /// The rows used to be live over each window, so confirming Save over a
+    /// shipped start closed the palette and did nothing.
     #[test]
-    fn the_chart_palette_offers_save_only_where_there_is_something_to_save() {
-        let without = chart_palette_candidates(false);
-        let with = chart_palette_candidates(true);
-        // Save, the Run that runs what Save writes, and each built operation,
-        // which is recorded into a Protocol: the rows a window with no Protocol
-        // behind it would confirm to no effect.
-        let mut saveable = vec!["save-spec", crate::window::RUN_PROTOCOL];
-        saveable.extend(crate::operation_ui::built().map(|ui| ui.verb));
-        for verb in saveable.iter().copied() {
+    fn the_chart_palette_greys_save_where_there_is_nothing_to_save() {
+        use brightfield_keys::{Condition, Selected};
+        let chart_start = Situation {
+            selected: vec![Selected::Protocol, Selected::Chart],
+            ..Situation::default()
+        };
+        let data_file = Situation {
+            conditions: vec![
+                Condition::ProtocolToRun,
+                Condition::ProtocolToSave,
+                Condition::Trusted,
+            ],
+            ..chart_start.clone()
+        };
+        let without = chart_palette_rows(Some(chart_start));
+        let with = chart_palette_rows(Some(data_file));
+        let row = |rows: &[PaletteCandidate], verb: &str| {
+            rows.iter()
+                .find(|c| c.longname == verb)
+                .unwrap_or_else(|| panic!("{verb} is not listed on the chart palette"))
+                .clone()
+        };
+        let on_the_protocol = ["save-spec", crate::window::RUN_PROTOCOL];
+        for verb in on_the_protocol {
+            let greyed = row(&without, verb);
+            assert!(!greyed.enabled, "{verb} is live with no Protocol to act on");
             assert!(
-                !without.contains(&verb),
-                "a window with no Protocol behind it is offered {verb}, which \
-                 confirms and does nothing: {without:?}"
+                greyed
+                    .missing
+                    .as_deref()
+                    .is_some_and(|sentence| sentence.contains("needs a Protocol to ")),
+                "{verb} says {:?}",
+                greyed.missing
             );
+            let live = row(&with, verb);
             assert!(
-                with.contains(&verb),
-                "a window with a Protocol behind it is offered no {verb}: {with:?}"
+                live.enabled && live.missing.is_none(),
+                "{verb} is greyed over a Protocol: {:?}",
+                live.missing
             );
-            assert!(!chart_offers(verb, false));
-            assert!(chart_offers(verb, true));
         }
-        // Nothing else moves with the state.
-        let mut rest: Vec<&str> = with
-            .iter()
-            .copied()
-            .filter(|v| !saveable.contains(v))
-            .collect();
-        rest.sort_unstable();
-        let mut base = without.clone();
-        base.sort_unstable();
-        assert_eq!(
-            rest, base,
-            "the saveable state changed more than the Save and Run rows"
+        // Nothing else moves with the Protocol.
+        for candidate in &without {
+            if on_the_protocol.contains(&candidate.longname) {
+                continue;
+            }
+            assert_eq!(
+                row(&with, candidate.longname).enabled,
+                candidate.enabled,
+                "{} moved with the Protocol",
+                candidate.longname
+            );
+        }
+        assert_eq!(without.len(), with.len());
+    }
+
+    #[test]
+    fn a_row_missing_an_input_says_its_sentence_and_refuses_to_run() {
+        let allow = chart_palette_verbs();
+        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow)
+            .with_situation(Situation::default());
+        p.update_query("zoom-in");
+        let i = (0..p.match_count())
+            .find(|&i| p.candidate(i).unwrap().longname == "zoom-in")
+            .expect("zoom-in is listed with its input missing");
+        let sentence = "Zoom in needs a chart on the canvas.";
+        assert!(
+            p.row(i)
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.ends_with(sentence)),
+            "the row's detail carries the sentence: {:?}",
+            p.row(i).detail
         );
-        for verb in CHART_PALETTE_VERBS {
-            assert!(
-                chart_offers(verb, false) && chart_offers(verb, true),
-                "{verb} is unconditional and stopped being offered"
-            );
-        }
+        assert_eq!(p.confirm(Some(i), "zoom-in"), PickerOutcome::KeepOpen);
+        assert!(p.take_picked().is_none());
+        assert_eq!(p.hint(), Some(PickerHint::Error(sentence.to_owned())));
     }
 
     #[test]
@@ -1390,10 +1426,16 @@ mod tests {
     // -- HelpSheet ----------------------------------------------------------
 
     #[test]
-    fn the_sheet_covers_the_whole_registry_and_reads_in_groups() {
+    fn the_sheet_covers_the_built_verbs_and_reads_in_groups() {
         let mut sheet = HelpSheet::new();
         sheet.update_query("");
-        assert_eq!(sheet.match_count(), registry().len());
+        let built = registry().iter().filter(|v| !v.is_reserved()).count();
+        assert_eq!(sheet.match_count(), built);
+        // A row with no key would list a command no key reaches.
+        for i in 0..sheet.match_count() {
+            let row = sheet.row(i);
+            assert!(row.keystroke.is_some(), "{} shows no key", row.label);
+        }
         // Headers appear exactly at group changes, and every group appears
         // exactly once — grouping is contiguous, not interleaved.
         let mut seen = Vec::new();
@@ -1414,7 +1456,7 @@ mod tests {
     fn the_sheet_filters_without_losing_its_grouping() {
         let mut sheet = HelpSheet::new();
         sheet.update_query("drill");
-        let full = registry().len();
+        let full = registry().iter().filter(|v| !v.is_reserved()).count();
         let hits = sheet.match_count();
         assert!(hits > 0, "nothing matched a real verb fragment");
         assert!(

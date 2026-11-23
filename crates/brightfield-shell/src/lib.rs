@@ -134,16 +134,22 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
-// One of the crate's two modules that write `unsafe`, beside `mac_open`: Foundation's
-// security-scoped bookmark calls behind the grant store.
+// One of the crate's three modules that write `unsafe`, beside `mac_open` and `mac_menu`:
+// Foundation's security-scoped bookmark calls behind the grant store.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_grants;
-// The other module that writes `unsafe`: Objective-C messages to the Apple Event manager, the app
+// The third module that writes `unsafe`: Objective-C messages to AppKit's menus, for the menu bar
+// built from the command list.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod mac_menu;
+// Another module that writes `unsafe`: Objective-C messages to the Apple Event manager, the app
 // menu, the open panel and the workspace's default-app call.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_open;
+pub mod menu_bar;
 pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;

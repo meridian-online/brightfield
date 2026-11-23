@@ -22,6 +22,7 @@
 //! operation previews it and keeps a draft, and a Save does the writing.
 
 use crate::altitude::Altitude;
+use crate::availability::{Condition, Need, Requirement, Selected};
 use crate::registry::{
     BindingContext, BindingSpec, CommandTier, Drives, Scores, VerbEntry, VerbStatus,
 };
@@ -34,10 +35,18 @@ fn grid(keystrokes: &'static str) -> BindingSpec {
     }
 }
 
+/// What an operation started from the grid needs: a Protocol its step is
+/// saved into, and the grid's cursor on a cell.
+const NEEDS_OPERATION: &[Requirement] = &[
+    Requirement::of(Need::Condition(Condition::ProtocolToSave)),
+    Requirement::of(Need::Selected(Selected::GridCell)),
+];
+
 /// An operation's entry: its long name as the verb, one key in the grid's
 /// context, its help line, and the scores that defend the key.
 fn entry(
     longname: &'static str,
+    label: &'static str,
     key: &'static str,
     help: &'static str,
     (frequency, mnemonic, convention): (u8, u8, u8),
@@ -45,6 +54,8 @@ fn entry(
 ) -> VerbEntry {
     VerbEntry {
         longname,
+        label,
+        needs: NEEDS_OPERATION,
         tier: CommandTier::View,
         binding_specs: vec![grid(key)],
         scope_applicability: vec![Altitude::View],
@@ -66,6 +77,7 @@ const HIDE_COLUMN_BUILT: bool = false;
 fn hide_column() -> VerbEntry {
     entry(
         "hide-column",
+        "Hide column",
         "-",
         "Hide the cursor's column; its header's menu does the same",
         (3, 4, 4),
@@ -78,6 +90,7 @@ const RENAME_COLUMN_BUILT: bool = false;
 fn rename_column() -> VerbEntry {
     entry(
         "rename-column",
+        "Rename column",
         "shift-r",
         "Rename the cursor's column in its header; a double-click on the name does the same",
         (3, 4, 2),
@@ -90,6 +103,7 @@ const DERIVE_COLUMN_BUILT: bool = false;
 fn derive_column() -> VerbEntry {
     entry(
         "derive-column",
+        "Derive column",
         "=",
         "Add a column from an expression, typed in a new header at the table's end",
         (3, 4, 4),
@@ -102,6 +116,7 @@ const CAST_COLUMN_BUILT: bool = false;
 fn cast_column() -> VerbEntry {
     entry(
         "cast-column",
+        "Cast column",
         "shift-t",
         "Change the cursor's column's type, starting from the type FineType reads",
         (2, 4, 2),
@@ -114,6 +129,7 @@ const SUMMARISE_ROWS_BUILT: bool = false;
 fn summarise_rows() -> VerbEntry {
     entry(
         "summarise-rows",
+        "Summarise rows",
         "shift-f",
         "Summarise the rows by the cursor's column: a count of each value, then the values to add",
         (3, 3, 5),
@@ -126,6 +142,7 @@ const DEDUPE_ROWS_BUILT: bool = false;
 fn dedupe_rows() -> VerbEntry {
     entry(
         "dedupe-rows",
+        "Remove duplicate rows",
         "shift-u",
         "Remove the table's duplicate rows",
         (2, 3, 2),
@@ -138,6 +155,7 @@ const LIMIT_ROWS_BUILT: bool = false;
 fn limit_rows() -> VerbEntry {
     entry(
         "limit-rows",
+        "Limit rows",
         "shift-l",
         "Keep the top rows by the cursor's column: ten, largest first, until changed",
         (2, 4, 2),
@@ -150,6 +168,7 @@ const FILL_NULLS_BUILT: bool = false;
 fn fill_nulls() -> VerbEntry {
     entry(
         "fill-nulls",
+        "Fill missing values",
         "f",
         "Fill the cursor's column's missing values, starting from a suggested value",
         (2, 4, 3),
@@ -162,6 +181,7 @@ const JOIN_TABLES_BUILT: bool = false;
 fn join_tables() -> VerbEntry {
     entry(
         "join-tables",
+        "Join tables",
         "&",
         "Join the table in front to one picked in the spine, on keys proposed from the model or the cursor's column",
         (2, 4, 5),
@@ -174,6 +194,7 @@ const APPEND_ROWS_BUILT: bool = false;
 fn append_rows() -> VerbEntry {
     entry(
         "append-rows",
+        "Append rows",
         "shift-a",
         "Append the rows of tables picked in the spine, matching columns by name",
         (2, 4, 3),

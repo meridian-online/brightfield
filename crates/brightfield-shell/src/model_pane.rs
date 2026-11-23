@@ -678,25 +678,31 @@ impl ModelPane {
     /// verb with no join selected, say. `None` when `longname` is not a reshape verb.
     #[must_use]
     pub fn reshape_action(&self, longname: &str) -> Option<Result<ModelAction, String>> {
+        use brightfield_keys::{Need, Selected};
         if !RESHAPE_VERBS.contains(&longname) {
             return None;
         }
-        let join = match &self.focus.selected {
-            Some(Selection::Relationship(name)) => Ok(name.clone()),
-            _ => Err(format!("Select a join first: {longname} acts on a join")),
+        // The sentence the verb declares for the selection it acts on
+        // (`the_refusals_the_window_says_are_declared`).
+        let declared = |selected: Selected| {
+            brightfield_keys::sentence(longname, Need::Selected(selected)).unwrap_or_default()
         };
-        let table = match &self.focus.selected {
+        let join = || match &self.focus.selected {
+            Some(Selection::Relationship(name)) => Ok(name.clone()),
+            _ => Err(declared(Selected::ModelJoin)),
+        };
+        let table = || match &self.focus.selected {
             Some(Selection::Dataset(name)) => Ok(name.clone()),
-            _ => Err(format!("Select a table first: {longname} acts on a table")),
+            _ => Err(declared(Selected::ModelTable)),
         };
         Some(match longname {
-            "keep-join" => join.map(ModelAction::Keep),
-            "drop-join" => join.map(ModelAction::Drop),
-            "change-join-keys" => join.map(ModelAction::ChangeKeys),
-            "add-join" => table.map(ModelAction::AddJoin),
-            "set-role" => table.map(ModelAction::PickRole),
-            "fold-table" => table.map(ModelAction::FoldInto),
-            "unfold-table" => table.and_then(|name| {
+            "keep-join" => join().map(ModelAction::Keep),
+            "drop-join" => join().map(ModelAction::Drop),
+            "change-join-keys" => join().map(ModelAction::ChangeKeys),
+            "add-join" => table().map(ModelAction::AddJoin),
+            "set-role" => table().map(ModelAction::PickRole),
+            "fold-table" => table().map(ModelAction::FoldInto),
+            "unfold-table" => table().and_then(|name| {
                 let folded = self
                     .model
                     .datasets
@@ -710,21 +716,21 @@ impl ModelPane {
             }),
             // Each of these two refuses a table already as it would leave it, so a stray key
             // changes nothing and marks nothing the analyst's.
-            "leave-out-table" => table.and_then(|name| {
+            "leave-out-table" => table().and_then(|name| {
                 if self.is_excluded(&name) {
                     Err(format!("{name} is already left out of the model"))
                 } else {
                     Ok(ModelAction::LeaveOut(name))
                 }
             }),
-            "include-table" => table.and_then(|name| {
+            "include-table" => table().and_then(|name| {
                 if self.is_excluded(&name) {
                     Ok(ModelAction::Include(name))
                 } else {
                     Err(format!("{name} is not left out of the model"))
                 }
             }),
-            _ => table.map(ModelAction::RetypeColumn),
+            _ => table().map(ModelAction::RetypeColumn),
         })
     }
 

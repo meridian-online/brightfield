@@ -120,8 +120,9 @@ impl Selection {
 /// dead while the buffer is clean and, when the buffer is dirty, dispatches the
 /// **Protocol** save and reports success over an edit that was never written.
 /// The palette is the surface that offers the Protocol save, because there the
-/// row is the verb rather than a pane's button — see
-/// [`crate::overlays::chart_offers`]. Splitting the verb is what would let this
+/// row is the verb rather than a pane's button: it is listed through
+/// [`crate::overlays::chart_palette_verbs`] and greyed from what the window
+/// holds ([`crate::overlays::CommandPalette::with_situation`]). Splitting the verb is what would let this
 /// rail offer either one honestly, and that is not this change.
 ///
 /// This is the pane's whole answer to "what can be done with it": a

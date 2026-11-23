@@ -285,6 +285,8 @@ const TITLE_MARK_SIDE: f32 = spacing::ROW_GRID;
 /// be able to name every control on it, which is why an icon-only control
 /// carries its name here rather than relying on the picture.
 pub const HOME_CONTROL_NAME: &str = "Home";
+/// The name of the mark where it opens the menus: on a host with no menu bar.
+pub const MENUS_CONTROL_NAME: &str = "Menus";
 
 /// The curated section's heading: the datasets chosen for this build.
 ///
@@ -618,6 +620,10 @@ pub const RENAME_PROTOCOL: &str = "rename-protocol";
 
 /// The `untrust-protocol` verb's longname: the registry's, spelled once here for the window.
 pub const UNTRUST_PROTOCOL: &str = "untrust-protocol";
+/// The verb that reads the open Protocol's data file again.
+pub const RELOAD_DATA: &str = "reload-data";
+/// The verb that lets go of the chart's selection.
+pub const CLEAR_SELECTION: &str = "clear-selection";
 
 /// The `copy-chart-picture` verb's longname — the registry's, spelled once here
 /// for the window's dispatch, its key and the palette.
@@ -2212,6 +2218,12 @@ struct TopBar {
     /// The band's controls with their names, as drawn: Home by its hover
     /// text, and the flow toggle by its label on a frame that drew it.
     controls: Vec<chrome::NamedControl>,
+    /// The mark's rect, when the band drew it.
+    mark_rect: Option<egui::Rect>,
+    /// What the menus the mark opens drew, on a host where it opens them.
+    menu_drawn: Vec<crate::menu_bar::DrawnRow>,
+    /// The command chosen from those menus this frame.
+    menu_choice: Option<&'static str>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -2480,7 +2492,8 @@ fn new_protocol_body(ui: &mut egui::Ui, sheet: &mut NewProtocolSheet) -> bool {
 /// the registry declares — the shell may not invent bindings any more than it
 /// may invent verbs.
 struct OverlayKeys {
-    palette: Option<&'static str>,
+    /// Each key `open-palette` is bound to, the bare one and the chord.
+    palette: Vec<&'static str>,
     help: Option<&'static str>,
     jump: Option<&'static str>,
 }
@@ -2494,7 +2507,11 @@ impl OverlayKeys {
                 .and_then(brightfield_keys::VerbEntry::primary_key)
         };
         Self {
-            palette: primary("open-palette"),
+            palette: reg
+                .iter()
+                .find(|v| v.longname == "open-palette")
+                .map(|v| v.binding_specs.iter().map(|b| b.keystrokes).collect())
+                .unwrap_or_default(),
             help: primary("open-help"),
             jump: primary("focus-jump"),
         }
@@ -2886,6 +2903,15 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-shift-h" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
+        "cmd-shift-p" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::P))
+        }
+        "cmd-shift-u" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::U))
+        }
+        "cmd-shift-r" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R))
+        }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
@@ -2985,6 +3011,52 @@ fn consume_unshifted(i: &mut egui::InputState, key: egui::Key) -> bool {
         )
     });
     i.events.len() != before
+}
+
+/// Whether `event` is the keyboard's: a key, the text it typed, or the copy,
+/// cut or paste a host makes of a chord in place of its key event.
+fn is_keyboard_event(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_)
+    )
+}
+
+/// The registry's own spelling of `longname`, when it registers the verb: the
+/// name with the lifetime the window's records keep.
+fn registered_longname(longname: &str) -> Option<&'static str> {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            brightfield_keys::registry()
+                .iter()
+                .map(|v| v.longname)
+                .collect()
+        })
+        .iter()
+        .copied()
+        .find(|name| *name == longname)
+}
+
+/// The egui key the registry's `clear-selection` is bound to. Read off the
+/// registry as [`shelf_entry_key`] reads its key; a token this does not map is
+/// a key that clears no selection.
+fn clear_selection_egui_key() -> Option<egui::Key> {
+    static TOKEN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    let token = *TOKEN.get_or_init(|| {
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == CLEAR_SELECTION)
+            .and_then(brightfield_keys::VerbEntry::primary_key)
+    });
+    match token? {
+        "escape" => Some(egui::Key::Escape),
+        _ => None,
+    }
 }
 
 /// The egui key the registry's `set-channel` is bound to, which hands the
@@ -3949,6 +4021,28 @@ pub struct MeridianApp {
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
+    /// The verbs a key performed on the frame being drawn, or the last one
+    /// drawn: what [`Self::keys_answered`] hands a test that asks whether a key
+    /// the help lists reached a handler.
+    keys_answered: Vec<&'static str>,
+    /// The verbs [`Self::apply`] performed on the frame being drawn, or the
+    /// last one drawn.
+    verbs_applied: Vec<&'static str>,
+    /// The menu bar's rows as the last frame left them, shared with whatever
+    /// draws the menus.
+    menu_state: crate::menu_bar::MenuState,
+    /// The sentence said for the last menu command the window refused.
+    menu_said: Option<String>,
+    /// Which menus this window's host draws.
+    menu_host: crate::menu_bar::MenuHost,
+    /// Where the title band drew the mark on the last frame that drew it.
+    mark_rect: Option<egui::Rect>,
+    /// What the menus the mark opens drew on the last frame.
+    mark_menu_drawn: Vec<crate::menu_bar::DrawnRow>,
+    /// `untrust-protocol`'s key, off the registry.
+    untrust_binding: Option<&'static str>,
+    /// `reload-data`'s key, off the registry.
+    reload_binding: Option<&'static str>,
 }
 
 impl MeridianApp {
@@ -4401,6 +4495,24 @@ impl MeridianApp {
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
             keyboard_held: false,
+            keys_answered: Vec::new(),
+            verbs_applied: Vec::new(),
+            menu_state: crate::menu_bar::MenuState::default(),
+            menu_said: None,
+            // The host's own menus until the host says otherwise
+            // (`set_menu_host`), so a headless window draws the same band on
+            // each platform the suite is built for.
+            menu_host: crate::menu_bar::MenuHost::Native,
+            mark_rect: None,
+            mark_menu_drawn: Vec::new(),
+            untrust_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == UNTRUST_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            reload_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == RELOAD_DATA)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -6597,6 +6709,8 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.keys_answered.clear();
+        self.verbs_applied.clear();
         self.open_queue.wake_with(&ctx);
         // Files dropped on the front door open as the picker's choice does, the files of one drop
         // together as one Protocol. Dropped on an open Protocol, they are added to it as sources,
@@ -6836,8 +6950,24 @@ impl MeridianApp {
 
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
-        if self.overlay.is_none() {
+        //
+        // The menus the mark opens stand over the window as an overlay does:
+        // while they are open the plot recorded stays the one under the
+        // pointer before they opened, and the frame's keys are theirs, held
+        // back from the window's handlers until the title band draws them.
+        let menus_open = !self.mark_menu_drawn.is_empty();
+        if self.overlay.is_none() && !menus_open {
             self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| self.plot_under(at));
+        }
+        let mut menu_keys = Vec::new();
+        if menus_open {
+            ctx.input_mut(|i| {
+                let (keys, rest) = std::mem::take(&mut i.events)
+                    .into_iter()
+                    .partition(is_keyboard_event);
+                menu_keys = keys;
+                i.events = rest;
+            });
         }
         // The spine's pick, ahead of every other handler: while the spine picks a table for
         // an operation, its five keys are the pick's.
@@ -6851,10 +6981,12 @@ impl MeridianApp {
         // its list holds them, they are not the frame verbs' or an overlay
         // opener's.
         self.shelf_keys(&ctx, graph_on_canvas);
+        self.take_pane_keys_answered();
         // The Outline's `z` and a channel, on the shelf's side of every other
         // bare key: `x` and `c` after a `z` are the chord's, not the axis
         // lock's or the colour scheme's.
         self.outline_keys(&ctx, graph_on_canvas);
+        self.take_pane_keys_answered();
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, graph_on_canvas);
@@ -6882,6 +7014,8 @@ impl MeridianApp {
         // The Versions panel's keys, on the same terms: with the panel focused
         // its keys are the cursor's, the step back's and the way back to now.
         self.versions_keys(&ctx, graph_on_canvas);
+        // Esc lets go of a held selection, ahead of the way back to the tiles.
+        self.clear_selection_key(&ctx, graph_on_canvas);
         // Esc back to every panel tile, from a panel opened from one.
         self.tile_back_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
@@ -6944,6 +7078,7 @@ impl MeridianApp {
                     .doc
                     .model
                     .feed_events(&events, canvas_node.as_ref());
+                self.take_pane_keys_answered();
             }
             if let Some(addr) = self.protocol.doc.model.take_yank_request() {
                 ctx.copy_text(addr);
@@ -6986,13 +7121,31 @@ impl MeridianApp {
 
         let mut bar = TopBar::default();
         let title = plan.expect_region(arrangement::TITLE_BAND);
+        // The keys held back for the mark's open menus, given to the frame
+        // again as the band that draws them is drawn.
+        if !menu_keys.is_empty() {
+            ctx.input_mut(|i| i.events.append(&mut menu_keys));
+        }
         let drawn = Panel::top(panel_id(title, false))
             .resizable(false)
             .exact_size(band_extent(title))
             .frame(chrome::region_frame(title.frame, ui, mode))
             .show(ui, |ui| bar = self.title_band(ui));
+        // What the menus left of them is not the window's either.
+        if menus_open {
+            ctx.input_mut(|i| {
+                i.events.retain(|e| !is_keyboard_event(e));
+            });
+        }
         self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
+        self.mark_rect = bar.mark_rect;
+        self.mark_menu_drawn = std::mem::take(&mut bar.menu_drawn);
+        // A command chosen from the mark's menus goes the way one chosen from
+        // the native bar goes, so it is refused on the same terms.
+        if let Some(choice) = bar.menu_choice.take() {
+            self.open_queue.ask_verb(choice);
+        }
 
         let canvas = plan.expect_region(arrangement::CANVAS);
 
@@ -8247,18 +8400,28 @@ impl MeridianApp {
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
+        // The commands chosen from a menu since the last frame, applied with
+        // the frame's own requests.
+        self.take_menu_verbs(&mut requests);
         self.apply(&ctx, graph_on_canvas, requests);
         // Cmd+S, after the panes have drawn: the YAML editor takes the chord while its text holds
         // the keyboard, saves its buffer and raises the window's Save, applied just above, so
         // what reaches here is a press from anywhere else.
         self.save_key(&ctx);
+        // What the panes' own keys performed as they drew: the editor's Save.
+        self.take_pane_keys_answered();
         self.quit_key(&ctx);
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
         self.rename_key(&ctx);
+        // ⌘⇧U and ⌘⇧R, which reopen the Protocol as a rename does.
+        self.untrust_key(&ctx);
+        self.reload_key(&ctx);
         self.browser_key(&ctx);
         self.new_protocol_key(&ctx);
         self.preferences_key(&ctx);
+        // What the menus read until the next frame.
+        self.menu_state.publish(self.menu_rows());
         if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
             if let Some(parent) = self
                 .open_protocol_dir()
@@ -8405,8 +8568,8 @@ impl MeridianApp {
     ///
     /// The palette opens either way, but the candidate list differs: with the
     /// graph on the canvas, `Altitude::Protocol`'s registry scope dispatches
-    /// through the model, less the rows that would put the Outline's column on
-    /// a chart the graph hides — [`Self::open_protocol_palette`]. With a chart
+    /// through the model, with the rows that would put the Outline's column on
+    /// a chart the graph hides greyed — [`Self::open_protocol_palette`]. With a chart
     /// there, most `Altitude::View` verbs have no handler in this
     /// shell yet — the editing bridge that would let `add-mark`,
     /// `set-channel` and the rest apply a `ChartEdit` is not landed — so
@@ -8417,20 +8580,32 @@ impl MeridianApp {
     /// graph — it has no chart equivalent yet — and the help sheet is
     /// read-only and opens anywhere.
     fn overlay_open_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
-        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+        if self.overlay.is_some() {
             return;
         }
-        let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
-        if self.model.as_ref().is_some_and(ModelDoc::shown) && pressed(self.overlay_keys.palette) {
-            self.open_model_palette();
-        } else if graph_on_canvas && pressed(self.overlay_keys.palette) {
-            self.open_protocol_palette();
-        } else if !graph_on_canvas && pressed(self.overlay_keys.palette) {
-            self.open_chart_palette();
+        // A bare key is a text field's while one holds the keyboard: a space
+        // or a `?` typed there is text. The palette's chord is no field's, so
+        // it opens the palette from a field too, as ⌘O and ⌘S act there.
+        let typing = ctx.egui_wants_keyboard_input();
+        let pressed =
+            |token: Option<&'static str>| !typing && token.is_some_and(|t| consume_token(ctx, t));
+        // Each of `open-palette`'s keys is read, so a frame carrying two of
+        // them leaves neither for a later handler.
+        let mut palette = false;
+        for token in &self.overlay_keys.palette {
+            if !typing || token.starts_with("cmd-") {
+                palette |= consume_token(ctx, token);
+            }
+        }
+        if palette {
+            self.open_palette_for_canvas(graph_on_canvas);
+            self.answered("open-palette");
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
+            self.answered("focus-jump");
         } else if pressed(self.overlay_keys.help) {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+            self.answered("open-help");
         }
     }
 
@@ -8449,8 +8624,161 @@ impl MeridianApp {
             return;
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered("open-home");
             self.leave(ctx, Leaving::Home);
         }
+    }
+
+    /// Open the palette of what the canvas holds: the model's over the model
+    /// pane, the Protocol's over the graph, the chart's otherwise. The key and
+    /// the menu both open it here.
+    fn open_palette_for_canvas(&mut self, graph_on_canvas: bool) {
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            self.open_model_palette();
+        } else if graph_on_canvas {
+            self.open_protocol_palette();
+        } else {
+            self.open_chart_palette();
+        }
+    }
+
+    /// **What stands over the window, as the menus read it**: a sheet that
+    /// waits on an answer is an overlay that is not one of the three pickers
+    /// (the palette, the help sheet, the node jump). While one is up the
+    /// menus are greyed and a command chosen from one is dropped, but for the
+    /// commands [`crate::menu_bar::Sheet::stops`] leaves live.
+    fn sheet(&self) -> crate::menu_bar::Sheet {
+        use crate::menu_bar::Sheet;
+        match self.overlay {
+            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_)) => Sheet::None,
+            Some(Overlay::CloseQuestion(_)) => Sheet::CloseQuestion,
+            Some(_) => Sheet::Up,
+        }
+    }
+
+    /// The menu bar's rows, read against what the window holds now.
+    #[must_use]
+    pub fn menu_rows(&self) -> Vec<crate::menu_bar::MenuRow> {
+        crate::menu_bar::menu_rows(&self.situation(), self.sheet())
+    }
+
+    /// The rows the last frame published, shared by clone with whatever draws
+    /// the menus.
+    #[must_use]
+    pub fn menu_state(&self) -> crate::menu_bar::MenuState {
+        self.menu_state.clone()
+    }
+
+    /// Which menus this window's host draws: the native bar's, or the ones
+    /// the mark opens. A window draws for a host with a menu bar until
+    /// [`Self::set_menu_host`] says otherwise, as `main` does for the build's
+    /// host.
+    #[must_use]
+    pub fn menu_host(&self) -> crate::menu_bar::MenuHost {
+        self.menu_host
+    }
+
+    /// Say which menus this window's host draws.
+    pub fn set_menu_host(&mut self, host: crate::menu_bar::MenuHost) {
+        self.menu_host = host;
+    }
+
+    /// [`Self::set_menu_host`], as a window is built.
+    #[must_use]
+    pub fn on_menu_host(mut self, host: crate::menu_bar::MenuHost) -> Self {
+        self.menu_host = host;
+        self
+    }
+
+    /// Where the title band drew the mark on the last frame, when it drew it.
+    #[must_use]
+    pub fn mark_rect(&self) -> Option<egui::Rect> {
+        self.mark_rect
+    }
+
+    /// What the menus the mark opens drew on the last frame: each menu's title
+    /// row while the mark's popup is open, and the commands of an open menu.
+    #[must_use]
+    pub fn mark_menu_drawn(&self) -> &[crate::menu_bar::DrawnRow] {
+        &self.mark_menu_drawn
+    }
+
+    /// The verbs the window applied from a request on the last frame drawn.
+    #[must_use]
+    pub fn verbs_applied(&self) -> &[&'static str] {
+        &self.verbs_applied
+    }
+
+    /// The sentence said for the last menu command the window refused — a test
+    /// hook, since the toast layer does not give its text back.
+    #[must_use]
+    pub fn menu_said(&self) -> Option<&str> {
+        self.menu_said.as_deref()
+    }
+
+    /// **Take the commands chosen from a menu** off the open queue into the
+    /// frame's requests. One a sheet stops is dropped; one chosen under a
+    /// picker closes the picker first; one the
+    /// window cannot take now says its sentence in a toast and is not applied.
+    fn take_menu_verbs(&mut self, requests: &mut Vec<Request>) {
+        for longname in self.open_queue.take_verbs() {
+            let sheet = self.sheet();
+            if sheet.stops(longname) {
+                continue;
+            }
+            if sheet == crate::menu_bar::Sheet::None {
+                self.overlay = None;
+            }
+            match self.availability_of(longname) {
+                Some(brightfield_keys::Availability::Available) => {
+                    requests.push(Request::Verb(Verb::new(longname)));
+                }
+                Some(brightfield_keys::Availability::Missing(sentence)) => {
+                    self.toasts
+                        .push(Toast::new(Severity::Info, sentence.clone()));
+                    self.menu_said = Some(sentence);
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// **Note that a key performed `verb` this frame**, where its handler took
+    /// the key.
+    fn answered(&mut self, verb: &'static str) {
+        self.keys_answered.push(verb);
+    }
+
+    /// [`Self::answered`], answering `true`, for a chain of conditions.
+    fn note(&mut self, verb: &'static str) -> bool {
+        self.answered(verb);
+        true
+    }
+
+    /// Consume `token`'s key if it is down this frame, noting `verb` as the one
+    /// it performed. Answers whether the key was down.
+    fn took(&mut self, ctx: &egui::Context, token: &str, verb: &'static str) -> bool {
+        consume_token(ctx, token) && self.note(verb)
+    }
+
+    /// Take what the panes' own key paths noted (the Protocol model with its
+    /// column list, the shelf band and the chart document) into the frame's
+    /// record.
+    fn take_pane_keys_answered(&mut self) {
+        let mut taken = self.protocol.doc.model.take_keys_answered();
+        if let Some(band) = self.charts.shelf.band.as_mut() {
+            taken.append(&mut band.take_keys_answered());
+        }
+        taken.append(&mut self.charts.doc.take_keys_answered());
+        self.keys_answered.append(&mut taken);
+    }
+
+    /// The verbs a key performed on the last frame drawn, in the order their
+    /// handlers took them. A verb is here when a handler took its key, whether
+    /// or not the verb then found work to do.
+    #[must_use]
+    pub fn keys_answered(&self) -> &[&'static str] {
+        &self.keys_answered
     }
 
     /// Ask for the picker if the registry's `open` keystroke was pressed this frame and no overlay
@@ -8465,6 +8793,7 @@ impl MeridianApp {
         }
         if self.open_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.pick_requested = true;
+            self.answered(OPEN_VERB);
         }
     }
 
@@ -8479,6 +8808,7 @@ impl MeridianApp {
             return;
         }
         if self.save_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(SAVE_PROTOCOL);
             self.save_everything(ctx);
         }
     }
@@ -8488,6 +8818,7 @@ impl MeridianApp {
     /// and reaches here by the open queue instead; this is the key where no menu takes it.
     fn quit_key(&mut self, ctx: &egui::Context) {
         if self.quit_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(QUIT);
             self.leave(ctx, Leaving::Quit);
         }
     }
@@ -8536,6 +8867,7 @@ impl MeridianApp {
             .navigator_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(NAVIGATOR_TOGGLE);
             self.toggle_navigator_focus(ctx);
         }
     }
@@ -8547,6 +8879,7 @@ impl MeridianApp {
             return;
         }
         if self.run_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(RUN_PROTOCOL);
             self.run_protocol(ctx);
         }
     }
@@ -8561,6 +8894,7 @@ impl MeridianApp {
         }
         for (token, longname) in self.picture_bindings {
             if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.answered(longname);
                 self.chart_picture(ctx, longname);
             }
         }
@@ -8573,6 +8907,7 @@ impl MeridianApp {
             return;
         }
         if self.grid_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::data_grid::MOVE_GRID);
             self.move_grid();
             ctx.request_repaint();
         }
@@ -8626,8 +8961,11 @@ impl MeridianApp {
         {
             return;
         }
-        if self.undo_binding.is_some_and(|t| consume_token(ctx, t)) && self.shelf_undo() {
-            ctx.request_repaint();
+        if self.undo_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::shelf::UNDO);
+            if self.shelf_undo() {
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -8688,8 +9026,11 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.nav_bindings.clone() {
-            if consume_token(ctx, token) && navigation_verb(&mut self.charts.doc, longname) {
-                ctx.request_repaint();
+            if consume_token(ctx, token) {
+                self.answered(longname);
+                if navigation_verb(&mut self.charts.doc, longname) {
+                    ctx.request_repaint();
+                }
             }
         }
     }
@@ -8781,6 +9122,7 @@ impl MeridianApp {
             // level, with a cell open or none.
             if self.charts.shelf.holds && crate::shelf::undoes(*key, *modifiers) {
                 owned = true;
+                self.answered(crate::shelf::UNDO);
                 self.shelf_undo();
                 continue;
             }
@@ -8793,6 +9135,7 @@ impl MeridianApp {
             } else if shelf_entry_key() == Some(*key) {
                 self.charts.shelf.holds = true;
                 owned = true;
+                self.answered("set-channel");
             }
         }
         // A frame with no key for the list still carries what the pointer
@@ -8866,6 +9209,7 @@ impl MeridianApp {
         };
         if key == egui::Key::Escape && band.active().is_none() {
             self.charts.shelf.holds = false;
+            self.answered("back-out-of-shelf");
             return;
         }
         band.press(key, modifiers);
@@ -9313,7 +9657,7 @@ impl MeridianApp {
         for (token, longname) in bindings {
             // An operation's key starts it, or says what it needs to start.
             if crate::operation_ui::by_verb(longname).is_some() {
-                if consume_token(ctx, token) {
+                if self.took(ctx, token, longname) {
                     // The text the same keystroke made is the key's, not a field's: a shifted
                     // key makes its upper-case letter, so the frame's text goes whole.
                     ctx.input_mut(|i| {
@@ -9327,7 +9671,7 @@ impl MeridianApp {
             let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
                 continue;
             };
-            if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+            if self.took(ctx, token, longname) && self.charts.doc.move_grid_cursor(step) {
                 ctx.request_repaint();
             }
         }
@@ -9432,7 +9776,7 @@ impl MeridianApp {
             let on_row = self.charts.doc.versions().cursor().is_some();
             let acted = match longname {
                 "move-version-cursor-down" | "move-version-cursor-up" => {
-                    consume_token(ctx, token)
+                    self.took(ctx, token, longname)
                         && self
                             .charts
                             .doc
@@ -9441,10 +9785,14 @@ impl MeridianApp {
                 "step-back-to-version" => {
                     on_row
                         && consume_versions_token(ctx, token)
+                        && self.note(longname)
                         && self.charts.doc.step_back_to_cursor()
                 }
                 "return-to-now" => {
-                    on_row && consume_versions_token(ctx, token) && self.charts.doc.return_to_now()
+                    on_row
+                        && consume_versions_token(ctx, token)
+                        && self.note(longname)
+                        && self.charts.doc.return_to_now()
                 }
                 _ => false,
             };
@@ -9461,7 +9809,8 @@ impl MeridianApp {
     fn open_model_palette(&mut self) {
         let allow = crate::model_pane::model_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
@@ -9487,6 +9836,7 @@ impl MeridianApp {
             }
         }
         for longname in pressed {
+            self.answered(longname);
             self.perform_model_verb(ctx, longname);
         }
     }
@@ -9507,21 +9857,19 @@ impl MeridianApp {
     }
 
     /// Open the command palette at the Protocol altitude, over a snapshot of
-    /// the session's recency, restricted to what choosing a row does here —
-    /// [`crate::overlays::protocol_palette_verbs`].
+    /// the session's recency, over the Protocol altitude's verbs —
+    /// [`crate::overlays::protocol_palette_verbs`] — each read against what
+    /// the window holds ([`Self::situation`]).
     ///
     /// It opens over the graph, and over the graph a column put on a channel is
     /// dropped ([`Self::outline_put`]), so the three `put-column-on-*` rows are
-    /// not offered: each would confirm and put no column —
-    /// `the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing`.
+    /// greyed there, each with the sentence it declares —
+    /// `the_protocol_palette_greys_the_put_rows_over_the_graph_with_their_sentence`.
     fn open_protocol_palette(&mut self) {
-        let puts_column = !self.graph_on_canvas()
-            && self.protocol.doc.model.outline_column().is_some()
-            && self.charts.shelf.band.is_some();
-        let removes_step = self.protocol.doc.model.removable_step().is_some();
-        let allow = crate::overlays::protocol_palette_verbs(puts_column, removes_step);
+        let allow = crate::overlays::protocol_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
@@ -9574,31 +9922,27 @@ impl MeridianApp {
     }
 
     /// Open the command palette's search at the chart altitude, restricted
-    /// to what a window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// to the verbs this shell dispatches there — see [`Self::overlay_open_keys`] for
     /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
-    /// The list is [`crate::overlays::chart_palette_verbs`] over
-    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler has
-    /// no work on this window is a row that confirms and then sits there,
-    /// which is the row that list exists to keep out.
-    /// `overlay_wiring.rs`'s `a_chart_start_is_offered_no_save` reads the
-    /// absence off a shipped start's own palette, and
-    /// `going_home_takes_the_save_offer_with_the_start` walks one window from
-    /// a data file, to the front door, and into a shipped start.
+    /// The list is [`crate::overlays::chart_palette_verbs`], read against what
+    /// the window holds ([`Self::situation`]): a verb whose handler has no work
+    /// on this window is greyed with the sentence it declares, where a live row
+    /// would confirm and then sit there.
+    /// `overlay_wiring.rs`'s `a_chart_start_greys_save_and_run_with_their_sentences`
+    /// reads that off a shipped start's own palette.
     fn open_chart_search(&mut self) {
-        // A Protocol's panels save and run through the same two verbs.
-        let allow = crate::overlays::chart_palette_verbs(
-            self.has_protocol_to_save() || self.tiles.is_some(),
-        );
+        let allow = crate::overlays::chart_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
+            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow)
+                .with_situation(self.situation()),
         )));
     }
 
-    /// **Whether this window has a Protocol for Save to write** — what the
-    /// chart palette is built from, and the same question
-    /// [`Self::save_protocol`] answers by returning `None`.
+    /// **Whether this window has a Protocol for Save to write** — one of the
+    /// facts [`Self::situation`] reads what Save and Run can act on from, and
+    /// the same question [`Self::save_protocol`] answers by returning `None`.
     ///
     /// The inspector rail does not read it: that rail draws the *editor's*
     /// Save entry, which is a different write under the same verb name, so it
@@ -9606,10 +9950,142 @@ impl MeridianApp {
     ///
     /// True for a window a data file opened, false for one over a chart spec,
     /// a shipped start or the front door. Asked of the live document rather
-    /// than cached, so going Home takes the row away with the document.
+    /// than cached, so going Home greys the palette's row with the document
+    /// gone.
     #[must_use]
     pub fn has_protocol_to_save(&self) -> bool {
         self.protocol.doc.model.source().is_some()
+    }
+
+    /// **What the window holds**, as far as a command's declared needs can ask:
+    /// how many sources, what is selected or on the canvas, the column under
+    /// the Outline's cursor, the edition's grants and the conditions that hold.
+    /// The palettes, and the menus after them, read each command's
+    /// availability from this one value ([`Self::availability_of`]).
+    #[must_use]
+    pub fn situation(&self) -> brightfield_keys::Situation {
+        use brightfield_keys::{ColumnKind, Condition, Grant, Selected};
+        let door = self.front_door_is_live();
+        let model_pane = self.model.as_ref().filter(|m| m.shown());
+        let protocol = &self.protocol.doc.model;
+
+        let mut selected = Vec::new();
+        let mut hold = |holds: bool, what: Selected| {
+            if holds {
+                selected.push(what);
+            }
+        };
+        hold(!door, Selected::Protocol);
+        hold(!door && self.graph_on_canvas(), Selected::Graph);
+        hold(
+            !door
+                && matches!(
+                    self.canvas_holds,
+                    CanvasHolds::Dashboard { .. } | CanvasHolds::Chart
+                )
+                && model_pane.is_none()
+                && !self.charts.doc.is_empty(),
+            Selected::Chart,
+        );
+        // The grid draws a Protocol's table, and a live chart's rows where no
+        // Protocol is behind it; Move grid moves either.
+        hold(
+            protocol.table().is_some() || (!door && self.charts.doc.is_live()),
+            Selected::Rows,
+        );
+        hold(
+            self.drawn_grid_layout() == crate::app::GridLayout::Rows
+                && self.charts.doc.grid_cursor_on_cell(),
+            Selected::GridCell,
+        );
+        hold(
+            protocol.selected().is_some() || self.canvas_holds.node().is_some(),
+            Selected::Asset,
+        );
+        hold(protocol.removable_step().is_some(), Selected::Step);
+        if let Some(pane) = model_pane {
+            use brightfield_render::model_scene::Selection;
+            selected.push(Selected::Model);
+            match pane.doc.focus.selected {
+                Some(Selection::Dataset(_)) => selected.push(Selected::ModelTable),
+                Some(Selection::Relationship(_)) => selected.push(Selected::ModelJoin),
+                None => {}
+            }
+        }
+
+        let mut conditions = Vec::new();
+        let mut when = |holds: bool, condition: Condition| {
+            if holds {
+                conditions.push(condition);
+            }
+        };
+        when(self.charts.doc.selection_active(), Condition::SelectionHeld);
+        when(
+            self.charts.doc.last_shelf_edit().is_some(),
+            Condition::EditToTakeBack,
+        );
+        when(self.anything_to_save(), Condition::UnsavedWork);
+        // What Run acts on: a Protocol a data file or a folder made, one whose
+        // panels the window holds as tiles, and the model pane's.
+        when(
+            self.has_protocol_to_save() || self.tiles.is_some() || model_pane.is_some(),
+            Condition::ProtocolToRun,
+        );
+        // What Save the spec writes: that Protocol's source, or a panel open
+        // from its tile.
+        when(
+            self.has_protocol_to_save() || self.open_tile_path().is_some(),
+            Condition::ProtocolToSave,
+        );
+        when(
+            !door && self.restricted.is_none() && self.held_untrusted().is_none(),
+            Condition::Trusted,
+        );
+        when(
+            self.protocol_taking_sources().is_some(),
+            Condition::TakesSources,
+        );
+        when(
+            self.fetching.is_none() && self.data_file_to_reload().is_some(),
+            Condition::FileToReload,
+        );
+        when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        when(
+            self.held_protocol_dir().is_some(),
+            Condition::ProtocolFolder,
+        );
+
+        // Counted from the model the window holds, on the canvas or waiting
+        // behind a table's grid, as `open_organise_joins` reads it.
+        let sources = self.model.as_ref().map_or_else(
+            || usize::from(self.has_protocol_to_save()),
+            |pane| pane.doc.model.datasets.len(),
+        );
+        brightfield_keys::Situation {
+            sources,
+            selected,
+            // The shell reports a column of any kind until a command declares
+            // a need for a typed one.
+            column: protocol.outline_column().map(|_| ColumnKind::Any),
+            grants: if crate::edition::current() == crate::edition::Edition::Full {
+                vec![Grant::FullEdition]
+            } else {
+                Vec::new()
+            },
+            conditions,
+        }
+    }
+
+    /// Whether the command named `longname` can act on what the window holds,
+    /// and the sentence it says when it cannot. `None` for a longname the
+    /// registry lacks.
+    #[must_use]
+    pub fn availability_of(&self, longname: &str) -> Option<brightfield_keys::Availability> {
+        let situation = self.situation();
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == longname)
+            .map(|verb| brightfield_keys::availability(verb, &situation))
     }
 
     /// Open the node jump over the outline — the graph in view, in its
@@ -9882,6 +10358,8 @@ impl MeridianApp {
                         crate::sources_browser::Effect::Add(..)
                             | crate::sources_browser::Effect::Close
                     );
+                self.keys_answered
+                    .append(&mut open.sheet.browser.take_keys_answered());
                 browser_effect = Some((shown.inner, open.made_of.clone()));
                 if open.sheet.reading() {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -11377,6 +11855,36 @@ impl MeridianApp {
             .collect()
     }
 
+    /// The **open palette's greyed rows**: each command listed with an input
+    /// missing, and the sentence its row says — empty when no palette is open.
+    /// Read off the delegate, as [`Self::open_palette_rows`] is.
+    #[must_use]
+    pub fn open_palette_missing(&self) -> Vec<(&'static str, String)> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return Vec::new();
+        };
+        use meridian_egui::PickerDelegate as _;
+        let delegate = &picker.delegate;
+        (0..delegate.match_count())
+            .filter_map(|i| delegate.candidate(i))
+            .filter_map(|c| c.missing.clone().map(|sentence| (c.longname, sentence)))
+            .collect()
+    }
+
+    /// What the **open palette** says under its query line after refusing a
+    /// row, if it has refused one: a test hook.
+    #[must_use]
+    pub fn open_palette_hint(&self) -> Option<String> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return None;
+        };
+        use meridian_egui::PickerDelegate as _;
+        match picker.delegate.hint() {
+            Some(meridian_egui::PickerHint::Error(said)) => Some(said),
+            _ => None,
+        }
+    }
+
     /// The persistent banner layer, read-only — what a test holds the
     /// replace-not-stack contract against.
     #[must_use]
@@ -11466,6 +11974,13 @@ impl MeridianApp {
         let mut bar = TopBar::default();
         let home_key = self.home_binding;
         let mark = self.mark.clone();
+        // On a host with no menu bar the mark opens the menus, on the front
+        // door too, and Home is the File menu's item and its key.
+        let opens_menus = self.menu_host == crate::menu_bar::MenuHost::Mark;
+        // The menus read the rows the last frame published, while they are
+        // open; a command chosen from a row a frame old is judged again as it
+        // is taken off the queue.
+        let menu_state = self.menu_state.clone();
         ui.horizontal_centered(|ui| {
             // The mark is the route home, and off the door it is the whole of
             // what stands left of the title. The word *Meridian* used to lead
@@ -11473,7 +11988,40 @@ impl MeridianApp {
             // on to name the application it is already looking at; the mark
             // says the same thing in a quarter of the width and takes the
             // click as well. Hugh's look of 2026-09-05.
-            if !door {
+            if opens_menus {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(TITLE_MARK_SIDE, TITLE_MARK_SIDE),
+                    egui::Sense::click(),
+                );
+                let ink = if response.hovered() {
+                    sem.text.primary
+                } else {
+                    sem.text.secondary
+                };
+                crate::brand::paint(ui.painter(), mark.as_ref(), rect, chrome::colour(ink));
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        MENUS_CONTROL_NAME,
+                    )
+                });
+                bar.mark_rect = Some(rect);
+                bar.controls
+                    .push(chrome::NamedControl::hovered(rect, MENUS_CONTROL_NAME));
+                let (menu_drawn, menu_choice) = (&mut bar.menu_drawn, &mut bar.menu_choice);
+                egui::Popup::menu(&response).show(|ui| {
+                    *menu_choice = crate::menu_bar::show_menus(
+                        ui,
+                        &brightfield_keys::menu_bar(),
+                        &menu_state.rows(),
+                        brightfield_keys::KeyPlatform::Other,
+                        menu_drawn,
+                    );
+                });
+                response.on_hover_text(MENUS_CONTROL_NAME);
+                ui.add_space(spacing::SPACE_4);
+            } else if !door {
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(TITLE_MARK_SIDE, TITLE_MARK_SIDE),
                     egui::Sense::click(),
@@ -11499,6 +12047,7 @@ impl MeridianApp {
                     None => HOME_CONTROL_NAME.to_string(),
                 });
                 bar.home_rect = Some(rect);
+                bar.mark_rect = Some(rect);
                 bar.controls
                     .push(chrome::NamedControl::hovered(rect, HOME_CONTROL_NAME));
                 if response.clicked() {
@@ -11789,7 +12338,55 @@ impl MeridianApp {
     /// intercepted above the branch — see the comments on each.
     fn apply(&mut self, ctx: &egui::Context, graph_on_canvas: bool, requests: Vec<Request>) {
         for request in requests {
+            // The verb's registered name, noted as applied once an arm below
+            // has taken it. An arm that finds the verb is not one it performs
+            // says so.
+            let asked = match &request {
+                Request::Verb(verb) => registered_longname(verb.as_str()),
+                _ => None,
+            };
+            let mut taken = true;
             match request {
+                // The palette, the help sheet and the node jump, chosen from a
+                // menu: what their keys open.
+                Request::Verb(verb) if verb.as_str() == "open-palette" => {
+                    self.open_palette_for_canvas(graph_on_canvas);
+                }
+                Request::Verb(verb) if verb.as_str() == "open-help" => {
+                    self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+                }
+                Request::Verb(verb) if verb.as_str() == "focus-jump" => {
+                    taken = graph_on_canvas;
+                    if graph_on_canvas {
+                        self.open_jump();
+                    }
+                }
+                // set-channel hands the hero pane's keys to the shelf band, as
+                // `e` does with the pane focused.
+                Request::Verb(verb) if verb.as_str() == "set-channel" => {
+                    taken = !graph_on_canvas && self.charts.shelf.band.is_some();
+                    if taken {
+                        self.ws_mut().set_focus(PaneKey::new(CHART));
+                        self.charts.shelf.holds = true;
+                        ctx.request_repaint();
+                    }
+                }
+                // A step removed and an address copied are the Protocol
+                // model's whatever the canvas holds, as a column put on a
+                // channel is.
+                Request::Verb(verb)
+                    if matches!(verb.as_str(), crate::protocol::REMOVE_STEP | "yank-address") =>
+                {
+                    let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
+                    taken = self
+                        .protocol
+                        .doc
+                        .model
+                        .dispatch(verb.as_str(), canvas_node.as_ref());
+                    if let Some(addr) = self.protocol.doc.model.take_yank_request() {
+                        ctx.copy_text(addr);
+                    }
+                }
                 // open-home is the window's verb, not either document's, so
                 // it is handled before the branch rather than inside it. The
                 // chart arm string-matches only clear-selection, and the graph
@@ -11812,7 +12409,7 @@ impl MeridianApp {
                 // An operation's verb is the window's: chosen from a palette or a menu, it starts
                 // the operation as its key does, or says what it needs.
                 Request::Verb(verb) if crate::operation_ui::by_verb(verb.as_str()).is_some() => {
-                    self.start_operation_verb(ctx, verb.as_str());
+                    taken = self.start_operation_verb(ctx, verb.as_str());
                 }
                 // The model pane's verbs are its own, chosen from the palette it opens.
                 Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
@@ -11833,7 +12430,7 @@ impl MeridianApp {
                 // this intercept the graph-on-canvas arm below would forward
                 // it to `model.dispatch`, which silently no-ops an unknown
                 // verb.
-                Request::Verb(verb) if verb.as_str() == "reload-data" => {
+                Request::Verb(verb) if verb.as_str() == RELOAD_DATA => {
                     self.reload_data_file(ctx);
                 }
                 // move-grid is the window's too: the grid's two spots are a
@@ -11868,6 +12465,7 @@ impl MeridianApp {
                 }
                 Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
                     self.open_place_field(PlaceField::Name);
+                    taken = self.place_edit.is_some();
                     ctx.request_repaint();
                 }
                 // untrust-protocol is the window's as Trust on the restricted band is: the trust
@@ -11893,7 +12491,10 @@ impl MeridianApp {
                     if graph_on_canvas {
                         self.toasts.push(Toast::new(
                             Severity::Info,
-                            "Open a chart to copy or export it as a picture",
+                            declared_sentence(
+                                verb.as_str(),
+                                brightfield_keys::Need::Selected(brightfield_keys::Selected::Chart),
+                            ),
                         ));
                     } else {
                         self.chart_picture(ctx, verb.as_str());
@@ -11919,13 +12520,17 @@ impl MeridianApp {
                 }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
-                    self.protocol
+                    taken = self
+                        .protocol
                         .doc
                         .model
-                        .dispatch(verb.as_str(), canvas_node.as_ref());
+                        .perform(verb.as_str(), canvas_node.as_ref())
+                        .is_some();
                 }
                 Request::Verb(verb) => {
-                    if verb.as_str() == "clear-selection" {
+                    taken = matches!(verb.as_str(), CLEAR_SELECTION | "save-spec")
+                        || self.nav_bindings.iter().any(|(_, v)| *v == verb.as_str());
+                    if verb.as_str() == CLEAR_SELECTION {
                         self.charts.doc.clear_selection();
                         ctx.request_repaint();
                     } else if verb.as_str() == "save-spec" {
@@ -11948,6 +12553,9 @@ impl MeridianApp {
                     self.ws_mut().set_focus(key);
                 }
                 Request::Repaint => ctx.request_repaint(),
+            }
+            if let (true, Some(verb)) = (taken, asked) {
+                self.verbs_applied.push(verb);
             }
         }
         // The one place the two documents' idea of "which column" is
@@ -13736,7 +14344,10 @@ impl MeridianApp {
             Some(sheet) => self.overlay = Some(Overlay::OrganiseJoins(Box::new(sheet))),
             None => self.toasts.push(Toast::new(
                 Severity::Info,
-                "Organising joins needs a Protocol of two sources or more",
+                declared_sentence(
+                    crate::protocol::ORGANISE_JOINS,
+                    brightfield_keys::Need::Sources(2),
+                ),
             )),
         }
         ctx.request_repaint();
@@ -13955,6 +14566,7 @@ impl MeridianApp {
             return;
         }
         if self.browser_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(crate::protocol::OPEN_SOURCES_BROWSER);
             self.open_sources_browser(ctx);
         }
     }
@@ -14396,6 +15008,7 @@ impl MeridianApp {
             .new_protocol_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(NEW_PROTOCOL);
             self.ask_new_protocol();
             ctx.request_repaint();
         }
@@ -14410,7 +15023,60 @@ impl MeridianApp {
             .preferences_binding
             .is_some_and(|t| consume_token(ctx, t))
         {
+            self.answered(OPEN_PREFERENCES);
             self.open_preferences();
+            ctx.request_repaint();
+        }
+    }
+
+    /// Stop trusting the open Protocol if the registry's `untrust-protocol`
+    /// keystroke is down this frame. Gated as [`Self::rename_key`] is: no
+    /// overlay may own the keyboard.
+    fn untrust_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.untrust_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(UNTRUST_PROTOCOL);
+            self.untrust_open_protocol(ctx);
+        }
+    }
+
+    /// Read the open Protocol's data file again if the registry's
+    /// `reload-data` keystroke is down this frame, on the same gate.
+    fn reload_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.reload_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(RELOAD_DATA);
+            self.reload_data_file(ctx);
+        }
+    }
+
+    /// **Esc lets go of the chart's selection**, the rung of the Esc ladder
+    /// above [`Self::tile_back_key`]: an overlay, a field holding the keyboard
+    /// and the shelf each take the key first.
+    ///
+    /// Taken with a chart on the canvas and a selection held. A widget that
+    /// held the keyboard at the end of the last frame takes this Esc as its
+    /// way out, as [`Self::tile_back_key`] says.
+    fn clear_selection_key(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas
+            || !self.charts.doc.selection_active()
+            || self.keyboard_held
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.shelf_holds_keys()
+        {
+            return;
+        }
+        let Some(key) = clear_selection_egui_key() else {
+            return;
+        };
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+            self.answered(CLEAR_SELECTION);
+            self.charts.doc.clear_selection();
             ctx.request_repaint();
         }
     }
@@ -14771,6 +15437,7 @@ impl MeridianApp {
         if !self.rename_binding.is_some_and(|t| consume_token(ctx, t)) {
             return;
         }
+        self.answered(RENAME_PROTOCOL);
         if self.front_door_is_live() {
             if let Some((id, in_tree)) = self.door_hovered.clone() {
                 self.open_door_rename(&id, in_tree);
@@ -17004,14 +17671,22 @@ impl MeridianApp {
     pub fn untrust_open_protocol(&mut self, ctx: &egui::Context) -> bool {
         ctx.request_repaint();
         if self.restricted.is_some() {
-            self.toasts
-                .push(Toast::new(Severity::Info, "This Protocol is not trusted"));
+            self.toasts.push(Toast::new(
+                Severity::Info,
+                declared_sentence(
+                    UNTRUST_PROTOCOL,
+                    brightfield_keys::Need::Condition(brightfield_keys::Condition::Trusted),
+                ),
+            ));
             return false;
         }
         let Some(dir) = self.held_protocol_dir() else {
             self.toasts.push(Toast::new(
                 Severity::Info,
-                "Open a Protocol to stop trusting it",
+                declared_sentence(
+                    UNTRUST_PROTOCOL,
+                    brightfield_keys::Need::Condition(brightfield_keys::Condition::ProtocolFolder),
+                ),
             ));
             return false;
         };
@@ -18190,6 +18865,13 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
 
 /// The stable id of the status band's line naming a range the shelf refused.
 pub const SHELF_REFUSAL_STATUS_ID: &str = "shelf-range-refused";
+
+/// The sentence the command named `longname` declares for `need`, for a handler
+/// that refuses for that need to say. Each pair the window passes is declared
+/// (`the_refusals_the_window_says_are_declared`).
+fn declared_sentence(longname: &str, need: brightfield_keys::Need) -> String {
+    brightfield_keys::sentence(longname, need).unwrap_or_default()
+}
 
 /// The stable id `last_shelf_edit_status_entry` writes — the handle a test
 /// reads the line by.
@@ -21218,6 +21900,37 @@ mod tests {
         MeridianApp::headless(Boot::empty(), Mode::Light)
     }
 
+    /// A handler that refuses for a need its command declares says the
+    /// declared sentence, so each pair it asks for has to be declared.
+    #[test]
+    fn the_refusals_the_window_says_are_declared() {
+        use brightfield_keys::{Condition, Need, Selected};
+        let mut pairs = vec![
+            (crate::protocol::ORGANISE_JOINS, Need::Sources(2)),
+            (COPY_CHART_PICTURE, Need::Selected(Selected::Chart)),
+            (EXPORT_CHART_PICTURE, Need::Selected(Selected::Chart)),
+            (UNTRUST_PROTOCOL, Need::Condition(Condition::Trusted)),
+            (UNTRUST_PROTOCOL, Need::Condition(Condition::ProtocolFolder)),
+        ];
+        // The model pane's reshape verbs: three act on a join, the rest on a
+        // table.
+        for verb in crate::model_pane::RESHAPE_VERBS {
+            let on = if matches!(verb, "keep-join" | "drop-join" | "change-join-keys") {
+                Selected::ModelJoin
+            } else {
+                Selected::ModelTable
+            };
+            pairs.push((verb, Need::Selected(on)));
+        }
+        for (verb, need) in pairs {
+            let said = declared_sentence(verb, need);
+            assert!(
+                said.ends_with('.') && !said.contains('{'),
+                "{verb} declares no sentence for {need:?}: {said:?}"
+            );
+        }
+    }
+
     /// Every bucket of a Protocols row's relative time, walked from both
     /// sides of every boundary.
     ///
@@ -21414,14 +22127,20 @@ mod tests {
                 .find(|v| v.longname == name)
                 .and_then(brightfield_keys::VerbEntry::primary_key)
         };
-        assert_eq!(keys.palette, primary("open-palette"));
+        assert_eq!(keys.palette.first().copied(), primary("open-palette"));
+        assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
         // …and every token an opener binds today is one `consume_token` can
-        // map to a key, so none of the three is silently unwired.
-        for token in [keys.palette, keys.help, keys.jump].into_iter().flatten() {
+        // map to a key, so none of them is silently unwired.
+        let tokens = keys
+            .palette
+            .iter()
+            .copied()
+            .chain([keys.help, keys.jump].into_iter().flatten());
+        for token in tokens {
             assert!(
-                matches!(token, "space" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );

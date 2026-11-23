@@ -465,6 +465,19 @@ impl BrightfieldApp {
                     if tried >= MENU_QUIT_TRIES {
                         self.app.say_menu_quit_unrouted(false);
                     }
+                    // The main menu is there, so the command list's menus go beside the app
+                    // menu, read from the rows each frame publishes.
+                    let built = objc2::MainThreadMarker::new().is_some_and(|main_thread| {
+                        brightfield_shell::mac_menu::install(
+                            main_thread,
+                            &brightfield_keys::menu_bar(),
+                            queue.clone(),
+                            self.app.menu_state(),
+                        )
+                    });
+                    if !built {
+                        eprintln!("the menu bar's menus were not built: no main menu to add to");
+                    }
                 } else {
                     let tried = tried.saturating_add(1);
                     if tried < MENU_QUIT_TRIES {
@@ -1355,6 +1368,7 @@ fn main() -> Result<(), String> {
                 // person in front of it, so it is the one that may raise a file
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
+                    .on_menu_host(brightfield_shell::menu_bar::MenuHost::of_this_build())
                     .allowing_dialogs()
                     .opening_from(open_queue)
                     .recording_older_protocols_once()

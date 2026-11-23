@@ -288,7 +288,7 @@ fn every_declared_toolbar_verb_either_dispatches_or_is_filtered_out() {
                  there is the editor's buffer Save and the dispatch is the \
                  Protocol's, so one of the two writes silently does not \
                  happen. The palette is where the Protocol save is offered — \
-                 see overlays::chart_offers."
+                 see overlays::chart_palette_verbs."
             ),
             other => panic!(
                 "{other} is declared on a chart-view pane's toolbar with no \

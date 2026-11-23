@@ -659,18 +659,31 @@ fn starting_over_a_kept_draft_of_the_same_operation_corrects_it() {
     assert_eq!(to, Some("income_2"));
 }
 
+/// The chart palette lists each built operation, and reads it against what
+/// the window holds: with nothing held, an operation's row is greyed with the
+/// sentence its command declares, where a live row would confirm and then say
+/// what it needs.
 #[test]
-fn the_chart_palette_lists_built_operations_only_where_a_protocol_is_saved() {
-    let with = chart_palette_verbs(true);
-    let without = chart_palette_verbs(false);
+fn the_chart_palette_lists_built_operations_and_greys_them_where_they_cannot_start() {
+    use brightfield_keys::{availability, registry, Availability, Situation};
+
+    let listed = chart_palette_verbs();
+    let reg = registry();
     for spec in brightfield_shell::operation_ui::built() {
+        assert!(listed.contains(&spec.verb), "{} is not listed", spec.verb);
+        let verb = reg
+            .iter()
+            .find(|v| v.longname == spec.verb)
+            .unwrap_or_else(|| panic!("{} is not in the registry", spec.verb));
         assert!(
-            with.contains(&spec.verb),
-            "{} where a Protocol is saved",
+            matches!(
+                availability(verb, &Situation::default()),
+                Availability::Missing(_)
+            ),
+            "{} reads available with nothing held",
             spec.verb
         );
-        assert!(!without.contains(&spec.verb), "{} where none is", spec.verb);
     }
-    assert!(with.contains(&"filter-rows-at-cursor"));
-    assert!(with.contains(&"sort-rows-at-cursor"));
+    assert!(listed.contains(&"filter-rows-at-cursor"));
+    assert!(listed.contains(&"sort-rows-at-cursor"));
 }

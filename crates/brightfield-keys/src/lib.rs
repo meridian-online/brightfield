@@ -16,19 +16,28 @@
 //! shell's scripted-keystroke capture tier and on-device eyeballs.
 
 pub mod altitude;
+pub mod availability;
 pub mod dispatch;
 pub mod esc;
 pub mod focus;
 pub mod fuzzy;
+pub mod keystroke;
+pub mod menus;
 pub mod operations;
 pub mod palette;
 pub mod registry;
 pub mod scope;
 
 pub use altitude::Altitude;
+pub use availability::{
+    availability, sentence, Availability, ColumnKind, Condition, Grant, Need, Requirement,
+    Selected, Situation,
+};
 pub use dispatch::{fires, resolution_table, DispatchContext, ResolutionTable};
 pub use esc::{esc_action, EscAction, EscState};
 pub use focus::{focus_jump_candidates, FocusNode, FocusState, FocusTree, JumpCandidate, NodeKind};
+pub use keystroke::{keys_label, parse_keystrokes, KeyPlatform, Keystroke, KEY_NAMES};
+pub use menus::{item_title, items_without_native, menu_bar, Menu, MenuItem, NativeItem};
 pub use palette::{palette_filter, PaletteCandidate, RecencyCounter};
 pub use registry::{
     help_sheet, keymap_bindings, palette_corpus, registry, BindingContext, BindingSpec, BoundKey,
@@ -54,7 +63,7 @@ mod tests {
                 .map(|v| v.longname)
                 .collect();
             let palette_enables: std::collections::HashSet<&str> =
-                palette_filter(&reg, altitude, "", &recency)
+                palette_filter(&reg, altitude, "", &recency, None)
                     .into_iter()
                     .filter(|c| c.enabled)
                     .map(|c| c.longname)

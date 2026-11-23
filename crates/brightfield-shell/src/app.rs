@@ -860,6 +860,9 @@ fn removal_words(step: &str) -> String {
 /// the chart pane reads, so that state belongs to the view rather than to
 /// either pane.
 pub struct ChartDoc {
+    /// The verbs a key performed in one of the document's panes since the
+    /// window last took them: the editor's Save.
+    keys_answered: Vec<&'static str>,
     /// The composited Vello dashboard and its logical size.
     pub composed: Composed,
     /// **What the pointer is resting on**, or `None` on a frame where it is
@@ -1557,6 +1560,7 @@ impl ChartDoc {
     #[must_use]
     pub fn new(composed: Composed, host: EguiCanvasHost) -> Self {
         Self {
+            keys_answered: Vec::new(),
             composed,
             hover_readout: None,
             viewport: None,
@@ -1641,6 +1645,7 @@ impl ChartDoc {
     #[must_use]
     pub fn headless(composed: Composed) -> Self {
         Self {
+            keys_answered: Vec::new(),
             composed,
             hover_readout: None,
             viewport: None,
@@ -3734,6 +3739,17 @@ impl ChartDoc {
     /// Say, or stop saying, the sentence a refused range row leaves for the band.
     pub fn set_shelf_refusal(&mut self, sentence: Option<String>) {
         self.shelf_refusal = sentence;
+    }
+
+    /// Note that a key performed `verb` in one of the document's panes.
+    pub fn note_key_answered(&mut self, verb: &'static str) {
+        self.keys_answered.push(verb);
+    }
+
+    /// The verbs a key performed in the document's panes since this was last
+    /// called.
+    pub fn take_keys_answered(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.keys_answered)
     }
 
     /// The last column kept from the shelf since the last Save, in the shelf's

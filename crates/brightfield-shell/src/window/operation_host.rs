@@ -1376,6 +1376,7 @@ impl MeridianApp {
             if !consume_pick_token(ctx, token) {
                 continue;
             }
+            self.answered(longname);
             // A sentence said by the key before stays until this one.
             self.operation.said = None;
             match longname {

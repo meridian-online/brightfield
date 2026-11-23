@@ -336,6 +336,30 @@ fn o_over_one_table_opens_nothing_and_says_why() {
     assert!(win.app.toasts().len() > toasts, "nothing said why");
 }
 
+/// Over one source the command is missing the two sources it declares it
+/// needs, and says so in that sentence; `o` there toasts and leaves the card shut.
+/// The toast layer does not give its text back, so that the toast's words are
+/// the declared ones is held by `the_refusals_the_window_says_are_declared`.
+#[test]
+fn organising_one_source_says_the_declared_sentence() {
+    let sentence = "Organising joins needs a Protocol of two sources or more.";
+    let mut win = Window::over_one_table();
+    assert_eq!(
+        win.app.availability_of("organise-joins"),
+        Some(brightfield_keys::Availability::Missing(sentence.to_owned()))
+    );
+    let toasts = win.app.toasts().len();
+    win.o();
+    assert_eq!(win.app.open_overlay(), None);
+    assert_eq!(win.app.toasts().len(), toasts + 1, "one toast says why");
+    // Over several sources it is available.
+    let retail = Window::over_retail();
+    assert_eq!(
+        retail.app.availability_of("organise-joins"),
+        Some(brightfield_keys::Availability::Available)
+    );
+}
+
 #[test]
 fn o_while_a_text_field_has_the_keys_opens_nothing() {
     let mut win = Window::over_retail();
