@@ -1208,12 +1208,18 @@ pub fn selection_wash(ui: &egui::Ui, rect: egui::Rect, mode: Mode) {
 /// with `Painter::set`. Returning the same shape both ways is what keeps that
 /// from becoming a sixth treatment of "this is selected".
 pub fn selection_wash_shape(rect: egui::Rect, mode: Mode) -> egui::Shape {
+    wash_shape(rect, radius::NONE, mode)
+}
+
+/// The selection wash at `corner`: square on a row, the control's corner on a
+/// toggle that is on, so the wash follows the shape it marks.
+fn wash_shape(rect: egui::Rect, corner: f32, mode: Mode) -> egui::Shape {
     let sem = semantic(mode.is_dark());
     egui::Shape::Vec(vec![
-        egui::Shape::rect_filled(rect, radius::NONE, colour(sem.rows.selected_background)),
+        egui::Shape::rect_filled(rect, corner, colour(sem.rows.selected_background)),
         egui::Shape::rect_stroke(
             rect,
-            radius::NONE,
+            corner,
             egui::Stroke::new(1.0, colour(sem.rows.selected_border)),
             egui::StrokeKind::Inside,
         ),
@@ -1493,12 +1499,15 @@ fn toolbar_button_at(
         // what an *enabled* toggle looks like. So the on-state steps down with
         // the control: outline instead of wash, disabled ink instead of
         // primary.
+        // The on-state follows the button's own corner, as its focus ring
+        // does; only a row's wash is square.
         if entry.enabled {
-            selection_wash(ui, response.rect, mode);
+            ui.painter()
+                .add(wash_shape(response.rect, radius::CONTROL, mode));
         } else {
             ui.painter().rect_stroke(
                 response.rect,
-                radius::NONE,
+                radius::CONTROL,
                 egui::Stroke::new(1.0, colour(sem.borders.subtle)),
                 egui::StrokeKind::Inside,
             );
@@ -2148,8 +2157,9 @@ mod tests {
     /// along each edge — so a fill-coloured vertex within a couple of pixels
     /// of `outer`'s corner is reachable when the fill drew square and not
     /// when it drew at a rung of the ladder above [`radius::NONE`]. The read
-    /// is within 1.5 px, so a radius of 1 would pass it; the ladder's next
-    /// rung, [`radius::CHIP`], is 3.
+    /// is within 1 px, which a square corner's feather diagonal (about
+    /// 0.7 px) meets and the ladder's next rung, [`radius::CHIP`] at 2, does
+    /// not: its nearest fill vertex sits about 1.3 px from the corner.
     #[test]
     fn an_orphan_panes_fill_has_a_vertex_at_each_exact_square_corner() {
         let key = PaneKey::new(crate::item::ItemId::new("test-orphan-pane"));
@@ -2172,11 +2182,10 @@ mod tests {
         // corner itself is not the point to check. What radius decides is
         // how much closer than that a fill vertex gets: a square corner's
         // nearest fill vertex is that ~0.7px feather diagonal; at
-        // `radius::PANEL` (8) the arc does not begin until a full 8px along
-        // each edge, so no fill-coloured vertex sits within a couple of
-        // pixels of the corner. 1.5px is comfortably inside the first band
-        // and comfortably short of the second.
-        const NEAR: f32 = 1.5;
+        // `radius::CHIP` (2), the smallest rung above none, the arc's
+        // nearest fill vertex sits ~1.3px from the corner once the feather
+        // insets it. 1px lies between the two.
+        const NEAR: f32 = 1.0;
 
         for corner in corners {
             let has_corner_vertex = primitives.iter().any(|p| match &p.primitive {
