@@ -201,10 +201,12 @@ pub fn isolated_ci(
 }
 
 /// Run `command` with its output and errors copied to the terminal and to
-/// `log`, and return how it exited.
-pub fn run_teed(mut command: Command, log: &Path) -> Result<ExitStatus, String> {
+/// `log`, and return how it exited. `first` heads the log, a line the caller
+/// has already said on the terminal, such as how many cores the run takes.
+pub fn run_teed(mut command: Command, log: &Path, first: &str) -> Result<ExitStatus, String> {
     let mut file =
         fs::File::create(log).map_err(|e| format!("cannot create {}: {e}", log.display()))?;
+    writeln!(file, "{first}").map_err(|e| format!("cannot write {}: {e}", log.display()))?;
     let (mut reader, writer) = std::io::pipe().map_err(|e| format!("cannot make a pipe: {e}"))?;
     let writer_copy = writer
         .try_clone()
@@ -365,6 +367,20 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn the_log_starts_with_the_callers_line_then_the_runs_output() {
+        let dir = scratch("teed");
+        let log = dir.join("run.log");
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo from the run"]);
+        let status = run_teed(command, &log, "running at 18 cargo jobs and test threads").unwrap();
+        assert!(status.success());
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "running at 18 cargo jobs and test threads\nfrom the run\n"
+        );
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gate-lock-{tag}-{}", std::process::id()));

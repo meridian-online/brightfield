@@ -295,10 +295,11 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
     let summary = scratch.dir.join("summary.json");
     let share = crate::share::at_start();
     let threads = share.threads.to_string();
-    say(&format!(
+    let chose = format!(
         "running at {threads} cargo jobs and test threads: {}",
         share.why
-    ));
+    );
+    say(&chose);
     command
         .arg("--nightly")
         .arg("--summary-json")
@@ -317,7 +318,7 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         log.display()
     ));
     let started = Instant::now();
-    let status = match run_teed(command, &log) {
+    let status = match run_teed(command, &log, &format!("cargo xtask nightly: {chose}")) {
         Ok(status) => status,
         Err(e) => return stopped(NightStage::Start, &e),
     };

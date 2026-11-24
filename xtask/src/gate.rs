@@ -390,10 +390,11 @@ fn gate_head(
     command
         .env("CARGO_BUILD_JOBS", &threads)
         .env("RUST_TEST_THREADS", &threads);
-    say(&format!(
+    let chose = format!(
         "running at {threads} cargo jobs and test threads: {}",
         share.why
-    ));
+    );
+    say(&chose);
 
     let main7: String = main_sha.chars().take(7).collect();
     nightly_status::post_status(
@@ -412,7 +413,7 @@ fn gate_head(
     // the head would stay pending.
     let own_log = tree.join("target/xtask/test-default.log");
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_and_read(command, paths, &summary, &own_log, &main_sha)
+        run_and_read(command, paths, &summary, &own_log, &main_sha, &chose)
     }))
     .unwrap_or_else(|_| {
         Err(Stop::Fail(Failure::new(
@@ -446,12 +447,14 @@ fn run_and_read(
     summary: &Path,
     own_log: &Path,
     main_sha: &str,
+    chose: &str,
 ) -> Result<Posted, Stop> {
     let fail = |stage: Stage| move |e: String| Stop::Fail(Failure::new(stage, e));
     // A kept log from an earlier run of this head would read as this run's.
     let _ = fs::remove_file(paths.kept);
     let started = Instant::now();
-    let status = run_teed(command, paths.log).map_err(fail(Stage::Start))?;
+    let status = run_teed(command, paths.log, &format!("cargo xtask gate: {chose}"))
+        .map_err(fail(Stage::Start))?;
     let took = started.elapsed();
 
     let kept = if own_log.is_file() {
