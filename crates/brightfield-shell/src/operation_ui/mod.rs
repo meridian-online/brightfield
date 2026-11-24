@@ -403,21 +403,32 @@ pub struct NameRule {
 pub enum By {
     /// The name has no last part.
     Nothing,
-    /// The draft's value of this key.
+    /// The draft's value of this key, read as SQL spells it: a column, or a
+    /// list of them with directions, where an expression names nothing.
     Value(&'static str),
+    /// The draft's value of this key, a column's name given bare, as arc takes
+    /// a name: the whole of it, spaces and all.
+    Name(&'static str),
 }
 
 impl NameRule {
-    /// The last part of the name for `draft`: the first comma-separated item
-    /// of the value [`By::Value`] names, without a surrounding `"` pair and
+    /// The last part of the name for `draft`: the value [`By::Name`] names,
+    /// whole, or the first comma-separated item of the value [`By::Value`] names, without a surrounding `"` pair and
     /// without a trailing `asc` or `desc`. `None` when the rule is [`By::Nothing`],
     /// when the draft lacks the value, when it is empty, and when what is left holds a
     /// character other than a letter, a digit or `_`, or a space outside quotes,
     /// since an expression is no name.
     #[must_use]
     pub fn last_part(&self, draft: &Draft) -> Option<String> {
-        let By::Value(key) = self.from else {
-            return None;
+        let key = match self.from {
+            By::Nothing => return None,
+            By::Name(key) => {
+                return draft
+                    .value(key)
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_string)
+            }
+            By::Value(key) => key,
         };
         let first = draft.value(key)?.split(',').next()?.trim();
         let lower = first.to_ascii_lowercase();
@@ -603,5 +614,19 @@ mod tests {
             with_by: false,
         };
         assert_eq!(nothing.last_part(&draft(&[("order_by", "a")])), None);
+    }
+
+    #[test]
+    fn a_step_is_named_by_a_bare_name_whole() {
+        let rule = NameRule {
+            word: "renamed",
+            from: By::Name("column"),
+            with_by: false,
+        };
+        let part = |text: &str| rule.last_part(&draft(&[("column", text)]));
+        assert_eq!(part("median income"), Some("median income".to_string()));
+        assert_eq!(part("order"), Some("order".to_string()));
+        assert_eq!(part("  "), None);
+        assert_eq!(rule.last_part(&Draft::empty("rename-column")), None);
     }
 }

@@ -369,6 +369,14 @@ impl MeridianApp {
         self.operation.said.as_deref()
     }
 
+    /// arc's or DuckDB's refusal of the draft being made as it stands, which
+    /// the status band says while no sentence leads it.
+    #[must_use]
+    pub fn operation_refusal(&self) -> Option<&str> {
+        self.charts.doc.making()?;
+        self.operation.reads.as_ref()?.refusal()
+    }
+
     /// The operation being made, while one is.
     #[must_use]
     pub fn making(&self) -> Option<&Making> {
@@ -792,6 +800,15 @@ impl MeridianApp {
                     text.clear();
                 } else {
                     text.pop();
+                }
+            }
+            // An arrow, Home or End lets go of a value selected whole and leaves the caret
+            // after it, the one place the caret stands, so the typing then adds to the name.
+            if whole {
+                for key in [Key::ArrowLeft, Key::ArrowRight, Key::Home, Key::End] {
+                    if i.consume_key(Modifiers::NONE, key) {
+                        whole = false;
+                    }
                 }
             }
             // A keystroke that makes text is the field's and no other handler's: its text

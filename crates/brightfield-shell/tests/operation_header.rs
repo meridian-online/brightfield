@@ -125,6 +125,37 @@ static RENAME: OperationUi = spec(
     "renamed",
 );
 
+/// A rename whose field opens on the column's own name.
+fn begin_rename_named(b: &Begin<'_>) -> Result<Draft, String> {
+    let mut draft = on_column("rename-column", b, "to")?;
+    draft.set("to", b.column.unwrap_or_default().to_string());
+    Ok(draft)
+}
+
+static RENAME_NAMED: OperationUi = spec(
+    "rename-column",
+    "Rename column",
+    &[Start::Header(HeaderPart::Name)],
+    begin_rename_named,
+    Some(InPlace {
+        part: HeaderPart::Name,
+        keys: &["to"],
+        suggestions: none,
+        follows: None,
+    }),
+    "renamed",
+);
+
+/// An operation that starts from a header's menu and from no part of it.
+static MENU_ONLY: OperationUi = spec(
+    "hide-column",
+    "Hide column",
+    &[Start::Header(HeaderPart::Menu)],
+    begin_rename,
+    None,
+    "without",
+);
+
 static CAST: OperationUi = spec(
     "cast-column",
     "Cast column",
@@ -375,18 +406,15 @@ fn an_operation_the_column_cannot_take_is_greyed_in_the_menu_with_its_sentence()
 
 #[test]
 fn a_part_no_operation_starts_from_senses_nothing() {
-    // The built operations start from no part of a column's header: hiding a column
-    // starts from its menu alone, so each cell is sensed for the menu and no part is.
-    // Deriving a column starts from the new-column cell after the last one.
-    let mut win = OpWindow::on_copy_of(WITH_NULLS);
-    let table = win.table();
-    win.show_grid_of(&table);
+    // An operation that starts from a header's menu alone, as hiding a column does:
+    // each cell is sensed for the menu and no part is.
+    let win = window(WITH_NULLS, &[&MENU_ONLY]);
     let drawn = win.app.chart_doc().header_drawn().clone();
     assert!(
         drawn.parts.is_empty() && !drawn.cells.is_empty(),
         "{drawn:?}"
     );
-    assert!(drawn.new_column.is_some(), "{drawn:?}");
+    assert_eq!(drawn.new_column, None);
 
     // With the rename alone, the name is sensed and the type and count are not.
     let win = window(WITH_NULLS, &[&RENAME]);
@@ -452,6 +480,61 @@ fn a_field_in_place_takes_typing_tab_and_its_suggestions() {
     assert_eq!(draft.value("column"), Some("double"));
     assert_eq!(draft.value("expression"), Some("house_age * 2"));
     assert_eq!(win.field_text().as_deref(), Some("house_age * 2"));
+}
+
+/// Whether the field in place draws its text selected whole.
+fn field_whole(win: &OpWindow) -> bool {
+    win.app
+        .chart_doc()
+        .header_drawn()
+        .field
+        .as_ref()
+        .is_some_and(|field| field.whole)
+}
+
+#[test]
+fn a_field_that_opens_on_a_value_selects_it_whole() {
+    let mut win = window(SAMPLE, &[&RENAME_NAMED]);
+    win.header("median_income", HeaderPart::Name, Gesture::DoubleClick);
+    assert_eq!(win.field_text().as_deref(), Some("median_income"));
+    assert!(field_whole(&win));
+    // The first text typed replaces it, and then the typing adds to it.
+    win.type_text("inc");
+    assert_eq!(win.field_text().as_deref(), Some("inc"));
+    assert!(!field_whole(&win));
+    win.type_text("ome");
+    assert_eq!(win.field_text().as_deref(), Some("income"));
+    win.key(egui::Key::Escape);
+
+    // Backspace over it empties the value, and a second takes nothing more.
+    win.header("median_income", HeaderPart::Name, Gesture::DoubleClick);
+    assert!(field_whole(&win));
+    win.key(egui::Key::Backspace);
+    assert_eq!(win.field_text().as_deref(), Some(""));
+    assert!(!field_whole(&win));
+    win.type_text("x");
+    assert_eq!(win.field_text().as_deref(), Some("x"));
+    win.key(egui::Key::Escape);
+
+    // An arrow or End lets go of it, and the typing adds to the name.
+    for key in [
+        egui::Key::ArrowRight,
+        egui::Key::End,
+        egui::Key::ArrowLeft,
+        egui::Key::Home,
+    ] {
+        win.header("median_income", HeaderPart::Name, Gesture::DoubleClick);
+        assert!(field_whole(&win));
+        win.key(key);
+        assert!(!field_whole(&win), "{key:?}");
+        win.type_text("_usd");
+        assert_eq!(
+            win.field_text().as_deref(),
+            Some("median_income_usd"),
+            "{key:?}"
+        );
+        win.key(egui::Key::Escape);
+    }
 }
 
 #[test]
