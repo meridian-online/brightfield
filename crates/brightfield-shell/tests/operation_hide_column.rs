@@ -173,6 +173,15 @@ fn hide_column_quotes_a_column_named_order() {
 }
 
 #[test]
+fn hide_column_names_its_step_for_a_column_whose_name_holds_a_space() {
+    let mut win = OpWindow::on_copy_of(WITH_NULLS);
+    hide_with_key(&mut win, "median income");
+    let kept = win.kept();
+    assert_eq!(kept.len(), 1, "{:?}", win.said());
+    assert_eq!(kept[0].name, "with_nulls_without_median_income");
+}
+
+#[test]
 fn hide_column_says_the_refusal_and_keeps_nothing() {
     // A table of one column: hiding it leaves a select of nothing, which DuckDB refuses.
     let mut win = OpWindow::on_copy_prepared(WITH_NULLS, |dir| {

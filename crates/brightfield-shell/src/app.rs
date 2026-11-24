@@ -804,6 +804,10 @@ pub struct Making {
     pub suggestions: Vec<String>,
     /// The suggestion the arrow keys are on.
     pub suggestion: Option<usize>,
+    /// Whether the value its in-place field edits is selected whole, as it is
+    /// when the field opens on a value or Tab moves to one: the first text
+    /// typed replaces it, and Backspace empties it.
+    pub whole: bool,
     /// The answer to the draft as it stands, once it has come, for its form.
     pub answer: Option<crate::operation_ui::DraftAnswer>,
     /// What its form asked for on the last frame it was drawn.

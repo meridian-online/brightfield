@@ -39,7 +39,7 @@ static UI: OperationUi = OperationUi {
     form: None,
     name: NameRule {
         word: "without",
-        from: By::Value("column"),
+        from: By::Name("column"),
         with_by: false,
     },
 };
