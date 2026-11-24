@@ -73,6 +73,7 @@ fn begin(b: &Begin<'_>) -> Result<Draft, String> {
 /// the name is in focus, inside a string literal, or when a bare word is already
 /// a column's whole name.
 fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
+    let columns = others(b, draft);
     if draft.focus == Some("column") {
         return Vec::new();
     }
@@ -95,7 +96,7 @@ fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
     if word.is_empty() && !quoted {
         return Vec::new();
     }
-    b.columns
+    columns
         .iter()
         .filter(|c| {
             let lower = c.to_lowercase();
@@ -131,6 +132,20 @@ fn ends_in(text: &str) -> Ends {
     ends
 }
 
+/// The columns the expression can read. A correction of a kept step is begun over that
+/// step's own table, while its draft stays on the table the step reads, so the
+/// step's table holds the column it added, last, and that column is left out
+/// (`correcting_a_derived_column_offers_the_columns_it_reads`).
+fn others(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
+    let correcting = b.table.is_some() && draft.on.as_deref() != b.table;
+    let read = if correcting {
+        b.columns.len().saturating_sub(1)
+    } else {
+        b.columns.len()
+    };
+    b.columns[..read].to_vec()
+}
+
 /// After the expression is edited from `before`, the name follows it while it
 /// is still the one `before` gave: a name typed into, or kept from a
 /// correction under another name, stays.
@@ -138,9 +153,10 @@ fn follow(b: &Begin<'_>, draft: &mut Draft, edited: &str, before: &str) {
     if edited != "expression" {
         return;
     }
-    let followed = name_for(before, b.columns);
+    let columns = others(b, draft);
+    let followed = name_for(before, &columns);
     if draft.value("column").is_none_or(|name| name == followed) {
-        let now = name_for(draft.value("expression").unwrap_or_default(), b.columns);
+        let now = name_for(draft.value("expression").unwrap_or_default(), &columns);
         draft.set("column", now);
     }
 }

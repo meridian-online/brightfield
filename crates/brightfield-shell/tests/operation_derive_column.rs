@@ -280,3 +280,48 @@ fn derive_column_completes_a_name_holding_a_quote_typed_doubled() {
     win.type_text("x + \"say \"\"h");
     assert_eq!(win.suggestions(), ["x + \"say \"\"hi\"\"\""]);
 }
+
+#[test]
+fn correcting_a_derived_column_offers_the_columns_it_reads() {
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    derive_with_key(&mut win, "median_income");
+    type_in(&mut win, "median_income * 2");
+    win.key(egui::Key::Enter);
+    win.settle_reads();
+    let name = format!("{}_with_median_income_2", win.table());
+    assert_eq!(win.kept().len(), 1, "{:?}", win.said());
+    win.wait_for_preview();
+
+    // `=` over the kept step's grid corrects it, its field over the column it added.
+    let over = win
+        .app
+        .chart_doc()
+        .header_drawn()
+        .cells
+        .iter()
+        .find(|(column, _)| column == "median_income_2")
+        .map(|(_, rect)| *rect);
+    assert!(over.is_some(), "{:?}", win.app.chart_doc().header_drawn());
+    win.press("=");
+    win.settle_reads();
+    let making = win.app.making().expect("the kept derive is corrected");
+    assert_eq!(making.corrects.as_deref(), Some(name.as_str()));
+    let drawn = win.app.chart_doc().header_drawn().clone();
+    let field = drawn.field.as_ref().expect("the field is drawn").rect;
+    // Over the same column: a draft's preview adds a line above its rows, so the
+    // header stands lower.
+    assert_eq!(
+        Some(field.x_range()),
+        over.map(|o| o.x_range()),
+        "{drawn:?}"
+    );
+
+    // Back to the expression: the column it adds is not offered.
+    win.key(egui::Key::Tab);
+    win.type_text("med");
+    assert_eq!(win.suggestions(), ["median_income", "median_house_value"]);
+    // And a name that was the expression's still follows it.
+    win.type_text("ian_income * 3");
+    let draft = win.making().expect("the draft is being made");
+    assert_eq!(draft.value("column"), Some("median_income_3"));
+}

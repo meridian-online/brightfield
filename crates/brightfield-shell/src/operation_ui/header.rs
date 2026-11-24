@@ -276,6 +276,9 @@ pub fn header_pass(
             making.whole,
         ))
     });
+    // A correction of a kept step began over that step's own table, which holds the
+    // column it added already.
+    let corrects = doc.making().is_some_and(|making| making.corrects.is_some());
     let begun_columns: Vec<String> = doc
         .making()
         .map(|making| making.with.columns.clone())
@@ -459,9 +462,9 @@ pub fn header_pass(
     // The field in place, over the part the operation names.
     if let Some((InPlace { part, .. }, column, text, suggestions, selected, whole)) = field {
         let at = if part == HeaderPart::NewColumn {
-            // Once the preview holds the new column, over its header, so its values fill
-            // under the field; until then, in the new-column cell.
-            let added = (drawn.columns > begun_columns.len())
+            // Once the preview holds the new column, the table's last, over its header, so
+            // its values fill under the field; until then, in the new-column cell.
+            let added = (corrects || drawn.columns > begun_columns.len())
                 .then(|| {
                     cells
                         .iter()
