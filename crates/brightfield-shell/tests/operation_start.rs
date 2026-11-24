@@ -99,6 +99,7 @@ static RENAME_LIKE: OperationUi = OperationUi {
         part: HeaderPart::Name,
         keys: &["to"],
         suggestions: no_suggestions,
+        follows: None,
     }),
     form: None,
     name: NameRule {
@@ -123,6 +124,7 @@ static DERIVE_LIKE: OperationUi = OperationUi {
         part: HeaderPart::NewColumn,
         keys: &["expression"],
         suggestions: no_suggestions,
+        follows: None,
     }),
     form: None,
     name: NameRule {
@@ -645,7 +647,8 @@ fn starting_over_a_kept_draft_of_the_same_operation_corrects_it() {
     assert_eq!(making.corrects.as_deref(), Some(name.as_str()));
     assert_eq!(making.draft.value("column"), Some("median_income"));
     assert_eq!(making.draft.value("to"), Some("income"));
-    win.type_text("_2");
+    // The field opens with the kept name selected whole, so the new one is typed whole.
+    win.type_text("income_2");
     win.settle_reads();
     win.key(egui::Key::Enter);
     let kept = win.kept();

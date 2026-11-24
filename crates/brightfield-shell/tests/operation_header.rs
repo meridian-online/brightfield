@@ -120,6 +120,7 @@ static RENAME: OperationUi = spec(
         part: HeaderPart::Name,
         keys: &["to"],
         suggestions: two_names,
+        follows: None,
     }),
     "renamed",
 );
@@ -133,6 +134,7 @@ static CAST: OperationUi = spec(
         part: HeaderPart::Type,
         keys: &["type"],
         suggestions: none,
+        follows: None,
     }),
     "cast",
 );
@@ -156,6 +158,7 @@ static FILL: OperationUi = OperationUi {
             part: HeaderPart::Missing,
             keys: &["value"],
             suggestions: none,
+            follows: None,
         }),
         "filled",
     )
@@ -176,6 +179,7 @@ const fn derive() -> OperationUi {
             part: HeaderPart::NewColumn,
             keys: &["column", "expression"],
             suggestions: none,
+            follows: None,
         }),
         "with",
     )
@@ -371,8 +375,9 @@ fn an_operation_the_column_cannot_take_is_greyed_in_the_menu_with_its_sentence()
 
 #[test]
 fn a_part_no_operation_starts_from_senses_nothing() {
-    // The built operations start from no part of a header: hiding a column starts from
-    // its menu alone, so each cell is sensed for the menu and no part is.
+    // The built operations start from no part of a column's header: hiding a column
+    // starts from its menu alone, so each cell is sensed for the menu and no part is.
+    // Deriving a column starts from the new-column cell after the last one.
     let mut win = OpWindow::on_copy_of(WITH_NULLS);
     let table = win.table();
     win.show_grid_of(&table);
@@ -381,7 +386,7 @@ fn a_part_no_operation_starts_from_senses_nothing() {
         drawn.parts.is_empty() && !drawn.cells.is_empty(),
         "{drawn:?}"
     );
-    assert_eq!(drawn.new_column, None);
+    assert!(drawn.new_column.is_some(), "{drawn:?}");
 
     // With the rename alone, the name is sensed and the type and count are not.
     let win = window(WITH_NULLS, &[&RENAME]);

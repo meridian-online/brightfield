@@ -147,6 +147,10 @@ pub struct InPlace {
     pub keys: &'static [&'static str],
     /// What the field offers under it for the value being typed.
     pub suggestions: fn(&Begin<'_>, &Draft) -> Vec<String>,
+    /// What the draft's other values become once the value named is edited
+    /// from the text given, for a value that follows another, as a derived
+    /// column's name follows its expression. `None` when no value follows.
+    pub follows: Option<fn(&Begin<'_>, &mut Draft, &str, &str)>,
 }
 
 /// Something the window must hold for an operation to start.

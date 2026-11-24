@@ -188,6 +188,7 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
 | `hide-column` | `-` | 3 / 4 / 4 | `-` is VisiData's hide; the Grid context keeps it apart from the Workspace's `-` zoom-out |
+| `derive-column` | `=` | 3 / 4 / 4 | `=` is VisiData's new column from an expression; the Grid context keeps it apart from the Workspace's `=` zoom-in |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 

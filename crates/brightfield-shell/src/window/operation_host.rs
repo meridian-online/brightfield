@@ -562,6 +562,13 @@ impl MeridianApp {
         ));
         self.operation.in_grid = None;
         self.operation.began_over = Some(self.canvas_holds().clone());
+        let whole = spec.field.is_some_and(|field| {
+            draft
+                .focus
+                .or_else(|| field.keys.first().copied())
+                .and_then(|focus| draft.value(focus))
+                .is_some_and(|value| !value.is_empty())
+        });
         self.charts.doc.set_making(Making {
             spec,
             draft,
@@ -571,6 +578,7 @@ impl MeridianApp {
             with,
             suggestions: Vec::new(),
             suggestion: None,
+            whole,
             answer: None,
             form_event: operation_ui::FormEvent::None,
         });
@@ -718,7 +726,7 @@ impl MeridianApp {
                     .focus
                     .or_else(|| making.spec.field.and_then(|f| f.keys.first().copied()));
                 if let (Some(taken), Some(focus)) = (taken, focus) {
-                    making.draft.set(focus, taken);
+                    set_and_follow(making, focus, taken);
                 }
             }
             self.keep_making(ctx);
@@ -745,6 +753,7 @@ impl MeridianApp {
         }
         let mut text = making.draft.value(focus).unwrap_or_default().to_string();
         let before = text.clone();
+        let mut whole = making.whole;
         let mut next = None;
         let offered = making.suggestions.len();
         ctx.input_mut(|i| {
@@ -766,21 +775,33 @@ impl MeridianApp {
                     .take()
                     .and_then(|at| making.suggestions.get(at))
                 {
-                    Some(taken) => text.clone_from(taken),
+                    Some(taken) => {
+                        text.clone_from(taken);
+                        whole = false;
+                    }
                     None => {
                         let at = field.keys.iter().position(|k| *k == focus).unwrap_or(0);
                         next = field.keys.get((at + 1) % field.keys.len()).copied();
                     }
                 }
             }
+            // Over a value selected whole, Backspace empties it and the first text typed
+            // replaces it, as a name field does when it opens with its name selected.
             if i.consume_key(Modifiers::NONE, Key::Backspace) {
-                text.pop();
+                if std::mem::take(&mut whole) {
+                    text.clear();
+                } else {
+                    text.pop();
+                }
             }
             // A keystroke that makes text is the field's and no other handler's: its text
             // goes into the value, and its key press goes with it, so `o` typed into a name
             // does not also sort the rows. A key held with Cmd, Ctrl or Alt is the window's.
             i.events.retain(|e| match e {
                 egui::Event::Text(typed) => {
+                    if std::mem::take(&mut whole) {
+                        text.clear();
+                    }
                     text.push_str(typed);
                     false
                 }
@@ -793,8 +814,16 @@ impl MeridianApp {
             });
         });
         if text != before {
-            making.draft.set(focus, text);
+            set_and_follow(making, focus, text);
         }
+        // Tab to another value selects it whole.
+        if let Some(next) = next {
+            whole = making
+                .draft
+                .value(next)
+                .is_some_and(|value| !value.is_empty());
+        }
+        making.whole = whole;
         making.draft.focus = Some(next.unwrap_or(focus));
         if next.is_some() {
             ctx.request_repaint();
@@ -1521,5 +1550,19 @@ impl MeridianApp {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+}
+
+/// Set the value `key` of the draft being made to `text`, and let a value that follows it
+/// follow, as a derived column's name follows its expression
+/// (`a_name_typed_into_stops_following_the_expression`).
+fn set_and_follow(making: &mut Making, key: &'static str, text: String) {
+    let before = making.draft.value(key).unwrap_or_default().to_string();
+    making.draft.set(key, text);
+    if let Some(follows) = making.spec.field.and_then(|field| field.follows) {
+        let draft = &mut making.draft;
+        making
+            .with
+            .with_begin(|begin| follows(begin, draft, key, &before));
     }
 }

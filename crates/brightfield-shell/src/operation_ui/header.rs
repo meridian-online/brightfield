@@ -83,6 +83,8 @@ pub struct FieldDrawn {
     pub suggestions: Vec<String>,
     /// Which of them the arrow keys are on.
     pub selected: Option<usize>,
+    /// Whether its text is selected whole, so the first letter typed replaces it.
+    pub whole: bool,
 }
 
 /// What the header pass sensed and drew on a frame.
@@ -253,6 +255,7 @@ pub fn header_pass(
             making.draft.value(focus).unwrap_or_default().to_string(),
             making.suggestions.clone(),
             making.suggestion,
+            making.whole,
         ))
     });
     let begun_columns: Vec<String> = doc
@@ -420,14 +423,29 @@ pub fn header_pass(
                     verb: None,
                 });
             }
+            // It draws only a `+`, so it is named by what it does.
+            doc.controls.push(chrome::NamedControl::labelled(
+                rect,
+                "Add a column".to_string(),
+            ));
             out.new_column = Some(rect);
         }
     }
 
     // The field in place, over the part the operation names.
-    if let Some((InPlace { part, .. }, column, text, suggestions, selected)) = field {
+    if let Some((InPlace { part, .. }, column, text, suggestions, selected, whole)) = field {
         let at = if part == HeaderPart::NewColumn {
-            new_column.or(last)
+            // Once the preview holds the new column, over its header, so its values fill
+            // under the field; until then, in the new-column cell.
+            let added = (drawn.columns > begun_columns.len())
+                .then(|| {
+                    cells
+                        .iter()
+                        .find(|(col, ..)| *col + 1 == drawn.columns)
+                        .map(|(.., at)| *at)
+                })
+                .flatten();
+            added.or(new_column).or(last)
         } else {
             // By the column's place in the table the draft began over, and not by
             // its name: a rename's preview has given the column another.
@@ -449,23 +467,32 @@ pub fn header_pass(
             let painter = ui.painter();
             painter.rect_filled(at, 0.0, chrome::colour(sem.surfaces.sunken));
             let font = egui::FontId::proportional(spacing::SPACE_5);
-            let end = painter
-                .text(
-                    at.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    &text,
-                    font.clone(),
-                    chrome::colour(sem.text.primary),
-                )
-                .right();
-            // The caret, after the text.
-            painter.line_segment(
-                [
-                    egui::pos2(end, at.top() + spacing::SPACE_1),
-                    egui::pos2(end, at.bottom() - spacing::SPACE_1),
-                ],
-                egui::Stroke::new(1.0, chrome::colour(sem.text.primary)),
+            let galley = painter.layout_no_wrap(
+                text.clone(),
+                font.clone(),
+                chrome::colour(sem.text.primary),
             );
+            let shown = egui::Rect::from_min_size(
+                egui::pos2(at.left(), at.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            if whole {
+                // The text selected whole, under the editor's selection wash and with no
+                // caret, as a text field draws a selection.
+                painter.rect_filled(shown, 0.0, chrome::colour(sem.editor.selection));
+            }
+            painter.galley(shown.min, galley, chrome::colour(sem.text.primary));
+            if !whole {
+                // The caret, after the text.
+                let end = shown.right();
+                painter.line_segment(
+                    [
+                        egui::pos2(end, at.top() + spacing::SPACE_1),
+                        egui::pos2(end, at.bottom() - spacing::SPACE_1),
+                    ],
+                    egui::Stroke::new(1.0, chrome::colour(sem.text.primary)),
+                );
+            }
             // What the operation offers, listed under the field.
             let row = at.height();
             for (i, suggestion) in suggestions.iter().enumerate() {
@@ -492,6 +519,7 @@ pub fn header_pass(
                 text,
                 suggestions,
                 selected,
+                whole,
             });
         }
     }

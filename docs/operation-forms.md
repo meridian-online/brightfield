@@ -86,6 +86,11 @@ Each of these is reversible, and each is the owner's to overturn.
 24. **The pick closes, beginning nothing, when its grid leaves the canvas, another pane takes the keys or the rail is put away**, as a draft goes when the grid it began over does.
 25. **A model's table is copied when it is taken, on the frame of the take**, as opening a table's grid copies it. Reading the columns of each candidate copies nothing.
 26. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
+27. **A field in place opens with its value selected whole**, as a name field in a file browser does. The first text typed replaces it and Backspace empties it; after that the typing adds to the end. Tab to another value selects that one whole. A rename's field opens on the column's own name, so typing a new name needs no clearing first, and a field that opens empty has nothing selected. The selection is drawn under the editor's selection wash, with no caret.
+28. **A value can follow another one.** An in-place field's `follows` keeps a value in step with the one being typed: a derived column's name follows its expression while it is still the name the expression before the edit gave, so a name typed into, or one kept from a correction under another name, stays. The name is the expression's letters, digits and `_`, each run of anything else made one `_`, trimmed and cut at 30 characters, then made free of the table's columns with `_2`, `_3`; an expression with no letter or digit names it `derived`.
+29. **A derived column's field moves over its column.** It opens in the new-column cell, and once the preview holds the new column it is drawn over that column's header, so the values fill under it as the expression is typed.
+30. **Derive column needs no column.** The new-column cell starts it on none, with an empty expression. From `=` on a cell or "Add a column from this one" on a header's menu, the expression starts as that column as SQL spells it.
+31. **Derive column completes the column the expression's last word begins**, as SQL spells it, quoted where it needs quotes, with the rest of the expression kept. Down picks one and Tab takes it. The name, once in focus, offers nothing.
 
 ## What arc lacks
 
@@ -103,7 +108,7 @@ These are arcform's to close. Until then the workarounds above stand.
 An operation is three files, so operations can be built side by side.
 
 1. **Fill its slot** in `crates/brightfield-shell/src/operation_ui/<op>.rs`: a `static` `OperationUi` and a `ui()` that returns it. Say where it starts (`starts`), what it needs (`needs`, in the order the sentences should be said), the draft it begins as (`begin`), whether it keeps at once or on Enter, its in-place field or its form, and its name rule.
-2. **Flip its `*_BUILT`** in `crates/brightfield-keys/src/operations.rs`. Its key then joins the registry, the palette and the help sheet. `hide-column` and `derive-column` use `-` and `=`, which a dispatch test in `crates/brightfield-keys` holds to resolving to no verb in the grid's context; that test changes with them. A shifted key is taken before its bare letter in the grid, so `shift-l` limits rows and `l` still moves the cursor.
+2. **Flip its `*_BUILT`** in `crates/brightfield-keys/src/operations.rs`. Its key then joins the registry, the palette and the help sheet. `hide-column` and `derive-column` use `-` and `=`, which the Workspace binds to zooming; a dispatch test in `crates/brightfield-keys` holds each to its operation in the grid's context. A shifted key is taken before its bare letter in the grid, so `shift-l` limits rows and `l` still moves the cursor.
 3. **Write its test file** from the harness in `crates/brightfield-shell/tests/support/operations.rs`: an `OpWindow` on a copy of a fixture, started from the operation's key, its header gesture and the palette.
 
 The tests in `tests/operation_registry.rs` then bite: the slot holds its own operation, its verb is in the key registry, its draft names only what arc describes, its needs agree with what arc says it reads, and it is filed under its stage.
