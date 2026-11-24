@@ -477,7 +477,7 @@ fn every_gated_component_has_light_and_dark_goldens() {
 /// teaches: it lists the catalog, so the next invocation can be right.
 #[test]
 fn a_shot_of_an_unknown_component_names_the_catalog() {
-    let out = std::env::temp_dir().join("bf-gallery-unknown.png");
+    let out = std::env::temp_dir().join(format!("bf-gallery-unknown-{}.png", std::process::id()));
     let err = capture_component("no-such-component", Mode::Light, 1.0, None, &out)
         .expect_err("an unknown id cannot capture");
     assert!(

@@ -1402,7 +1402,8 @@ mod tests {
         );
         let composed = crate::pipeline::compose_spec_str(&source, None)
             .unwrap_or_else(|e| panic!("{cast}: {e}\n{source}"));
-        let png = std::env::temp_dir().join(format!("bf-band-ink-{cast}.png"));
+        let png =
+            std::env::temp_dir().join(format!("bf-band-ink-{cast}-{}.png", std::process::id()));
         crate::capture::capture_vello_only(composed, 1.0, &png).expect("export");
         let want = meridian_design::viz::MARK_DEFAULT_LIGHT;
         let want = [

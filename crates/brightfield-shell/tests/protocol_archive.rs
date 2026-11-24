@@ -1301,8 +1301,9 @@ fn a_protocol_new_protocol_made_outside_the_protocols_folder_is_trusted() {
 
 #[test]
 fn rename_relocate_and_the_preferences_move_repoint_trust_records() {
-    let store = Store::current();
     let folder = input("repoint-sources");
+    // After `input`, which points the config folder at the scratch one.
+    let store = Store::current();
     std::fs::copy(measures_csv(), folder.join("a.csv")).unwrap();
     let parent = input("repoint-made");
     let made = brightfield_shell::own_files::create_empty(&parent).expect("a Protocol");

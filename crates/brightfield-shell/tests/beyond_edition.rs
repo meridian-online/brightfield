@@ -19,12 +19,12 @@ use brightfield_shell::beyond_edition::{
 };
 use brightfield_shell::edition::Edition;
 
-/// A scratch folder of this test binary's own, with the config folder the trust store is kept in
+/// A scratch folder of this test process's own, with the config folder the trust store is kept in
 /// set once, before any test reads it.
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("beyond_edition");
+        let root = std::env::temp_dir().join(format!("bf-beyond-edition-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for sub in ["config", "history", "db", "protocols"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");

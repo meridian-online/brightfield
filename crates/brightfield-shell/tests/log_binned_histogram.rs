@@ -54,7 +54,7 @@ fn example(name: &str) -> PathBuf {
 }
 
 fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join("bf-log-binned-histogram");
+    let dir = std::env::temp_dir().join(format!("bf-log-binned-histogram-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }

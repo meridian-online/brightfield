@@ -62,7 +62,7 @@ fn default_mark_ink() -> [u8; 3] {
 
 /// Compose a spec source and export it, returning the PNG path.
 fn export(name: &str, source: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("bf-colour-literals");
+    let dir = std::env::temp_dir().join(format!("bf-colour-literals-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(format!("{name}.png"));
     let composed = compose_spec_str(source, None)
