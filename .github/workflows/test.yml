@@ -272,6 +272,12 @@ jobs:
       # action documents for exact versions.
       - uses: dtolnay/rust-toolchain@1.95.0
 
+      # test-default runs its targets under cargo-nextest, which runs each
+      # test in a process of its own; the action installs a prebuilt binary.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       # Caches ~/.cargo (registry + git checkouts, which matter here: the
       # design-system and arcform pins are git dependencies) plus ./target.
       #
@@ -537,11 +543,12 @@ jobs:
       # This shard's other targets, on cargo's default threads, when it is one
       # of the other shards. `--workspace` on every command, never `--exclude`
       # or `-p`, so each reuses the build above it. `--doc` cannot be combined
-      # with a target flag, so it is its own command on the shard that holds it.
-      # The empty case matters: `cargo test --workspace` with no target flag
+      # with a target flag, so it is its own command on the shard that holds it,
+      # and runs under cargo test, since nextest does not run doctests.
+      # The empty case matters: `cargo nextest run --workspace` with no target flag
       # runs every target in the workspace, so the step runs nothing then. On a
       # one-thread shard the step says it has nothing to run and passes.
-      - name: cargo test, this shard's other targets on cargo's default threads
+      - name: cargo nextest, this shard's other targets at the run's test threads
         run: cargo xtask ci --step test-default
 
       # THE CONFORMANCE SCOREBOARD runs after the suite on the last of the

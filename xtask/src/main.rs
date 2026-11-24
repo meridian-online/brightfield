@@ -20,8 +20,8 @@
 //! only by hand or on a release tag.
 //!
 //! What a full run needs on the machine, each refused by name at its step when
-//! absent: the pinned toolchain, `cargo-deny`, `python3` and the pinned
-//! DuckDB CLI. The nightly-only report on open-analytics needs the sibling
+//! absent: the pinned toolchain, `cargo-deny`, `cargo-nextest`, `python3`
+//! and the pinned DuckDB CLI. The nightly-only report on open-analytics needs the sibling
 //! `open-analytics` checkout too.
 
 mod duckdb_stamp;

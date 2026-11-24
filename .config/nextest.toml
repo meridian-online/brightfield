@@ -1,0 +1,11 @@
+# cargo-nextest's settings for `cargo xtask ci --step test-default`, which
+# runs every test in a process of its own.
+
+# `typed_sql_reads` times the UI thread against a 50 ms budget, and a test
+# beside it that starts a statement DuckDB spreads over every core can hold
+# that thread past the budget. Under cargo test the file's own lock kept the
+# file's other tests off it; under nextest each test is a process, so the
+# test takes every test thread instead and runs with nothing beside it.
+[[profile.default.overrides]]
+filter = 'binary(typed_sql_reads) & test(=the_ui_thread_is_not_held_by_a_slow_statement)'
+threads-required = "num-test-threads"
