@@ -301,6 +301,9 @@ fn role_of(probe: ProbeRole) -> Role {
         ProbeRole::Button => Role::Button,
         ProbeRole::Label => Role::Label,
         ProbeRole::TextInput => Role::TextInput,
+        ProbeRole::Tab => Role::Tab,
+        ProbeRole::Status => Role::Status,
+        ProbeRole::Tooltip => Role::Tooltip,
     }
 }
 

@@ -87,8 +87,8 @@ indexmap = "2"
 # resolvers, since the schema refers only to itself.
 jsonschema = { version = "0.30", default-features = false }
 kurbo = "0.13"
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
-meridian-egui = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "822d4d1034f8bb347599f8c506fbdb4fcaf3ae05" }
+meridian-egui = { git = "https://github.com/meridian-online/design", rev = "822d4d1034f8bb347599f8c506fbdb4fcaf3ae05" }
 peniko = "0.6"
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }

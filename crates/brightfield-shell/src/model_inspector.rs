@@ -647,7 +647,9 @@ fn combo(
         .selected_text(value.as_str())
         .show_ui(ui, |ui| {
             for c in choices {
-                ui.selectable_value(value, c.clone(), c);
+                if chrome::selectable_row(ui, *value == *c, c.as_str()).clicked() {
+                    value.clone_from(c);
+                }
             }
         });
 }
@@ -1126,7 +1128,9 @@ fn role_picker(
             .selected_text(role_label(role))
             .show_ui(ui, |ui| {
                 for r in ROLES {
-                    ui.selectable_value(&mut role, r, role_label(r));
+                    if chrome::selectable_row(ui, role == r, role_label(r)).clicked() {
+                        role = r;
+                    }
                 }
             });
         if role != t.role {

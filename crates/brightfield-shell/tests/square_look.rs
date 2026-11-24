@@ -1,9 +1,12 @@
-//! The square look at this repo's own call sites, read out of the paint list.
+//! The design system's corners at this repo's own call sites, read out of the
+//! paint list.
 //!
-//! The design system draws the chrome square: a rule and a bar do what a
-//! corner and a wash did. This file asks the surfaces the shell draws whether
-//! they carry it, because a pinned revision can name the look and a call site
-//! can still hand a radius of its own to a painter, or draw a ring outside the
+//! The design system draws the chrome nearly square: chips round by 2,
+//! controls and cards by 3, and rows, their fills, bars, rules and bands that
+//! run edge to edge stay square, so a rule and a bar do what a wash did. This
+//! file asks the surfaces the shell draws whether they keep to it, because a
+//! pinned revision can name the corners and a call site can still hand a
+//! radius of its own to a painter, round a row, or draw a ring outside the
 //! edge it belongs to. The claims below are made of what a frame painted: a
 //! `RectShape` says its rect, its corner, its stroke and where the stroke sits,
 //! so "the ring lies inside its edge" is a claim about that shape and not about
@@ -17,7 +20,9 @@
 //! the pointer, when picked, and when the canvas holds it.
 //!
 //! WHAT IS NOT CLAIMED. A round mark stays round (a dot, a slider's thumb), and
-//! none of these surfaces draws one.
+//! none of these surfaces draws one. Which rung each shape takes is the design
+//! system's to test; this file holds that every corner is a rung, that the
+//! rows stay square and that a ring follows its control's corner.
 //!
 //! CPU tessellation only, so it runs on a machine with no GPU, like
 //! `chip_geometry.rs`.
@@ -32,7 +37,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 use meridian_design::control::ROW_BAR_WIDTH;
 use meridian_design::focus::RING_WIDTH;
-use meridian_design::semantic;
+use meridian_design::{radius, semantic};
 
 const MODES: [Mode; 2] = [Mode::Light, Mode::Dark];
 
@@ -52,24 +57,41 @@ fn rect_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<RectShape> {
     out
 }
 
-/// The rects in `rects` drawn with any corner.
-fn cornered(rects: &[RectShape]) -> Vec<&RectShape> {
+/// Whether `corner` is a rung of the design system's radius ladder.
+fn on_the_ladder(corner: u8) -> bool {
+    radius::RADII.iter().any(|&rung| f32::from(corner) == rung)
+}
+
+/// The rects in `rects` with a corner that is not a rung of the ladder.
+fn off_the_ladder(rects: &[RectShape]) -> Vec<&RectShape> {
     rects
         .iter()
-        .filter(|r| r.corner_radius != egui::CornerRadius::ZERO)
+        .filter(|r| {
+            let c = r.corner_radius;
+            ![c.nw, c.ne, c.sw, c.se].into_iter().all(on_the_ladder)
+        })
         .collect()
 }
 
-fn assert_square(rects: &[RectShape], what: &str) {
-    let rounded = cornered(rects);
+fn assert_on_the_ladder(rects: &[RectShape], what: &str) {
+    let stray = off_the_ladder(rects);
     assert!(
-        rounded.is_empty(),
-        "{what}: {} of {} rects carry a corner, the first {:?} at {:?}",
-        rounded.len(),
+        stray.is_empty(),
+        "{what}: {} of {} rects carry a corner that is no rung of the radius \
+         ladder {:?}, the first {:?} at {:?}",
+        stray.len(),
         rects.len(),
-        rounded[0].corner_radius,
-        rounded[0].rect
+        radius::RADII,
+        stray[0].corner_radius,
+        stray[0].rect
     );
+}
+
+/// Whether any rect in `rects` rounds every corner by `rung`.
+fn has_corner(rects: &[RectShape], rung: f32) -> bool {
+    rects
+        .iter()
+        .any(|r| r.corner_radius == egui::CornerRadius::same(rung as u8))
 }
 
 fn specimen(id: &str) -> Box<dyn Component> {
@@ -92,35 +114,47 @@ fn solo_harness(id: &str, mode: Mode) -> Harness<'static> {
 }
 
 /// The status pill, the key, the picker (which is the palette's list over the
-/// palette's delegate) and the modal card are drawn without a corner.
+/// palette's delegate) and the modal card take only the ladder's corners: the
+/// pill and the key round as chips, and the modal card as a card.
 ///
 /// Each is named by its catalogue id and rendered on its own, so a specimen
-/// that stopped drawing anything would fail the census before it could pass
-/// for square.
+/// that stopped drawing anything would fail the census before it could pass.
 #[test]
-fn the_pill_the_key_the_picker_and_the_modal_card_are_drawn_without_a_corner() {
+fn the_pill_the_key_the_picker_and_the_modal_card_take_only_the_ladders_corners() {
     for mode in MODES {
-        for id in ["status-pill", "key-chip", "picker", "modal-chrome"] {
+        for (id, rung) in [
+            ("status-pill", Some(radius::CHIP)),
+            ("key-chip", Some(radius::CHIP)),
+            ("picker", None),
+            ("modal-chrome", Some(radius::PANEL)),
+        ] {
             let harness = solo_harness(id, mode);
             let rects = rect_shapes(&harness.output().shapes);
             assert!(
                 rects.len() >= 2,
                 "{id} {mode:?}: the specimen painted {} rects, which is not a \
-                 specimen worth calling square",
+                 specimen worth measuring",
                 rects.len()
             );
-            assert_square(&rects, &format!("{id} {mode:?}"));
+            assert_on_the_ladder(&rects, &format!("{id} {mode:?}"));
+            if let Some(rung) = rung {
+                assert!(
+                    has_corner(&rects, rung),
+                    "{id} {mode:?}: nothing on the specimen rounds by {rung}, \
+                     the corner its shape takes"
+                );
+            }
         }
     }
 }
 
-/// The toast the feedback specimen raises is drawn without a corner.
+/// The toast the feedback specimen raises takes only the ladder's corners.
 ///
 /// It is raised the way a person raises it, by pressing the specimen's button,
 /// and the test reads the frame after the toast's own label is on it, so a
-/// toast that never appeared cannot pass for a square one.
+/// toast that never appeared cannot pass.
 #[test]
-fn a_toast_is_drawn_without_a_corner() {
+fn a_toast_takes_only_the_ladders_corners() {
     for mode in MODES {
         let mut harness = solo_harness("feedback-layers", mode);
         assert!(
@@ -137,7 +171,7 @@ fn a_toast_is_drawn_without_a_corner() {
             "{mode:?}: raising the toast painted no rect ({before} before, {} after)",
             rects.len()
         );
-        assert_square(&rects, &format!("toast {mode:?}"));
+        assert_on_the_ladder(&rects, &format!("toast {mode:?}"));
     }
 }
 
@@ -188,13 +222,13 @@ impl Window {
 }
 
 /// The command palette and the help sheet, opened by the keys that open them
-/// in the window, are drawn without a corner.
+/// in the window, take only the ladder's corners.
 ///
-/// The frame under the overlay is measured first, and the window shown to be
-/// square before the overlay opens, so a corner cannot be blamed on the wrong
-/// surface. The overlay must then have painted rects of its own.
+/// The frame under the overlay is measured first, and the window shown to keep
+/// to the ladder before the overlay opens, so a stray corner cannot be blamed
+/// on the wrong surface. The overlay must then have painted rects of its own.
 #[test]
-fn the_palette_and_the_help_sheet_are_drawn_without_a_corner() {
+fn the_palette_and_the_help_sheet_take_only_the_ladders_corners() {
     for mode in MODES {
         for (key, overlay) in [
             (egui::Key::Space, "palette"),
@@ -203,7 +237,7 @@ fn the_palette_and_the_help_sheet_are_drawn_without_a_corner() {
             let mut win = Window::open(mode);
             let closed = win.frame(Vec::new());
             assert_eq!(win.app.open_overlay(), None);
-            assert_square(&closed, &format!("the window under the {overlay} {mode:?}"));
+            assert_on_the_ladder(&closed, &format!("the window under the {overlay} {mode:?}"));
 
             let open = win.press(key);
             assert_eq!(
@@ -218,13 +252,13 @@ fn the_palette_and_the_help_sheet_are_drawn_without_a_corner() {
                 closed.len(),
                 open.len()
             );
-            assert_square(&open, &format!("{overlay} {mode:?}"));
+            assert_on_the_ladder(&open, &format!("{overlay} {mode:?}"));
         }
     }
 }
 
 /// A focused control's ring is a two-pixel rule in the focus ink drawn inside
-/// the control's own edge.
+/// the control's own edge, following the control's corner.
 ///
 /// Read off the focus-ring specimen, which draws a standing exemplar (a
 /// swatch with a ring) and a button that takes the ring when it holds the
@@ -273,7 +307,12 @@ fn a_focused_controls_ring_is_inside_its_edge() {
                 ring.rect,
                 ring.stroke_kind
             );
-            assert_eq!(ring.corner_radius, egui::CornerRadius::ZERO, "{mode:?}");
+            assert_eq!(
+                ring.corner_radius,
+                egui::CornerRadius::same(radius::CONTROL as u8),
+                "{mode:?}: the ring at {:?} does not follow its control's corner",
+                ring.rect
+            );
         }
 
         // The ring is on the control's own rect and not on a larger one.

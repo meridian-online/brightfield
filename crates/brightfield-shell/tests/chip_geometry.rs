@@ -49,7 +49,7 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::gallery::{catalog, region_catalog, region_row, solo, Component};
 use brightfield_workbench::subject::RunState;
 use egui_kittest::Harness;
-use meridian_design::control::{HEIGHT_XS, ICON_XS, KEYCAP_FOOT_WIDTH};
+use meridian_design::control::{HEIGHT_XS, ICON_XS, KEYCAP_HEIGHT, KEYCAP_HEIGHT_IN_CONTROL};
 use meridian_design::spacing::{CHIP_PADDING_X, ICON_LABEL_GAP, SPACE_1, SPACE_2, SPACE_3};
 
 /// The hairline every box in the design system is stroked with. Spelled out
@@ -82,18 +82,19 @@ fn near(a: f32, b: f32) -> bool {
 /// Which primitive a chip box came from, told apart by HOW it draws rather
 /// than by the geometry under test.
 ///
-/// The chrome is square, so a chip's corner radius no longer says which boxes
-/// are chips: every panel and every row is drawn at the same radius of zero.
-/// What still tells the two primitives apart is their recipe.
+/// A chip's corner radius does not say which boxes are chips: a keycap and a
+/// pill share the chip corner, and a control's is one rung from it. What
+/// tells the two primitives apart is their recipe.
 ///
 /// The status pill lays its capsule down as two rects over one rectangle: an
 /// opaque fill with no stroke, then a hairline stroke over a transparent fill.
 /// The hairline is part of the recipe: a fill ringed at the focus ring's width
 /// is a focused control, and holds no label.
 ///
-/// The keycap is one sunken fill with its rules laid on the fill's own edges:
-/// a hairline across the top and a [`KEYCAP_FOOT_WIDTH`] foot across the
-/// bottom, flush to the fill's corners.
+/// The keycap is one box: a sunken fill ringed by a hairline laid inside its
+/// edge, and then the same box filled again in the foot ink, clipped to a
+/// `control::KEYCAP_FOOT_WIDTH` band along its bottom so the foot follows the box's
+/// corners. The paint list keeps the box's own rect for the clipped fill.
 ///
 /// Both recipes are stated here from the design system's constants, and
 /// neither reads an inset this file measures.
@@ -163,20 +164,14 @@ fn recognise(rects: &[Boxed]) -> Vec<(egui::Rect, Primitive)> {
     let mut chips = Vec::new();
     for fill in rects.iter().filter(|b| b.filled && b.stroke_width == 0.0) {
         let r = fill.rect;
-        let ruled = |rule: egui::Rect| {
-            rects
-                .iter()
-                .any(|b| b.filled && b.stroke_width == 0.0 && same_rect(b.rect, rule))
+        let ringed = |filled: bool| {
+            rects.iter().any(|b| {
+                b.filled == filled && near(b.stroke_width, HAIRLINE) && same_rect(b.rect, r)
+            })
         };
-        let top = egui::Rect::from_min_max(r.min, egui::pos2(r.right(), r.top() + HAIRLINE));
-        let foot =
-            egui::Rect::from_min_max(egui::pos2(r.left(), r.bottom() - KEYCAP_FOOT_WIDTH), r.max);
-        let stroked = rects
-            .iter()
-            .any(|b| !b.filled && near(b.stroke_width, HAIRLINE) && same_rect(b.rect, r));
-        if stroked {
+        if ringed(false) {
             chips.push((r, Primitive::Pill));
-        } else if ruled(top) && ruled(foot) {
+        } else if ringed(true) {
             chips.push((r, Primitive::Keycap));
         }
     }
@@ -323,20 +318,34 @@ fn assert_keycap(where_: &str, mode: Mode, chip: &Chip) {
         Primitive::Keycap,
         "{where_} {mode:?} {keystroke:?}: measured as a keycap but drawn as a pill"
     );
-    // The hairline is in the expectation because the keycap's side rule sits
-    // inside the painted rect, between the box's edge and its padding.
-    let expected = CHIP_PADDING_X + HAIRLINE;
+    // A keycap comes in two sizes: the row's, padded by the named chip
+    // padding, and the smaller one drawn inside a control (a button's key),
+    // padded by one ladder step less so it fits the control. The hairline is
+    // in the expectation because the keycap's side rule sits inside the
+    // painted rect, between the box's edge and its padding.
+    let pad = if near(box_.height(), KEYCAP_HEIGHT) {
+        CHIP_PADDING_X
+    } else if near(box_.height(), KEYCAP_HEIGHT_IN_CONTROL) {
+        SPACE_2
+    } else {
+        panic!(
+            "{where_} {mode:?} {keystroke:?}: a keycap {} tall is neither the \
+             row's ({KEYCAP_HEIGHT}) nor a control's ({KEYCAP_HEIGHT_IN_CONTROL})",
+            box_.height()
+        )
+    };
+    let expected = pad + HAIRLINE;
     let leading = text.left() - box_.left();
     let trailing = box_.right() - text.right();
     assert!(
         near(leading, expected),
         "{where_} {mode:?} {keystroke:?}: leading inset {leading} is not \
-         CHIP_PADDING_X + hairline ({expected})"
+         its size's padding + hairline ({expected})"
     );
     assert!(
         near(trailing, expected),
         "{where_} {mode:?} {keystroke:?}: trailing inset {trailing} is not \
-         CHIP_PADDING_X + hairline ({expected})"
+         its size's padding + hairline ({expected})"
     );
     assert!(
         near(box_.width(), text.width() + 2.0 * expected),
@@ -368,11 +377,14 @@ const CHIP_SPECIMEN: [&str; 3] = ["Esc", "⌘S", "Space"];
 /// `every_chip_in_every_gallery_specimen_spends_the_named_padding` and says so
 /// in the failure, instead of being discovered as a golden nobody expected to
 /// move. Counts are per frame, and identical in light and dark.
-const CHIP_CENSUS: [(&str, usize, usize); 4] = [
+const CHIP_CENSUS: [(&str, usize, usize); 7] = [
     // (specimen id, pills, keycaps)
     ("key-chip", 0, 3),
+    ("key-tip", 0, 1),
     ("modal-chrome", 0, 1),
     ("picker", 0, 3),
+    ("reason-popover", 0, 1),
+    ("ribbon-row", 0, 1),
     ("status-pill", 3, 0),
 ];
 

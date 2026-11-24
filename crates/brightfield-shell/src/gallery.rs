@@ -76,6 +76,7 @@
 //!    of it with no opt-in;
 //! 5. carry **two goldens**, light and dark, at the `kittest.toml` floor.
 
+use brightfield_keys::ribbon::{Context as RibbonContext, Stage};
 use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
 use brightfield_workbench::arrangement::{self, Extent, Region};
 use brightfield_workbench::registry::Slot;
@@ -85,9 +86,11 @@ use brightfield_workbench::{
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, icons, key_chip, list_row, overlay_frame, query_line, tooltip_for_action, widgets,
-    ListRow, MeridianUi, ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer,
-    Picker, RowHeight, Severity, Toast, ToastLayer, PROMPT_GLYPH,
+    align, button, icons, key_chip, key_tip, list_row, overlay_frame, query_line, ribbon_row,
+    ribbon_tabs, run_status, tooltip_for_action, widgets, Anchor, Button, ListRow, MeridianUi,
+    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, Popover,
+    RibbonRow, RibbonTab, RibbonTabs, RowHeight, RunStatus, Severity, StepMark, TabPick, Toast,
+    ToastLayer, Weight, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -197,6 +200,12 @@ pub enum ProbeRole {
     Label,
     /// A single-line text input.
     TextInput,
+    /// One tab of a tab list.
+    Tab,
+    /// A live region reporting state, such as the run status.
+    Status,
+    /// A floating card that explains, such as a greyed command's reason.
+    Tooltip,
 }
 
 /// How the gate finds the specimen: role plus label. This is the first gate
@@ -374,6 +383,12 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(ModalChromeDemo::default()),
         Box::new(FeedbackLayersDemo::default()),
         Box::new(PickerDemo::default()),
+        Box::new(RibbonTabsDemo::default()),
+        Box::new(RibbonRowDemo::default()),
+        Box::new(KeyTipDemo),
+        Box::new(ReasonPopoverDemo),
+        Box::new(PopoverDemo::default()),
+        Box::new(RunStatusDemo::default()),
     ]
 }
 
@@ -1296,6 +1311,330 @@ impl Component for PickerDemo {
         self.picker.show(ui);
         if !self.picker.query().is_empty() {
             ui.label(PICKER_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`RibbonTabsDemo`] shows once a tab has been picked.
+const TAB_EVIDENCE: &str = "tab picked";
+
+/// `ribbon_tabs`: the ribbon's stages, read from the taxonomy so the specimen
+/// carries the names the window draws, then the contextual tab set apart.
+struct RibbonTabsDemo {
+    selected: Option<TabPick>,
+    picked: bool,
+}
+
+impl Default for RibbonTabsDemo {
+    fn default() -> Self {
+        Self {
+            selected: Some(TabPick::Stage(1)),
+            picked: false,
+        }
+    }
+}
+
+impl Component for RibbonTabsDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "ribbon-tabs",
+            name: "Ribbon tabs",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Tab,
+                label: Stage::Shape.label(),
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: TAB_EVIDENCE,
+            }),
+            solo_size: (520.0, 120.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let stages = Stage::ALL.map(|stage| RibbonTab::new(stage.label()));
+        let contextual = format!("{} · ranking", RibbonContext::Grid.label());
+        let response = ribbon_tabs(
+            ui,
+            RibbonTabs::new(&stages, self.selected).contextual(RibbonTab::new(&contextual)),
+        );
+        if let Some(pick) = response.clicked {
+            self.selected = Some(pick);
+            self.picked = true;
+        }
+        if self.picked {
+            ui.label(TAB_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`RibbonRowDemo`] shows once a command has run.
+const COMMAND_EVIDENCE: &str = "command run";
+
+/// The sentence the greyed specimen commands give, in the ribbon row and in
+/// the reason popover.
+const EXPORT_REASON: &str = "Nothing is drawn yet, so there is no picture to export.";
+
+/// `ribbon_row`: two groups of commands, one of them greyed with its reason.
+#[derive(Default)]
+struct RibbonRowDemo {
+    ran: bool,
+}
+
+impl Component for RibbonRowDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "ribbon-row",
+            name: "Ribbon row",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Button,
+                label: "Open",
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::ControlMd,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: COMMAND_EVIDENCE,
+            }),
+            solo_size: (520.0, 120.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let open = [
+            Button::new("Open").icon(&icons::FOLDER).keystroke("⌘O"),
+            Button::new("Sources").icon(&icons::DATABASE),
+        ];
+        let publish = [
+            Button::new("Copy picture").icon(&icons::COPY),
+            Button::new("Export picture")
+                .icon(&icons::DOWNLOAD)
+                .unavailable(EXPORT_REASON),
+        ];
+        let groups: [&[Button<'_>]; 2] = [&open, &publish];
+        if ribbon_row(ui, RibbonRow::new(&groups)).clicked.is_some() {
+            self.ran = true;
+        }
+        if self.ran {
+            ui.label(COMMAND_EVIDENCE);
+        }
+    }
+}
+
+/// `key_tip`: the badge that names a target's key while key tips are on,
+/// over a quiet button.
+struct KeyTipDemo;
+
+impl Component for KeyTipDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "key-tip",
+            name: "Key tip",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Label,
+                label: "S",
+            },
+            height: GateHeight::Intrinsic(
+                "a key tip is the row keycap, which hugs its keystroke; it \
+                 floats on a layer of its own and takes no row",
+            ),
+            actuation: None,
+            solo_size: (300.0, 100.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let sort = button(
+            ui,
+            Button::new("Sort")
+                .icon(&icons::ARROWS_SORT)
+                .weight(Weight::Quiet),
+        );
+        key_tip(ui, sort.response.rect, "S");
+    }
+}
+
+/// `Popover::show_reason`: a greyed command and the one sentence that says
+/// why, anchored below it.
+struct ReasonPopoverDemo;
+
+impl Component for ReasonPopoverDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "reason-popover",
+            name: "Reason popover",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Tooltip,
+                label: EXPORT_REASON,
+            },
+            height: GateHeight::Intrinsic(
+                "the card is a fixed width from the popover token and wraps \
+                 its sentence, so its height is the sentence's",
+            ),
+            actuation: None,
+            solo_size: (380.0, 160.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let export = button(
+            ui,
+            Button::new("Export picture")
+                .icon(&icons::DOWNLOAD)
+                .unavailable(EXPORT_REASON),
+        );
+        let _ = Popover::show_reason(
+            ui.ctx(),
+            "gallery-reason-popover",
+            export.response.rect,
+            EXPORT_REASON,
+            Some("⌘E"),
+        );
+    }
+}
+
+/// The evidence label [`PopoverDemo`] shows once its body has been used.
+const POPOVER_EVIDENCE: &str = "chosen in the popover";
+
+/// `Popover::show`: a card anchored below its button, holding any body. Open
+/// at rest so the goldens draw it; the button opens it again once dismissed.
+#[derive(Default)]
+struct PopoverDemo {
+    closed: bool,
+    chosen: bool,
+}
+
+impl Component for PopoverDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "popover",
+            name: "Popover",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Button,
+                label: "Choose",
+            },
+            height: GateHeight::Intrinsic(
+                "the card is as wide and as tall as the body its caller \
+                 gives it",
+            ),
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: POPOVER_EVIDENCE,
+            }),
+            solo_size: (380.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let anchor = button(ui, Button::new("Options").icon(&icons::CHEVRON_DOWN));
+        if anchor.clicked {
+            self.closed = !self.closed;
+        }
+        if self.closed {
+            return;
+        }
+        let chosen = &mut self.chosen;
+        let shown = Popover::show(
+            ui.ctx(),
+            "gallery-popover",
+            anchor.response.rect,
+            Anchor::Below,
+            |ui| {
+                let pad = ui.tokens().panel_padding;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(pad.round() as i8))
+                    .show(ui, |ui| {
+                        ui.label("Anchored below its button");
+                        if button(ui, Button::new("Choose")).clicked {
+                            *chosen = true;
+                        }
+                        if *chosen {
+                            ui.label(POPOVER_EVIDENCE);
+                        }
+                    });
+            },
+        );
+        if shown.dismissed {
+            self.closed = true;
+        }
+    }
+}
+
+/// The evidence label [`RunStatusDemo`] shows once the area has been clicked.
+const RUN_STATUS_EVIDENCE: &str = "run status opened";
+
+/// The words the ran specimen gives, and the label its node is read by: the
+/// words joined, then the state word the component adds.
+const RAN_WHEN: &str = "Today 09:14";
+const RAN_AGE: &str = "2 hours ago";
+const RAN_PROBE: &str = "Today 09:14, 2 hours ago, ok";
+
+/// `run_status`: the title band's activity area, in its three cases.
+#[derive(Default)]
+struct RunStatusDemo {
+    opened: bool,
+}
+
+impl Component for RunStatusDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "run-status",
+            name: "Run status",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Status,
+                label: RAN_PROBE,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: RUN_STATUS_EVIDENCE,
+            }),
+            solo_size: (380.0, 160.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let statuses = [
+            RunStatus::Running {
+                step: Some("ranking"),
+                done: 3,
+                total: 7,
+            },
+            RunStatus::Ran {
+                when: RAN_WHEN,
+                age: RAN_AGE,
+                mark: StepMark::Ok,
+            },
+            RunStatus::NotRun {
+                label: "Not run yet",
+            },
+        ];
+        for status in statuses {
+            if run_status(ui, status).clicked() {
+                self.opened = true;
+            }
+        }
+        if self.opened {
+            ui.label(RUN_STATUS_EVIDENCE);
         }
     }
 }
