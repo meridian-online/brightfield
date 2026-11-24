@@ -728,8 +728,8 @@ pub fn database_lock(db: &Path) -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// [`database_lock`] for the database arc keeps for the Protocol in `dir`, or for `dir` itself
-/// when arc cannot say where that is: no copy is taken of a database whose path cannot be read,
-/// so nothing a copy is held off from is lost.
+/// when arc cannot say where that is. Discovery's copy stops at that same error before it takes
+/// a lock, so it never copies under the folder's key.
 pub fn protocol_database_lock(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
     let db = arc::spec::protocol_db_path(dir).unwrap_or_else(|_| dir.to_path_buf());
     database_lock(&db)
