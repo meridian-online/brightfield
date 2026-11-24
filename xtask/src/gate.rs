@@ -385,6 +385,15 @@ fn gate_head(
             }
         })?;
     command.arg("--summary-json").arg(&summary);
+    let share = crate::share::at_start();
+    let threads = share.threads.to_string();
+    command
+        .env("CARGO_BUILD_JOBS", &threads)
+        .env("RUST_TEST_THREADS", &threads);
+    say(&format!(
+        "running at {threads} cargo jobs and test threads: {}",
+        share.why
+    ));
 
     let main7: String = main_sha.chars().take(7).collect();
     nightly_status::post_status(
