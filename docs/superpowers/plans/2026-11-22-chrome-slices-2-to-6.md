@@ -162,6 +162,15 @@ These names come from slice 1, which is built; its plan is removed and its outco
 
 A design review in `meridian-online/design` builds these in `meridian-egui`, with pure data in `meridian-design`, which is ADR 0011's crate-boundary test. The interfaces below are this plan's proposals. Each task calls the signature named here. If the review lands a different signature, the consuming task follows the landed one, and its Interfaces block is updated in the same commit.
 
+**What the review landed for slice 2.** The design review closed, and Brightfield pins its result from Task 2 on. Where it differs from the proposals below, the landed form is the one to call:
+
+- **§1 and §3**, `ribbon_tabs` and `key_tip`, landed as proposed. A tab's node is a `Tab` in a `TabList`.
+- **§2**, `ribbon_row`, takes groups of `meridian_egui::Button`s rather than a `RibbonCommand` type: `Button::new(label).icon(&icon).keystroke(k).unavailable(reason)`. The row is `spacing::BAND_HEIGHT` (32) tall and each command is a 24 button in it. The design system also carries every icon the taxonomy and the forms name.
+- **§4 and §5** are one component, `Popover`. The reason popover is `Popover::show_reason(ctx, id_salt, anchor, reason, keystroke)`, a 240-wide card published as a `Tooltip`. The anchored layer is `Popover::show(ctx, id_salt, anchor, Anchor::Below, body)`, which returns `PopoverResponse { inner, dismissed }`. A menu is `Popover::show_menu` with `menu_item`s. Task 7 calls `Popover::show`, not `egui::Popup`.
+- **§9**, the activity area, landed as `run_status(ui, RunStatus)` with `RunStatus::{Running { step, done, total }, Ran { when, age, mark: StepMark }, NotRun { label }}`. `Freshness` is `StepMark::{Ok, Stale, Failed}`, and "not run yet" is the caller's `label`. The component writes the "n of m" count itself. Its node is a `Status` named by its words and the mark's state word.
+- **§13**, `PickerRow::unavailable(reason)`, landed as proposed, with one change: Enter or a click on an unavailable row picks nothing, rather than reaching the delegate's confirm, and the reason is already drawn as the row's detail. Task 9 follows the landed behaviour.
+- The review also replaced ADR 0011's cap with an inventory, so no entry was composed away for the cap's sake.
+
 ### Rules the components share
 
 These follow `meridian-egui`'s existing style (`line_tabs`, `list_row`, `key_chip`, `overlay_frame`):
@@ -839,8 +848,9 @@ Linux and Windows already reach the menus from the mark (slice 1 Task 10). The l
 **Interfaces:**
 - Consumes: the design section's §1–5, §9 and §13.
 - Produces:
-  - Gallery entries `ribbon-tabs`, `ribbon-row`, `key-tip`, `reason-popover`, `anchored-layer` and `activity-area`, each a `Component` with a `ComponentInfo`.
-  - The existing `PickerDemo` shows one disabled row.
+  - Gallery entries `ribbon-tabs`, `ribbon-row`, `key-tip`, `reason-popover`, `popover` and `run-status`, each a `Component` with a `ComponentInfo`, named for the components the review landed.
+  - The gallery's probe roles gain `Tab`, `Status` and `Tooltip`.
+  - The existing `PickerDemo` shows a disabled row once Task 9 greys the palette's rows. Its delegate is the shipping `CommandPalette`, which does not mark a row unavailable until then.
 
 - [ ] **Step 1: Bump the pin and add the demos.** Bump both revs to the design commit that carries the components. Add one `impl Component` demo per primitive to `catalog()`, each `ComponentStatus::Draft`, with a probe by role and label, and a height that is a `GateHeight::Rung`.
 - [ ] **Step 2: Check the ribbon's icons.** Add `every_ribbon_command_names_an_icon_the_design_system_carries` to `crates/brightfield-shell/tests/ribbon.rs`, asserting `meridian_egui::Icon::by_name(entry.icon).is_some()` for every `RibbonEntry` of the taxonomy's stages and contexts. The forms' icons are checked in Task 6.
