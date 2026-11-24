@@ -49,9 +49,6 @@ const REPORT_STEP: &str = "sibling-manifests";
 /// The start of the line the report's step ends its output with, which says
 /// in a sentence what the report found.
 const REPORT_LINE: &str = "open-analytics report: ";
-/// The cargo job and test thread caps a Claude Code session runs with, which
-/// the nightly keeps to so it takes no more than one build slot.
-const CAP: &str = "6";
 /// GitHub caps a commit status description at 140 characters.
 const DESCRIPTION_LIMIT: usize = 140;
 /// The minute of the day the lock wait ends, 05:30 local, so a full run can
@@ -296,12 +293,19 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         Err(e) => return unready(e),
     };
     let summary = scratch.dir.join("summary.json");
+    let share = crate::share::at_start();
+    let threads = share.threads.to_string();
+    let chose = format!(
+        "running at {threads} cargo jobs and test threads: {}",
+        share.why
+    );
+    say(&chose);
     command
         .arg("--nightly")
         .arg("--summary-json")
         .arg(&summary)
-        .env("CARGO_BUILD_JOBS", CAP)
-        .env("RUST_TEST_THREADS", CAP)
+        .env("CARGO_BUILD_JOBS", &threads)
+        .env("RUST_TEST_THREADS", &threads)
         .env(
             "BRIGHTFIELD_DUCKDB_MANAGED_DIR",
             gate_dir.join("duckdb-managed"),
@@ -314,7 +318,7 @@ pub fn run(sha: &str, trial: bool) -> ExitCode {
         log.display()
     ));
     let started = Instant::now();
-    let status = match run_teed(command, &log) {
+    let status = match run_teed(command, &log, &format!("cargo xtask nightly: {chose}")) {
         Ok(status) => status,
         Err(e) => return stopped(NightStage::Start, &e),
     };

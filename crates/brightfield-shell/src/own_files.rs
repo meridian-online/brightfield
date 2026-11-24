@@ -710,18 +710,74 @@ fn unclashed(base: &str, taken: &mut HashSet<String>) -> String {
     name
 }
 
-/// Held by the own-files flow's writes to a Protocol's database, [`run_loads`] and
-/// [`drop_unmade_silver`], for their whole run, and by a discovery pass while it copies the
-/// database for its child, so the copy is not taken part way through one of those writes. The
-/// window's own runs start `arc` without it: they run the workbench's Protocols, and an own-files
-/// Protocol is run through this module. The lock is this process's, so another process writing the
-/// same folder is not held off. A writer that panicked left the database as an interrupted run
-/// would, so the lock is taken again rather than refused.
-pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
-    static DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    DATABASE
+/// Held by the own-files flow's writes to the database at `db`, [`run_loads`] and
+/// [`drop_unmade_silver`] among them, for their whole run, and by a discovery pass while it
+/// copies that database for its child, so the copy is not taken part way through one of those
+/// writes. Each database has a lock of its own, so writes to one Protocol's database never wait on
+/// another's: tests open many Protocols at once, and a lock shared by every database made them
+/// queue for each other's `arc` runs. Two spellings of one path share a lock, as the key is
+/// made canonical through its nearest folder that exists. The window's own runs start `arc`
+/// without it: they run the workbench's Protocols, and an own-files Protocol is run through this
+/// module. The lock is this process's, so another process writing the same database is not held
+/// off. A writer that panicked left the database as an interrupted run would, so the lock is
+/// taken again rather than refused.
+pub fn database_lock(db: &Path) -> std::sync::MutexGuard<'static, ()> {
+    lock_of(db)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// [`database_lock`] for the database arc keeps for the Protocol in `dir`, or for `dir` itself
+/// when arc cannot say where that is. Discovery's copy stops at that same error before it takes
+/// a lock, so it never copies under the folder's key.
+pub fn protocol_database_lock(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+    let db = arc::spec::protocol_db_path(dir).unwrap_or_else(|_| dir.to_path_buf());
+    database_lock(&db)
+}
+
+/// The locks of both databases, taken in the order of their keys so that two takers of the same
+/// pair cannot each hold one and wait for the other: what a move from one to the other holds.
+pub fn database_locks(a: &Path, b: &Path) -> Vec<std::sync::MutexGuard<'static, ()>> {
+    let (ka, kb) = (lock_key(a), lock_key(b));
+    if ka == kb {
+        return vec![database_lock(a)];
+    }
+    let (first, second) = if ka < kb { (a, b) } else { (b, a) };
+    vec![database_lock(first), database_lock(second)]
+}
+
+/// The mutex for the database at `db`, made the first time it is asked for. One is kept per
+/// database for the life of the process, which is a handful in the app.
+fn lock_of(db: &Path) -> &'static std::sync::Mutex<()> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, &'static std::sync::Mutex<()>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks
+        .entry(lock_key(db))
+        .or_insert_with(|| Box::leak(Box::new(std::sync::Mutex::new(()))))
+}
+
+/// `path` with its nearest existing ancestor made canonical and the rest joined back on, so a
+/// database not made yet and one reached through a link or a relative path have one key.
+fn lock_key(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, part| p.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it. The run is
@@ -731,7 +787,7 @@ pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
 ///
 /// What `arc` printed, when the run did not succeed.
 pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
-    let _writing = database_lock();
+    let _writing = protocol_database_lock(&p.dir);
     let finished: Finished = Run::begin(runner, &p.dir, || {}).wait();
     // Brightfield ran it to make the tables it previews, so it is marked as a preview: the door
     // says the Protocol has not been run until the analyst runs it.
@@ -887,8 +943,8 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
 ///
 /// The reason when the database cannot be opened or a table cannot be dropped.
 pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
-    let _writing = database_lock();
     let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+    let _writing = database_lock(&db);
     if !db.is_file() {
         return Ok(());
     }
@@ -1511,8 +1567,8 @@ pub fn reload_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, Str
 /// changed sat out the next run as unchanged, though the loads-only run had changed its input
 /// (`reloading_the_data_rereads_the_analysts_file` in `tests/open_makes_a_protocol.rs`).
 fn forget_after_loads(p: &OwnProtocol) -> Result<(), String> {
-    let _writing = database_lock();
     let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+    let _writing = database_lock(&db);
     if !db.is_file() {
         return Ok(());
     }
@@ -1815,6 +1871,92 @@ fn quoted_yaml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether a thread taking `take`'s lock gets it within half a second while `held` is held.
+    fn taken_while_held(held: &Path, take: &Path) -> bool {
+        let holding = database_lock(held);
+        let take = take.to_path_buf();
+        let (sent, got) = std::sync::mpsc::channel();
+        let taker = std::thread::spawn(move || {
+            let _taken = database_lock(&take);
+            let _ = sent.send(());
+        });
+        let taken = got
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok();
+        drop(holding);
+        taker
+            .join()
+            .expect("the taker ends once the lock is let go");
+        taken
+    }
+
+    #[test]
+    fn a_write_to_one_database_does_not_hold_off_another() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (root.path().join("a.duckdb"), root.path().join("b.duckdb"));
+        assert!(taken_while_held(&a, &b), "another database's lock is free");
+        assert!(!taken_while_held(&a, &a), "the same database's lock waits");
+    }
+
+    #[test]
+    fn two_spellings_of_one_database_share_its_lock() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        std::fs::create_dir(root.path().join("db")).expect("a folder");
+        let plain = root.path().join("db/p.duckdb");
+        let roundabout = root.path().join("db/../db/./p.duckdb");
+        assert!(!taken_while_held(&plain, &roundabout));
+    }
+
+    #[test]
+    fn a_move_holds_both_databases() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (root.path().join("a.duckdb"), root.path().join("b.duckdb"));
+        let both = database_locks(&b, &a);
+        assert!(!taken_while_held_already(&a), "the first is held");
+        assert!(!taken_while_held_already(&b), "the second is held");
+        drop(both);
+        assert_eq!(database_locks(&a, &a).len(), 1, "one database is one lock");
+    }
+
+    #[test]
+    fn a_move_takes_the_lower_key_first_whichever_order_names_them() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (root.path().join("a.duckdb"), root.path().join("b.duckdb"));
+        let (low, high) = if lock_key(&a) < lock_key(&b) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let holding_low = database_lock(&low);
+        // Named higher first: a move that took its locks in the order named would hold the higher
+        // key while it waits for the lower, and two such moves could each wait on the other.
+        let mover = std::thread::spawn({
+            let (low, high) = (low.clone(), high.clone());
+            move || drop(database_locks(&high, &low))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            taken_while_held_already(&high),
+            "the move waits on the lower key holding nothing"
+        );
+        drop(holding_low);
+        mover
+            .join()
+            .expect("the move goes ahead once the lower key is let go");
+    }
+
+    /// Whether another thread gets `db`'s lock within a third of a second.
+    fn taken_while_held_already(db: &Path) -> bool {
+        let db = db.to_path_buf();
+        let (sent, got) = std::sync::mpsc::channel();
+        let _taker = std::thread::spawn(move || {
+            let _taken = database_lock(&db);
+            let _ = sent.send(());
+        });
+        got.recv_timeout(std::time::Duration::from_millis(300))
+            .is_ok()
+    }
 
     #[test]
     fn an_empty_protocols_manifest_is_one_arc_reads() {

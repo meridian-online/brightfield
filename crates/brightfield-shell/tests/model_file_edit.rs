@@ -13,7 +13,7 @@
 //! is driven with an explicit clock, so nothing sleeps.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::OnceLock;
 
 use brightfield_ossie::{Band, DecidedBy, Edit, ListRow, Model, Role};
 use brightfield_render::model_scene::Selection;
@@ -64,19 +64,10 @@ fn retail_model() -> Model {
     brightfield_ossie::read(&text).unwrap()
 }
 
-/// Held around each open that makes a Protocol folder: the opens share one.
-fn folder_lock() -> MutexGuard<'static, ()> {
-    static OPENS: Mutex<()> = Mutex::new(());
-    OPENS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// The retail extract opened as a Protocol and run, with its written model saved over the one the
-/// open found. The lock is held for the test's whole life, since a hand edit runs the Protocol
-/// in the folder every open shares.
-fn opened() -> (ModelPane, MutexGuard<'static, ()>) {
-    let held = folder_lock();
+/// open found. Each open makes a Protocol folder of its own (`retail_extract`, `retail_extract-2`
+/// and so on), so tests that open it run side by side.
+fn opened() -> ModelPane {
     let Opened::Model(protocol) = data_file::open_any(&retail(), &runner()).expect("it opens")
     else {
         panic!("several tables are a model");
@@ -84,7 +75,7 @@ fn opened() -> (ModelPane, MutexGuard<'static, ()>) {
     let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
     pane.save_model(retail_model())
         .expect("the written model runs");
-    (pane, held)
+    pane
 }
 
 /// A pane over the written retail model, with no Protocol or database behind it: enough for an
@@ -213,7 +204,7 @@ fn broken_yaml_keeps_last_good() {
 
 #[test]
 fn valid_edit_redraws() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     assert_eq!(card_band(&pane, "customers"), Some(Band::Entities));
     let text = pane.file_text().to_string();
     let edited = replaced(
@@ -233,7 +224,7 @@ fn valid_edit_redraws() {
 
 #[test]
 fn hand_edit_marks_analyst() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     // The role of customers, the expression of its email field, the keys of one join, a trailing
     // space after another's key, and a third join taken out.
@@ -334,7 +325,7 @@ fn cut_item(text: &str, name: &str) -> String {
 
 #[test]
 fn a_join_deleted_by_hand_stays_out_after_a_full_pass() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     type_and_pause(&mut pane, cut_item(&text, "transactions_stores"));
     assert_eq!(pane.file_error(), None);
@@ -366,7 +357,7 @@ fn a_join_deleted_by_hand_stays_out_after_a_full_pass() {
 
 #[test]
 fn a_dataset_deleted_by_hand_stays_left_out() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     type_and_pause(&mut pane, cut_item(&text, "promo_codes"));
     assert_eq!(pane.file_error(), None);
@@ -397,7 +388,7 @@ fn a_dataset_deleted_by_hand_stays_left_out() {
 
 #[test]
 fn a_table_deleted_by_hand_keeps_its_joins_in_the_model() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     // The table's own block goes and its joins stay: the table is held, left out, so its joins
     // name a table of the model and are not set aside as joins to a missing one.
@@ -413,7 +404,7 @@ fn a_table_deleted_by_hand_keeps_its_joins_in_the_model() {
 
 #[test]
 fn deleting_a_fold_host_by_hand_is_refused() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let before = on_disk(&pane);
     let text = pane.file_text().to_string();
     // categories is folded into products, so leaving products out would strand it.
@@ -433,7 +424,7 @@ fn deleting_a_fold_host_by_hand_is_refused() {
 
 #[test]
 fn folding_a_table_into_a_combinations_part_by_hand_is_refused() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let before = on_disk(&pane);
     let text = pane.file_text().to_string();
     // products becomes a part of a combination while categories is still folded into it: a part
@@ -456,7 +447,7 @@ fn folding_a_table_into_a_combinations_part_by_hand_is_refused() {
 
 #[test]
 fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {
         dataset: "promo_codes".into(),
         role: Role::Reference,
@@ -498,7 +489,7 @@ fn focus_editor(pane: &mut ModelPane) -> egui::Context {
 
 #[test]
 fn a_join_typed_then_deleted_under_a_focused_editor_is_gone() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = focus_editor(&mut pane);
     let name = "loyalty_visits_customer_segments";
     let typed = replaced(
@@ -531,7 +522,7 @@ fn a_join_typed_then_deleted_under_a_focused_editor_is_gone() {
 
 #[test]
 fn a_table_left_out_since_the_editors_text_stays_left_out() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = focus_editor(&mut pane);
     let text = pane.file_draft().to_string();
     type_and_pause(&mut pane, cut_item(&text, "promo_codes"));
@@ -564,7 +555,7 @@ fn a_table_left_out_since_the_editors_text_stays_left_out() {
 
 #[test]
 fn a_table_renamed_through_other_names_leaves_none_of_them_behind() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let mut from = "promo_codes";
     for to in ["promo", "promo_c", "promo_offers"] {
         let text = pane.file_text().to_string();
@@ -598,7 +589,7 @@ fn a_table_renamed_through_other_names_leaves_none_of_them_behind() {
 
 #[test]
 fn a_join_renamed_through_another_name_is_not_rejected() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     type_and_pause(
         &mut pane,
@@ -639,7 +630,7 @@ fn a_join_renamed_through_another_name_is_not_rejected() {
 
 #[test]
 fn a_join_a_pass_adds_under_a_focused_editor_is_not_deleted_by_hand() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = egui::Context::default();
     pane.view = ModelView::File;
     draw(&ctx, &mut pane, Vec::new());
@@ -709,7 +700,7 @@ fn a_join_a_pass_adds_under_a_focused_editor_is_not_deleted_by_hand() {
 
 #[test]
 fn unknown_dataset_warns_and_rest_applies() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     let edited = replaced(
         &text,
@@ -749,7 +740,7 @@ fn unknown_dataset_warns_and_rest_applies() {
 
 #[test]
 fn an_unknown_role_is_ignored_and_the_file_reopens() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = pane.file_text().to_string();
     let edited = replaced(
         &text,
@@ -825,7 +816,7 @@ fn a_read_error_beside_an_unknown_role_names_the_typed_line() {
 
 #[test]
 fn an_applied_edit_leaves_the_focused_editor_as_typed() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = egui::Context::default();
     pane.view = ModelView::File;
     draw(&ctx, &mut pane, Vec::new());
@@ -868,7 +859,7 @@ fn an_applied_edit_leaves_the_focused_editor_as_typed() {
 
 #[test]
 fn a_reshape_reads_a_waiting_edit_first() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let edited = replaced(
         pane.file_text(),
         CUSTOMERS_ROLE,
@@ -899,7 +890,7 @@ fn a_reshape_reads_a_waiting_edit_first() {
 
 #[test]
 fn a_refused_edit_blocks_a_reshape_until_discarded() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let disk = on_disk(&pane);
     let broken = replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n");
     pane.set_file_draft(broken.clone());
@@ -940,7 +931,7 @@ fn a_refused_edit_blocks_a_reshape_until_discarded() {
 
 #[test]
 fn a_join_to_a_missing_table_survives_a_reshape() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let edited = replaced(
         pane.file_text(),
         "relationships:\n",
@@ -1071,7 +1062,6 @@ impl Window {
 
 #[test]
 fn typing_in_the_file_view_fires_no_reshape_key() {
-    let _held = folder_lock();
     let mut win = Window::over_retail();
     let joined = "transactions_customers";
     {
@@ -1191,7 +1181,7 @@ fn leave_promo_out_by_typing(pane: &mut ModelPane) -> egui::Context {
 
 #[test]
 fn a_typing_pause_runs_nothing_until_the_editor_lets_go() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = leave_promo_out_by_typing(&mut pane);
 
     // Let go of the keyboard, and the next tick runs the Protocol once.
@@ -1210,8 +1200,8 @@ fn a_typing_pause_runs_nothing_until_the_editor_lets_go() {
     assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 5), None, "it runs once");
 }
 
-/// Trusts a Protocol folder again when dropped, so a test that stops trusting the folder every open
-/// shares gives it back even when it fails.
+/// Trusts a Protocol folder again when dropped, so a test that stops trusting its own Protocol's
+/// folder leaves the trust store's record of it as it found it, even when the test fails.
 struct TrustedAgain(PathBuf);
 
 impl Drop for TrustedAgain {
@@ -1225,7 +1215,7 @@ impl Drop for TrustedAgain {
 /// and nothing is left for the window to call unsaved.
 #[test]
 fn saving_an_untrusted_protocol_writes_its_steps_without_the_run() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let _again = TrustedAgain(pane.protocol.dir.clone());
     let _ctx = leave_promo_out_by_typing(&mut pane);
     brightfield_shell::trust::Store::current()
@@ -1243,7 +1233,7 @@ fn saving_an_untrusted_protocol_writes_its_steps_without_the_run() {
 
 #[test]
 fn a_typing_pause_runs_once_the_file_view_is_left() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let ctx = leave_promo_out_by_typing(&mut pane);
 
     pane.view = ModelView::Diagram;
@@ -1277,7 +1267,7 @@ fn name_failures(pane: &mut ModelPane) -> u64 {
 
 #[test]
 fn the_inspector_reads_the_run_a_hand_edit_owed() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     pane.focus.selected = Some(Selection::Dataset("customers".into()));
     assert_eq!(name_failures(&mut pane), 0, "names cast as they are");
     let ctx = focus_editor(&mut pane);
@@ -1740,7 +1730,7 @@ fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model()
 
 #[test]
 fn run_before_the_pause_ends_runs_the_edit_and_owes_nothing_after() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     assert!(promo_silver_step(&pane) && promo_silver_table(&pane));
     let dir = pane.protocol.dir.clone();
     let previews = brightfield_shell::run::preview_ids(&dir);
@@ -1777,7 +1767,7 @@ fn run_before_the_pause_ends_runs_the_edit_and_owes_nothing_after() {
 
 #[test]
 fn run_refuses_an_edit_that_does_not_read() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let records = brightfield_shell::run::record_paths_newest_first(&pane.protocol.dir).len();
     let broken = replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n");
     pane.set_file_draft(broken);
@@ -1806,7 +1796,7 @@ fn join_evidence(pane: &ModelPane, name: &str) -> brightfield_ossie::Evidence {
 
 #[test]
 fn run_before_the_pause_ends_measures_the_edited_joins_again() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
     // Joined from customer_id, stores' three ids miss the transactions of customers 4 and 5. A
     // hand edit does not claim evidence, so the join keeps the old numbers until it is measured.
@@ -1848,7 +1838,7 @@ fn run_before_the_pause_ends_measures_the_edited_joins_again() {
 
 #[test]
 fn a_run_with_nothing_owed_leaves_the_model_unwritten() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     assert!(!pane.run_waiting());
     let written = on_disk(&pane);
     // Evidence that differs from what the tables measure, put on the pane without an edit, so a
@@ -1873,8 +1863,7 @@ fn a_run_with_nothing_owed_leaves_the_model_unwritten() {
 
 /// The retail extract copied to a scratch folder of `name` and opened as `opened` opens it, so a
 /// test can take a source away without touching the fixture.
-fn opened_copy(name: &str) -> (ModelPane, PathBuf, MutexGuard<'static, ()>) {
-    let held = folder_lock();
+fn opened_copy(name: &str) -> (ModelPane, PathBuf) {
     let copy = scratch().join(name);
     let _ = std::fs::remove_dir_all(&copy);
     std::fs::create_dir_all(&copy).unwrap();
@@ -1890,12 +1879,12 @@ fn opened_copy(name: &str) -> (ModelPane, PathBuf, MutexGuard<'static, ()>) {
     let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
     pane.save_model(retail_model())
         .expect("the written model runs");
-    (pane, copy, held)
+    (pane, copy)
 }
 
 #[test]
 fn run_after_an_owed_run_failed_measures_the_edited_joins() {
-    let (mut pane, copy, _held) = opened_copy("owed-run-failed");
+    let (mut pane, copy) = opened_copy("owed-run-failed");
     assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
     // A source taken away, so the run the edit owes fails before it measures anything.
     let away = copy.join("transactions.csv.away");
@@ -1994,7 +1983,7 @@ fn edit_on_disk(pane: &ModelPane) -> bool {
 
 #[test]
 fn an_inspector_action_writes_an_unwritten_edit_first() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
         return;
     };
@@ -2020,7 +2009,7 @@ fn an_inspector_action_writes_an_unwritten_edit_first() {
 
 #[test]
 fn rediscover_writes_an_unwritten_edit_first() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let Some((read_only, _)) = unwritten_edit(&mut pane) else {
         return;
     };
@@ -2035,7 +2024,7 @@ fn rediscover_writes_an_unwritten_edit_first() {
 
 #[test]
 fn run_in_the_model_pane_runs_an_unwritten_edit() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let Some((read_only, _)) = unwritten_edit(&mut pane) else {
         return;
     };
@@ -2053,7 +2042,7 @@ fn run_in_the_model_pane_runs_an_unwritten_edit() {
 
 #[test]
 fn a_full_pass_waits_for_an_unwritten_edit_and_then_writes_it() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
         return;
     };
@@ -2077,7 +2066,7 @@ fn broken(pane: &ModelPane) -> String {
 
 #[test]
 fn a_corrected_edit_whose_file_cannot_be_written_says_why_on_save() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = broken(&pane);
     type_and_pause(&mut pane, text);
     assert!(pane.file_error().is_some_and(|e| e.starts_with("Line 3:")));
@@ -2106,7 +2095,7 @@ fn a_corrected_edit_whose_file_cannot_be_written_says_why_on_save() {
 
 #[test]
 fn saving_a_refused_edit_says_the_line_that_does_not_read() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let text = broken(&pane);
     type_and_pause(&mut pane, text);
     let said = pane.save_draft().expect_err("the edit does not read");
@@ -2116,7 +2105,7 @@ fn saving_a_refused_edit_says_the_line_that_does_not_read() {
 
 #[test]
 fn save_model_settles_the_file_view_first() {
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let disk = on_disk(&pane);
     let text = broken(&pane);
     type_and_pause(&mut pane, text.clone());
@@ -2131,7 +2120,7 @@ fn save_model_settles_the_file_view_first() {
 #[test]
 fn a_held_full_pass_retries_an_unwritten_edit_only_every_so_often() {
     use brightfield_shell::model_pane::WRITE_RETRY_MS;
-    let (mut pane, _held) = opened();
+    let mut pane = opened();
     let Some((read_only, _)) = unwritten_edit(&mut pane) else {
         return;
     };
