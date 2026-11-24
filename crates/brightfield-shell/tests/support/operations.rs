@@ -81,7 +81,7 @@ pub struct OpWindow {
     pub texts: Vec<String>,
     /// Where each of them was drawn.
     pub text_rects: Vec<(String, egui::Rect)>,
-    /// The keys the last [`Self::run`] answered, from every pass of its frame.
+    /// The keys the last [`Self::run`] answered, read after each pass of its frame.
     pub answered: Vec<&'static str>,
     fixture: String,
     time: f64,

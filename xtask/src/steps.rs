@@ -704,8 +704,8 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
 }
 
 /// Run `cargo nextest run` over `args`, at the run's test threads: those
-/// `RUST_TEST_THREADS` names when it is set, as cargo test reads it, since
-/// nextest reads only its own `NEXTEST_TEST_THREADS`.
+/// `RUST_TEST_THREADS` names when it is set, as cargo test reads it. nextest
+/// takes its count from `--test-threads` or `NEXTEST_TEST_THREADS`.
 fn cargo_nextest(ctx: &Ctx, engine: &Path, args: &[String]) -> Result<(), String> {
     let installed = ctx
         .cargo(&["nextest", "--version"])
