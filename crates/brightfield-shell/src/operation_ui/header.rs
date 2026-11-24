@@ -405,12 +405,13 @@ pub fn header_pass(
         }
     }
 
-    // The new-column cell: one header row tall and as wide, after the table's
-    // last column where that leaves it inside the pane, and at the pane's
-    // trailing edge otherwise, so it is in reach however wide the table is.
+    // The new-column cell: one header row tall and as wide as the gutter the grid
+    // leaves for it, after the table's last column where that leaves it inside the
+    // pane, and in the gutter at the pane's trailing edge otherwise, so it is in reach
+    // however wide the table is and covers no column's header
+    // (`the_new_column_cell_stands_beside_a_wide_tables_last_header`). The field it
+    // opens is as wide as a header row is tall.
     let room = ui.clip_rect();
-    // The cell is as wide as the gutter the grid leaves for it, and the field it opens is
-    // as wide as a header row is tall.
     let width = NEW_COLUMN_WIDTH;
     let side = drawn.header_height.max(spacing::SPACE_6);
     let row = drawn.header_cells.first().map(|(_, rect, _)| *rect);

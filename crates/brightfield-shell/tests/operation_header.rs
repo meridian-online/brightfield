@@ -556,6 +556,39 @@ fn the_new_column_cell_shows_only_when_an_operation_starts_there() {
 }
 
 #[test]
+fn the_new_column_cell_stands_beside_a_wide_tables_last_header() {
+    // Thirty columns are wider than the window's grid pane.
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, |dir| {
+        let names: Vec<String> = (0..30).map(|i| format!("column_{i:02}")).collect();
+        let mut csv = names.join(",") + "\n";
+        for row in 0..5 {
+            let values: Vec<String> = (0..30).map(|i| (row * 31 + i).to_string()).collect();
+            csv += &(values.join(",") + "\n");
+        }
+        std::fs::write(dir.join(SAMPLE), csv).expect("the wide table writes");
+    });
+    win.app.chart_doc_mut().set_header_operations(vec![&DERIVE]);
+    let table = win.table();
+    win.show_grid_of(&table);
+    win.settle();
+    let drawn = win.app.chart_doc().header_drawn().clone();
+    let cell = drawn
+        .new_column
+        .expect("the header drew its new-column cell");
+    let shown: Vec<&str> = drawn.cells.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        !shown.contains(&"column_29"),
+        "the table fits its pane, so this tests nothing: {shown:?}"
+    );
+    for (name, rect) in &drawn.cells {
+        assert!(
+            !rect.intersects(cell.shrink(0.5)),
+            "the new-column cell {cell:?} covers {name}'s header {rect:?}"
+        );
+    }
+}
+
+#[test]
 fn the_operation_section_draws_the_form_of_the_operation_being_made() {
     let mut win = window(SAMPLE, &[&RENAME, &SUMMARISE]);
     win.header_menu("house_age", "Summarise by this column");
