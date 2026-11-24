@@ -70,18 +70,17 @@ fn begin(b: &Begin<'_>) -> Result<Draft, String> {
 /// be. A word after a `"` not yet closed is the start of a quoted name, spaces
 /// and all, and is completed from the quote
 /// (`derive_column_completes_a_quoted_name_from_its_open_quote`). Nothing while
-/// the name is in focus, or when a bare word is already a column's whole name.
+/// the name is in focus, inside a string literal, or when a bare word is already
+/// a column's whole name.
 fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
     if draft.focus == Some("column") {
         return Vec::new();
     }
     let text = draft.value("expression").unwrap_or_default();
-    let open_quote = (text.matches('"').count() % 2 == 1)
-        .then(|| text.rfind('"'))
-        .flatten();
-    let (from, word, quoted) = match open_quote {
-        Some(at) => (at, &text[at + 1..], true),
-        None => {
+    let (from, word, quoted) = match ends_in(text) {
+        Ends::Literal => return Vec::new(),
+        Ends::Name(at) => (at, &text[at + 1..], true),
+        Ends::Plain => {
             let at = text
                 .char_indices()
                 .rev()
@@ -103,6 +102,32 @@ fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
         })
         .map(|c| format!("{}{}", &text[..from], (b.quote)(c)))
         .collect()
+}
+
+/// Where an expression ends: in plain SQL, inside a `'...'` string literal, or
+/// inside a `"..."` name begun at the byte given.
+#[derive(Debug, PartialEq, Eq)]
+enum Ends {
+    Plain,
+    Literal,
+    Name(usize),
+}
+
+/// Read `text` from the start, a doubled quote inside a literal or a name being
+/// that quote, to say where it ends.
+fn ends_in(text: &str) -> Ends {
+    let mut ends = Ends::Plain;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        ends = match (ends, c) {
+            (Ends::Plain, '\'') => Ends::Literal,
+            (Ends::Plain, '"') => Ends::Name(at),
+            (Ends::Literal, '\'') if chars.next_if(|(_, n)| *n == '\'').is_none() => Ends::Plain,
+            (Ends::Name(_), '"') if chars.next_if(|(_, n)| *n == '"').is_none() => Ends::Plain,
+            (still, _) => still,
+        };
+    }
+    ends
 }
 
 /// After the expression is edited from `before`, the name follows it while it
@@ -157,7 +182,20 @@ pub fn ui() -> Option<&'static OperationUi> {
 
 #[cfg(test)]
 mod tests {
-    use super::{name_for, NAME_LENGTH};
+    use super::{ends_in, name_for, Ends, NAME_LENGTH};
+
+    #[test]
+    fn an_expression_ends_in_a_name_only_inside_an_open_double_quote() {
+        assert_eq!(ends_in("house_age + hou"), Ends::Plain);
+        assert_eq!(ends_in("house_age + \"med"), Ends::Name(12));
+        assert_eq!(ends_in("\"median income\" + 1"), Ends::Plain);
+        // A `"` inside a string literal opens no name.
+        assert_eq!(ends_in("replace(city, '\"', '') || hou"), Ends::Plain);
+        assert_eq!(ends_in("city || 'it''s"), Ends::Literal);
+        // A doubled quote inside a name is part of it.
+        assert_eq!(ends_in("x + \"a \"\"b"), Ends::Name(4));
+        assert_eq!(ends_in("x + \"a \"\"b\""), Ends::Plain);
+    }
 
     fn columns(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| (*n).to_string()).collect()
