@@ -118,9 +118,8 @@ static CONFIG: Mutex<()> = Mutex::new(());
 fn no_protocols_folder() {
     static EMPTY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     EMPTY.get_or_init(|| {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join("front_door")
-            .join("no-protocols");
+        let dir =
+            std::env::temp_dir().join(format!("bf-front-door-no-protocols-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var(brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR, &dir);
         dir

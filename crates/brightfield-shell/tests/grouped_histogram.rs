@@ -79,7 +79,7 @@ const EXPECTED: [[u32; 3]; 11] = [
 
 /// Render an example and return the PNG path.
 fn export(spec: &str, out: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("bf-grouped-histogram");
+    let dir = std::env::temp_dir().join(format!("bf-grouped-histogram-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(out);
     let composed =

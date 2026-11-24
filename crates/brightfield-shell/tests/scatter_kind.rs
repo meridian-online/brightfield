@@ -545,7 +545,7 @@ fn is_ink(p: [u8; 4], want: [i32; 3]) -> bool {
 /// Render a composition and read its pixels back — the same bytes an export
 /// writes.
 fn raster(composed: Composed, name: &str) -> RgbaImage {
-    let dir = std::env::temp_dir().join("bf-scatter-kind");
+    let dir = std::env::temp_dir().join(format!("bf-scatter-kind-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(name);
     capture_vello_only(composed, 1.0, &png).expect("export");

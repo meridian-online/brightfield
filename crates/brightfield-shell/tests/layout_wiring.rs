@@ -49,7 +49,7 @@ use brightfield_workbench::{GridLayout, PaneKey, RunState, RECENTS_KEPT};
 fn own_home() {
     static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
-        let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("layout_wiring");
+        let root = std::env::temp_dir().join(format!("bf-layout-wiring-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var(
             brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,

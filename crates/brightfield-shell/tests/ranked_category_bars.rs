@@ -241,7 +241,7 @@ fn module_beside_a_filtered_chart(categories: usize) -> String {
 
 /// Write a generated spec somewhere `live_spec` can open it.
 fn spec_path(source: &str, name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("bf-ranked-category-bars");
+    let dir = std::env::temp_dir().join(format!("bf-ranked-category-bars-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let path = dir.join(format!("{name}.yaml"));
     std::fs::write(&path, source).expect("write spec");
@@ -266,7 +266,7 @@ const LABEL_SCALE: u32 = 2;
 
 /// Render at `scale` device pixels per logical pixel.
 fn raster_at(composed: Composed, name: &str, scale: u32) -> RgbaImage {
-    let dir = std::env::temp_dir().join("bf-ranked-category-bars");
+    let dir = std::env::temp_dir().join(format!("bf-ranked-category-bars-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(format!("{name}.png"));
     capture_vello_only(composed, scale as f32, &png).expect("export");

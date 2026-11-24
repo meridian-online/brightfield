@@ -60,7 +60,7 @@ fn mark_ink_px(png: &std::path::Path) -> u64 {
 }
 
 fn export(spec: &str, out: &str) -> u64 {
-    let dir = std::env::temp_dir().join("bf-bar-orientation");
+    let dir = std::env::temp_dir().join(format!("bf-bar-orientation-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(out);
     let composed =
@@ -161,7 +161,7 @@ fn bar_lengths(png: &std::path::Path) -> Vec<u32> {
 /// pixels-per-unit.
 #[test]
 fn barx_bar_lengths_are_proportional_to_their_values() {
-    let dir = std::env::temp_dir().join("bf-bar-orientation");
+    let dir = std::env::temp_dir().join(format!("bf-bar-orientation-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join("barx-lengths.png");
     let composed = compose_spec(example("bars-x.yaml").to_str().expect("utf-8 path"))

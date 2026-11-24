@@ -148,13 +148,20 @@ impl Window {
             events,
             ..Default::default()
         };
-        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        // egui runs a frame again when a pass asks to discard its layout, and hands the second
+        // pass no events; the window clears what it answered and applied as each pass begins, so
+        // each pass's is read before the next runs. Read only after the frame, a key the first
+        // pass answered was lost whenever a layout change landed on its frame.
+        let (app, answered, applied) = (&mut self.app, &mut self.answered, &mut self.applied);
+        let out = self.ctx.run_ui(raw, |ui| {
+            app.draw(ui);
+            answered.extend_from_slice(app.keys_answered());
+            applied.extend_from_slice(app.verbs_applied());
+        });
         self.commands.extend(out.platform_output.commands);
         if let Some(root) = out.viewport_output.get(&egui::ViewportId::ROOT) {
             self.viewport_commands.extend(root.commands.iter().cloned());
         }
-        self.answered.extend_from_slice(self.app.keys_answered());
-        self.applied.extend_from_slice(self.app.verbs_applied());
     }
 
     /// Press a binding's keystrokes as a keyboard brings them, a frame a

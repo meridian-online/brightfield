@@ -62,7 +62,7 @@ const MARK_INK_TOL: i32 = 20;
 
 /// Render an example and return the PNG path.
 fn export(spec: &str, out: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("bf-binned-histogram");
+    let dir = std::env::temp_dir().join(format!("bf-binned-histogram-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(out);
     let composed =
@@ -200,7 +200,7 @@ fn a_binned_counted_rect_draws_the_histogram_its_counts_describe() {
 /// the picture to say which half.
 #[test]
 fn the_transposed_histogram_draws_the_same_shape_lying_down() {
-    let dir = std::env::temp_dir().join("bf-binned-histogram");
+    let dir = std::env::temp_dir().join(format!("bf-binned-histogram-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let spec_path = dir.join("rect-bin-count-x.yaml");
     let source = std::fs::read_to_string(example("rect-bin-count.yaml")).expect("read example");

@@ -376,7 +376,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "test-default",
-        runs: "cargo test --locked --workspace over every other target, then --doc",
+        runs: "cargo nextest run --locked --workspace over every other target, then cargo test --doc",
         only_in_ci: None,
         only_at_night: None,
         run: test_default,
@@ -700,8 +700,63 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     if threads_one {
         all.extend(["--", "--test-threads=1"]);
     }
-    let mut command = ctx.cargo(&all);
+    run_tests(ctx, engine, &all)
+}
+
+/// The cargo-nextest the step's failure excerpt was written against.
+const NEXTEST_VERSION: &str = "0.9.152";
+
+/// A warning when `cargo nextest --version` printed another release than
+/// [`NEXTEST_VERSION`], whose output the failure excerpt may not read.
+fn nextest_version_warning(printed: &str) -> Option<String> {
+    let found = printed
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("an unknown version");
+    (found != NEXTEST_VERSION).then(|| {
+        format!(
+            "warning: cargo-nextest {found} is installed and the step expects {NEXTEST_VERSION}; a failure's excerpt may leave out its output. Run `cargo install --locked cargo-nextest --version {NEXTEST_VERSION}` to match"
+        )
+    })
+}
+
+/// Run `cargo nextest run` over `args`, at the run's test threads: those
+/// `RUST_TEST_THREADS` names when it is set, as cargo test reads it. nextest
+/// takes its count from `--test-threads` or `NEXTEST_TEST_THREADS`.
+fn cargo_nextest(ctx: &Ctx, engine: &Path, args: &[String]) -> Result<(), String> {
+    let version = ctx
+        .cargo(&["nextest", "--version"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    let Some(version) = version else {
+        return Err(format!(
+            "cargo-nextest is not installed: run `cargo install --locked cargo-nextest --version {NEXTEST_VERSION}`, then run again"
+        ));
+    };
+    if let Some(warning) = nextest_version_warning(&version) {
+        println!("{warning}");
+    }
+    let threads = std::env::var("RUST_TEST_THREADS")
+        .ok()
+        .filter(|value| value.parse::<usize>().is_ok_and(|n| n > 0));
+    let mut all: Vec<&str> = vec!["nextest", "run", "--locked", "--workspace"];
+    all.extend(args.iter().map(String::as_str));
+    if let Some(threads) = &threads {
+        all.extend(["--test-threads", threads]);
+    }
+    run_tests(ctx, engine, &all)
+}
+
+/// Run a cargo test command with the pinned DuckDB CLI and a temporary
+/// folder of its own, writing to the step's log when it has one.
+fn run_tests(ctx: &Ctx, engine: &Path, all: &[&str]) -> Result<(), String> {
+    let mut command = ctx.cargo(all);
     command.env("ARC_DUCKDB_BIN", engine);
+    let tmp = RunTmp::make()?;
+    command.env("TMPDIR", &tmp.dir);
     let shown = format!("cargo {}", all.join(" "));
     if let Some(path) = &ctx.log {
         let open = || {
@@ -716,12 +771,131 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     run(command, &shown)
 }
 
-/// What to show of a test log after a failure: from the last detailed
-/// `failures:` block onward, or the last 60 lines when the log has none.
-/// libtest prints that block, with a `---- <test> stdout ----` section per
-/// failed test, and then a second `failures:` block that lists only names; the
-/// detailed one is the block whose first non-blank line is such a header.
+/// The prefix of a test run's temporary folder, in the system's.
+const RUN_TMP_PREFIX: &str = "brightfield-tests-";
+
+/// A test run's own temporary folder, `brightfield-tests-<pid>-<n>` in the
+/// system's, removed when the run ends. Many test files keep a scratch folder
+/// named for the test process under `std::env::temp_dir()`, and under
+/// cargo-nextest every test is a process, so without this a session's
+/// temporary folder would keep thousands of them per run. Folders a killed
+/// run left, whose process is gone, are removed when the next run starts.
+struct RunTmp {
+    dir: PathBuf,
+}
+
+impl RunTmp {
+    fn make() -> Result<Self, String> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let system = std::env::temp_dir();
+        sweep_run_tmps(&system);
+        let pid = std::process::id();
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = system.join(format!("{RUN_TMP_PREFIX}{pid}-{n}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        Ok(Self { dir })
+    }
+}
+
+impl Drop for RunTmp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Remove the test-run folders in `system` whose process has ended.
+fn sweep_run_tmps(system: &Path) {
+    let Ok(entries) = fs::read_dir(system) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = run_tmp_pid(&name.to_string_lossy()) else {
+            continue;
+        };
+        if pid != std::process::id() && !process_alive(pid) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// The process id in a test-run folder's name, `brightfield-tests-<pid>-<n>`.
+fn run_tmp_pid(name: &str) -> Option<u32> {
+    let (pid, n) = name.strip_prefix(RUN_TMP_PREFIX)?.split_once('-')?;
+    n.parse::<usize>().ok()?;
+    pid.parse().ok()
+}
+
+/// True when a process with this id is running, as `kill -0` answers.
+fn process_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// What to show of a test log after a failure. When cargo-nextest's run
+/// failed, each failed test's block and the run's summary; otherwise libtest's
+/// excerpt, from the last detailed `failures:` block onward, or the last 60
+/// lines when the log has none. libtest prints that block, with a
+/// `---- <test> stdout ----` section per failed test, and then a second
+/// `failures:` block that lists only names; the detailed one is the block
+/// whose first non-blank line is such a header.
 pub fn failure_excerpt(log: &str) -> String {
+    nextest_excerpt(log).unwrap_or_else(|| libtest_excerpt(log))
+}
+
+/// nextest's status word at the head of a line, as in `FAIL [   0.4s] ...`,
+/// or `Summary` on its summary line.
+fn nextest_status(line: &str) -> Option<&str> {
+    let (word, rest) = line.trim_start().split_once(' ')?;
+    let is_word = word == "Summary"
+        || (!word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-'));
+    (is_word && rest.trim_start().starts_with('[')).then_some(word)
+}
+
+/// True for a status nextest gives a test that did not pass.
+fn nextest_failed(word: &str) -> bool {
+    matches!(word, "FAIL" | "TIMEOUT" | "ABORT" | "LEAK-FAIL") || word.starts_with("SIG")
+}
+
+/// Each failed test's block from a failed nextest run, then its summary
+/// onward; `None` when the log holds no nextest summary after a failure.
+fn nextest_excerpt(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let summary = lines
+        .iter()
+        .rposition(|line| nextest_status(line) == Some("Summary"))?;
+    let failed_after = lines[summary + 1..]
+        .iter()
+        .any(|line| nextest_status(line).is_some_and(nextest_failed));
+    if !failed_after {
+        return None;
+    }
+    let mut excerpt: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in &lines[..summary] {
+        match nextest_status(line) {
+            Some(word) => inside = nextest_failed(word),
+            None if line.starts_with("    ") || line.starts_with("  std") || line.is_empty() => {}
+            None => inside = false,
+        }
+        if inside {
+            excerpt.push(line);
+        }
+    }
+    excerpt.extend(&lines[summary..]);
+    Some(excerpt.join("\n"))
+}
+
+fn libtest_excerpt(log: &str) -> String {
     let lines: Vec<&str> = log.lines().collect();
     let blocks: Vec<usize> = (0..lines.len())
         .filter(|&at| lines[at].trim() == "failures:")
@@ -776,10 +950,11 @@ fn test_default(ctx: &Ctx) -> Result<(), String> {
         return Ok(());
     }
     let engine = pinned_duckdb(ctx)?;
-    // With no target flag `cargo test --workspace` runs every target, so an
-    // empty list runs nothing rather than that.
+    // With no target flag `cargo nextest run --workspace` runs every target,
+    // so an empty list runs nothing rather than that. nextest does not run
+    // doctests, so cargo test runs them.
     if !args.is_empty() {
-        cargo_test(ctx, &engine, &args, false)?;
+        cargo_nextest(ctx, &engine, &args)?;
     }
     if part.doc() {
         cargo_test(ctx, &engine, &["--doc".to_owned()], false)?;
@@ -1159,6 +1334,78 @@ mod tests {
         let tail = failure_excerpt(&without);
         assert_eq!(tail.lines().count(), 60);
         assert!(tail.starts_with("line 41\n") && tail.ends_with("line 100"));
+    }
+
+    #[test]
+    fn a_failed_nextest_run_shows_each_failed_test_and_the_summary() {
+        let log = "   Compiling a v0.1.0\n        PASS [   1.0s] (1/3) a::t one\n        FAIL [   0.4s] (2/3) a::t two\n  stdout ───\n\n    running 1 test\n    test two ... FAILED\n\n  stderr ───\n\n    thread 'two' panicked at t.rs:3:5:\n    the message\n\n        PASS [   2.0s] (3/3) a::t three\n     SIGSEGV [   7.3s] (4/4) a::t four\n  stdout ───\n    test four ... ok\n    (test aborted with signal 11: SIGSEGV)\n\n────────────\n     Summary [  10.0s] 4 tests run: 2 passed, 2 failed, 0 skipped\n        FAIL [   0.4s] (2/3) a::t two\n     SIGSEGV [   7.3s] (4/4) a::t four\nerror: test run failed\n";
+        let excerpt = failure_excerpt(log);
+        assert!(
+            excerpt.starts_with("        FAIL [   0.4s] (2/3) a::t two"),
+            "{excerpt}"
+        );
+        assert!(excerpt.contains("the message"));
+        assert!(excerpt.contains("(test aborted with signal 11: SIGSEGV)"));
+        assert!(!excerpt.contains("a::t one") && !excerpt.contains("a::t three"));
+        assert!(!excerpt.contains("────────────"));
+        assert!(excerpt.ends_with("error: test run failed"));
+    }
+
+    #[test]
+    fn a_passed_nextest_run_leaves_a_doctest_failure_to_libtest() {
+        let log = "        PASS [   1.0s] (1/1) a::t one\n     Summary [   1.0s] 1 test run: 1 passed, 0 skipped\n   Doc-tests a\nfailures:\n\n---- src/lib.rs - f (line 3) stdout ----\nboom\n\nfailures:\n    src/lib.rs - f (line 3)\n\ntest result: FAILED. 0 passed; 1 failed\n";
+        let excerpt = failure_excerpt(log);
+        assert!(excerpt.starts_with("failures:\n\n---- src/lib.rs - f (line 3) stdout ----"));
+    }
+
+    #[test]
+    fn another_nextest_release_is_warned_about() {
+        assert_eq!(
+            nextest_version_warning(&format!("cargo-nextest {NEXTEST_VERSION} (26ebeda79 2026-11-13)\nrelease: {NEXTEST_VERSION}\n")),
+            None
+        );
+        let warning = nextest_version_warning("cargo-nextest 0.9.200 (abc 2027-01-01)\n").unwrap();
+        assert!(warning.contains("0.9.200") && warning.contains(NEXTEST_VERSION));
+    }
+
+    #[test]
+    fn a_test_run_folder_is_swept_once_its_process_has_ended() {
+        let system = std::env::temp_dir().join(format!("xtask-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&system);
+        fs::create_dir_all(&system).unwrap();
+        let mut ended = Command::new("true").spawn().unwrap();
+        let ended_pid = ended.id();
+        ended.wait().unwrap();
+        let mut live = Command::new("sleep").arg("30").spawn().unwrap();
+        let names = [
+            format!("{RUN_TMP_PREFIX}{ended_pid}-0"),
+            format!("{RUN_TMP_PREFIX}{}-3", live.id()),
+            format!("{RUN_TMP_PREFIX}{}-1", std::process::id()),
+            format!("{RUN_TMP_PREFIX}{ended_pid}"),
+            "bf-scenes-1".to_owned(),
+        ];
+        for name in &names {
+            fs::create_dir_all(system.join(name)).unwrap();
+        }
+        sweep_run_tmps(&system);
+        let kept: Vec<bool> = names.iter().map(|n| system.join(n).exists()).collect();
+        let _ = live.kill();
+        let _ = live.wait();
+        let _ = fs::remove_dir_all(&system);
+        assert_eq!(kept, [false, true, true, true, true], "{names:?}");
+    }
+
+    #[test]
+    fn a_test_run_folder_is_removed_when_the_run_ends() {
+        let tmp = RunTmp::make().unwrap();
+        let dir = tmp.dir.clone();
+        assert!(dir.is_dir());
+        assert_eq!(
+            run_tmp_pid(&dir.file_name().unwrap().to_string_lossy()),
+            Some(std::process::id())
+        );
+        drop(tmp);
+        assert!(!dir.exists());
     }
 
     #[test]

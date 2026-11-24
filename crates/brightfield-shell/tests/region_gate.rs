@@ -722,30 +722,26 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
     );
 }
 
-/// Point brightfield's config directory at this target's scratch, so loading a
+/// Point brightfield's config directory at this process's scratch, so loading a
 /// start that opens a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`.
 ///
-/// "This target's" because the folder is named after it: `CARGO_TARGET_TMPDIR`
-/// is one folder for every test target in the crate, and `cargo xtask ci` runs
-/// its two test groups at once. Under one shared `config`, `remote_start`'s
-/// `taking_the_housing_card_with_nothing_on_disk_records_the_statlib_archive`,
+/// Named after this target, not left in one shared folder: `cargo xtask ci`
+/// runs its two test groups at once, and under one shared `config`,
+/// `remote_start`'s `taking_the_housing_card_with_nothing_on_disk_records_the_statlib_archive`,
 /// which removes the California Housing file to find nothing on disk, could
 /// remove it while `region_gate`, in the other group, was opening it.
 ///
-/// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`, which
-/// gives each test a directory of its own in turn. Two tests here share this
-/// fixed path, through [`every_window_this_build_can_open`], and both write
-/// the data start's file into it from the committed copy of its source. Each
-/// write stages under a name of its own and renames onto the path, so two at
-/// once each land a whole file. CI runs this target in its one-thread group.
-/// If it flakes under cargo's default threads, take front_door's approach. An
-/// integration test target cannot import a sibling's helper.
+/// And of this process's own: the two tests here that reach
+/// [`every_window_this_build_can_open`] each boot a Protocol start into it,
+/// and its lock serialises them only within one process. Under a runner that
+/// gives each test a process, a shared folder would have two runs of one
+/// Protocol at once, each finding the other's database locked.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join("region_gate")
+        std::env::temp_dir()
+            .join(format!("bf-region-gate-{}", std::process::id()))
             .join("config"),
     );
 }

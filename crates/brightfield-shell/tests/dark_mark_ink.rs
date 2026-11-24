@@ -78,7 +78,7 @@ const MIN_INKED: usize = 200;
 /// is the only mode-aware entry point, and inventing a second one to avoid a
 /// temp file would put this test on a path the app does not use.
 fn compose(source: &str, mode: Mode) -> Composed {
-    let dir = std::env::temp_dir().join("bf-dark-mark-ink");
+    let dir = std::env::temp_dir().join(format!("bf-dark-mark-ink-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let path = dir.join(format!("f{:x}-{mode:?}.yaml", source.len()));
     std::fs::write(&path, source).expect("write fixture");
