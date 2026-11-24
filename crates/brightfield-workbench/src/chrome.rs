@@ -2182,7 +2182,7 @@ mod tests {
         // corner itself is not the point to check. What radius decides is
         // how much closer than that a fill vertex gets: a square corner's
         // nearest fill vertex is that ~0.7px feather diagonal; at
-        // `radius::CHIP` (2), the smallest rung above none, the arc's
+        // `radius::CHIP` (2), the rung after `radius::NONE`, the arc's
         // nearest fill vertex sits ~1.3px from the corner once the feather
         // insets it. 1px lies between the two.
         const NEAR: f32 = 1.0;
