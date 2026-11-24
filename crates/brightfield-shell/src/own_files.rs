@@ -1909,28 +1909,41 @@ mod tests {
     }
 
     #[test]
-    fn a_move_holds_both_databases_whichever_order_names_them() {
+    fn a_move_holds_both_databases() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (a, b) = (root.path().join("a.duckdb"), root.path().join("b.duckdb"));
         let both = database_locks(&b, &a);
         assert!(!taken_while_held_already(&a), "the first is held");
         assert!(!taken_while_held_already(&b), "the second is held");
-        let (sent, got) = std::sync::mpsc::channel();
-        let other = std::thread::spawn({
-            let (a, b) = (a.clone(), b.clone());
-            move || {
-                let _both = database_locks(&a, &b);
-                let _ = sent.send(());
-            }
-        });
-        assert!(got
-            .recv_timeout(std::time::Duration::from_millis(300))
-            .is_err());
         drop(both);
-        other
-            .join()
-            .expect("the other move goes ahead once the first ends");
         assert_eq!(database_locks(&a, &a).len(), 1, "one database is one lock");
+    }
+
+    #[test]
+    fn a_move_takes_the_lower_key_first_whichever_order_names_them() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (root.path().join("a.duckdb"), root.path().join("b.duckdb"));
+        let (low, high) = if lock_key(&a) < lock_key(&b) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let holding_low = database_lock(&low);
+        // Named higher first: a move that took its locks in the order named would hold the higher
+        // key while it waits for the lower, and two such moves could each wait on the other.
+        let mover = std::thread::spawn({
+            let (low, high) = (low.clone(), high.clone());
+            move || drop(database_locks(&high, &low))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            taken_while_held_already(&high),
+            "the move waits on the lower key holding nothing"
+        );
+        drop(holding_low);
+        mover
+            .join()
+            .expect("the move goes ahead once the lower key is let go");
     }
 
     /// Whether another thread gets `db`'s lock within a third of a second.
