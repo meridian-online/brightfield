@@ -86,7 +86,7 @@ fn hide_column() -> VerbEntry {
 }
 
 // ---- rename-column ----
-const RENAME_COLUMN_BUILT: bool = false;
+const RENAME_COLUMN_BUILT: bool = true;
 fn rename_column() -> VerbEntry {
     entry(
         "rename-column",

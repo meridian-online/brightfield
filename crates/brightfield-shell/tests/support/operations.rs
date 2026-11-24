@@ -645,11 +645,13 @@ impl OpWindow {
         self.settle();
     }
 
-    /// What the status band says of an operation: its own sentence, or the
-    /// foot row's over a step's preview.
+    /// What the status band says of an operation: its own sentence, arc's or
+    /// DuckDB's refusal of the draft being made, or the foot row's over a
+    /// step's preview.
     pub fn said(&self) -> Option<String> {
         self.app
             .operation_said()
+            .or_else(|| self.app.operation_refusal())
             .map(str::to_string)
             .or_else(|| self.app.chart_doc().foot_said())
     }

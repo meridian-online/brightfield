@@ -645,7 +645,9 @@ fn starting_over_a_kept_draft_of_the_same_operation_corrects_it() {
     assert_eq!(making.corrects.as_deref(), Some(name.as_str()));
     assert_eq!(making.draft.value("column"), Some("median_income"));
     assert_eq!(making.draft.value("to"), Some("income"));
-    win.type_text("_2");
+    // The kept name opens selected whole, so the new one is typed over it.
+    assert!(making.whole);
+    win.type_text("income_2");
     win.settle_reads();
     win.key(egui::Key::Enter);
     let kept = win.kept();
