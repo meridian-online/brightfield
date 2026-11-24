@@ -182,9 +182,9 @@ impl Discovery for StandIn {
 /// child never writes `model.ossie.yaml`, which holds the analyst's decisions and is Brightfield's
 /// alone to write; it is handed that file as `--base`, so the analyst's decisions carry through.
 ///
-/// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`],
-/// which the own-files flow's writes to that database hold, so the copy waits for a write in
-/// progress to finish. The lock is let go before the child starts, so a run waits on a pass while
+/// The child reads a copy of the Protocol's database, taken under that database's
+/// [`own_files::database_lock`], which the own-files flow's writes to that database hold, so the
+/// copy waits for a write in progress to finish. The lock is let go before the child starts, so a run waits on a pass while
 /// it copies and not while its child runs. Each pass has files of its own, a copy named for the run
 /// and an out file beside it, so a superseded child being killed and its successor write separate
 /// files. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and that
@@ -506,7 +506,7 @@ fn copy_database(dir: &Path, copy: &Path) -> Result<(), String> {
         }
         _ => {}
     }
-    let _writing = own_files::database_lock();
+    let _writing = own_files::database_lock(&db);
     std::fs::copy(&db, copy).map_err(|e| format!("{}: {e}", db.display()))?;
     let wal = wal_of(&db);
     if wal.is_file() {

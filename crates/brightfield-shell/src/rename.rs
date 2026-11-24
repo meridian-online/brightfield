@@ -1069,7 +1069,7 @@ fn move_database(old: Option<PathBuf>, now: &Path) -> Result<(), String> {
     if new == old {
         return Ok(());
     }
-    let _writing = crate::own_files::database_lock();
+    let _writing = crate::own_files::database_locks(&old, &new);
     let wal = |db: &Path| {
         let mut name = db.as_os_str().to_os_string();
         name.push(".wal");

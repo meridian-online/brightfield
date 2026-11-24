@@ -1196,7 +1196,7 @@ impl ModelPane {
             self.joins_unmeasured = true;
         }
         let finished = {
-            let _writing = own_files::database_lock();
+            let _writing = own_files::protocol_database_lock(&self.protocol.dir);
             crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
         };
         // The run changed the tables under the model the inspector last read.
