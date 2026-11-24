@@ -964,8 +964,8 @@ fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option
 /// The frame is the workbench's own overlay treatment plus the shadow
 /// [`Elevation::Overlay`] declares — read off the design system rather than
 /// typed here, so a change to what an overlay looks like moves this with the
-/// rest of the chrome. Square and hard: a one-pixel rule in the default border
-/// ink, the corner the token names, and a shadow with no blur.
+/// rest of the chrome. A card and hard: a one-pixel rule in the default border
+/// ink, the card's corner, and a shadow with no blur.
 fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
     let dark = mode.is_dark();
     let sem = semantic(dark);
@@ -975,7 +975,7 @@ fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
             spacing::SPACE_3 as i8,
         ))
         .stroke(egui::Stroke::new(1.0, chrome::colour(sem.borders.default_)))
-        .corner_radius(radius::CONTROL);
+        .corner_radius(radius::PANEL);
     if let Some(shadow) = Elevation::Overlay.shadow(dark) {
         frame = frame.shadow(egui::epaint::Shadow {
             offset: [shadow.x as i8, shadow.y as i8],
@@ -3116,15 +3116,15 @@ mod tests {
         }
     }
 
-    /// **The hover readout is drawn square and hard**: a 1px rule in the
-    /// default border ink, no corner, and the overlay's shadow — the card's own
-    /// rect offset by the token, with no blur.
+    /// **The hover readout is drawn as a hard card**: a 1px rule in the
+    /// default border ink, the card's corner, and the overlay's shadow — the
+    /// card's own rect offset by the token, with no blur.
     ///
     /// Read off the paint list of the frame the readout is drawn in, in both
     /// modes: the card is the rect that carries the rule, and the shadow is
     /// found by its own rect and colour, so neither is taken for the other.
     #[test]
-    fn the_hover_readout_draws_a_one_pixel_rule_and_a_hard_shadow_with_no_corner() {
+    fn the_hover_readout_draws_a_one_pixel_rule_and_a_hard_shadow_at_the_cards_corner() {
         for mode in [Mode::Light, Mode::Dark] {
             let dark = mode.is_dark();
             let sem = semantic(dark);
@@ -3172,8 +3172,8 @@ mod tests {
             );
             assert_eq!(
                 card.corner_radius,
-                egui::CornerRadius::ZERO,
-                "{mode:?}: the readout carries a corner"
+                egui::CornerRadius::same(radius::PANEL as u8),
+                "{mode:?}: the readout does not round as a card"
             );
             let hard = rects
                 .iter()
@@ -3186,9 +3186,8 @@ mod tests {
                 });
             assert_eq!(hard.blur_width, 0.0, "{mode:?}: the shadow is blurred");
             assert_eq!(
-                hard.corner_radius,
-                egui::CornerRadius::ZERO,
-                "{mode:?}: the shadow carries a corner"
+                hard.corner_radius, card.corner_radius,
+                "{mode:?}: the shadow does not follow the card's corner"
             );
             assert!(
                 (hard.rect.min - card.rect.min - egui::vec2(shadow.x, shadow.y))

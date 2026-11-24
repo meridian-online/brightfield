@@ -2395,7 +2395,7 @@ fn which_protocol_body(ui: &mut egui::Ui, sheet: &mut WhichProtocolSheet) -> boo
             Some(choice) => {
                 let place = choice.dir.parent().unwrap_or(&choice.dir);
                 ui.horizontal(|ui| {
-                    let row = ui.selectable_label(sheet.selected == at, &choice.name);
+                    let row = chrome::selectable_row(ui, sheet.selected == at, &choice.name);
                     // A long location gives up its middle rather than widening the card past
                     // its rung, as the Preferences sheet's folder does.
                     let font = egui::TextStyle::Small.resolve(ui.style());
@@ -2410,7 +2410,7 @@ fn which_protocol_body(ui: &mut egui::Ui, sheet: &mut WhichProtocolSheet) -> boo
                 })
                 .inner
             }
-            None => ui.selectable_label(sheet.selected == at, WHICH_PROTOCOL_NEW),
+            None => chrome::selectable_row(ui, sheet.selected == at, WHICH_PROTOCOL_NEW),
         };
         sheet.rows.push(row.rect);
         if row.clicked() {
@@ -2476,7 +2476,7 @@ fn new_protocol_body(ui: &mut egui::Ui, sheet: &mut NewProtocolSheet) -> bool {
     ui.add_space(gap);
     sheet.rows.clear();
     for (at, place) in sheet.places.iter().enumerate() {
-        let row = ui.selectable_label(sheet.selected == at, place.label());
+        let row = chrome::selectable_row(ui, sheet.selected == at, place.label());
         sheet.rows.push(row.rect);
         if row.clicked() {
             sheet.selected = at;
@@ -18558,7 +18558,7 @@ impl MeridianApp {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
             if response.hovered() {
-                painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
+                painter.rect_filled(rect, radius::NONE, chrome::colour(sem.surfaces.raised));
             }
             let mid = rect.center().y;
             if !renaming {

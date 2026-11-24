@@ -1210,10 +1210,10 @@ pub fn selection_wash(ui: &egui::Ui, rect: egui::Rect, mode: Mode) {
 pub fn selection_wash_shape(rect: egui::Rect, mode: Mode) -> egui::Shape {
     let sem = semantic(mode.is_dark());
     egui::Shape::Vec(vec![
-        egui::Shape::rect_filled(rect, radius::CHIP, colour(sem.rows.selected_background)),
+        egui::Shape::rect_filled(rect, radius::NONE, colour(sem.rows.selected_background)),
         egui::Shape::rect_stroke(
             rect,
-            radius::CHIP,
+            radius::NONE,
             egui::Stroke::new(1.0, colour(sem.rows.selected_border)),
             egui::StrokeKind::Inside,
         ),
@@ -1498,7 +1498,7 @@ fn toolbar_button_at(
         } else {
             ui.painter().rect_stroke(
                 response.rect,
-                radius::CHIP,
+                radius::NONE,
                 egui::Stroke::new(1.0, colour(sem.borders.subtle)),
                 egui::StrokeKind::Inside,
             );
@@ -1780,6 +1780,22 @@ fn affordance_button(ui: &mut egui::Ui, next: &Affordance) -> egui::Response {
             .corner_radius(radius::CONTROL)
             .min_size(egui::vec2(0.0, b.control)),
     )
+}
+
+/// A row that can be selected, drawn by egui's selectable button with square
+/// corners.
+///
+/// `theme::apply` gives egui's own widgets the control corner, so a bare
+/// `Ui::selectable_label` or `selectable_value` rounds its hover and selection
+/// fills. A row's fills stay square, as the design system's corner ruling
+/// says, so every list of choices built from egui's selectable widget goes
+/// through here.
+pub fn selectable_row<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    ui.add(egui::Button::selectable(selected, text).corner_radius(radius::NONE))
 }
 
 // ---------------------------------------------------------------------------
