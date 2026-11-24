@@ -99,6 +99,7 @@ static RENAME_LIKE: OperationUi = OperationUi {
         part: HeaderPart::Name,
         keys: &["to"],
         suggestions: no_suggestions,
+        follows: None,
     }),
     form: None,
     name: NameRule {
@@ -123,6 +124,7 @@ static DERIVE_LIKE: OperationUi = OperationUi {
         part: HeaderPart::NewColumn,
         keys: &["expression"],
         suggestions: no_suggestions,
+        follows: None,
     }),
     form: None,
     name: NameRule {

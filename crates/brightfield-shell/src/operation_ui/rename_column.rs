@@ -57,6 +57,7 @@ static UI: OperationUi = OperationUi {
         part: HeaderPart::Name,
         keys: &["to"],
         suggestions: no_suggestions,
+        follows: None,
     }),
     form: None,
     name: NameRule {

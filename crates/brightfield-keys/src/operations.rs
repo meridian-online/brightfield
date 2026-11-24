@@ -99,7 +99,7 @@ fn rename_column() -> VerbEntry {
 }
 
 // ---- derive-column ----
-const DERIVE_COLUMN_BUILT: bool = false;
+const DERIVE_COLUMN_BUILT: bool = true;
 fn derive_column() -> VerbEntry {
     entry(
         "derive-column",

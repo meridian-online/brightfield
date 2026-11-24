@@ -734,7 +734,7 @@ impl MeridianApp {
                     .focus
                     .or_else(|| making.spec.field.and_then(|f| f.keys.first().copied()));
                 if let (Some(taken), Some(focus)) = (taken, focus) {
-                    making.draft.set(focus, taken);
+                    set_and_follow(making, focus, taken);
                 }
             }
             self.keep_making(ctx);
@@ -831,7 +831,7 @@ impl MeridianApp {
             });
         });
         if text != before {
-            making.draft.set(focus, text);
+            set_and_follow(making, focus, text);
         }
         // Tab to another value selects it whole.
         if let Some(next) = next {
@@ -1567,5 +1567,19 @@ impl MeridianApp {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+}
+
+/// Set the value `key` of the draft being made to `text`, and let a value that follows it
+/// follow, as a derived column's name follows its expression
+/// (`a_name_typed_into_stops_following_the_expression`).
+fn set_and_follow(making: &mut Making, key: &'static str, text: String) {
+    let before = making.draft.value(key).unwrap_or_default().to_string();
+    making.draft.set(key, text);
+    if let Some(follows) = making.spec.field.and_then(|field| field.follows) {
+        let draft = &mut making.draft;
+        making
+            .with
+            .with_begin(|begin| follows(begin, draft, key, &before));
     }
 }

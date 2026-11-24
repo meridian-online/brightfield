@@ -167,6 +167,24 @@ impl ChartDoc {
     }
 }
 
+/// The width of the new-column cell, and of the gutter the grid leaves for it.
+const NEW_COLUMN_WIDTH: f32 = spacing::SPACE_7;
+
+/// **The width the grid leaves after its columns for the new-column cell**, while a
+/// built operation starts from that cell, so that on a table wider than its pane the
+/// cell stands beside the last column's header rather than over it. Nothing otherwise.
+#[must_use]
+pub fn new_column_gutter(doc: &ChartDoc) -> f32 {
+    if starting_from(&doc.header.ops(), HeaderPart::NewColumn)
+        .next()
+        .is_some()
+    {
+        NEW_COLUMN_WIDTH
+    } else {
+        0.0
+    }
+}
+
 /// The operations of `ops` that start from `part`.
 fn starting_from<'a>(
     ops: &'a [&'static OperationUi],
@@ -258,6 +276,9 @@ pub fn header_pass(
             making.whole,
         ))
     });
+    // A correction of a kept step began over that step's own table, which holds the
+    // column it added already.
+    let corrects = doc.making().is_some_and(|making| making.corrects.is_some());
     let begun_columns: Vec<String> = doc
         .making()
         .map(|making| making.with.columns.clone())
@@ -387,10 +408,14 @@ pub fn header_pass(
         }
     }
 
-    // The new-column cell: one header row tall and as wide, after the table's
-    // last column where that leaves it inside the pane, and at the pane's
-    // trailing edge otherwise, so it is in reach however wide the table is.
+    // The new-column cell: one header row tall and as wide as the gutter the grid
+    // leaves for it, after the table's last column where that leaves it inside the
+    // pane, and in the gutter at the pane's trailing edge otherwise, so it is in reach
+    // however wide the table is and covers no column's header
+    // (`the_new_column_cell_stands_beside_a_wide_tables_last_header`). The field it
+    // opens is as wide as a header row is tall.
     let room = ui.clip_rect();
+    let width = NEW_COLUMN_WIDTH;
     let side = drawn.header_height.max(spacing::SPACE_6);
     let row = drawn.header_cells.first().map(|(_, rect, _)| *rect);
     let after_last = drawn
@@ -400,8 +425,10 @@ pub fn header_pass(
         .map(|(_, rect, _)| rect.right());
     let last = row;
     let new_column = row.map(|row| {
-        let left = after_last.unwrap_or(f32::INFINITY).min(room.right() - side);
-        egui::Rect::from_min_size(egui::pos2(left, row.top()), egui::vec2(side, row.height()))
+        let left = after_last
+            .unwrap_or(f32::INFINITY)
+            .min(room.right() - width);
+        egui::Rect::from_min_size(egui::pos2(left, row.top()), egui::vec2(width, row.height()))
     });
     if field.is_none() && starting_from(&ops, HeaderPart::NewColumn).next().is_some() {
         if let Some(rect) = new_column {
@@ -423,6 +450,11 @@ pub fn header_pass(
                     verb: None,
                 });
             }
+            // It draws only a `+`, so it is named by what it does.
+            doc.controls.push(chrome::NamedControl::labelled(
+                rect,
+                "Add a column".to_string(),
+            ));
             out.new_column = Some(rect);
         }
     }
@@ -430,7 +462,26 @@ pub fn header_pass(
     // The field in place, over the part the operation names.
     if let Some((InPlace { part, .. }, column, text, suggestions, selected, whole)) = field {
         let at = if part == HeaderPart::NewColumn {
-            new_column.or(last)
+            // Once the preview holds the new column, the table's last, over its header, so
+            // its values fill under the field; until then, in the new-column cell.
+            let added = (corrects || drawn.columns > begun_columns.len())
+                .then(|| {
+                    cells
+                        .iter()
+                        .find(|(col, ..)| *col + 1 == drawn.columns)
+                        .map(|(.., at)| *at)
+                })
+                .flatten();
+            // The cell is narrow, so the field it opens reaches back over the table, within
+            // the pane, until the new column comes.
+            let field = new_column.map(|cell| {
+                let left = cell.left().min(room.right() - side).max(room.left());
+                egui::Rect::from_min_size(
+                    egui::pos2(left, cell.top()),
+                    egui::vec2(side.min(room.width()), cell.height()),
+                )
+            });
+            added.or(field).or(last)
         } else {
             // By the column's place in the table the draft began over, and not by
             // its name: a rename's preview has given the column another.
