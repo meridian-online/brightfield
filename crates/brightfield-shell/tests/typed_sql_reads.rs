@@ -5,6 +5,7 @@
 //! `tests/sql_through_arc.rs`, and the rows are the housing start's own file.
 
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use brightfield_engine::{FileReader, PreviewOp};
@@ -18,6 +19,22 @@ use brightfield_shell::typed_sql::{
 
 const FILTER: &str = "select * from california_housing where house_age > 28";
 const SLOW: &str = "select sum(range) from range(1000000000000000)";
+
+/// Taken for writing by the test that times the UI thread, and for reading by every other test
+/// here, so it runs with none of them beside it. Each of the others may start [`SLOW`], which
+/// DuckDB spreads over every core, and at 18 test threads they left the timed thread waiting for
+/// one, past its 50 ms budget (84 ms once), in both full runs of the step and in one of six runs
+/// of this file alone. The file takes about three seconds, so running that one test by itself
+/// costs nothing worth having.
+static TIMED: RwLock<()> = RwLock::new(());
+
+fn beside_the_others() -> RwLockReadGuard<'static, ()> {
+    TIMED.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn alone() -> RwLockWriteGuard<'static, ()> {
+    TIMED.write().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn housing_source() -> TypedSource {
     use_own_preview_gate_on_this_thread();
@@ -69,6 +86,7 @@ fn answered(text: &str) -> TypedAnswer {
 
 #[test]
 fn a_read_starts_only_after_the_pause() {
+    let _beside = beside_the_others();
     let (mut r, t0) = (reads(TYPED_PAUSE), Instant::now());
     r.edit(FILTER, t0);
     r.tick(t0 + Duration::from_millis(299));
@@ -80,6 +98,7 @@ fn a_read_starts_only_after_the_pause() {
 
 #[test]
 fn the_time_left_in_the_pause_is_what_a_frame_waits_for() {
+    let _beside = beside_the_others();
     let (mut r, t0) = (reads(TYPED_PAUSE), Instant::now());
     assert_eq!(r.pause_left(t0), None, "nothing typed, nothing to wait for");
     r.edit(FILTER, t0);
@@ -95,6 +114,7 @@ fn the_time_left_in_the_pause_is_what_a_frame_waits_for() {
 
 #[test]
 fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
+    let _beside = beside_the_others();
     let a = answered(FILTER);
     assert_eq!(a.page.rows.len() as u64, PREVIEW_ROWS);
     assert_eq!(a.reading.tables, vec!["california_housing".to_string()]);
@@ -110,6 +130,7 @@ fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
 
 #[test]
 fn a_filter_of_the_root_table_is_paged_under_the_pending_order() {
+    let _beside = beside_the_others();
     assert!(
         answered(FILTER).filter_page.is_some(),
         "no order still reads the filter's own page"
@@ -134,6 +155,7 @@ fn a_filter_of_the_root_table_is_paged_under_the_pending_order() {
 /// view reads: the first rows in `ORDER BY ALL` order, not in file order.
 #[test]
 fn an_unordered_filter_previews_the_page_the_applied_view_reads() {
+    let _beside = beside_the_others();
     use_own_preview_gate_on_this_thread();
     let dir = std::env::temp_dir().join(format!("bf_unsorted_filter_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a scratch directory");
@@ -182,6 +204,7 @@ fn an_unordered_filter_previews_the_page_the_applied_view_reads() {
 
 #[test]
 fn a_refused_text_keeps_the_last_good_rows_and_says_why() {
+    let _beside = beside_the_others();
     let mut r = reads(TYPED_PAUSE);
     answer(&mut r, FILTER);
     answer(&mut r, "select * from nowhere");
@@ -195,6 +218,7 @@ fn a_refused_text_keeps_the_last_good_rows_and_says_why() {
 /// text comes back to it.
 #[test]
 fn text_refused_before_is_read_again_after_other_text_answers() {
+    let _beside = beside_the_others();
     let mut r = reads(TYPED_PAUSE);
     answer(&mut r, "select * from nowhere");
     assert!(r.refusal().is_some());
@@ -207,6 +231,7 @@ fn text_refused_before_is_read_again_after_other_text_answers() {
 
 #[test]
 fn a_superseded_read_is_stopped() {
+    let _beside = beside_the_others();
     let mut r = reads(TYPED_PAUSE);
     r.edit(SLOW, Instant::now());
     r.read_now();
@@ -220,6 +245,7 @@ fn a_superseded_read_is_stopped() {
 
 #[test]
 fn an_edit_stops_the_read_of_the_text_it_left() {
+    let _beside = beside_the_others();
     let mut r = reads(TYPED_PAUSE);
     answer(&mut r, FILTER);
     r.edit(SLOW, Instant::now());
@@ -235,6 +261,7 @@ fn an_edit_stops_the_read_of_the_text_it_left() {
 
 #[test]
 fn the_ui_thread_is_not_held_by_a_slow_statement() {
+    let _alone = alone();
     // No pause, so each frame's tick starts a read of the text its edit
     // left, and each edit stops the read before it.
     let mut r = reads(Duration::ZERO);
@@ -257,6 +284,7 @@ fn the_ui_thread_is_not_held_by_a_slow_statement() {
 
 #[test]
 fn stopping_drops_a_late_answer() {
+    let _beside = beside_the_others();
     let mut r = reads(TYPED_PAUSE);
     r.edit(FILTER, Instant::now());
     r.read_now();
@@ -268,6 +296,7 @@ fn stopping_drops_a_late_answer() {
 
 #[test]
 fn dropping_the_reader_stops_its_read() {
+    let _beside = beside_the_others();
     let mut slow = reads(TYPED_PAUSE);
     slow.edit(SLOW, Instant::now());
     slow.read_now();
@@ -283,6 +312,7 @@ fn dropping_the_reader_stops_its_read() {
 
 #[test]
 fn a_kept_steps_rows_are_counted_off_the_thread() {
+    let _beside = beside_the_others();
     let chain = vec![(
         "t".into(),
         PreviewOp::Statement(
@@ -309,6 +339,7 @@ fn sql_step(name: &str, statement: &str, reads: &[&str]) -> GeneratedStep {
 /// neither refuses nor holds up its preview.
 #[test]
 fn a_statement_over_the_loaded_table_previews_past_a_failing_step() {
+    let _beside = beside_the_others();
     let mut source = housing_source();
     source.steps = vec![
         sql_step("broken", "select * from no_such_table", &["no_such_table"]),
@@ -357,6 +388,7 @@ fn a_statement_over_the_loaded_table_previews_past_a_failing_step() {
 /// step built for it to read.
 #[test]
 fn a_statement_that_does_not_parse_is_refused_without_building_a_step() {
+    let _beside = beside_the_others();
     let mut source = housing_source();
     source.steps = vec![sql_step(
         "broken",
