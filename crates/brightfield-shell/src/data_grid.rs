@@ -2905,8 +2905,10 @@ impl DataGridItem {
             ),
             room.max,
         );
+        // A gutter after the columns for the new-column cell, while an operation starts there.
+        let gutter = crate::operation_ui::header::new_column_gutter(doc);
         let table_rect =
-            egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
+            egui::Rect::from_min_max(room.min, egui::pos2(room.right() - gutter, foot_rect.top()));
         let mut drawn = None;
         match (preview.page(), preview.refusal()) {
             (Some(page), _) => {
@@ -3203,8 +3205,10 @@ impl Item<ChartDoc> for DataGridItem {
             ),
             room.max,
         );
+        // A gutter after the columns for the new-column cell, while an operation starts there.
+        let gutter = crate::operation_ui::header::new_column_gutter(doc);
         let table_rect =
-            egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
+            egui::Rect::from_min_max(room.min, egui::pos2(room.right() - gutter, foot_rect.top()));
         let mut drawn = None;
         let mut names = Vec::new();
         // Under the grid's own id rather than the spot's, so the scroll and
