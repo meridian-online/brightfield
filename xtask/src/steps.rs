@@ -715,7 +715,7 @@ fn cargo_nextest(ctx: &Ctx, engine: &Path, args: &[String]) -> Result<(), String
         .is_ok_and(|status| status.success());
     if !installed {
         return Err(
-            "cargo-nextest is not installed: run `cargo install --locked cargo-nextest`, then run again"
+            "cargo-nextest is not installed: run `cargo install --locked cargo-nextest --version 0.9.152`, then run again"
                 .to_owned(),
         );
     }

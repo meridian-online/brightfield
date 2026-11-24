@@ -274,9 +274,11 @@ jobs:
 
       # test-default runs its targets under cargo-nextest, which runs each
       # test in a process of its own; the action installs a prebuilt binary.
+      # The version is the one `cargo xtask ci`'s install message names, since
+      # the step's failure excerpt reads nextest's output layout.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.152
 
       # Caches ~/.cargo (registry + git checkouts, which matter here: the
       # design-system and arcform pins are git dependencies) plus ./target.
