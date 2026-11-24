@@ -608,11 +608,11 @@ fn every_spine_pick_key_is_answered() {
                 modifiers: egui::Modifiers::NONE,
             }]);
             assert!(
-                win.app.keys_answered().contains(&verb.longname),
+                win.answered.contains(&verb.longname),
                 "{} is listed for {} in the spine's pick and no handler took it: {:?}",
                 binding.keystrokes,
                 verb.longname,
-                win.app.keys_answered()
+                win.answered
             );
         }
     }

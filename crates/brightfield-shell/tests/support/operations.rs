@@ -81,6 +81,8 @@ pub struct OpWindow {
     pub texts: Vec<String>,
     /// Where each of them was drawn.
     pub text_rects: Vec<(String, egui::Rect)>,
+    /// The keys the last [`Self::run`] answered, from every pass of its frame.
+    pub answered: Vec<&'static str>,
     fixture: String,
     time: f64,
     tmp: std::rc::Rc<TempDir>,
@@ -139,6 +141,7 @@ impl OpWindow {
             ctx: egui::Context::default(),
             texts: Vec::new(),
             text_rects: Vec::new(),
+            answered: Vec::new(),
             fixture: fixture.to_string(),
             time: 0.0,
             tmp: std::rc::Rc::new(tmp),
@@ -162,6 +165,7 @@ impl OpWindow {
             ctx: egui::Context::default(),
             texts: Vec::new(),
             text_rects: Vec::new(),
+            answered: Vec::new(),
             fixture: fixture.to_string(),
             time: 0.0,
             tmp,
@@ -203,7 +207,15 @@ impl OpWindow {
             events,
             ..Default::default()
         };
-        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        // egui runs a frame again when a pass asks to discard its layout, and hands the second
+        // pass no events; the window clears what keys it answered as each pass begins, so what
+        // the first pass answered is read before the second runs.
+        let (app, answered) = (&mut self.app, &mut self.answered);
+        answered.clear();
+        let out = self.ctx.run_ui(raw, |ui| {
+            app.draw(ui);
+            answered.extend_from_slice(app.keys_answered());
+        });
         let mut texts = Vec::new();
         for clipped in &out.shapes {
             collect_text(&clipped.shape, &mut texts);
