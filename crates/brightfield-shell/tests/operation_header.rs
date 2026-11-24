@@ -509,6 +509,27 @@ fn a_field_that_opens_on_a_value_selects_it_whole() {
     assert!(!field_whole(&win));
     win.type_text("x");
     assert_eq!(win.field_text().as_deref(), Some("x"));
+    win.key(egui::Key::Escape);
+
+    // An arrow or End lets go of it, and the typing adds to the name.
+    for key in [
+        egui::Key::ArrowRight,
+        egui::Key::End,
+        egui::Key::ArrowLeft,
+        egui::Key::Home,
+    ] {
+        win.header("median_income", HeaderPart::Name, Gesture::DoubleClick);
+        assert!(field_whole(&win));
+        win.key(key);
+        assert!(!field_whole(&win), "{key:?}");
+        win.type_text("_usd");
+        assert_eq!(
+            win.field_text().as_deref(),
+            Some("median_income_usd"),
+            "{key:?}"
+        );
+        win.key(egui::Key::Escape);
+    }
 }
 
 #[test]

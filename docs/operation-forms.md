@@ -86,7 +86,7 @@ Each of these is reversible, and each is the owner's to overturn.
 24. **The pick closes, beginning nothing, when its grid leaves the canvas, another pane takes the keys or the rail is put away**, as a draft goes when the grid it began over does.
 25. **A model's table is copied when it is taken, on the frame of the take**, as opening a table's grid copies it. Reading the columns of each candidate copies nothing.
 26. **A kept step being corrected skips the pick.** It holds its tables already, and its draft begins from them.
-27. **A field in place opens with its value selected whole**, as a name field in a file browser does. The first text typed replaces it and Backspace empties it; after that the typing adds to the end. Tab to another value selects that one whole. A rename's field opens on the column's own name, so typing a new name needs no clearing first, and a field that opens empty has nothing selected. The selection is drawn under the editor's selection wash, with no caret.
+27. **A field in place opens with its value selected whole**, as a name field in a file browser does. The first text typed replaces it and Backspace empties it, while an arrow, Home or End lets go of it with the caret after it; after that the typing adds to the end. Tab to another value selects that one whole. A rename's field opens on the column's own name, so typing a new name needs no clearing first, and a field that opens empty has nothing selected. The selection is drawn under the editor's selection wash, with no caret.
 
 ## What arc lacks
 
