@@ -265,3 +265,18 @@ fn derive_column_completes_a_quoted_name_from_its_open_quote() {
     // A closed quote begins no completion.
     assert!(win.suggestions().is_empty(), "{:?}", win.suggestions());
 }
+
+#[test]
+fn derive_column_completes_a_name_holding_a_quote_typed_doubled() {
+    let mut win = OpWindow::on_copy_prepared(WITH_NULLS, |dir| {
+        std::fs::write(
+            dir.join(WITH_NULLS),
+            "x,\"say \"\"hi\"\"\"\n1,a\n2,b\n3,c\n",
+        )
+        .expect("the table writes");
+    });
+    derive_with_key(&mut win, "x");
+    // The default `x` is selected whole, so the typing replaces it.
+    win.type_text("x + \"say \"\"h");
+    assert_eq!(win.suggestions(), ["x + \"say \"\"hi\"\"\""]);
+}

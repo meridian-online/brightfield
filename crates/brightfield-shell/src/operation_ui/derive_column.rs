@@ -90,7 +90,8 @@ fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
             (at, &text[at..], false)
         }
     };
-    let word = word.to_lowercase();
+    // A name's quote is typed doubled inside it, and read as one.
+    let word = word.replace("\"\"", "\"").to_lowercase();
     if word.is_empty() && !quoted {
         return Vec::new();
     }
