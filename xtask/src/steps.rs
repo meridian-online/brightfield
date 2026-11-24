@@ -703,21 +703,41 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     run_tests(ctx, engine, &all)
 }
 
+/// The cargo-nextest the step's failure excerpt was written against.
+const NEXTEST_VERSION: &str = "0.9.152";
+
+/// A warning when `cargo nextest --version` printed another release than
+/// [`NEXTEST_VERSION`], whose output the failure excerpt may not read.
+fn nextest_version_warning(printed: &str) -> Option<String> {
+    let found = printed
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("an unknown version");
+    (found != NEXTEST_VERSION).then(|| {
+        format!(
+            "warning: cargo-nextest {found} is installed and the step expects {NEXTEST_VERSION}; a failure's excerpt may leave out its output. Run `cargo install --locked cargo-nextest --version {NEXTEST_VERSION}` to match"
+        )
+    })
+}
+
 /// Run `cargo nextest run` over `args`, at the run's test threads: those
 /// `RUST_TEST_THREADS` names when it is set, as cargo test reads it. nextest
 /// takes its count from `--test-threads` or `NEXTEST_TEST_THREADS`.
 fn cargo_nextest(ctx: &Ctx, engine: &Path, args: &[String]) -> Result<(), String> {
-    let installed = ctx
+    let version = ctx
         .cargo(&["nextest", "--version"])
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !installed {
-        return Err(
-            "cargo-nextest is not installed: run `cargo install --locked cargo-nextest --version 0.9.152`, then run again"
-                .to_owned(),
-        );
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    let Some(version) = version else {
+        return Err(format!(
+            "cargo-nextest is not installed: run `cargo install --locked cargo-nextest --version {NEXTEST_VERSION}`, then run again"
+        ));
+    };
+    if let Some(warning) = nextest_version_warning(&version) {
+        println!("{warning}");
     }
     let threads = std::env::var("RUST_TEST_THREADS")
         .ok()
@@ -1336,6 +1356,16 @@ mod tests {
         let log = "        PASS [   1.0s] (1/1) a::t one\n     Summary [   1.0s] 1 test run: 1 passed, 0 skipped\n   Doc-tests a\nfailures:\n\n---- src/lib.rs - f (line 3) stdout ----\nboom\n\nfailures:\n    src/lib.rs - f (line 3)\n\ntest result: FAILED. 0 passed; 1 failed\n";
         let excerpt = failure_excerpt(log);
         assert!(excerpt.starts_with("failures:\n\n---- src/lib.rs - f (line 3) stdout ----"));
+    }
+
+    #[test]
+    fn another_nextest_release_is_warned_about() {
+        assert_eq!(
+            nextest_version_warning(&format!("cargo-nextest {NEXTEST_VERSION} (26ebeda79 2026-11-13)\nrelease: {NEXTEST_VERSION}\n")),
+            None
+        );
+        let warning = nextest_version_warning("cargo-nextest 0.9.200 (abc 2027-01-01)\n").unwrap();
+        assert!(warning.contains("0.9.200") && warning.contains(NEXTEST_VERSION));
     }
 
     #[test]
