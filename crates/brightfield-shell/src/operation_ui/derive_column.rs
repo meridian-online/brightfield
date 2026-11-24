@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(name_for("* -", &none), "derived");
         let long = name_for("a_very_long_expression_name_that_goes_on + more", &none);
         assert_eq!(long.chars().count(), NAME_LENGTH);
-        // A cut that ends on a `_` leaves none trailing.
+        // A cut that ends on a `_` drops it.
         assert_eq!(
             name_for("abcdefghijklmnopqrstuvwxyz123 + x", &none),
             "abcdefghijklmnopqrstuvwxyz123"
