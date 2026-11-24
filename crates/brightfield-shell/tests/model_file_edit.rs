@@ -1200,8 +1200,8 @@ fn a_typing_pause_runs_nothing_until_the_editor_lets_go() {
     assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 5), None, "it runs once");
 }
 
-/// Trusts a Protocol folder again when dropped, so a test that stops trusting the folder every open
-/// shares gives it back even when it fails.
+/// Trusts a Protocol folder again when dropped, so a test that stops trusting its own Protocol's
+/// folder leaves the trust store's record of it as it found it, even when the test fails.
 struct TrustedAgain(PathBuf);
 
 impl Drop for TrustedAgain {
