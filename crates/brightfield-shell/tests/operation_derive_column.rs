@@ -247,3 +247,21 @@ fn a_name_typed_into_stops_following_the_expression() {
     assert_eq!(draft.value("expression"), Some("house_age * 2"));
     assert_eq!(draft.value("column"), Some("income"));
 }
+
+#[test]
+fn derive_column_completes_a_quoted_name_from_its_open_quote() {
+    let mut win = OpWindow::on_copy_of(WITH_NULLS);
+    win.settle();
+    until_making(&mut win, OpWindow::header_new_column);
+    // A name begun with its quote is completed from the quote, spaces and all.
+    win.type_text("house_age + \"median in");
+    assert_eq!(win.suggestions(), ["house_age + \"median income\""]);
+    win.key(egui::Key::ArrowDown);
+    win.key(egui::Key::Tab);
+    assert_eq!(
+        win.field_text().as_deref(),
+        Some("house_age + \"median income\"")
+    );
+    // A closed quote begins no completion.
+    assert!(win.suggestions().is_empty(), "{:?}", win.suggestions());
+}

@@ -67,30 +67,41 @@ fn begin(b: &Begin<'_>) -> Result<Draft, String> {
 
 /// The column the expression's last word begins, completed as SQL spells it:
 /// the whole expression with that word finished, one for each column it could
-/// be. Nothing while the name is in focus, or when the word is already a
-/// column's whole name.
+/// be. A word after a `"` not yet closed is the start of a quoted name, spaces
+/// and all, and is completed from the quote
+/// (`derive_column_completes_a_quoted_name_from_its_open_quote`). Nothing while
+/// the name is in focus, or when a bare word is already a column's whole name.
 fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
     if draft.focus == Some("column") {
         return Vec::new();
     }
     let text = draft.value("expression").unwrap_or_default();
-    let word_at = text
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
-        .last()
-        .map_or(text.len(), |(at, _)| at);
-    let word = text[word_at..].to_lowercase();
-    if word.is_empty() {
+    let open_quote = (text.matches('"').count() % 2 == 1)
+        .then(|| text.rfind('"'))
+        .flatten();
+    let (from, word, quoted) = match open_quote {
+        Some(at) => (at, &text[at + 1..], true),
+        None => {
+            let at = text
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+                .last()
+                .map_or(text.len(), |(at, _)| at);
+            (at, &text[at..], false)
+        }
+    };
+    let word = word.to_lowercase();
+    if word.is_empty() && !quoted {
         return Vec::new();
     }
     b.columns
         .iter()
         .filter(|c| {
             let lower = c.to_lowercase();
-            lower.starts_with(&word) && lower != word
+            lower.starts_with(&word) && (quoted || lower != word)
         })
-        .map(|c| format!("{}{}", &text[..word_at], (b.quote)(c)))
+        .map(|c| format!("{}{}", &text[..from], (b.quote)(c)))
         .collect()
 }
 
