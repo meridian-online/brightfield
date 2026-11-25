@@ -55,8 +55,8 @@ use brightfield_protocol::panel::{
     inspector_for, kind_label, outline_rows, InspectorFacts, OutlineRow,
 };
 use brightfield_protocol::{
-    collapse_families, explode_ctes, manifest_sql, ContractView, Dir, FoldOutcome, ProtocolNav,
-    StepRow, StepsSheet,
+    collapse_families, collapse_families_except, explode_ctes, manifest_sql, ContractView, Dir,
+    FoldOutcome, ProtocolNav, StepRow, StepsSheet,
 };
 
 use brightfield_render::canvas_host::{Color, PixelSize};
@@ -80,6 +80,7 @@ use crate::shelf::{
     CardDrawn, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListReport,
     ShelfChannels,
 };
+use crate::spine::{Lanes, SpineFold, SpineState, StepTimes, Timing};
 use crate::starts;
 use crate::text_ink;
 
@@ -895,7 +896,7 @@ impl ModelJoins {
 }
 
 /// The spine with the curves its gutter draws: [`ProtocolModel::spine_with_joins`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spine {
     /// The rows, in the order the pane lists them.
     pub rows: Vec<SpineRow>,
@@ -912,7 +913,7 @@ pub struct Spine {
 /// a node's views listed under it — and, on a Protocol whose model joins its
 /// tables, each table's rows moved so the joined tables lead
 /// ([`ProtocolModel::spine_with_joins`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SpineRow {
     /// What the row is called — an asset's label, a step's name, a view's word.
     pub label: String,
@@ -938,6 +939,104 @@ pub struct SpineRow {
     /// Whether the row is drawn struck through: the step is removed and the
     /// removal not yet saved, on the step's row and the rows of what it makes.
     pub struck: bool,
+    /// The step's state, on a step row: the fact [`Self::kind`] spells in
+    /// words, as the state the spine's mark draws. `None` on every other row.
+    pub state: Option<SpineState>,
+    /// What the row's thing produced: a table's row count, or how many tables
+    /// a step that ran made. `None` where nothing is measured.
+    pub output: Option<String>,
+    /// When the step ran within the run and how long it took, on a step row
+    /// whose record measured it.
+    pub timing: Option<Timing>,
+    /// The fold control, on a parameterised family's row while it is folded
+    /// and on the first row of its members while it is unfolded.
+    pub fold: Option<SpineFold>,
+    /// Where the row sits in the gutter that draws the graph's edges.
+    pub lanes: Lanes,
+}
+
+impl SpineRow {
+    /// A row with no state, output, timing, fold or lanes, which the spine
+    /// fills in afterwards where they apply.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+    fn plain(
+        label: String,
+        kind: String,
+        depth: u8,
+        marker: SpineMarker,
+        role: SpineRole,
+        selected: bool,
+        id: Option<AssetId>,
+        view: Option<NodeView>,
+        struck: bool,
+    ) -> Self {
+        Self {
+            label,
+            kind,
+            depth,
+            marker,
+            role,
+            selected,
+            id,
+            view,
+            struck,
+            state: None,
+            output: None,
+            timing: None,
+            fold: None,
+            lanes: Lanes::default(),
+        }
+    }
+}
+
+/// `n` rows, written as a spine row's output: `1 row`, `19,028 rows`.
+fn rows_output(n: u64) -> String {
+    if n == 1 {
+        "1 row".to_string()
+    } else {
+        format!("{} rows", crate::column_header::thousands(n))
+    }
+}
+
+/// Fill in the gutter's lanes for `rows`, the spine of `graph`.
+///
+/// Each asset row and each step row is a node. A step row stands above the
+/// asset it makes, so an edge runs from each asset to the step row of an asset
+/// made from it, and from each step row down to its asset; an asset with no
+/// step row of its own is reached directly.
+fn fill_lanes(graph: &AssetGraph, rows: &mut [SpineRow]) {
+    let mut asset_row: BTreeMap<&AssetId, usize> = BTreeMap::new();
+    for (at, row) in rows.iter().enumerate() {
+        if row.role == SpineRole::Asset {
+            if let Some(id) = &row.id {
+                asset_row.entry(id).or_insert(at);
+            }
+        }
+    }
+    let step_row = |at: usize| (at > 0 && rows[at - 1].role == SpineRole::Step).then(|| at - 1);
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for &at in asset_row.values() {
+        if let Some(step) = step_row(at) {
+            edges.push((step, at));
+        }
+    }
+    for edge in &graph.edges {
+        let (Some(&from), Some(&to)) = (asset_row.get(&edge.from), asset_row.get(&edge.to)) else {
+            continue;
+        };
+        edges.push((from, step_row(to).unwrap_or(to)));
+    }
+    let nodes: Vec<Option<usize>> = rows
+        .iter()
+        .enumerate()
+        .map(|(at, row)| matches!(row.role, SpineRole::Asset | SpineRole::Step).then_some(at))
+        .collect();
+    for (row, lanes) in rows
+        .iter_mut()
+        .zip(crate::spine::lanes(nodes.len(), &nodes, &edges))
+    {
+        row.lanes = lanes;
+    }
 }
 
 /// The separator a caption row puts between its clauses.
@@ -988,34 +1087,34 @@ struct SpineUnit {
 
 /// The model step's row: the joins the model makes, counted.
 pub(crate) fn model_step_row(joins: usize) -> SpineRow {
-    SpineRow {
-        label: MODEL_STEP.to_string(),
-        kind: format!("model \u{b7} {}", counted(joins, "join")),
-        depth: 0,
+    SpineRow::plain(
+        MODEL_STEP.to_string(),
+        format!("model \u{b7} {}", counted(joins, "join")),
+        0,
         // The model is in its file from the moment a join is made, so it is
         // drawn as a thing that is there.
-        marker: SpineMarker::Filled,
-        role: SpineRole::Model,
-        selected: false,
-        id: None,
-        view: None,
-        struck: false,
-    }
+        SpineMarker::Filled,
+        SpineRole::Model,
+        false,
+        None,
+        None,
+        false,
+    )
 }
 
 /// The heading over the sources with no join: how many there are.
 fn unjoined_row(sources: usize) -> SpineRow {
-    SpineRow {
-        label: caption(&[UNJOINED_HEADING, &counted(sources, "source")]),
-        kind: String::new(),
-        depth: 0,
-        marker: SpineMarker::None,
-        role: SpineRole::Unjoined,
-        selected: false,
-        id: None,
-        view: None,
-        struck: false,
-    }
+    SpineRow::plain(
+        caption(&[UNJOINED_HEADING, &counted(sources, "source")]),
+        String::new(),
+        0,
+        SpineMarker::None,
+        SpineRole::Unjoined,
+        false,
+        None,
+        None,
+        false,
+    )
 }
 
 /// The tables `joins` joins, in the order the spine leads with them: breadth
@@ -1430,6 +1529,10 @@ pub struct ProtocolModel {
     show_sheet: bool,
     /// Whether the canvas shows the full (unfolded) graph.
     display_expanded: bool,
+    /// The families the spine lists unfolded, by their tiles' ids: see
+    /// [`ProtocolModel::toggle_spine_fold`]. Apart from the canvas's fold, so
+    /// opening a family in the list leaves the picture as it was.
+    spine_expanded: BTreeSet<AssetId>,
     /// Whether the canvas draws each SQL step's CTEs as nodes of their own.
     ///
     /// **One flag over the whole canvas, not one per step.** The alternative —
@@ -1620,6 +1723,7 @@ impl ProtocolModel {
             flow,
             show_sheet: false,
             display_expanded: false,
+            spine_expanded: BTreeSet::new(),
             cte_expanded: false,
             chain_contracted: false,
             scope_graph: None,
@@ -2229,19 +2333,88 @@ impl ProtocolModel {
     /// lists, keeps the outline's order, with no model step, heading or curve.
     #[must_use]
     pub fn spine_with_joins(&self) -> Spine {
-        let units = self.spine_units();
-        match self.model_joins.as_ref() {
-            Some(model) => model_first(&self.graph_collapsed, units, model),
+        let graph = self.spine_graph();
+        let units = self.spine_units(&graph);
+        let mut spine = match self.model_joins.as_ref() {
+            Some(model) => model_first(&graph, units, model),
             None => Spine {
                 rows: units.into_iter().flat_map(|unit| unit.rows).collect(),
                 join_curves: Vec::new(),
             },
+        };
+        fill_lanes(&graph, &mut spine.rows);
+        // An unfolded family carries its control on the first row of its
+        // members, so the family folds again from where it opened.
+        if !self.spine_expanded.is_empty() {
+            for family in brightfield_protocol::families(&self.graph_full) {
+                if !self.spine_expanded.contains(&family.id) {
+                    continue;
+                }
+                if let Some(row) = spine
+                    .rows
+                    .iter_mut()
+                    .find(|row| row.role == SpineRole::Step && family.members.contains(&row.label))
+                {
+                    row.fold = Some(SpineFold {
+                        family: family.id,
+                        folded: false,
+                        members: family.count,
+                    });
+                }
+            }
+        }
+        spine
+    }
+
+    /// The graph the spine lists: the collapsed graph, with each family the
+    /// spine has unfolded ([`Self::toggle_spine_fold`]) listed by its members.
+    fn spine_graph(&self) -> std::borrow::Cow<'_, AssetGraph> {
+        if self.spine_expanded.is_empty() {
+            std::borrow::Cow::Borrowed(&self.graph_collapsed)
+        } else {
+            std::borrow::Cow::Owned(collapse_families_except(
+                &self.graph_full,
+                &self.spine_expanded,
+            ))
         }
     }
 
-    /// The spine's rows in the outline's order, one [`SpineUnit`] per asset.
-    fn spine_units(&self) -> Vec<SpineUnit> {
-        let graph = &self.graph_collapsed;
+    /// The families the spine lists unfolded, by their tiles' ids.
+    #[must_use]
+    pub fn spine_expanded(&self) -> &BTreeSet<AssetId> {
+        &self.spine_expanded
+    }
+
+    /// Fold the family whose tile is `family` on the spine if it is unfolded,
+    /// and unfold it if it is folded. The canvas keeps its own fold.
+    pub fn toggle_spine_fold(&mut self, family: &str) {
+        if !self.spine_expanded.remove(family) {
+            self.spine_expanded.insert(family.to_string());
+        }
+    }
+
+    /// Each step's timing, read from the run record's measurements.
+    fn spine_timings(&self) -> BTreeMap<String, Timing> {
+        let times: BTreeMap<String, StepTimes> = self
+            .steps
+            .iter()
+            .map(|(name, step)| {
+                (
+                    name.clone(),
+                    StepTimes {
+                        start_ms: step.start_ms,
+                        duration_ms: step.duration_ms,
+                    },
+                )
+            })
+            .collect();
+        crate::spine::timings(&times)
+    }
+
+    /// The spine's rows of `graph` in the outline's order, one [`SpineUnit`]
+    /// per asset.
+    fn spine_units(&self, graph: &AssetGraph) -> Vec<SpineUnit> {
+        let timings = self.spine_timings();
         let assets = outline_rows(graph, &self.statuses, self.selected.as_ref());
         let mut units = Vec::with_capacity(assets.len());
         for row in assets {
@@ -2279,24 +2452,44 @@ impl ProtocolModel {
             let typed = step.and_then(|step| self.typed.get(step));
             let struck = step.is_some_and(|step| self.removing.contains(step));
             if let Some(step) = step {
-                let (state, marker) = match typed {
+                let (word, marker) = match typed {
                     Some(_) => (NOT_RECORDED, SpineMarker::Unrecorded),
                     None if row.status == SeamStatus::Ok => {
                         (status_word(row.status), SpineMarker::Filled)
                     }
                     None => (status_word(row.status), SpineMarker::Hollow),
                 };
-                rows.push(SpineRow {
-                    label: step.clone(),
-                    kind: format!("{} \u{b7} {state}", seam_kind_word(graph, step)),
-                    depth: 0,
+                // A step made from typed SQL is in no run's record yet.
+                let state = if typed.is_some() {
+                    SpineState::NotRun
+                } else {
+                    let recorded = self.steps.get(step).map_or(RunState::NeverRun, |s| {
+                        run_state_recorded(Some(s.state), s.skip_reason_kind())
+                    });
+                    crate::spine::spine_state(row.status, recorded)
+                };
+                // What a step that ran made: how many tables.
+                let made = graph
+                    .nodes
+                    .values()
+                    .filter(|n| n.step.as_ref() == Some(step) && n.kind.is_tabular())
+                    .count();
+                let mut step_row = SpineRow::plain(
+                    step.clone(),
+                    format!("{} \u{b7} {word}", seam_kind_word(graph, step)),
+                    0,
                     marker,
-                    role: SpineRole::Step,
-                    selected: false,
-                    id: None,
-                    view: None,
+                    SpineRole::Step,
+                    false,
+                    None,
+                    None,
                     struck,
-                });
+                );
+                step_row.state = Some(state);
+                step_row.output =
+                    (state == SpineState::Ok && made > 0).then(|| counted(made, "table"));
+                step_row.timing = timings.get(step).cloned();
+                rows.push(step_row);
             }
             let exists = match row.kind {
                 // A family tile stands for the assets a collapse absorbed. It
@@ -2332,28 +2525,46 @@ impl ProtocolModel {
                 None => (kind_label(row.kind).to_string(), SpineMarker::Hollow),
             };
             let at = rows.len();
-            rows.push(SpineRow {
-                label: row.label.clone(),
+            let mut asset_row = SpineRow::plain(
+                row.label.clone(),
                 kind,
-                depth: 0,
+                0,
                 marker,
-                role: SpineRole::Asset,
-                selected: row.selected,
-                id: Some(row.id.clone()),
-                view: None,
+                SpineRole::Asset,
+                row.selected,
+                Some(row.id.clone()),
+                None,
                 struck,
-            });
+            );
+            asset_row.output = match typed {
+                Some(typed_rows) => typed_rows.map(rows_output),
+                None => self
+                    .assets
+                    .get(&row.id)
+                    .and_then(|meta| meta.row_count)
+                    .map(rows_output),
+            };
+            if row.kind == AssetKind::Family {
+                asset_row.fold = Some(SpineFold {
+                    family: row.id.clone(),
+                    folded: true,
+                    members: node.and_then(|n| n.family_count).unwrap_or(0),
+                });
+            }
+            rows.push(asset_row);
             if has_views {
-                rows.extend(NodeView::ALL.map(|view| SpineRow {
-                    label: view.label().to_string(),
-                    kind: "view".to_string(),
-                    depth: 1,
-                    marker: SpineMarker::None,
-                    role: SpineRole::View,
-                    selected: false,
-                    id: Some(row.id.clone()),
-                    view: Some(view),
-                    struck: false,
+                rows.extend(NodeView::ALL.map(|view| {
+                    SpineRow::plain(
+                        view.label().to_string(),
+                        "view".to_string(),
+                        1,
+                        SpineMarker::None,
+                        SpineRole::View,
+                        false,
+                        Some(row.id.clone()),
+                        Some(view),
+                        false,
+                    )
                 }));
             }
             units.push(SpineUnit {
@@ -7924,17 +8135,17 @@ steps:
     fn a_row_that_is_picked_and_on_the_canvas_draws_as_picked() {
         for mode in [Mode::Light, Mode::Dark] {
             let sem = semantic(mode.is_dark());
-            let row = SpineRow {
-                label: "table".to_string(),
-                kind: "table".to_string(),
-                depth: 0,
-                marker: SpineMarker::Filled,
-                role: SpineRole::Asset,
-                selected: true,
-                id: None,
-                view: None,
-                struck: false,
-            };
+            let row = SpineRow::plain(
+                "table".to_string(),
+                "table".to_string(),
+                0,
+                SpineMarker::Filled,
+                SpineRole::Asset,
+                true,
+                None,
+                None,
+                false,
+            );
             let (both, rects) = painted_spine_row(&row, true, mode);
             let bar = row_bar(both.rect);
             assert_eq!(

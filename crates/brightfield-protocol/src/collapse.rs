@@ -148,15 +148,61 @@ fn common_tail<'a>(block: &[&'a Seam]) -> Option<&'a str> {
     tail
 }
 
+/// The id of the `Family` tile `family` folds to in `graph`.
+fn tile_id(graph: &AssetGraph, family: &Family) -> String {
+    format!("family.{}.{}", graph.protocol, family.cycle_names.join("+"))
+}
+
+/// The parameterised families of `graph`, in manifest order: each one's tile
+/// id, as [`collapse_families`] names it, and its member steps.
+fn parameter_families(graph: &AssetGraph) -> Vec<(String, Family)> {
+    let mut ordered: Vec<&Seam> = graph.seams.values().collect();
+    ordered.sort_by_key(|s| s.index);
+    detect_families(&ordered)
+        .into_iter()
+        .filter(|f| is_parameter_variant(f, graph))
+        .map(|f| (tile_id(graph, &f), f))
+        .collect()
+}
+
+/// One parameterised family of a graph, as [`families`] lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FamilyTile {
+    /// The id of the tile [`collapse_families`] folds it to.
+    pub id: String,
+    /// The member steps, in manifest order.
+    pub members: Vec<StepId>,
+    /// How many instances the family repeats.
+    pub count: usize,
+}
+
+/// The parameterised families of the uncollapsed `graph`, in manifest order.
+#[must_use]
+pub fn families(graph: &AssetGraph) -> Vec<FamilyTile> {
+    parameter_families(graph)
+        .into_iter()
+        .map(|(id, f)| FamilyTile {
+            id,
+            members: f.members,
+            count: f.count,
+        })
+        .collect()
+}
+
 /// Fold every detected parameterised family to one `Family` tile.
 /// Pure and idempotent: collapsing an already-collapsed graph is a no-op.
 #[must_use]
 pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
-    let mut ordered: Vec<&Seam> = graph.seams.values().collect();
-    ordered.sort_by_key(|s| s.index);
-    let families: Vec<Family> = detect_families(&ordered)
+    collapse_families_except(graph, &BTreeSet::new())
+}
+
+/// Fold every detected parameterised family to one `Family` tile, except the
+/// families whose tile id is in `open`, which keep their members.
+#[must_use]
+pub fn collapse_families_except(graph: &AssetGraph, open: &BTreeSet<String>) -> AssetGraph {
+    let families: Vec<(String, Family)> = parameter_families(graph)
         .into_iter()
-        .filter(|f| is_parameter_variant(f, graph))
+        .filter(|(id, _)| !open.contains(id))
         .collect();
     if families.is_empty() {
         return graph.clone();
@@ -166,8 +212,7 @@ pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
     let mut seams = graph.seams.clone();
     // member step -> its family's tile id.
     let mut member_tile: BTreeMap<StepId, String> = BTreeMap::new();
-    for family in &families {
-        let tile_id = format!("family.{}.{}", graph.protocol, family.cycle_names.join("+"));
+    for (tile_id, family) in &families {
         let anchor_index = seams[&family.members[0]].index;
         for member in &family.members {
             member_tile.insert(member.clone(), tile_id.clone());
@@ -280,6 +325,24 @@ steps:
             Ok("CREATE TABLE loaded AS SELECT * FROM read_csv('build/x/*/p.tsv');".to_string()),
         );
         build_graph(&manifest, &sources)
+    }
+
+    #[test]
+    fn a_family_left_open_keeps_its_members_and_its_tile_id_is_the_collapses() {
+        let full = family_graph();
+        let listed = families(&full);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "family.fam.fetch_x+extract_x");
+        assert_eq!(listed[0].count, 2);
+        assert_eq!(
+            listed[0].members,
+            ["fetch_x_q1", "extract_x_q1", "fetch_x_q2", "extract_x_q2"]
+        );
+        let open = BTreeSet::from([listed[0].id.clone()]);
+        assert_eq!(collapse_families_except(&full, &open), full);
+        assert!(collapse_families(&full)
+            .nodes
+            .contains_key("family.fam.fetch_x+extract_x"));
     }
 
     #[test]
