@@ -2479,7 +2479,7 @@ impl ProtocolModel {
         })
     }
 
-    /// Every chart that reads `table`: each dashboard node an edge out of it
+    /// The charts that read `table`: the dashboard nodes an edge out of it
     /// reaches in the collapsed graph, in the order the graph lists its edges.
     ///
     /// [`Self::dashboard`] answers the first of these for the held table, which
