@@ -91,6 +91,8 @@ Each of these is reversible, and each is the owner's to overturn.
 29. **A derived column's field moves over its column.** It opens in the new-column cell, and once the preview holds the new column it is drawn over that column's header, so the values fill under it as the expression is typed.
 30. **Derive column needs no column.** The new-column cell starts it on none, with an empty expression. From `=` on a cell or "Add a column from this one" on a header's menu, the expression starts as that column as SQL spells it.
 31. **Derive column completes the column the expression's last word begins**, as SQL spells it, quoted where it needs quotes, with the rest of the expression kept. Down picks one and Tab takes it. The name, once in focus, offers nothing.
+32. **Fill nulls opens on a fill its storage type takes**, selected whole: `0` for a number, `'unknown'` for text, `false` for a boolean, and nothing for any other type. For a number it also offers the column's median, rounded to a whole number on an integer column so that taking it keeps the column's type. What it offers leaves out the value as it stands.
+33. **Fill nulls starts only over the loaded table's grid.** Which columns have missing values is known there alone, so over a step's preview, a kept fill's included, it says it needs a column with missing values. A kept fill is changed by taking it back with `remove-step` and filling again.
 
 ## What arc lacks
 

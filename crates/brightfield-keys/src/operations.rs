@@ -164,7 +164,7 @@ fn limit_rows() -> VerbEntry {
 }
 
 // ---- fill-nulls ----
-const FILL_NULLS_BUILT: bool = false;
+const FILL_NULLS_BUILT: bool = true;
 fn fill_nulls() -> VerbEntry {
     entry(
         "fill-nulls",
