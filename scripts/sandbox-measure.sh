@@ -107,6 +107,11 @@ shot() {
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "${png#$work/}" "$status" "$hash" "${line:-<no line>}"
 }
 
+baseline_cleanup() {
+    if [ -d "$subject/models" ]; then chmod 755 "$subject/models"; fi
+    if [ -n "$downloads" ]; then rm -rf "$downloads"; fi
+}
+
 baseline() {
     if [ "${1:-}" = "--package" ]; then
         package="${2:?--package needs the path of the Store package, Brightfield.app}"
@@ -125,7 +130,10 @@ baseline() {
     # models/ is set to mode 000 below; an interrupted run puts it back.
     # A CSV is put in ~/Downloads for the Store case below; it goes too.
     downloads="$HOME/Downloads/bf-sandbox-measure"
-    trap '[ -d "$subject/models" ] && chmod 755 "$subject/models"; rm -rf "$downloads"' EXIT INT TERM
+    # An interrupted run cleans up and stops, rather than printing rows measured
+    # with models/ readable again or the CSV gone.
+    trap 'baseline_cleanup' EXIT
+    trap 'baseline_cleanup; exit 130' INT TERM
     mkdir -p "$apps"
     printf 'case\twritten to\texit\tpng\tdetector\n'
     local plain; plain="$(make_app unsandboxed sandbox "$bin")"
