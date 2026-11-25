@@ -345,7 +345,7 @@ const NEEDS_CHART_ACTIVITY: &[Requirement] = &[
     ),
     Requirement::new(
         Need::Condition(Condition::ChartReadsFocus),
-        "No chart reads this table or view yet.",
+        "There is no chart to show for this node yet.",
     ),
 ];
 const NEEDS_RELATE: &[Requirement] = &[Requirement::new(

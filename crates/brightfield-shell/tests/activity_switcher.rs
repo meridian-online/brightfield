@@ -79,10 +79,10 @@ fn switching_from_chart_to_grid_and_back_keeps_the_node_and_the_selection() {
 fn chart_opens_the_one_chart_that_reads_the_node() {
     let mut win = scenes::data_file();
     let (table, chart) = table_and_chart(&win);
-    assert_eq!(
-        win.app.protocol_model().charts_reading(&table),
-        vec![chart.clone()]
-    );
+    let model = win.app.protocol_model();
+    assert_eq!(model.charts_reading(&table), vec![chart.clone()]);
+    assert_eq!(model.table_read_by(&chart), Some(&table));
+    assert_eq!(model.table_read_by(&table), None, "a table is no chart");
     win.choose(SHOW_GRID);
     assert_eq!(win.applied, [SHOW_GRID]);
     assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
@@ -190,7 +190,7 @@ fn chart_over_a_node_no_chart_reads_is_greyed_on_the_menu_and_by_its_offer() {
         }
     }
     assert!(found, "no asset beside the table could be put in focus");
-    let sentence = "No chart reads this table or view yet.";
+    let sentence = "There is no chart to show for this node yet.";
     assert_eq!(menu_missing(&win, SHOW_CHART).as_deref(), Some(sentence));
     assert_eq!(menu_missing(&win, SHOW_GRID), None);
     let offered = offers(&win.app);

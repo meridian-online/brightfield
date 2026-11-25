@@ -9032,9 +9032,9 @@ impl MeridianApp {
 
     /// **The node whose activities the window offers**: the model step while
     /// the model pane holds the canvas, the node a grid lists, the chart on
-    /// the canvas with the table it reads, or, over the graph, the viewable
-    /// node selected on the spine. `None` on the front door and for a chart
-    /// with no Protocol behind it.
+    /// the canvas with the table it reads, or, over the graph, the node
+    /// selected there: a viewable node, or a chart with the table it reads.
+    /// `None` on the front door and for a chart with no Protocol behind it.
     #[must_use]
     pub fn node_in_focus(&self) -> Option<crate::node_activity::FocusedNode> {
         use crate::node_activity::FocusedNode;
@@ -9056,7 +9056,13 @@ impl MeridianApp {
                 if model.is_viewable(node) {
                     return Some(FocusedNode::Table(node.clone()));
                 }
-                let table = model.table_read_by(node)?;
+                // The held dashboard reads the held table, whichever of its
+                // tables the graph lists first.
+                let table = if model.dashboard() == Some(node) {
+                    model.table()?
+                } else {
+                    model.table_read_by(node)?
+                };
                 Some(FocusedNode::Chart {
                     node: node.clone(),
                     table: table.clone(),
