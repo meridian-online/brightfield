@@ -53,8 +53,19 @@ Measured on 2026-11-17 on Apple Silicon, release builds:
 
 So the managed edition's DuckDB, its libraries and shell together, is about 134.2 MB, against about 126.9 MB of DuckDB in the full edition's bundle before any extension is fetched: the 60.7 MB by which its Brightfield binary is larger, and the release shell. The full edition's v0.1.8 disk image is 117.9 MB. The managed edition's disk image is measured when its packaging is built.
 
+## Extensions built in, install and load off
+
+When the engine links this library, its sessions' extensions are built in (`Extensions::BuiltIn`, `crates/brightfield-engine/src/extensions.rs`). The choice follows the library the engine links rather than the edition, because "built in" is a fact about that library: the edition's own tests, which keep duckdb-rs's bundled DuckDB, still install what they read with.
+
+- The engine issues no `INSTALL`, whatever its network policy, and sets automatic install and load off, with an extension repository that cannot resolve.
+- A source whose SQL installs an extension, updates extensions, or loads one that is not built in, or any file, is refused before it runs, with the sentence "This edition can't install the DuckDB extension h3: it runs only the DuckDB extensions built into it." A `LOAD` of a built-in extension is allowed and does nothing. This check reads the SQL's statements, since DuckDB has no setting that refuses an `INSTALL ... FROM` and keeps files readable.
+- The load step Brightfield writes into a Protocol for a workbook or a SQLite table names no extension, where the full edition's starts `INSTALL excel; LOAD excel;`. An `INSTALL` would go to the network, and a step that said only `LOAD excel` would fail on DuckDB's release command line on a machine that never installed excel. With neither, the managed library finds the reader compiled in, and the release command line, whose automatic install and load are on, installs it on first use, so a Protocol made in the managed edition runs in the full one. Discovery installs nothing either.
+- FineType's bundle supplies only its model and schema catalogue. The bundle is opened without loading an extension file, against the FineType compiled into the library, after the same checks of its files, and it needs no signature checks relaxed.
+
+`crates/brightfield-engine/tests/built_in_extensions.rs` holds this. Its refusal, settings, load-step and FineType tests run in every build. The one that reads a workbook and a SQLite file under `sandbox-exec` with the network denied runs with the library, in the `managed-duckdb-test` step.
+
 ## Open
 
 - The LGPL's other obligations for GEOS fall to the Store packaging: the bundle carries GEOS's licence text and says where its source is. A replacement GEOS also has to keep one function from GEOS's C++ library, `geos_d2sfixed_buffered_n`, which spatial calls beside GEOS's stable C API (`scripts/duckdb-managed/patches/spatial/`).
 - The Rust crates FineType depends on are compiled into the library too, and nothing in this build checks their licences. The Store packaging checks them, as cargo-deny does Brightfield's own, and carries their notices with the C libraries'.
-- An `INSTALL` of an extension that is already compiled in still goes to the network in this build, as in DuckDB's release. Offline it fails; online it would fetch an extension file. Turning installs and loads off in the managed edition is its own piece of work, which handles it.
+- An `INSTALL` of an extension that is already compiled in still goes to the network in this build, as in DuckDB's release: offline it fails, and online it fetches an extension file. Brightfield's in-process engine issues none (below), but the shell that arc runs a Protocol's steps with would run one a step carries, and no DuckDB setting short of `enable_external_access` refuses `INSTALL <name> FROM core`. Refusing it in the shell is its own piece of work, and the restricted mode refuses only a step that names an extension outside the built-in set.

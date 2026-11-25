@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use duckdb::Connection;
 
+use crate::extensions::Extensions;
+
 /// What a file holds: each table's schema (unset for the main schema, or for a file with no
 /// schemas), its sheet or table name (unset for a flat file) and the reader that loads it.
 type Parts = Vec<(Option<String>, Option<String>, Reader)>;
@@ -184,8 +186,29 @@ pub fn extensions_needed(set: &SourceSet) -> Vec<&'static str> {
 /// The SQL that loads `table` as `"raw_<name>"` with the three lineage columns: the file (relative
 /// to `protocol_dir` when it lies inside, else absolute), the sheet or table, and the 1-based row.
 ///
-/// A step that needs an extension starts with its `INSTALL` and `LOAD`, so the Protocol records it.
+/// A step that needs an extension starts with its `INSTALL` and `LOAD`, so the Protocol records it,
+/// unless this build's extensions are built in: see [`load_sql_for`].
 pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
+    load_sql_for(table, protocol_dir, Extensions::linked())
+}
+
+/// [`load_sql`], for a session whose extensions come from `extensions`.
+///
+/// With [`Extensions::BuiltIn`] the step names no extension at all, because `INSTALL` would go to
+/// the network even for an extension that is compiled in. Its reader is then found by DuckDB:
+/// compiled in, in the managed edition's DuckDB, and installed and loaded on first use by DuckDB's
+/// release command line, whose automatic install and load are on. So a Protocol made in the
+/// managed edition runs in the full one. A step that says only `LOAD excel` would not: on a
+/// machine that has never installed excel, the release command line refuses it.
+pub fn load_sql_for(table: &SourceTable, protocol_dir: &Path, extensions: Extensions) -> String {
+    let (excel, sqlite) = if extensions.installs() {
+        (
+            "INSTALL excel; LOAD excel; ",
+            "INSTALL sqlite; LOAD sqlite; ",
+        )
+    } else {
+        ("", "")
+    };
     let shown = table.file.strip_prefix(protocol_dir).unwrap_or(&table.file);
     let file = literal(&table.file.to_string_lossy());
     let lineage_file = literal(&shown.to_string_lossy());
@@ -223,13 +246,13 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
              FROM read_parquet({file}, file_row_number = true);"
         ),
         Reader::XlsxSheet => format!(
-            "INSTALL excel; LOAD excel; SET preserve_insertion_order = true; \
+            "{excel}SET preserve_insertion_order = true; \
              {target} SELECT {lead}, {row_number}, * \
              FROM read_xlsx({file}, sheet = {}, header = true, all_varchar = true);",
             literal(part_name)
         ),
         Reader::SqliteTable => format!(
-            "INSTALL sqlite; LOAD sqlite; SET preserve_insertion_order = true; \
+            "{sqlite}SET preserve_insertion_order = true; \
              {target} SELECT {lead}, {row_number}, * FROM sqlite_scan({file}, {});",
             literal(part_name)
         ),
@@ -316,7 +339,8 @@ impl Probe {
     }
 
     fn extension(&mut self, ext: &'static str) -> Result<(), String> {
-        if self.loaded.contains(ext) {
+        // Compiled in, and already loaded: an `INSTALL` would go to the network for nothing.
+        if self.loaded.contains(ext) || !Extensions::linked().installs() {
             return Ok(());
         }
         self.conn()?

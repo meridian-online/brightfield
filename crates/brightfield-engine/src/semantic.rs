@@ -55,6 +55,8 @@ use std::path::{Path, PathBuf};
 use duckdb::arrow::array::{Array, Float64Array, StringArray, StructArray};
 use duckdb::Connection;
 
+use crate::extensions::Extensions;
+
 mod split;
 pub(crate) use split::{materialise_split, PartHashes};
 
@@ -264,11 +266,30 @@ impl TypeSourceSpec {
     /// Whatever stopped it, in words naming the source. The caller reports
     /// this and carries on with no type source; it is never fatal to a load.
     pub fn open(&self, conn: &Connection) -> Result<Box<dyn TypeSource>, String> {
-        match self {
-            TypeSourceSpec::Bundle(dir) => {
+        self.open_for(conn, Extensions::linked())
+    }
+
+    /// [`Self::open`], on a session whose extensions come from `extensions`.
+    /// With [`Extensions::BuiltIn`] a bundle's FineType is the one compiled
+    /// into DuckDB, and no extension file is loaded
+    /// ([`FinetypeBundle::open_built_in`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn open_for(
+        &self,
+        conn: &Connection,
+        extensions: Extensions,
+    ) -> Result<Box<dyn TypeSource>, String> {
+        match (self, extensions) {
+            (TypeSourceSpec::Bundle(dir), Extensions::Installable) => {
                 FinetypeBundle::open(dir, conn).map(|b| Box::new(b) as Box<dyn TypeSource>)
             }
-            TypeSourceSpec::Other(open) => open.open(conn),
+            (TypeSourceSpec::Bundle(dir), Extensions::BuiltIn) => {
+                FinetypeBundle::open_built_in(dir, conn).map(|b| Box::new(b) as Box<dyn TypeSource>)
+            }
+            (TypeSourceSpec::Other(open), _) => open.open(conn),
         }
     }
 
@@ -283,8 +304,16 @@ impl TypeSourceSpec {
     /// usable on any session.
     #[must_use]
     pub fn needs_unsigned_extensions(&self) -> bool {
+        self.needs_unsigned_extensions_for(Extensions::linked())
+    }
+
+    /// [`Self::needs_unsigned_extensions`], on a session whose extensions come
+    /// from `extensions`. A bundle opened with [`Extensions::BuiltIn`] loads
+    /// no file, so it needs nothing relaxed.
+    #[must_use]
+    pub fn needs_unsigned_extensions_for(&self, extensions: Extensions) -> bool {
         match self {
-            TypeSourceSpec::Bundle(_) => true,
+            TypeSourceSpec::Bundle(_) => extensions.installs(),
             TypeSourceSpec::Other(open) => open.needs_unsigned_extensions(),
         }
     }
@@ -670,6 +699,56 @@ impl FinetypeBundle {
         Ok(bundle)
     }
 
+    /// Open a bundle whose FineType is compiled into the DuckDB `conn` runs
+    /// on, as in the managed edition: the bundle carries the model and the
+    /// schema catalogue, and no extension file is read or loaded.
+    ///
+    /// Everything [`Self::open`] checks that is not about the extension file is
+    /// checked here too: the manifest's hashes of the files it names that are
+    /// not the extension's, the model, the catalogue and their coverage of each
+    /// other, and the canary.
+    ///
+    /// # Errors
+    ///
+    /// A missing model or catalogue, a file whose bytes the manifest
+    /// contradicts, a DuckDB with no FineType compiled in, or a canary that
+    /// comes back wrong. Every one names the bundle directory.
+    pub fn open_built_in(dir: &Path, conn: &Connection) -> Result<Self, String> {
+        let at = |what: &str, e: String| format!("finetype bundle {}: {what}: {e}", dir.display());
+
+        verify_against_manifest_except(dir, conn, EXTENSION_FILES)
+            .map_err(|e| at(MANIFEST_FILE, e))?;
+        let model = dir.join(MODEL_DIR);
+        if !model.join("model.safetensors").exists() {
+            return Err(at(
+                MODEL_DIR,
+                "no model.safetensors — the extension would fall back to downloading one".into(),
+            ));
+        }
+        let catalogue = dir.join(SCHEMA_CATALOGUE);
+        let text =
+            std::fs::read_to_string(&catalogue).map_err(|e| at(SCHEMA_CATALOGUE, e.to_string()))?;
+        let schemas = parse_schema_catalogue(&text).map_err(|e| at(SCHEMA_CATALOGUE, e))?;
+        let labels = std::fs::read_to_string(model.join(LABEL_MAP_FILE))
+            .map_err(|e| at(LABEL_MAP_FILE, e.to_string()))?;
+        let coverage = catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
+        coverage.accept().map_err(|e| at("coverage", e))?;
+
+        let name = conn
+            .query_row("SELECT ft_version()", [], |r| r.get::<_, String>(0))
+            .map_err(|e| {
+                at(
+                    "ft_version()",
+                    format!("this DuckDB has no FineType compiled in: {e}"),
+                )
+            })?;
+        seal_model_dir_to(&model).map_err(|e| at(MODEL_DIR_ENV, e))?;
+
+        let bundle = FinetypeBundle { name, schemas };
+        bundle.canary(conn).map_err(|e| at("canary", e))?;
+        Ok(bundle)
+    }
+
     /// Classify three email addresses and insist on the answer.
     fn canary(&self, conn: &Connection) -> Result<(), String> {
         let label: String = conn
@@ -822,10 +901,30 @@ pub const LABEL_MAP_FILE: &str = "label_map.json";
 ///
 /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
 pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), String> {
+    verify_against_manifest_except(dir, conn, &[])
+}
+
+/// The files of a bundle that are its extension, joined or split. A bundle
+/// opened on a DuckDB with FineType compiled in neither needs nor reads them.
+const EXTENSION_FILES: &[&str] = &[EXTENSION_FILE, SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE];
+
+/// [`verify_against_manifest`], passing over the entries for the files named
+/// in `skipped`.
+fn verify_against_manifest_except(
+    dir: &Path,
+    conn: &Connection,
+    skipped: &[&str],
+) -> Result<(), String> {
     let Some(entries) = manifest_entries(dir)? else {
         return Ok(());
     };
-    for (want, rel) in &entries {
+    if entries.is_empty() {
+        return Err("the manifest names no files, so it verified nothing".to_string());
+    }
+    for (want, rel) in entries
+        .iter()
+        .filter(|(_, rel)| !skipped.contains(&rel.as_str()))
+    {
         let path = dir.join(rel);
         let got: String = conn
             .query_row(
@@ -839,9 +938,6 @@ pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), Stri
                 "{rel} is not the file that was packaged (recorded {want}, found {got})"
             ));
         }
-    }
-    if entries.is_empty() {
-        return Err("the manifest names no files, so it verified nothing".to_string());
     }
     Ok(())
 }
@@ -1244,14 +1340,24 @@ impl TypeSource for FinetypeBundle {
 /// app running with no type source and no word why.
 #[must_use]
 pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
+    bundle_beside_for(exe, Extensions::linked())
+}
+
+/// [`bundle_beside`], for a build whose extensions come from `extensions`.
+/// With [`Extensions::BuiltIn`] a bundle carries no extension file, so a
+/// directory counts when it holds a model or a schema catalogue, and one with
+/// either missing is still found, so that [`FinetypeBundle::open_built_in`]
+/// refuses it naming what is missing.
+#[must_use]
+pub fn bundle_beside_for(exe: &Path, extensions: Extensions) -> Option<PathBuf> {
     let dir = exe.parent()?;
+    let marks: &[&str] = match extensions {
+        Extensions::Installable => EXTENSION_FILES,
+        Extensions::BuiltIn => &["model/model.safetensors", SCHEMA_CATALOGUE],
+    };
     [dir.join("finetype"), dir.join("../Resources/finetype")]
         .into_iter()
-        .find(|candidate| {
-            [EXTENSION_FILE, SPLIT_LIBRARY_FILE, SPLIT_TRAILER_FILE]
-                .iter()
-                .any(|file| candidate.join(file).is_file())
-        })
+        .find(|candidate| marks.iter().any(|file| candidate.join(file).is_file()))
 }
 
 /// The catalogue of the bundle in `dir`, when it reads.
