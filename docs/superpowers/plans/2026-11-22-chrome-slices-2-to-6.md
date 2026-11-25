@@ -178,6 +178,12 @@ A design review in `meridian-online/design` builds these in `meridian-egui`, wit
 - **§7's mark data** landed as proposed, in `meridian_design::marks`: `StepMark`, `STEP_MARKS`, `glyph(mark, dark) -> MarkGlyph { shape: MarkShape, ink, fill }` and `word(mark)`. The state vocabulary stays in the design system.
 - **§8**, the open place, is `vertical_tab(ui, VerticalTab) -> VerticalTabResponse { response, clicked, close_clicked }`, with `VerticalTab::new(node, activity).current(..).dirty(..)`. Its node is a `Tab` named `"<node> · <activity>"`.
 
+**What the review landed for slice 5.** The same design revision carries slice 5's components under general names, and Brightfield draws them in the gallery from Task 22 on. Where they differ from §10 and §11, the landed form is the one to call:
+
+- **§10's section** is `section(ui, Section::new(title, open).count(n), body) -> SectionResponse<R>`, with `toggled` and `inner` as proposed. The header is a 24 (`control::HEIGHT_MD`) row whose node is a `Button` named by the title as passed, with its expanded state set; the title is drawn in capitals. `meridian_egui::Section` shares its name with the inspector's own `Section` enum that Task 23 adds, so `inspector.rs` calls the component by its path, `meridian_egui::section` and `meridian_egui::Section`.
+- **§10's distribution bar** landed as proposed, with `DistributionBar::dense()` for a 20-tall bar in a column header; it is 36 (`spacing::ROW_PREVIEW`) otherwise. `total` is accepted for the caller's readout and not divided by. The bar senses hover only and publishes no name, so Brightfield names its node, as the gallery's specimen does. `hovered` counts the values in order, then the rest (for `Top`), then the missing bar.
+- **§11's menu row** is `menu_item(ui, MenuItem::new(label) …) -> MenuItemResponse`, with `keystroke`, `unavailable`, `checked`, `submenu` and a new `cursor`, and `menu_separator(ui)` between groups. A menu is `Popover::show_menu` with `menu_item`s in it. An item takes no keyboard focus: the caller holds a cursor and reads the keys, and an unavailable item still takes the cursor so its reason can be read. Its node has the `MenuItem` role. The response carries `clicked` and `pointed_unavailable` as proposed.
+
 ### Rules the components share
 
 These follow `meridian-egui`'s existing style (`line_tabs`, `list_row`, `key_chip`, `overlay_frame`):
@@ -1505,13 +1511,13 @@ The slice is finished when the right rail is one inspector. It describes a colum
 
 ### Task 22: Adopt slice 5's components
 
-**Blocked by:** `inspector_section`, `distribution_bar` and `menu_row`.
+**Blocked by:** `section`, `distribution_bar` and `menu_item` with `menu_separator`.
 
-Do the same as Task 2, with the gallery entries `inspector-section`, `distribution-bar` and `menu-row`. Commit with the message "Take the inspector's components from the design system".
+Do the same as Task 2, with the gallery entries `section`, `distribution-bar` and `menu-item`, named for the components the review landed. The gallery's probe roles gain `MenuItem`. The pin needs no bump: the design revision Task 2 pinned carries these components. Commit with the message "Take the inspector's components from the design system".
 
 ### Task 23: One inspector, in sections
 
-**Blocked by:** `inspector_section` (Task 22).
+**Blocked by:** `section` (Task 22).
 
 **Files:**
 - Modify:
@@ -1546,14 +1552,14 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
 
 ### Task 24: The column's sections
 
-**Blocked by:** `distribution_bar` and `menu_row` (Task 22). It also needs Tasks 21 and 23, and the operation-forms plan's phase 1 merged.
+**Blocked by:** `distribution_bar` and `menu_item` (Task 22). It also needs Tasks 21 and 23, and the operation-forms plan's phase 1 merged.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/inspector.rs` (`column_body`)
 - Test: `crates/brightfield-shell/tests/inspector_contract.rs`
 
 **Interfaces:**
-- Consumes: `meridian_egui::{distribution_bar, DistributionBar, Bars, menu_row, MenuRow, widgets::field_row}`; `ColumnMoments::bars()`; slice 1's `availability_of`, `VerbEntry::label` and `keys_label`; the forms plan's `forms::built()`.
+- Consumes: `meridian_egui::{distribution_bar, DistributionBar, Bars, menu_item, MenuItem, widgets::field_row}`; `ColumnMoments::bars()`; slice 1's `availability_of`, `VerbEntry::label` and `keys_label`; the forms plan's `forms::built()`.
 
 - [ ] **Step 1: Write the failing tests.**
   - `the_column_section_says_its_finetype_its_storage_type_and_its_step`
@@ -1563,7 +1569,7 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
     - the built forms asked from the grid, read from `forms::built()` so a form joins with no edit here, filter and sort among them;
     - `put-column-on-x`, `put-column-on-y`, `put-column-on-colour` and `retype-column`.
 
-    Each is a `meridian_egui::menu_row` with its label and `keys_label`, greyed with its `availability_of` sentence.
+    Each is a `meridian_egui::menu_item` with its label and `keys_label`, greyed with its `availability_of` sentence.
   - `hovering_a_bin_says_its_range_and_count`
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test inspector_contract`.
 - [ ] **Step 3: Implement.** Show `Bars::Bins` for a number, and `Bars::Top` for a category of 64 or fewer distinct values (`Distribution::Values`). Draw each figure with `field_row` inside an `align_scope`.
@@ -1572,14 +1578,14 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
 
 ### Task 25: The chart's sections
 
-**Blocked by:** `inspector_section` and `menu_row` (Task 22). It also needs Task 23.
+**Blocked by:** `section` and `menu_item` (Task 22). It also needs Task 23.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/inspector.rs`
 - Test: `crates/brightfield-shell/tests/inspector_contract.rs`
 
 - [ ] **Step 1: Write the failing tests.**
-  - `the_encoding_section_lists_each_channel_and_its_field`: each is a `menu_row` whose key is the shelf's `go-to-*-cell` key, and which focuses that shelf cell when clicked.
+  - `the_encoding_section_lists_each_channel_and_its_field`: each is a `menu_item` whose key is the shelf's `go-to-*-cell` key, and which focuses that shelf cell when clicked.
   - `the_reads_section_names_the_table_and_the_rows_drawn`: "ranking · 19,028 of 19,028 rows".
   - `the_fields_section_counts_the_fields_available`
   - `the_parameters_section_holds_the_sliders`, moved from the old Inspector pane.
