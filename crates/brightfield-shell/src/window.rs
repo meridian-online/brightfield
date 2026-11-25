@@ -508,8 +508,9 @@ struct PendingRun {
     /// The live stream `arc` writes beside the record as each step finishes, once
     /// [`crate::run::live_stream`] has found it: what [`MeridianApp::run_progress`] reads.
     stream: Option<brightfield_protocol::stream::StreamReader>,
-    /// When the run began, so the stream found is this run's and not an earlier one's.
-    since: std::time::SystemTime,
+    /// The streams in the runs folder before the run began, so the stream found is this run's
+    /// and not an earlier one's.
+    earlier: BTreeSet<PathBuf>,
 }
 
 /// A run of the Protocol in [`Self::dir`] that ended without a record: refused before `arc`
@@ -527,7 +528,7 @@ struct UnrecordedFailure {
 /// and read again next frame, since the run's record is what lands it either way.
 fn follow_stream(pending: &mut PendingRun) {
     if pending.stream.is_none() {
-        pending.stream = crate::run::live_stream(pending.run.dir(), pending.since)
+        pending.stream = crate::run::live_stream(pending.run.dir(), &pending.earlier)
             .map(brightfield_protocol::stream::StreamReader::open);
     }
     if let Some(stream) = pending.stream.as_mut() {
@@ -17179,13 +17180,14 @@ impl MeridianApp {
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
         let fetching = fetch_urls_in(&dir);
+        let earlier = crate::run::streams_in(&dir);
         self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &dir, move || wake.request_repaint()),
             protocol: name,
             fetching,
             shipped: false,
             stream: None,
-            since: std::time::SystemTime::now(),
+            earlier,
         });
         ctx.request_repaint();
         true
@@ -17327,13 +17329,14 @@ impl MeridianApp {
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
         let fetching = fetch_urls_in(&source.dir);
+        let earlier = crate::run::streams_in(&source.dir);
         self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &source.dir, move || wake.request_repaint()),
             protocol: source.name,
             fetching,
             shipped: false,
             stream: None,
-            since: std::time::SystemTime::now(),
+            earlier,
         });
         ctx.request_repaint();
         true
@@ -17353,6 +17356,7 @@ impl MeridianApp {
         let finished = match model.doc.run_whole() {
             Ok(finished) => finished,
             Err(why) => {
+                self.note_run_not_started();
                 self.notifications.raise(
                     Notification::new(banner, Severity::Error, "Could not run this Protocol")
                         .body(why),
@@ -17386,6 +17390,7 @@ impl MeridianApp {
         };
         model.last_run_said = Some(said.clone());
         let landed = model.last_run.is_some();
+        self.note_run_landed(&dir, finished.record.is_some());
         // The door reads this Protocol's rows afresh.
         self.door_runs.clear();
         if succeeded {
@@ -17502,6 +17507,23 @@ impl MeridianApp {
         })
     }
 
+    /// Note how a run of the Protocol folder `dir` ended, whichever document the window holds:
+    /// with a record, which clears the folder's unrecorded failure, or without one, which is it.
+    fn note_run_landed(&mut self, dir: &Path, recorded: bool) {
+        if !recorded {
+            self.unrecorded_failure = Some(UnrecordedFailure {
+                dir: dir.to_path_buf(),
+                at: chrono::Local::now(),
+            });
+        } else if self
+            .unrecorded_failure
+            .as_ref()
+            .is_some_and(|failure| failure.dir == dir)
+        {
+            self.unrecorded_failure = None;
+        }
+    }
+
     /// Note that a run of the Protocol this window holds was asked for and refused before it
     /// started, for [`Self::last_run`] to say it failed.
     fn note_run_not_started(&mut self) {
@@ -17571,6 +17593,8 @@ impl MeridianApp {
         let protocol = pending.protocol;
         let shipped = pending.shipped;
         let landing = self.landing.take_if(|landing| landing.dir == dir);
+        // Whichever document is open: the failure is the folder's.
+        self.note_run_landed(&dir, finished.record.is_some());
         if !self.holds_protocol(&dir, &protocol) {
             // Gone to another document: a start that was waiting on this run
             // has nothing to land on. A shipped start's failed run still
@@ -17580,18 +17604,6 @@ impl MeridianApp {
                 let _ = crate::starts::settle_run(&dir, &finished);
             }
             return;
-        }
-        if finished.record.is_none() {
-            self.unrecorded_failure = Some(UnrecordedFailure {
-                dir: dir.clone(),
-                at: chrono::Local::now(),
-            });
-        } else if self
-            .unrecorded_failure
-            .as_ref()
-            .is_some_and(|failure| failure.dir == dir)
-        {
-            self.unrecorded_failure = None;
         }
         if let Some(landing) = landing {
             self.land_shipped_run(ctx, landing, &finished);

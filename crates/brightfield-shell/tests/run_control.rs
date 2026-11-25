@@ -835,11 +835,11 @@ fn frames_until(win: &mut Window, what: &str, until: impl Fn(&MeridianApp) -> bo
 /// The runner is a script standing in for `arc`, so each moment of the run is the test's to
 /// choose: it waits for one mark, writes the stream line `arc` writes as the Protocol's one step
 /// finishes, waits for a second mark, and exits having written no record. An earlier run's stream
-/// is already in the runs folder, dated before this run began, and names the same step done, so a
-/// window that read it would count the step before the script wrote its line.
+/// is already in the runs folder, written moments before this run began, and names the same step
+/// done, so a window that read it would count the step before the script wrote its line.
 ///
-/// Watched redden, two mutations, each alone: `live_stream`'s `modified >= since` filter dropped
-/// (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count stays
+/// Watched redden, two mutations, each alone: `live_stream`'s `!earlier.contains(path)` filter
+/// dropped (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count stays
 /// at 0).
 #[cfg(unix)]
 #[test]
@@ -856,11 +856,6 @@ fn a_run_under_way_counts_its_steps_on_its_own_stream() {
         format!("{{\"step\":\"{STEP}\",\"state\":\"success\"}}\n"),
     )
     .expect("an earlier run's stream writes");
-    std::fs::File::options()
-        .write(true)
-        .open(&earlier)
-        .and_then(|f| f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3_600)))
-        .expect("the earlier stream is dated an hour back");
 
     let first = dir.path().join("write-the-line");
     let second = dir.path().join("finish");
@@ -962,4 +957,109 @@ fn after_a_run_the_last_run_says_when_and_how_long_ago() {
         last.when,
         chrono::Local::now().format("ran %-d %b").to_string()
     );
+}
+
+/// **A run that records clears the folder's unrecorded failure, and a run that does not sets it,
+/// whichever document is open when it lands.**
+///
+/// The runner is a script that refuses a run of the housing file's folder while the test's mark
+/// is in place, writing no record, and otherwise hands it to the real runner, so the CSV's own
+/// run on its open is never refused. Four runs of the housing file, refused and
+/// recorded in turn: the first two land while it is open, and the last two while a CSV in another
+/// folder is, the housing file opened again after each with the mark taken away.
+///
+/// Watched redden, two mutations, each alone: `note_run_landed`'s clearing branch removed (the
+/// second run reads failed), and its call in `land_run` moved back after the `holds_protocol`
+/// return (the third run reads fresh).
+#[cfg(unix)]
+#[test]
+fn the_last_run_follows_the_folders_runs_whichever_document_is_open() {
+    use brightfield_workbench::RunState;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("follows");
+    let housing = dir.housing();
+    let elsewhere = TempDir::new("follows-elsewhere");
+    let csv = elsewhere.path().join("tiny.csv");
+    std::fs::write(&csv, "a,b\n1,2\n3,4\n").expect("the CSV writes");
+    let tools = TempDir::new("follows-tools");
+    let refuse = tools.path().join("refuse");
+    let script = tools.path().join("every-other-run");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             if [ -e '{refuse}' ] && [ \"$(pwd -P)\" = '{housing_dir}' ]; then\n\
+               echo 'refused by the test' >&2; exit 1\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            refuse = refuse.display(),
+            housing_dir = std::fs::canonicalize(dir.path())
+                .expect("the housing folder resolves")
+                .display(),
+            real = env!("CARGO_BIN_EXE_brightfield-shell"),
+        ),
+    )
+    .expect("the script writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the script is executable");
+    let state = |win: &Window| win.app.last_run().map(|last| last.state);
+
+    let mut win = Window::over_file(&housing, Some(Runner::at(&script)));
+    let marked = |on: bool| {
+        if on {
+            std::fs::write(&refuse, b"").expect("the mark writes");
+        } else {
+            let _ = std::fs::remove_file(&refuse);
+        }
+    };
+    marked(true);
+    win.take_run_control();
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the first run, refused"
+    );
+    marked(false);
+    win.take_run_control();
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Fresh),
+        "the second run, recorded"
+    );
+
+    for (run, refused, expected) in [
+        ("third", true, RunState::Failed),
+        ("fourth", false, RunState::Fresh),
+    ] {
+        marked(refused);
+        assert!(
+            win.app.run_protocol(&win.ctx.clone()),
+            "the {run} run did not start"
+        );
+        win.app
+            .open_data_file(&win.ctx.clone(), &csv.to_string_lossy());
+        win.settle();
+        assert!(
+            !win.app.run_in_progress(),
+            "the CSV's window reads the {run} run as its own"
+        );
+        assert_ne!(
+            win.app.held_protocol_dir().as_deref(),
+            Some(dir.path()),
+            "the CSV did not open, so the {run} run lands on the housing file"
+        );
+        frames_until(&mut win, "the run landing", |app| !app.run_outstanding());
+        marked(false);
+        win.app
+            .open_data_file(&win.ctx.clone(), &housing.to_string_lossy());
+        win.settle();
+        assert_eq!(
+            state(&win),
+            Some(expected),
+            "the {run} run, landed while another file was open"
+        );
+    }
 }

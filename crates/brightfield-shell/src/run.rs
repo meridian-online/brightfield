@@ -730,24 +730,38 @@ pub fn without_colour_codes(text: &str) -> String {
     out
 }
 
-/// The live stream of the run that began at `since` over the Protocol in `dir`: the newest
-/// `*.jsonl` in [`runs_dir`] modified at or after `since`.
-///
-/// `arc` names the stream by a run id it chooses itself and does not hand back, so the window
-/// finds it by time. A stream older than `since` is an earlier run's, and is not this one. `None`
-/// until `arc` has written the file, which it opens as the step loop begins, so a run refused
-/// before that loop reads as having no stream
-/// (`the_live_stream_is_the_newest_jsonl_written_since_the_run_began`).
+/// The live streams, `*.jsonl`, in the [`runs_dir`] of the Protocol in `dir`.
 #[must_use]
-pub fn live_stream(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(runs_dir(dir)).ok()?;
+pub fn streams_in(dir: &Path) -> BTreeSet<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(runs_dir(dir)) else {
+        return BTreeSet::new();
+    };
     entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|path| {
-            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-            (modified >= since).then_some((modified, path))
+        .collect()
+}
+
+/// The live stream of a run over the Protocol in `dir` that began when the streams there were
+/// `earlier`: the newest `*.jsonl` in [`runs_dir`] that is not one of them.
+///
+/// `arc` names the stream by a run id it chooses itself and does not hand back, so the window
+/// finds it as the file that was not there before. Not by time: a file system that keeps
+/// modification times to the second or two would date a stream written just after the run began
+/// before it. `None` until `arc` has written the file, which it opens as the step loop begins, so
+/// a run refused before that loop reads as having no stream
+/// (`the_live_stream_is_the_newest_jsonl_not_there_when_the_run_began`).
+#[must_use]
+pub fn live_stream(dir: &Path, earlier: &BTreeSet<PathBuf>) -> Option<PathBuf> {
+    streams_in(dir)
+        .into_iter()
+        .filter(|path| !earlier.contains(path))
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (modified, path)
         })
         .max()
         .map(|(_, path)| path)
@@ -1106,7 +1120,7 @@ echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init|${DUCKDB_AGENT_MODE:
     }
 
     #[test]
-    fn the_live_stream_is_the_newest_jsonl_written_since_the_run_began() {
+    fn the_live_stream_is_the_newest_jsonl_not_there_when_the_run_began() {
         let tmp = std::env::temp_dir().join(format!(
             "bf-live-stream-{}-{}",
             std::process::id(),
@@ -1114,34 +1128,41 @@ echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init|${DUCKDB_AGENT_MODE:
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.subsec_nanos())
         ));
+        assert_eq!(
+            live_stream(&tmp, &BTreeSet::new()),
+            None,
+            "no runs folder, no stream"
+        );
         let runs = runs_dir(&tmp);
         std::fs::create_dir_all(&runs).unwrap();
-        assert_eq!(live_stream(&tmp, std::time::SystemTime::UNIX_EPOCH), None);
+        assert_eq!(live_stream(&tmp, &BTreeSet::new()), None);
 
         let old = runs.join("old.jsonl");
         std::fs::write(&old, b"").unwrap();
-        let old_time = std::fs::metadata(&old).unwrap().modified().unwrap();
-        let since = old_time + std::time::Duration::from_secs(1);
+        let earlier = streams_in(&tmp);
+        assert_eq!(earlier, BTreeSet::from([old.clone()]));
         assert_eq!(
-            live_stream(&tmp, since),
+            live_stream(&tmp, &earlier),
             None,
-            "an earlier run's stream is not this one"
+            "an earlier run's stream is not this one, however recent"
         );
 
         let new = runs.join("new.jsonl");
         std::fs::write(&new, b"").unwrap();
         std::fs::write(runs.join("new.json"), b"{}").unwrap();
+        assert_eq!(live_stream(&tmp, &earlier), Some(new.clone()));
+        let later = runs.join("later.jsonl");
+        std::fs::write(&later, b"").unwrap();
         std::fs::File::options()
             .write(true)
-            .open(&new)
+            .open(&later)
             .unwrap()
-            .set_modified(since + std::time::Duration::from_secs(1))
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
             .unwrap();
-        assert_eq!(live_stream(&tmp, since), Some(new.clone()));
         assert_eq!(
-            live_stream(&tmp, std::time::SystemTime::UNIX_EPOCH),
-            Some(new),
-            "of two streams since the start, the newer"
+            live_stream(&tmp, &earlier),
+            Some(later),
+            "of two new streams, the newer"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
