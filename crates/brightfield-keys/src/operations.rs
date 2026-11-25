@@ -112,7 +112,7 @@ fn derive_column() -> VerbEntry {
 }
 
 // ---- cast-column ----
-const CAST_COLUMN_BUILT: bool = false;
+const CAST_COLUMN_BUILT: bool = true;
 fn cast_column() -> VerbEntry {
     entry(
         "cast-column",
