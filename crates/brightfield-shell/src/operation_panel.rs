@@ -204,10 +204,7 @@ impl Item<ChartDoc> for OperationPane {
     /// there.
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
         // An operation being made with a form of its own is in hand too.
-        if doc
-            .making()
-            .is_some_and(|making| making.spec.form.is_some())
-        {
+        if doc.making().is_some_and(|making| making.form().is_some()) {
             return None;
         }
         doc.operation_in_hand().is_none().then(|| {
@@ -230,7 +227,7 @@ impl Item<ChartDoc> for OperationPane {
         // The section adds the operation's name above it and draws no control
         // of its own, so how an operation asks stays that operation's.
         if let Some(making) = doc.making_mut() {
-            if let Some(form) = making.spec.form {
+            if let Some(form) = making.form() {
                 let sem = semantic(cx.mode.is_dark());
                 ui.label(
                     egui::RichText::new(crate::operation_ui::label(making.spec.long_name))

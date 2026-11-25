@@ -814,6 +814,28 @@ pub struct Making {
     pub form_event: crate::operation_ui::FormEvent,
 }
 
+impl Making {
+    /// **The form the operation asks with now**, when it has one: always for an
+    /// operation kept on Enter, and for one kept at once only while it corrects its
+    /// kept step. The first draft of an operation kept at once asks for nothing, so
+    /// an edit made in a form while it is read would be kept without Enter
+    /// (`dedupe_rows_shows_no_form_before_its_step_is_kept`).
+    #[must_use]
+    pub fn form(
+        &self,
+    ) -> Option<
+        fn(
+            &mut crate::operation_ui::Draft,
+            &mut egui::Ui,
+            &crate::operation_ui::FormCx<'_>,
+        ) -> crate::operation_ui::FormEvent,
+    > {
+        let asks =
+            self.spec.keeps == crate::operation_ui::Keeps::OnEnter || self.corrects.is_some();
+        self.spec.form.filter(|_| asks)
+    }
+}
+
 /// What the Editor drew on a frame: its title, its text, and whether the text
 /// could be edited.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -104,6 +104,30 @@ fn dedupe_rows_keeps_select_distinct_at_once_and_opens_its_form() {
 }
 
 #[test]
+fn dedupe_rows_shows_no_form_before_its_step_is_kept() {
+    let mut win = with_a_duplicate();
+    win.cursor_on("house_age");
+    // Whenever the first draft is open, before its step is kept, it asks with no form.
+    for _ in 0..600 {
+        win.press("shift-u");
+        if let Some(making) = win.app.making() {
+            if making.corrects.is_none() {
+                assert!(making.form().is_none(), "the first draft asks nothing");
+                assert!(!win.texts.iter().any(|t| t.contains("One row per")));
+            }
+        }
+        if !win.kept().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.run(Vec::new());
+    }
+    win.settle_reads();
+    let making = win.app.making().expect("the kept step opens in its form");
+    assert!(making.form().is_some());
+}
+
+#[test]
 fn dedupe_rows_form_refines_the_kept_step_in_place_under_its_name() {
     let mut win = with_a_duplicate();
     dedupe_with_key(&mut win);

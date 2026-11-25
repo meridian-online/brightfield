@@ -606,8 +606,9 @@ impl MeridianApp {
                 .and_then(|focus| draft.value(focus))
                 .is_some_and(|value| !value.is_empty())
         });
+        let form = making.form().is_some();
         self.charts.doc.set_making(making);
-        if spec.form.is_some() {
+        if form {
             self.open_rail_on_form();
         }
         self.send_draft();
