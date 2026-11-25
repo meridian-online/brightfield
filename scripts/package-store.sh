@@ -12,7 +12,7 @@
 #   Brightfield.app                     the sandboxed bundle
 #   Brightfield-<VERSION>.pkg           the installer package App Store Connect takes
 #   brightfield-shot                    the managed edition's headless renderer,
-#                                       outside the bundle, which
+#                                       copied from the build, outside the bundle, which
 #                                       scripts/sandbox-measure.sh baseline --package
 #                                       wraps in the bundle's own frameworks
 #
@@ -138,8 +138,11 @@ fi
 echo "== build (release, locked, managed edition)"
 BRIGHTFIELD_DUCKDB_MANAGED_DIR="$MANAGED" cargo build --release --locked -p brightfield-shell \
   --features managed-duckdb --bin brightfield-shell --bin brightfield-shot
-BIN="target/release/brightfield-shell"
-SHOT="target/release/brightfield-shot"
+# Where cargo put them: CARGO_TARGET_DIR when set, as the gate and the nightly
+# set it, and ./target otherwise.
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+BIN="${TARGET_DIR}/release/brightfield-shell"
+SHOT="${TARGET_DIR}/release/brightfield-shot"
 
 echo "== audit: linked libraries (${BIN})"
 # The OS's libraries, and Meridian's DuckDB by its install name, which the

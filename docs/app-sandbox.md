@@ -38,12 +38,12 @@ Measured on macOS 27.2, arm64, on 2026-11-17, against `main` at `2e0f3e1f` and t
 What follows from the rows:
 
 1. **A child inherits the folders the analyst granted after launch.** On macOS 27.2 a sandboxed app's children, and their children, get the grants the app holds when it starts them, whether those grants came from an open-documents event or from a resolved security-scoped bookmark, and with no bookmark handed down. Apple's archived Entitlement Key Reference says the opposite, that a child inherits "only the static rights defined in the main app's entitlements file". On this system it does not hold.
-2. **DuckDB's own CLI runs as a sandboxed child, and within the grants.** It reads and writes the granted folder and is refused the rest, whether it keeps DuckDB's signature or is re-signed as an `inherit` helper. So the Store build can ship the pinned CLI itself, and the stand-in in the design is not needed.
+2. **DuckDB's own CLI runs as a sandboxed child, and within the grants.** It reads and writes the granted folder and is refused the rest, whether it keeps DuckDB's signature or is re-signed as an `inherit` helper. So the Store build can ship DuckDB's own CLI, rather than a smaller program standing in for it.
 3. **Programs outside the bundle do not start, even from a granted folder.** This is Apple's documented rule, and it is what the managed edition's restriction on command steps rests on. `/bin/sh` and the system's own tools do start, and they run sandboxed.
 4. **`open -a` grants what it opens.** So does a Finder open, which takes the same route. A Terminal function that calls `open -a Brightfield` is a working way in for the managed edition.
 5. **A security-scoped bookmark survives a relaunch.** It was not stale, and the children it reached after the relaunch read the folder too, with nothing handed to them. This is the path a Protocol reopened from Recents and then run takes: the app resolves the bookmark at launch, and arc and DuckDB's CLI, started with no bookmark, read the folder and are refused its ungranted sibling.
 
-## Premise 12: signing the bundled DuckDB extensions
+## Signing the bundled DuckDB extensions
 
 Unsandboxed, with the pinned CLI, `excel` was installed into a scratch directory and copied twice:
 
@@ -75,7 +75,7 @@ Apple's `codesign` cannot sign a DuckDB extension, because DuckDB appends its me
 What changed since v0.1.2, and what did not:
 
 - **A refused model is now named as refused.** The loader tells a refused read from a missing file, and stderr says "the read was refused", naming the model.
-- **It is still drawn without the model, and still exits 0.** A grant on the file alone gives the same picture, byte for byte, as `models/` at mode `000`, at exit 0. Nothing in the window says the Protocol is incomplete beyond the chip's own label. Task 6 of the plan, a banner in the window and a non-zero headless exit, is still needed.
+- **It is still drawn without the model, and still exits 0.** A grant on the file alone gives the same picture, byte for byte, as `models/` at mode `000`, at exit 0. Nothing in the window said the Protocol was incomplete beyond the chip's own label. A banner in the window and a non-zero headless exit were needed, and the package measured below has both.
 - **A grant on the folder is indistinguishable from no sandbox,** read-only or read-write, as in v0.1.2.
 - **Writing needs a read-write grant, and a refused write is loud,** as in v0.1.2.
 

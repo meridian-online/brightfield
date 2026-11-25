@@ -11,7 +11,7 @@
 # APP's Contents/Frameworks (Meridian's DuckDB library), Contents/Helpers and
 # Contents/Resources, around BINARY, which is then the managed edition's
 # brightfield-shot that scripts/package-store.sh builds beside the app
-# (target/release/brightfield-shot). Given APP, premises runs the package's own
+# (dist/store/brightfield-shot). Given APP, premises runs the package's own
 # DuckDB CLI, with its library, in place of the pinned release CLI.
 #
 # Results print as tab-separated rows. docs/app-sandbox.md records a run and
@@ -195,7 +195,7 @@ PLIST
         --entitlements "$ents/helper-inherit.plist" "$app/Contents/Helpers/duckdb-inherit"
     codesign --force --sign - --entitlements "$ents/app.plist" "$app"
     rm -f "$data/tmp/probe.log" "$data/tmp/scoped.bookmark"
-    # Premise 10 and 8: a folder handed over by `open -a`, then passed to children.
+    # A folder handed over by `open -a`, then passed to children.
     open -W -a "$app" "$folder"
     # The relaunch case: no document, resolve the saved security-scoped bookmark.
     open -W -a "$app"
