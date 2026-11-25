@@ -115,11 +115,12 @@ pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> 
     let mut pending: Vec<Option<usize>> = Vec::new();
     let mut out = Vec::with_capacity(rows);
     for row in 0..rows {
-        let mut from_above = Vec::new();
+        // The lanes reaching this row, as indices into `pending`.
+        let mut reaching = Vec::new();
         for (at, target) in pending.iter_mut().enumerate() {
             if *target == Some(row) {
                 *target = None;
-                from_above.push(lane(at));
+                reaching.push(at);
             }
         }
         let lowest_free = |pending: &[Option<usize>]| {
@@ -128,11 +129,13 @@ pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> 
                 .position(Option::is_none)
                 .unwrap_or(pending.len())
         };
-        let node = nodes.get(row).copied().flatten().map(|_| {
-            from_above
+        // The node's own lane is free here: it is a lane just freed, or the
+        // lowest free one.
+        let own = nodes.get(row).copied().flatten().map(|_| {
+            reaching
                 .first()
                 .copied()
-                .unwrap_or_else(|| lane(lowest_free(&pending)))
+                .unwrap_or_else(|| lowest_free(&pending))
         });
         let through = pending
             .iter()
@@ -141,17 +144,9 @@ pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> 
             .map(|(at, _)| lane(at))
             .collect();
         let mut to_below = Vec::new();
-        if let Some(own) = node {
-            for &consumer in below.get(&row).into_iter().flatten() {
-                let own = usize::from(own);
-                let at = if pending.get(own).is_none_or(Option::is_none) {
-                    own
-                } else {
-                    lowest_free(&pending)
-                };
-                if at >= pending.len() {
-                    pending.resize(at, None);
-                }
+        if let Some(own) = own {
+            for (nth, &consumer) in below.get(&row).into_iter().flatten().enumerate() {
+                let at = if nth == 0 { own } else { lowest_free(&pending) };
                 if at == pending.len() {
                     pending.push(Some(consumer));
                 } else {
@@ -160,6 +155,8 @@ pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> 
                 to_below.push(lane(at));
             }
         }
+        let node = own.map(lane);
+        let from_above = reaching.into_iter().map(lane).collect();
         out.push(Lanes {
             node,
             through,
