@@ -393,6 +393,50 @@ pub fn preview_row_count_stoppable(
     )
 }
 
+/// **The profile of `table`**, the root table or a table `chain` makes: its
+/// row count and the profile of each of its columns, as [`crate::Session::profile_sources`]
+/// measures a source's, recomputed from the data file on a connection of its
+/// own on the same terms as [`preview_first_page_stoppable`].
+///
+/// The pass is the session's own, run over the preview's connection, so a
+/// step's table is measured as the table the file opened as is. No type source
+/// rides it: each column's [`crate::ColumnProfile::semantic`] is
+/// [`crate::SemanticType::NotAsked`].
+///
+/// # Errors
+///
+/// As [`preview_first_page_stoppable`], with DuckDB's words in
+/// [`PreviewRefusal::Engine`] when `table` cannot be described or measured,
+/// which is how a table the chain does not make is refused.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_profile_stoppable(
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    chain: &[(String, PreviewOp)],
+    table: &str,
+    file_limit_bytes: u64,
+    deadline: Duration,
+    stop: &PreviewStop,
+) -> Result<(u64, Vec<crate::ColumnProfile>), PreviewRefusal> {
+    with_chain(
+        data,
+        reader,
+        root_table,
+        chain,
+        file_limit_bytes,
+        deadline,
+        stop,
+        |conn, _last, _refused| match crate::Profiler::plain(conn).profile_table(table) {
+            crate::ProfileOutcome::Profiled { row_count, columns } => Ok((row_count, columns)),
+            crate::ProfileOutcome::Failed(reason) => Err(PreviewRefusal::Engine(reason)),
+            crate::ProfileOutcome::Unsupported => Err(PreviewRefusal::Engine(
+                "the table cannot be profiled".to_string(),
+            )),
+        },
+    )
+}
+
 /// Loads `data`, shuts and locks the connection, makes each step of `chain`
 /// as a table, and hands `read` the connection, the last table's name and the
 /// map from a DuckDB error to a refusal. One watch of `deadline` and `stop`

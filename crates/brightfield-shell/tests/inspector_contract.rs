@@ -18,14 +18,25 @@
 //! they read `chart_registry()` directly, never the live app — so this file
 //! carries the one test that does.
 
+#[path = "support/operations.rs"]
+mod operations;
+
+use std::path::Path;
+use std::time::{Duration, Instant};
+
 use brightfield_shell::app::{ChartDoc, CHART, CONTROLS};
+use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
+use brightfield_shell::inspector::{reading_line, NOT_RUN};
 use brightfield_shell::inspector::{InspectorPane, Selection, TableHandle};
+use brightfield_shell::operation;
 use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
+use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::{Item, PaneKey};
+use operations::{runner, OpWindow};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 
@@ -302,5 +313,190 @@ fn every_declared_toolbar_verb_either_dispatches_or_is_filtered_out() {
         verbs.contains(&"save-spec"),
         "the editor's toolbar declared no save-spec entry — the file did \
          not open, which would make this sweep vacuous for it: saw {verbs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A table a later step makes
+// ---------------------------------------------------------------------------
+
+const SAMPLE: &str = "california_housing_sample.csv";
+const ROOT: &str = "california_housing_sample";
+
+/// Save the sample's Protocol into `dir`, then record two steps on the loaded
+/// table through arc: `top`, which keeps ten rows, and `old`, which keeps the
+/// rows of houses older than forty years.
+fn two_steps(dir: &Path) {
+    let opened = data_file::open(&dir.join(SAMPLE).to_string_lossy()).expect("the sample opens");
+    opened.protocol.save_to(dir).expect("the Protocol saves");
+    operation::record(
+        &runner(),
+        dir,
+        "limit-rows",
+        ROOT,
+        "top",
+        &[("count", "10")],
+    )
+    .expect("arc records top");
+    operation::record(
+        &runner(),
+        dir,
+        "filter-rows",
+        ROOT,
+        "old",
+        &[("where", "house_age > 40")],
+    )
+    .expect("arc records old");
+}
+
+/// Ask for the columns of `table` until they have been read.
+fn read_columns(win: &mut OpWindow, table: &str) -> Vec<brightfield_shell::one_step::ColumnFacts> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(columns) = win.app.column_facts_for(table) {
+            return columns.to_vec();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the columns of {table} never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Click the `grid` row under the asset row of `table`, putting its grid on
+/// the canvas, without waiting for anything to be read.
+fn click_grid_of(win: &mut OpWindow, table: &str) {
+    let rows = win.rows();
+    let at = rows
+        .iter()
+        .position(|row| row.role == SpineRole::Asset && row.label == table)
+        .unwrap_or_else(|| panic!("no asset row {table}: {:?}", win.spine_labels()));
+    let grid = rows
+        .get(at + 1)
+        .filter(|row| row.role == SpineRole::View && row.label == "grid")
+        .unwrap_or_else(|| panic!("no grid row under {table}: {:?}", win.spine_labels()));
+    win.click(grid.rect.center());
+}
+
+/// Draw frames until the window draws `text`.
+fn wait_to_draw(win: &mut OpWindow, text: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !win.texts.iter().any(|t| t == text) {
+        assert!(
+            Instant::now() < deadline,
+            "the window never drew {text:?}; it drew {:?}",
+            win.texts
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+}
+
+/// **A step's table is profiled the first time it is asked about, and once.**
+/// Nothing is read before the ask; the ask starts a read and answers `None`
+/// until it is in; the answer is the step's own table, ten rows of the
+/// sample's columns, with the moments of a numeric column measured over those
+/// rows; and asking again is served from what was read.
+#[test]
+fn a_column_of_a_steps_table_is_profiled_when_first_inspected() {
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, two_steps);
+    assert_eq!(
+        win.app.column_profiles_started(),
+        0,
+        "no table is profiled before something asks about it"
+    );
+    assert!(
+        win.app.column_facts_for("top").is_none(),
+        "the first ask starts the read; it does not wait for it"
+    );
+    assert_eq!(win.app.column_profiles_started(), 1);
+
+    let columns = read_columns(&mut win, "top");
+    let income = columns
+        .iter()
+        .find(|c| c.column == "median_income")
+        .unwrap_or_else(|| panic!("top keeps the sample's columns: {columns:?}"));
+    assert_eq!(income.rows, 10, "the profile is of the step's ten rows");
+    let moments = income.moments.as_ref().expect("a numeric column's moments");
+    let upper = moments
+        .upper_quartile
+        .expect("the upper quartile is measured");
+    assert!(moments.median <= upper && upper <= moments.max);
+
+    let _ = read_columns(&mut win, "top");
+    assert_eq!(
+        win.app.column_profiles_started(),
+        1,
+        "a second ask is served from the profile already read"
+    );
+    assert!(
+        win.app.column_facts_for(ROOT).is_some(),
+        "the file's own table is answered from the profile it opened with"
+    );
+    assert_eq!(win.app.column_profiles_started(), 1);
+}
+
+/// **The inspector names the step that made the table, and where that step
+/// stands**: `top` and not the load, its kind in the steps sheet's word, and
+/// `not run`, since no run has recorded it. The inspector draws both under the
+/// table's name once its grid is on the canvas.
+#[test]
+fn the_inspector_names_the_step_that_made_the_column_and_its_state() {
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, two_steps);
+    let table = win
+        .app
+        .column_table_for("top")
+        .expect("the model knows top");
+    assert_eq!(table.table, "top");
+    assert_eq!(
+        table.step, "top",
+        "the step that makes the table, not the load"
+    );
+    assert_eq!(table.kind, "sql", "arc records a limit as a SQL model");
+    assert_eq!(table.state, NOT_RUN, "no run has recorded the step");
+
+    let root = win
+        .app
+        .column_table_for(ROOT)
+        .expect("the model knows the file's table");
+    assert_ne!(root.step, "top", "the file's table is made by its load");
+
+    win.show_grid_of("top");
+    wait_to_draw(&mut win, "top · sql");
+    assert!(
+        win.texts.iter().any(|t| t == NOT_RUN),
+        "the inspector states the step's state: {:?}",
+        win.texts
+    );
+}
+
+/// **A profile still being read says so.** With the read held, the inspector
+/// draws its reading line for the table on the canvas, not an empty list; once
+/// the read is let go, the columns replace it.
+#[test]
+fn a_profile_still_reading_says_so_rather_than_showing_nothing() {
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, two_steps);
+    win.app.chart_doc().hold_preview_reads(true);
+    click_grid_of(&mut win, "old");
+    wait_to_draw(&mut win, &reading_line("old"));
+    // The Outline lists the file's own columns whatever the inspector says, so
+    // a column of `old` is one more of the name than the Outline draws.
+    let drawn = |win: &OpWindow| win.texts.iter().filter(|t| *t == "median_income").count();
+    let while_reading = drawn(&win);
+
+    win.app.chart_doc().hold_preview_reads(false);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while drawn(&win) == while_reading {
+        assert!(
+            Instant::now() < deadline,
+            "the columns of old never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+    assert!(
+        !win.texts.iter().any(|t| *t == reading_line("old")),
+        "the reading line goes once the columns are in"
     );
 }

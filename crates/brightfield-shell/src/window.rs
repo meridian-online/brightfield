@@ -87,10 +87,11 @@ use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::chart_item::PREDICATE_READOUT;
 use crate::column_header::GridDensity;
+use crate::column_profiles::{ColumnProfiles, ProfileRead};
 use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
-use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
+use crate::inspector::{InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
     HelpSheet, JumpTarget, JumpToNode,
@@ -3241,6 +3242,13 @@ struct ChartView {
     /// inspector. Written whenever a document is adopted; see
     /// [`wire_columns`].
     inspector_table: TableHandle,
+    /// The table a later step makes, while the canvas holds it, as the
+    /// inspector describes it — written by [`MeridianApp::draw`] beside
+    /// [`Self::inspector_selection`].
+    inspector_inspected: InspectedHandle,
+    /// The column profiles of the tables the inspector has been asked about;
+    /// see [`MeridianApp::column_facts_for`].
+    column_profiles: ColumnProfiles,
     /// The hero pane's shelf: the band carved under its header, and who holds
     /// the keys. See [`ShelfHold`].
     shelf: ShelfHold,
@@ -3324,11 +3332,14 @@ impl ShelfHold {
 /// cannot move one without the other.
 fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle) {
     let tiles: Vec<crate::one_step::ColumnFacts> = model.tiles().to_vec();
-    table.set((!tiles.is_empty()).then(|| ColumnTable {
-        table: model.protocol.clone(),
-        step: crate::one_step::STEP_NAME.to_string(),
-        kind: "sql",
-    }));
+    // The table and the step that makes it are the model's: the load, for a
+    // table the file opened as, named and stated as the steps sheet names and
+    // states it.
+    table.set(
+        (!tiles.is_empty())
+            .then(|| model.table().and_then(|node| model.column_table(node)))
+            .flatten(),
+    );
     chart.set_column_facts(model.columns());
     chart.set_tile_columns(tiles);
     // The table the node in view makes, which the operation panel names: the
@@ -4318,13 +4329,14 @@ impl MeridianApp {
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
         let inspector_selection = Selection::default();
         let inspector_table = TableHandle::default();
+        let inspector_inspected = InspectedHandle::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
-            Box::new(InspectorPane::new(
-                inspector_selection.clone(),
-                inspector_table.clone(),
-            )),
+            Box::new(
+                InspectorPane::new(inspector_selection.clone(), inspector_table.clone())
+                    .with_inspected(inspector_inspected.clone()),
+            ),
         );
         // The two documents' one join: what each tile is of. Done here rather
         // than in each constructor because all four of them land here, and the
@@ -4351,6 +4363,8 @@ impl MeridianApp {
                 items: chart_items,
                 inspector_selection,
                 inspector_table,
+                inspector_inspected,
+                column_profiles: ColumnProfiles::default(),
                 shelf: ShelfHold::new(),
             },
             protocol: ProtocolView {
@@ -5320,6 +5334,81 @@ impl MeridianApp {
     #[must_use]
     pub fn inspector_selection(&self) -> Option<Subject> {
         self.charts.inspector_selection.get()
+    }
+
+    /// **The columns of `table`, profiled**: the file's own table's from its
+    /// profile, and any other's once it has been read.
+    ///
+    /// A table a later step makes is profiled on a worker the first time it is
+    /// asked about, and kept against its content hash and the steps it is made
+    /// through ([`crate::column_profiles::ProfileKey`]); `None` until the read
+    /// has an answer, and for a table whose columns could not be read.
+    pub fn column_facts_for(&mut self, table: &str) -> Option<&[crate::one_step::ColumnFacts]> {
+        let model = &self.protocol.doc.model;
+        if model
+            .source()
+            .is_some_and(|source| source.name.eq_ignore_ascii_case(table))
+        {
+            return Some(self.protocol.doc.model.columns());
+        }
+        match self.column_profile_for(table) {
+            ProfileRead::Read(columns) => self.charts.column_profiles.kept(&columns),
+            ProfileRead::Reading | ProfileRead::Failed(_) => None,
+        }
+    }
+
+    /// Where the profile of `table` stands, starting its read when none is
+    /// kept or under way. See [`Self::column_facts_for`].
+    pub fn column_profile_for(&mut self, table: &str) -> ProfileRead {
+        let Some(source) = self.typed_source(None) else {
+            return ProfileRead::Failed(
+                "Brightfield reads the columns of a step's table in a Protocol made from a \
+                 data file."
+                    .to_string(),
+            );
+        };
+        let model = &self.protocol.doc.model;
+        let hash = model
+            .node_of_step_table(table)
+            .and_then(|node| model.content_hash_of(node))
+            .map(str::to_owned);
+        self.charts.column_profiles.read(
+            table,
+            hash.as_deref(),
+            &source,
+            self.charts.doc.preview_hooks(),
+        )
+    }
+
+    /// How many column profiles the window has started reading.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn column_profiles_started(&self) -> usize {
+        self.charts.column_profiles.started()
+    }
+
+    /// What a selected column of `table` belongs to: the step that makes it,
+    /// that step's kind and its state, read from the Protocol's model.
+    #[must_use]
+    pub fn column_table_for(&self, table: &str) -> Option<crate::inspector::ColumnTable> {
+        let model = &self.protocol.doc.model;
+        let node = model.node_of_step_table(table)?;
+        model.column_table(node)
+    }
+
+    /// The table the inspector describes this frame, when the canvas holds
+    /// one a step after the load makes: what makes it, and its columns as far
+    /// as they have been read. The file's own table is described by its
+    /// tiles, so it is not among them.
+    fn inspected_table(&mut self) -> Option<InspectedTable> {
+        let model = &self.protocol.doc.model;
+        let node = self.protocol.doc.canvas_holds.node()?;
+        if model.table() == Some(node) || !model.is_viewable(node) {
+            return None;
+        }
+        let table = model.column_table(node)?;
+        let columns = self.column_profile_for(&table.table);
+        Some(InspectedTable { table, columns })
     }
 
     /// Move focus to `key` — the same effect the
@@ -7506,6 +7595,8 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
+            let inspected = self.inspected_table();
+            self.charts.inspector_inspected.set(inspected);
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
             let counts = self.locator_counts();

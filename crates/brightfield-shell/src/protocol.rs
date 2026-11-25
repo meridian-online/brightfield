@@ -2542,6 +2542,29 @@ impl ProtocolModel {
         crate::refusal::refusals_in_graph(&self.graph_full)
     }
 
+    /// What the table `node` is belongs to: its name, the step that makes it,
+    /// that step's kind and the state the run record gives it, in the words
+    /// the steps sheet uses. `None` for a node the graph does not hold, or one
+    /// no step makes, such as a file.
+    #[must_use]
+    pub fn column_table(&self, node: &AssetId) -> Option<crate::inspector::ColumnTable> {
+        let facts = self.inspector(Some(node));
+        let step = facts.producing_step?;
+        Some(crate::inspector::ColumnTable {
+            table: facts.label,
+            kind: seam_kind_word(&self.graph_collapsed, &step),
+            state: status_word(facts.status),
+            step,
+        })
+    }
+
+    /// The content hash the run record gives the table `node`, when it gives
+    /// one.
+    #[must_use]
+    pub fn content_hash_of(&self, node: &AssetId) -> Option<&str> {
+        self.assets.get(node)?.content_hash.as_deref()
+    }
+
     /// The node of the table the step `name` makes, found by its label in the
     /// graph the canvas draws.
     #[must_use]

@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 
 use brightfield_engine::{
     preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
-    preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
-    PreviewStop, RecordBatch, PREVIEW_FILE_LIMIT_BYTES,
+    preview_first_page_within, preview_profile_stoppable, preview_row_count_stoppable, FileReader,
+    PreviewOp, PreviewRefusal, PreviewStop, RecordBatch, PREVIEW_DEADLINE,
+    PREVIEW_FILE_LIMIT_BYTES,
 };
 use duckdb::arrow::array::{Array, Float64Array};
 
@@ -442,4 +443,48 @@ fn the_rows_of_a_chain_are_counted() {
         )]),
         52
     );
+}
+
+/// **A step's table is profiled as the file's table is**: the filter's rows
+/// are counted, each column the step keeps is measured, and a numeric one
+/// carries its moments, the upper quartile among them, from the step's rows
+/// rather than the file's.
+#[test]
+fn a_steps_table_is_profiled_on_the_previews_own_connection() {
+    let chain = [filter("rich", "median_income > 8")];
+    let stop = PreviewStop::default();
+    let (rows, columns) = preview_profile_stoppable(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &chain,
+        "rich",
+        PREVIEW_FILE_LIMIT_BYTES,
+        PREVIEW_DEADLINE,
+        &stop,
+    )
+    .expect("the step's table is profiled");
+    let counted = preview_row_count_stoppable(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &chain,
+        PREVIEW_FILE_LIMIT_BYTES,
+        PREVIEW_DEADLINE,
+        &stop,
+    )
+    .expect("the step's rows are counted");
+    assert_eq!(rows, counted, "the profile counts the step's rows");
+    let income = columns
+        .iter()
+        .find(|c| c.name == "median_income")
+        .expect("the filter keeps every column");
+    let moments = income.moments.as_ref().expect("a numeric column");
+    assert!(
+        moments.min > 8.0,
+        "the minimum is the step's, not the file's: {}",
+        moments.min
+    );
+    let upper = moments.upper_quartile.expect("an upper quartile");
+    assert!(moments.median <= upper && upper <= moments.max);
 }
