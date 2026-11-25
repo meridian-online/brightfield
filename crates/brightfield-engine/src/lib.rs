@@ -3852,7 +3852,7 @@ impl Session {
 
     /// Run a raw read-only query and collect its Arrow batches — the profiling
     /// counterpart to the mark path's cached `execute_emitted`, deliberately
-    /// bypassing the caches so it never perturbs mark execution counts.
+    /// bypassing the caches so mark execution counts stay as they were.
     fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
         self.record_scan(sql);
         let mut stmt = self.conn.prepare(sql)?;
@@ -3930,11 +3930,11 @@ impl Session {
     /// network-shaped failure here — mid-session, long after a successful
     /// load — is a network failure and must say so
     /// ([`EngineError::RemoteSourceFailed`] naming the source, the
-    /// location, and the network), never a bare SQL error a reader could
+    /// location, and the network), not a bare SQL error a reader could
     /// mistake for a local-data problem. A failure of another kind (a local-backed
     /// mark, or a query-shape error such as a binder failure on a remote
     /// one) stays [`EngineError::QueryFailed`] with the cause intact —
-    /// the fallback direction never misattributes.
+    /// the fallback keeps the cause it was given.
     fn classify_query_failure(
         &self,
         mark_index: usize,
