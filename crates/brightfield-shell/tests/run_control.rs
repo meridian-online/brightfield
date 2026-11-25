@@ -812,3 +812,154 @@ fn a_run_that_lands_after_another_file_opened_lands_on_nothing() {
         "a record appeared beside the CSV"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Run progress, read from arc's live stream, and when the Protocol last ran
+// ---------------------------------------------------------------------------
+
+/// Draw frames until `until` holds of the window, or fail after [`PATIENCE`].
+fn frames_until(win: &mut Window, what: &str, until: impl Fn(&MeridianApp) -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    while !until(&win.app) {
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not happen inside {PATIENCE:?}"
+        );
+        win.frame(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A run under way counts its steps off the stream it writes, and not off an earlier run's.**
+///
+/// The runner is a script standing in for `arc`, so each moment of the run is the test's to
+/// choose: it waits for one mark, writes the stream line `arc` writes as the Protocol's one step
+/// finishes, waits for a second mark, and exits having written no record. An earlier run's stream
+/// is already in the runs folder, dated before this run began, and names the same step done, so a
+/// window that read it would count the step before the script wrote its line.
+///
+/// Watched redden, two mutations, each alone: `live_stream`'s `modified >= since` filter dropped
+/// (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count never
+/// reaches 1).
+#[cfg(unix)]
+#[test]
+fn a_run_under_way_counts_its_steps_on_its_own_stream() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("progress");
+    let path = dir.housing();
+    let runs = run::runs_dir(dir.path());
+    std::fs::create_dir_all(&runs).expect("the runs folder");
+    let earlier = runs.join("earlier.jsonl");
+    std::fs::write(
+        &earlier,
+        format!("{{\"step\":\"{STEP}\",\"state\":\"success\"}}\n"),
+    )
+    .expect("an earlier run's stream writes");
+    std::fs::File::options()
+        .write(true)
+        .open(&earlier)
+        .and_then(|f| f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3_600)))
+        .expect("the earlier stream is dated an hour back");
+
+    let first = dir.path().join("write-the-line");
+    let second = dir.path().join("finish");
+    let script = dir.path().join("stand-in-arc");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             while [ ! -e '{first}' ]; do sleep 0.01; done\n\
+             printf '{{\"step\":\"{STEP}\",\"state\":\"success\",\"ts\":\"t\"}}\\n' > '{stream}'\n\
+             while [ ! -e '{second}' ]; do sleep 0.01; done\n\
+             echo 'the stand-in wrote no record' >&2\n\
+             exit 1\n",
+            first = first.display(),
+            second = second.display(),
+            stream = runs.join("this-run.jsonl").display(),
+        ),
+    )
+    .expect("the stand-in runner writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the stand-in runner is executable");
+
+    let mut win = Window::over_file(&path, Some(Runner::at(&script)));
+    assert_eq!(win.app.run_progress(), None, "no run, so no progress");
+    win.take_run_control();
+    for _ in 0..5 {
+        win.frame(Vec::new());
+    }
+    assert_eq!(
+        win.app.run_progress(),
+        Some(run::RunProgress {
+            running: None,
+            done: 0,
+            total: 1
+        }),
+        "before the run wrote its stream, none of its one step is done"
+    );
+
+    std::fs::write(&first, b"").expect("the first mark");
+    frames_until(&mut win, "the stream's step counting as done", |app| {
+        app.run_progress().is_some_and(|p| p.done == 1)
+    });
+    assert_eq!(win.app.run_progress().map(|p| p.total), Some(1));
+
+    std::fs::write(&second, b"").expect("the second mark");
+    win.drive_until_landed();
+    assert_eq!(
+        win.app.run_progress(),
+        None,
+        "a landed run leaves no progress"
+    );
+}
+
+/// **A run that ends before its step loop leaves no progress standing, and the last run reads
+/// failed.**
+///
+/// The runner is a path with no program at it, so the run ends without starting, as a manifest
+/// `arc` refuses ends it: no record and no stream. The window has a record of nothing, so it is
+/// the window that says the run failed. The Protocol refused before a run starts, untrusted, is
+/// held the same way by `keep_editing_after_untrusting_refuses_a_run`.
+///
+/// Watched redden, one mutation: `land_run`'s `unrecorded_failure` left unset, so `last_run`
+/// reads no run.
+#[test]
+fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
+    let dir = TempDir::new("refused");
+    let path = dir.housing();
+    let mut win = Window::over_file(&path, Some(Runner::at(dir.path().join("no-runner-here"))));
+    assert_eq!(win.app.last_run(), None, "a file never run has no last run");
+    win.take_run_control();
+    win.drive_until_landed();
+
+    assert_eq!(win.app.run_progress(), None);
+    let last = win.app.last_run().expect("the refused run is the last run");
+    assert_eq!(last.state, brightfield_workbench::RunState::Failed);
+    assert_eq!(last.age, "just now");
+    assert!(
+        records(dir.path()).is_empty(),
+        "the refused run wrote a record"
+    );
+}
+
+/// **After a run, the Protocol says the day it ran and how long ago.**
+///
+/// A real run of the housing file: its record's finish time is read back as today's date and
+/// "just now", in the state the strip draws.
+#[test]
+fn after_a_run_the_last_run_says_when_and_how_long_ago() {
+    let dir = TempDir::new("last-run");
+    let path = dir.housing();
+    let mut win = Window::over_file(&path, Some(runner()));
+    win.take_run_control();
+    win.drive_until_landed();
+
+    let last = win.app.last_run().expect("the run landed a record");
+    assert_eq!(last.state, brightfield_workbench::RunState::Fresh);
+    assert_eq!(last.age, "just now");
+    assert_eq!(
+        last.when,
+        chrono::Local::now().format("ran %-d %b").to_string()
+    );
+}

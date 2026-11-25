@@ -483,6 +483,13 @@ fn keep_editing_after_untrusting_refuses_a_run() {
         "the window says why: {}",
         win.said()
     );
+    // The refused run leaves no progress standing, and the last run reads failed.
+    assert_eq!(win.app.run_progress(), None);
+    assert_eq!(
+        win.app.last_run().map(|last| last.state),
+        Some(brightfield_workbench::RunState::Failed),
+        "the run refused untrusted does not read as the last run, failed"
+    );
     // Any arc run of it is refused, as the model pane's own runs start one.
     let runner = Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
     let finished = brightfield_shell::run::Run::begin(&runner, &win.dir(), || {}).wait();

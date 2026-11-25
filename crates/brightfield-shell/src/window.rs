@@ -505,6 +505,39 @@ struct PendingRun {
     /// binary's own and runs again from nothing, where a reader's Protocol
     /// keeps the tables its earlier runs made.
     shipped: bool,
+    /// The live stream `arc` writes beside the record as each step finishes, once
+    /// [`crate::run::live_stream`] has found it: what [`MeridianApp::run_progress`] reads.
+    stream: Option<brightfield_protocol::stream::StreamReader>,
+    /// When the run began, so the stream found is this run's and not an earlier one's.
+    since: std::time::SystemTime,
+}
+
+/// A run of the Protocol in [`Self::dir`] that ended without a record: refused before `arc`
+/// reached its steps, or never started. Nothing on disk says it happened, so the window keeps it,
+/// for [`MeridianApp::last_run`] to say the run failed rather than show the record before it.
+struct UnrecordedFailure {
+    /// The Protocol folder the run was of.
+    dir: PathBuf,
+    /// When it ended.
+    at: chrono::DateTime<chrono::Local>,
+}
+
+/// Read what `arc` has added to `pending`'s live stream since the last frame: find the stream
+/// once it is there, then read only what was appended. A stream that will not read is reported
+/// and read again next frame, since the run's record is what lands it either way.
+fn follow_stream(pending: &mut PendingRun) {
+    if pending.stream.is_none() {
+        pending.stream = crate::run::live_stream(pending.run.dir(), pending.since)
+            .map(brightfield_protocol::stream::StreamReader::open);
+    }
+    if let Some(stream) = pending.stream.as_mut() {
+        if let Err(e) = stream.poll() {
+            eprintln!(
+                "could not read the run's stream {}: {e}",
+                stream.path().display()
+            );
+        }
+    }
 }
 
 /// A shipped Protocol start whose run is under way, to open on its first
@@ -3670,6 +3703,9 @@ pub struct MeridianApp {
     /// The runs this window started and has not landed, at most one per
     /// Protocol folder — see [`PendingRun`] and [`MeridianApp::run_protocol`].
     running: Vec<PendingRun>,
+    /// The last run of a Protocol folder that ended without a record, until a run of that folder
+    /// records one — see [`UnrecordedFailure`].
+    unrecorded_failure: Option<UnrecordedFailure>,
     /// The shipped Protocol start waiting on its run in [`Self::running`] to
     /// open its first panel — see [`PendingLanding`]. Only the start on
     /// screen waits: a run whose start the reader left is settled when it
@@ -4364,6 +4400,7 @@ impl MeridianApp {
             door_help: None,
             fetching: None,
             running: Vec::new(),
+            unrecorded_failure: None,
             landing: None,
             runner: None,
             descriptions: None,
@@ -17132,6 +17169,7 @@ impl MeridianApp {
         }
         let Some(runner) = self.runner.as_ref() else {
             eprintln!("could not run the Protocol: no runner");
+            self.note_run_not_started();
             self.notifications.raise(
                 Notification::new(banner, Severity::Error, "Could not run this Protocol")
                     .body("this window was started without a runner to hand the run to"),
@@ -17146,6 +17184,8 @@ impl MeridianApp {
             protocol: name,
             fetching,
             shipped: false,
+            stream: None,
+            since: std::time::SystemTime::now(),
         });
         ctx.request_repaint();
         true
@@ -17199,6 +17239,7 @@ impl MeridianApp {
                 )
                 .body(body),
             );
+            self.note_run_not_started();
             ctx.request_repaint();
             return false;
         }
@@ -17219,6 +17260,7 @@ impl MeridianApp {
                 )
                 .body(body),
             );
+            self.note_run_not_started();
             ctx.request_repaint();
             return false;
         }
@@ -17239,6 +17281,7 @@ impl MeridianApp {
                 )
                 .body(body),
             );
+            self.note_run_not_started();
             ctx.request_repaint();
             return false;
         }
@@ -17254,6 +17297,7 @@ impl MeridianApp {
         let banner = NotificationId::new("run-protocol");
         let refused = |this: &mut Self, body: String| {
             eprintln!("could not run the Protocol: {body}");
+            this.note_run_not_started();
             this.notifications.raise(
                 Notification::new(banner, Severity::Error, "Could not run this Protocol")
                     .body(body),
@@ -17288,6 +17332,8 @@ impl MeridianApp {
             protocol: source.name,
             fetching,
             shipped: false,
+            stream: None,
+            since: std::time::SystemTime::now(),
         });
         ctx.request_repaint();
         true
@@ -17405,6 +17451,68 @@ impl MeridianApp {
         !self.running.is_empty()
     }
 
+    /// How far the run under way for the document open now has got, read from the live stream
+    /// `arc` writes beside its record; `None` while no run of it is under way.
+    ///
+    /// Before `arc` has written the stream, which it opens as its step loop begins, the run reads
+    /// as none done. The total is the Protocol's step count, the number the spine's caption
+    /// gives.
+    #[must_use]
+    pub fn run_progress(&self) -> Option<crate::run::RunProgress> {
+        let pending = self.running_here()?;
+        let total = self.protocol.doc.model.step_count();
+        Some(match &pending.stream {
+            Some(stream) => crate::run::progress(stream.state(), total),
+            None => crate::run::RunProgress {
+                running: None,
+                done: 0,
+                total,
+            },
+        })
+    }
+
+    /// When the Protocol this window holds last ran, and how that run went; `None` when it has
+    /// no run to report.
+    ///
+    /// A run this window took that ended without a record, refused or never started, is the
+    /// last run, and it failed: no record says so, so the window does, until a run of the same
+    /// folder records one. Otherwise it is the record the window read, its finish time described
+    /// by [`crate::run::describe_ran`] and its state the one the window draws.
+    #[must_use]
+    pub fn last_run(&self) -> Option<crate::run::LastRun> {
+        let now = chrono::Local::now();
+        if let Some(failure) = self
+            .unrecorded_failure
+            .as_ref()
+            .filter(|failure| self.held_protocol_dir().as_ref() == Some(&failure.dir))
+        {
+            let (when, age) = crate::run::describe_ran(&failure.at.to_rfc3339(), now)?;
+            return Some(crate::run::LastRun {
+                when,
+                age,
+                state: RunState::Failed,
+            });
+        }
+        let finished_at = self.protocol.doc.model.run()?.finished_at.as_deref()?;
+        let (when, age) = crate::run::describe_ran(finished_at, now)?;
+        Some(crate::run::LastRun {
+            when,
+            age,
+            state: self.recorded_run_state(),
+        })
+    }
+
+    /// Note that a run of the Protocol this window holds was asked for and refused before it
+    /// started, for [`Self::last_run`] to say it failed.
+    fn note_run_not_started(&mut self) {
+        if let Some(dir) = self.held_protocol_dir() {
+            self.unrecorded_failure = Some(UnrecordedFailure {
+                dir,
+                at: chrono::Local::now(),
+            });
+        }
+    }
+
     /// Whether the document open now is the Protocol named `protocol` whose
     /// spec lives in `dir`.
     fn holds_protocol(&self, dir: &std::path::Path, protocol: &str) -> bool {
@@ -17433,6 +17541,9 @@ impl MeridianApp {
     /// the grid's spot are the reader's and stay where they were — and the
     /// run's log is kept on the new model for the session.
     fn poll_run(&mut self, ctx: &egui::Context) {
+        for pending in &mut self.running {
+            follow_stream(pending);
+        }
         let mut at = 0;
         while at < self.running.len() {
             match self.running[at].run.take() {
@@ -17469,6 +17580,18 @@ impl MeridianApp {
                 let _ = crate::starts::settle_run(&dir, &finished);
             }
             return;
+        }
+        if finished.record.is_none() {
+            self.unrecorded_failure = Some(UnrecordedFailure {
+                dir: dir.clone(),
+                at: chrono::Local::now(),
+            });
+        } else if self
+            .unrecorded_failure
+            .as_ref()
+            .is_some_and(|failure| failure.dir == dir)
+        {
+            self.unrecorded_failure = None;
         }
         if let Some(landing) = landing {
             self.land_shipped_run(ctx, landing, &finished);
