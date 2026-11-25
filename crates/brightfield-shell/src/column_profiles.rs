@@ -88,9 +88,13 @@ struct Reading {
 pub struct ColumnProfiles {
     /// Each profile read, or the refusal that will not change by asking again.
     kept: Vec<(ProfileKey, ProfileRead)>,
-    /// A refusal that may: shown until the table is next asked about, then
-    /// read again.
+    /// A refusal that may: shown until the table is next asked about afresh
+    /// (see [`is_fresh_ask`]), then read again.
     passing: Option<(ProfileKey, String)>,
+    /// The table the inspector has been describing since the canvas came to
+    /// it. The inspector asks on each frame it draws, and only the first of
+    /// those asks is a fresh one.
+    viewing: Option<ProfileKey>,
     reading: Option<Reading>,
     started: usize,
 }
@@ -105,8 +109,9 @@ impl ColumnProfiles {
         }
     }
 
-    /// Where the profile under `key` stands, without starting a read: `None`
-    /// when no profile is kept for it and no read of it is under way.
+    /// Where the profile under `key` stands, without starting a read: what is
+    /// kept for it, that a read of it is under way, or the refusal held for
+    /// it that may pass; `None` when there is no such answer.
     pub(crate) fn peek(&mut self, key: &ProfileKey) -> Option<ProfileRead> {
         self.poll();
         if let Some((_, read)) = self.kept.iter().find(|(k, _)| k == key) {
@@ -122,9 +127,13 @@ impl ColumnProfiles {
     }
 
     /// Where the profile under `key` stands, starting a read of it on a worker
-    /// unless a profile is kept for it or a read of it is under way. A refusal that may pass is read again.
-    /// A read under way for another table is stopped: one table is asked
-    /// about at a time, and the one asked about now is the one wanted.
+    /// unless a profile is kept for it or a read of it is under way.
+    ///
+    /// A refusal that may pass is shown, and read again only on a fresh ask
+    /// ([`is_fresh_ask`]), so a table whose profile keeps running out of time
+    /// says so rather than being read again on each frame. A read under way
+    /// for another table is stopped: one table is asked about at a time, and
+    /// the one asked about now is the one wanted.
     pub(crate) fn read(
         &mut self,
         key: ProfileKey,
@@ -134,7 +143,11 @@ impl ColumnProfiles {
     ) -> ProfileRead {
         let known = self.peek(&key);
         let passing_here = self.passing.as_ref().is_some_and(|(k, _)| *k == key);
-        if let Some(read) = known.filter(|_| !passing_here) {
+        let fresh = is_fresh_ask(self.viewing.as_ref(), &key, for_inspector);
+        if for_inspector {
+            self.viewing = Some(key.clone());
+        }
+        if let Some(read) = known.filter(|_| !(passing_here && fresh)) {
             return read;
         }
         self.passing = None;
@@ -146,6 +159,7 @@ impl ColumnProfiles {
     /// moved off the table it was reading, and a preview of the table now in
     /// view should not wait behind it.
     pub(crate) fn stop_the_inspectors(&mut self) {
+        self.viewing = None;
         if self.reading.as_ref().is_some_and(|r| r.for_inspector) {
             if let Some(reading) = self.reading.take() {
                 reading.stop.stop();
@@ -264,10 +278,70 @@ impl ColumnProfiles {
     }
 }
 
+/// Whether an ask for `key` is a fresh one: a caller's ask by name always is,
+/// and the inspector's is when the table it describes has changed since it
+/// last asked, which includes the canvas coming back to the table after
+/// leaving it.
+fn is_fresh_ask(viewing: Option<&ProfileKey>, key: &ProfileKey, for_inspector: bool) -> bool {
+    !for_inspector || viewing != Some(key)
+}
+
 impl Drop for ColumnProfiles {
     fn drop(&mut self) {
         if let Some(reading) = self.reading.take() {
             reading.stop.stop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(table: &str) -> ProfileKey {
+        ProfileKey {
+            table: table.to_string(),
+            content_hash: None,
+            chain: (table.to_string(), Vec::new()),
+        }
+    }
+
+    /// The inspector's ask on each frame after the first is not fresh, so a
+    /// refusal that may pass is shown rather than read again at once; a new
+    /// table, a return to the table, and a caller's ask by name are fresh.
+    #[test]
+    fn only_a_new_ask_reads_a_passing_refusal_again() {
+        let old = key("old");
+        assert!(is_fresh_ask(None, &old, true), "the canvas came to old");
+        assert!(
+            !is_fresh_ask(Some(&old), &old, true),
+            "the inspector asking again, frame after frame"
+        );
+        assert!(is_fresh_ask(Some(&key("top")), &old, true), "another table");
+        assert!(
+            is_fresh_ask(Some(&old), &old, false),
+            "a caller asking by name"
+        );
+    }
+
+    /// A refusal that may pass, held for the table in view, is answered as it
+    /// is while the inspector keeps asking: no read is started for it.
+    #[test]
+    fn a_passing_refusal_is_shown_while_the_inspector_keeps_asking() {
+        let old = key("old");
+        let mut profiles = ColumnProfiles::default();
+        profiles.passing = Some((old.clone(), "took too long".to_string()));
+        profiles.viewing = Some(old.clone());
+        assert_eq!(
+            profiles.peek(&old),
+            Some(ProfileRead::Failed("took too long".to_string()))
+        );
+        let passing_here = profiles.passing.as_ref().is_some_and(|(k, _)| *k == old);
+        assert!(passing_here && !is_fresh_ask(profiles.viewing.as_ref(), &old, true));
+        profiles.stop_the_inspectors();
+        assert!(
+            is_fresh_ask(profiles.viewing.as_ref(), &old, true),
+            "leaving the table makes the next ask a fresh one"
+        );
     }
 }

@@ -14,7 +14,7 @@ The read is a preview's. The data file is loaded on a fresh in-memory connection
 
 No type source rides the preview, so a step table's column has no semantic label. Its "finetype" line shows its storage type until the type source can be asked on a preview connection.
 
-The window keeps up to eight profiles (`ColumnProfiles`), each against the table's name, the content hash the run record gives it, and the steps it is made through. A run that changes the table changes its hash, and an edit to one of its steps changes the steps, so either reads the table again. A read that ran out of time or was stopped is read again on the next ask; a refusal that asking again cannot change, such as DuckDB rejecting a statement, is kept.
+The window keeps up to eight profiles (`ColumnProfiles`), each against the table's name, the content hash the run record gives it, and the steps it is made through. A run that changes the table changes its hash, and an edit to one of its steps changes the steps, so either reads the table again. A read that ran out of time is said to have, and is read again on the next fresh ask: the canvas coming to the table again, or a caller asking for it by name. The inspector's own asks on each frame it draws the table are not fresh, so a table whose profile keeps running out of time is not read again behind the reader's back. A refusal that asking again cannot change, such as DuckDB rejecting a statement, is kept.
 
 ## What the inspector says
 
