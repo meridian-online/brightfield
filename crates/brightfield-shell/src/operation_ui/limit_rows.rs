@@ -54,30 +54,65 @@ impl Direction {
     }
 }
 
-/// Where the first item of `order` ends: at its first comma outside quotes.
-fn first_item_end(order: &str) -> usize {
-    let mut quoted = false;
-    for (at, c) in order.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ',' if !quoted => return at,
-            _ => {}
-        }
-    }
-    order.len()
+/// What a character of an order is part of, read left to right: a `"name"`
+/// or a `'literal'` (a doubled quote inside one closes and opens it again,
+/// which leaves it open), and how many parentheses are open around it.
+#[derive(Default)]
+struct Scan {
+    quote: Option<char>,
+    depth: usize,
 }
 
-/// The words of `item` after its last quote, each with where it starts, so a
-/// quoted name holding `desc` is not read as a direction.
+impl Scan {
+    /// Take `c`, and say whether it stands at the top level: outside every
+    /// quote and parenthesis, its own opening one included.
+    fn top(&mut self, c: char) -> bool {
+        match (self.quote, c) {
+            (Some(q), _) => {
+                if c == q {
+                    self.quote = None;
+                }
+                false
+            }
+            (None, '"' | '\'') => {
+                self.quote = Some(c);
+                false
+            }
+            (None, '(') => {
+                self.depth += 1;
+                false
+            }
+            (None, ')') => {
+                self.depth = self.depth.saturating_sub(1);
+                false
+            }
+            (None, _) => self.depth == 0,
+        }
+    }
+}
+
+/// Where the first item of `order` ends: at its first comma at the top level,
+/// so a comma in a name, a literal or a call's arguments ends nothing.
+fn first_item_end(order: &str) -> usize {
+    let mut scan = Scan::default();
+    order
+        .char_indices()
+        .find(|&(_, c)| scan.top(c) && c == ',')
+        .map_or(order.len(), |(at, _)| at)
+}
+
+/// The words of `item`, each with where it starts, split at whitespace at the
+/// top level only, so `"most desc"` and `round(x, 1)` are one word each and a
+/// `desc` inside them is not read as a direction.
 fn tail_words(item: &str) -> Vec<(usize, &str)> {
-    let from = item.rfind('"').map_or(0, |at| at + 1);
-    let tail = &item[from..];
+    let mut scan = Scan::default();
     let mut words = Vec::new();
     let mut start = None;
-    for (at, c) in tail.char_indices() {
-        match (c.is_whitespace(), start) {
+    for (at, c) in item.char_indices() {
+        let gap = scan.top(c) && c.is_whitespace();
+        match (gap, start) {
             (true, Some(s)) => {
-                words.push((from + s, &tail[s..at]));
+                words.push((s, &item[s..at]));
                 start = None;
             }
             (false, None) => start = Some(at),
@@ -85,7 +120,7 @@ fn tail_words(item: &str) -> Vec<(usize, &str)> {
         }
     }
     if let Some(s) = start {
-        words.push((from + s, &tail[s..]));
+        words.push((s, &item[s..]));
     }
     words
 }
@@ -313,6 +348,13 @@ mod tests {
         assert_eq!(direction("\"most desc\""), Some(Direction::Smallest));
         assert_eq!(direction("\"a, b\" desc"), Some(Direction::Largest));
         assert_eq!(direction("  "), None);
+        // A comma in a call's arguments or in a literal ends no item.
+        assert_eq!(direction("round(x, 1) desc"), Some(Direction::Largest));
+        assert_eq!(
+            direction("concat(a, ', ', b) desc"),
+            Some(Direction::Largest)
+        );
+        assert_eq!(direction("lower('it''s, desc')"), Some(Direction::Smallest));
     }
 
     #[test]
@@ -332,6 +374,18 @@ mod tests {
         assert_eq!(with_direction("\"most desc\"", large), "\"most desc\" desc");
         assert_eq!(with_direction("\"a, b\" asc, c", large), "\"a, b\" desc, c");
         assert_eq!(with_direction("", large), "");
+        assert_eq!(
+            with_direction("coalesce(a, 0) asc, b", large),
+            "coalesce(a, 0) desc, b"
+        );
+        assert_eq!(
+            with_direction("round(median_income, 1)", large),
+            "round(median_income, 1) desc"
+        );
+        assert_eq!(
+            with_direction("concat(a, ', ', b) desc", small),
+            "concat(a, ', ', b) asc"
+        );
     }
 
     #[test]
