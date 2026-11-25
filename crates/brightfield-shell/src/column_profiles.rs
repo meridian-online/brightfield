@@ -130,7 +130,7 @@ impl ColumnProfiles {
     /// unless a profile is kept for it or a read of it is under way.
     ///
     /// A refusal that may pass is shown, and read again only on a fresh ask
-    /// ([`is_fresh_ask`]), so a table whose profile keeps running out of time
+    /// ([`is_fresh_ask`], held by `only_a_new_ask_reads_a_passing_refusal_again`), so a table whose profile keeps running out of time
     /// says so rather than being read again on each frame. A read under way
     /// for another table is stopped: one table is asked about at a time, and
     /// the one asked about now is the one wanted.
@@ -281,7 +281,7 @@ impl ColumnProfiles {
 /// Whether an ask for `key` is a fresh one: a caller's ask by name always is,
 /// and the inspector's is when the table it describes has changed since it
 /// last asked, which includes the canvas coming back to the table after
-/// leaving it.
+/// leaving it (`only_a_new_ask_reads_a_passing_refusal_again`).
 fn is_fresh_ask(viewing: Option<&ProfileKey>, key: &ProfileKey, for_inspector: bool) -> bool {
     !for_inspector || viewing != Some(key)
 }
