@@ -20,7 +20,8 @@
 //!
 //! **A read under way is said to be under way** ([`ProfileRead::Reading`]), so
 //! the inspector draws a line saying so rather than drawing nothing while the
-//! worker reads.
+//! worker reads (`a_profile_still_reading_says_so_rather_than_showing_nothing`
+//! in `tests/inspector_contract.rs`).
 
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
