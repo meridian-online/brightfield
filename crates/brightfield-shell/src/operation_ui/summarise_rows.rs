@@ -3,10 +3,11 @@
 //! Operation section.
 //!
 //! It starts from `shift-f` with the grid's cursor on a cell, or from
-//! "Summarise by this column" on a header's menu, and asks nothing to begin, as
-//! VisiData's frequency table does: `group_by` is the column as SQL spells it
-//! and `aggregates` is `count(*) AS n`, so the preview is a count of each of
-//! the column's values at once, and Enter keeps it.
+//! "Summarise by this column" on a header's menu, and begins with no question,
+//! as VisiData's frequency table does: `group_by` is the column as SQL spells
+//! it and `aggregates` is `count(*) AS n`, so the preview is a count of each of
+//! the column's values at once, and Enter keeps it
+//! (`summarise_rows_starts_from_a_cell_as_a_count_of_each_value`).
 //!
 //! The form has two parts. "Group by" lists the items grouped by, each a chip
 //! that a click takes off, and *+ group* lists the table's columns not yet
@@ -150,7 +151,8 @@ fn function_for(label: Option<&str>, storage: &str) -> usize {
     }
 }
 
-/// [`function_for`] a column Brightfield may know nothing of.
+/// [`function_for`] a column, or `count(DISTINCT …)` for one Brightfield has
+/// no facts of.
 fn function_of(facts: Option<&ColumnFacts>) -> usize {
     facts.map_or(DISTINCT, |f| function_for(f.label.as_deref(), &f.storage))
 }
