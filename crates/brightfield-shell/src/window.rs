@@ -5404,6 +5404,17 @@ impl MeridianApp {
         }
     }
 
+    /// Whether the inspector is describing a step's table whose columns it
+    /// has not yet had: it draws the reading line in their place.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn inspector_awaits_columns(&self) -> bool {
+        self.charts
+            .inspector_inspected
+            .get()
+            .is_some_and(|inspected| inspected.columns == ProfileRead::Reading)
+    }
+
     /// Whether a column profile is being read.
     #[doc(hidden)]
     #[must_use]
