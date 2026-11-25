@@ -192,6 +192,7 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | `derive-column` | `=` | 3 / 4 / 4 | `=` is VisiData's new column from an expression; the Grid context keeps it apart from the Workspace's `=` zoom-in |
 | `fill-nulls` | `f` | 2 / 4 / 3 | `f` is VisiData's fill; the grid's filter is `w`, and a click on a header's missing count does the same |
 | `cast-column` | `shift-t` | 2 / 4 / 2 | `T` = type; a click on a header's type does the same, and `retype-column` is the model's, in its own context |
+| `dedupe-rows` | `shift-u` | 2 / 3 / 2 | `U` = unique; bare `u` is undo elsewhere, and "Remove duplicate rows" on a header's menu does the same |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 
