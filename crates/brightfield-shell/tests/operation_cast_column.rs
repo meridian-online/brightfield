@@ -163,7 +163,7 @@ fn cast_column_starts_from_a_cell_and_the_menu_with_the_same_defaults() {
 #[test]
 fn cast_column_on_a_column_fine_type_agrees_with_opens_empty() {
     // `median_income` is stored as `DOUBLE`, and FineType reads its label as
-    // `DOUBLE` too: there is nothing to suggest first.
+    // `DOUBLE` too, so the field opens with no type in it.
     let mut win = labelled(SAMPLE, &[("median_income", DECIMAL)]);
     cast_from_header(&mut win, "median_income");
     let draft = win.making().expect("the cast is being made");
