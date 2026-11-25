@@ -5,8 +5,11 @@
 //! storage label), from `shift-t` with the grid's cursor on a cell, or from
 //! "Change type" on a header's menu. Its field opens over the storage label
 //! with the DuckDB type FineType gives the column's label, selected whole,
-//! when that differs from the type the column is stored as; otherwise it
-//! opens empty. Under it are that type, then the common types, less the one
+//! when that differs from the type the column is stored as and FineType
+//! reaches it with a plain `CAST`; otherwise it opens empty. A label FineType
+//! reads through a format (a `strptime` for a day-first date, a pattern for
+//! `enabled` and `disabled`) is not offered, since arc's plain `CAST` of
+//! those values fails. Under it are that type, then the common types, less the one
 //! the column already has and filtered by what is typed. `column` is given
 //! bare, since arc takes it as a name; `type` is SQL.
 //!
@@ -50,15 +53,28 @@ fn types_of<'b>(b: &'b Begin<'_>) -> (Option<&'b str>, Option<&'b str>) {
     else {
         return (None, None);
     };
-    let fine_type = facts
-        .label
-        .as_deref()
-        .and_then(|label| b.transforms.duckdb_type(label));
+    let fine_type = facts.label.as_deref().and_then(|label| {
+        let fine_type = b.transforms.duckdb_type(label)?;
+        plain_cast(b.transforms.transform(label), fine_type).then_some(fine_type)
+    });
     (Some(facts.storage.as_str()), fine_type)
 }
 
-/// The type FineType reads for the column, when it is not the one the column
-/// is stored as.
+/// Whether FineType reaches `fine_type` with nothing but a cast, as arc's
+/// `cast-column` does: no transform, `CAST({col} AS <type>)` or
+/// `{col}::<type>`.
+fn plain_cast(transform: Option<&str>, fine_type: &str) -> bool {
+    let Some(transform) = transform else {
+        return true;
+    };
+    let transform = spelled(transform);
+    let fine_type = spelled(fine_type);
+    transform == format!("CAST({{COL}}AS{fine_type})")
+        || transform == format!("{{COL}}::{fine_type}")
+}
+
+/// The type FineType reads for the column, when a plain cast reaches it and
+/// it is not the one the column is stored as.
 fn fine_type_default(b: &Begin<'_>) -> Option<String> {
     let (storage, fine_type) = types_of(b);
     let fine_type = fine_type?;

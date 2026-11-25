@@ -188,6 +188,24 @@ fn cast_column_on_a_column_fine_type_agrees_with_opens_empty() {
 }
 
 #[test]
+fn cast_column_opens_empty_where_fine_type_reads_its_type_through_a_format() {
+    // FineType reads `representation.boolean.terms` (`enabled`, `active`) as
+    // `BOOLEAN` through a pattern, which arc's plain `CAST` does not take, so
+    // that type is not the default.
+    let mut win = labelled(WITH_NULLS, &[("city", "representation.boolean.terms")]);
+    cast_with_key(&mut win, "city");
+    assert_eq!(win.field_text().as_deref(), Some(""));
+    assert_eq!(win.suggestions()[0], "BIGINT");
+
+    // `representation.boolean.binary` is a plain cast to `BOOLEAN`, so the
+    // same column opens on it.
+    let mut win = labelled(WITH_NULLS, &[("city", "representation.boolean.binary")]);
+    cast_with_key(&mut win, "city");
+    assert_eq!(win.field_text().as_deref(), Some("BOOLEAN"));
+    assert_eq!(win.suggestions()[0], "BOOLEAN");
+}
+
+#[test]
 fn cast_column_previews_arcs_model_as_it_is_edited() {
     let mut win = OpWindow::on_copy_of(SAMPLE);
     cast_with_key(&mut win, "median_income");
