@@ -129,6 +129,10 @@ const ONE_LABEL_CATALOGUE: &str =
 /// A synthesised bundle reaches it, because every file-level check now runs
 /// before the extension is loaded.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn a_bundle_whose_catalogue_does_not_describe_its_model_is_refused_by_open() {
     let dir = std::env::temp_dir().join(format!("bf-skew-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
@@ -176,6 +180,10 @@ fn a_bundle_whose_catalogue_does_not_describe_its_model_is_refused_by_open() {
 /// `open`, and "verified before loading" is the only version of this check
 /// worth having — after the LOAD the code is already running.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loads() {
     let dir = std::env::temp_dir().join(format!("bf-tamper-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
@@ -225,6 +233,10 @@ fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loa
 /// Parquet files opening at all, which is a user's first action after choosing
 /// one.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn a_native_type_source_costs_the_session_acquisition_but_not_autoload() {
     let dir = std::env::temp_dir().join(format!("bf-settings-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
@@ -286,6 +298,10 @@ fn a_native_type_source_costs_the_session_acquisition_but_not_autoload() {
 /// with or without a type source, so losing the whole dashboard over a missing
 /// optional file would be absurd.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn a_directory_that_is_not_a_bundle_is_refused_and_the_load_survives() {
     let dir = std::env::temp_dir().join(format!("bf-not-a-bundle-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -303,6 +319,10 @@ fn a_directory_that_is_not_a_bundle_is_refused_and_the_load_survives() {
 /// A bundle whose extension file is a plain shared library — never stamped
 /// with DuckDB's metadata trailer — is refused before any `LOAD` is attempted.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn an_unstamped_extension_is_refused_by_the_abi_check() {
     let dir = std::env::temp_dir().join(format!("bf-unstamped-{}", std::process::id()));
     std::fs::create_dir_all(dir.join(semantic::MODEL_DIR)).unwrap();

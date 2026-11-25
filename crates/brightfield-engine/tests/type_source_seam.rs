@@ -110,6 +110,10 @@ impl OpenTypeSource for OpenBackwardsNative {
 /// restriction could quietly be a special case for `TypeSourceSpec::Bundle`,
 /// which would leave the next native source to rediscover the hazard.
 #[test]
+#[cfg_attr(
+    feature = "managed-duckdb",
+    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+)]
 fn the_unsigned_extension_restriction_follows_what_a_source_declares() {
     let load = |spec: TypeSourceSpec| -> (Option<String>, Option<String>, String) {
         let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
