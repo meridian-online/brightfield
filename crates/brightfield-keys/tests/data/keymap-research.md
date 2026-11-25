@@ -53,11 +53,11 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `export-chart-picture` | `cmd-shift-e` | 2 / 5 / 4 | cmd-shift-e = export (Figma's export chord); `cmd-e` is `toggle-focus`'s; global, so it reaches the chart under the pointer from any pane |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
-| `show-bring-in-tab` | `alt-b` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Bring in tab |
+| `show-connect-tab` | `alt-c` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Connect tab |
 | `show-shape-tab` | `alt-s` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Shape tab |
 | `show-model-tab` | `alt-m` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Model tab |
 | `show-publish-tab` | `alt-p` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Publish tab |
-| `show-context-tab` | `alt-c` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's the contextual tab |
+| `show-context-tab` | `alt-x` | 3 / 5 / 4 | ⌥ and X, since the contextual tab's name changes with the canvas: selects the ribbon's contextual tab |
 | `toggle-ribbon` | `alt-r` | 3 / 5 / 4 | ⌥ and R, beside the tabs' keys in the Office KeyTip move: collapses the ribbon to its tabs and opens it again |
 | `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
 

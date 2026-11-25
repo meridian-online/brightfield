@@ -5,7 +5,7 @@
 //! as the analyst works: the tab their keys or clicks picked, and the collapse.
 
 use brightfield_keys::ribbon::{
-    Stage, SHOW_BRING_IN_TAB, SHOW_CONTEXT_TAB, SHOW_MODEL_TAB, SHOW_PUBLISH_TAB, SHOW_SHAPE_TAB,
+    Stage, SHOW_CONNECT_TAB, SHOW_CONTEXT_TAB, SHOW_MODEL_TAB, SHOW_PUBLISH_TAB, SHOW_SHAPE_TAB,
     TOGGLE_RIBBON,
 };
 
@@ -42,7 +42,7 @@ impl RibbonState {
     /// Perform one of the ribbon's verbs. Answers whether `verb` is one.
     pub fn perform(&mut self, verb: &str) -> bool {
         let pick = match verb {
-            SHOW_BRING_IN_TAB => RibbonPick::Stage(Stage::BringIn),
+            SHOW_CONNECT_TAB => RibbonPick::Stage(Stage::Connect),
             SHOW_SHAPE_TAB => RibbonPick::Stage(Stage::Shape),
             SHOW_MODEL_TAB => RibbonPick::Stage(Stage::Model),
             SHOW_PUBLISH_TAB => RibbonPick::Stage(Stage::Publish),

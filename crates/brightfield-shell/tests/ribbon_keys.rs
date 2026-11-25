@@ -15,11 +15,11 @@ fn the_tab_keys_select_their_tabs_over_a_protocol() {
     win.press("alt-m");
     assert_eq!(win.answered, ["show-model-tab"]);
     assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::Model));
-    win.press("alt-b");
-    assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::BringIn));
+    win.press("alt-c");
+    assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::Connect));
     win.press("alt-p");
     assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::Publish));
-    win.press("alt-c");
+    win.press("alt-x");
     assert_eq!(win.app.ribbon().selected, RibbonPick::Context);
     win.press("alt-s");
     assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::Shape));
