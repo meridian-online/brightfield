@@ -205,19 +205,38 @@ pub struct InspectorPane {
 /// The window's handle on the table the canvas holds, when a step after the
 /// load makes it — written each frame before the dock draws, read by
 /// [`InspectorPane::ui`].
+///
+/// It also carries the inspector's ask back: the pane notes when it drew the
+/// table, and the window starts reading the table's columns only then, so a
+/// table on the canvas with the inspector shut or on another pane is not read
+/// for nobody.
 #[derive(Clone, Default)]
-pub struct InspectedHandle(Rc<RefCell<Option<InspectedTable>>>);
+pub struct InspectedHandle {
+    table: Rc<RefCell<Option<InspectedTable>>>,
+    asked: Rc<std::cell::Cell<bool>>,
+}
 
 impl InspectedHandle {
     /// Declare this frame's table. `None` when the canvas holds no such table.
     pub fn set(&self, table: Option<InspectedTable>) {
-        *self.0.borrow_mut() = table;
+        *self.table.borrow_mut() = table;
     }
 
     /// What was last declared.
     #[must_use]
     pub fn get(&self) -> Option<InspectedTable> {
-        self.0.borrow().clone()
+        self.table.borrow().clone()
+    }
+
+    /// Note that the inspector drew the declared table this frame.
+    pub fn ask(&self) {
+        self.asked.set(true);
+    }
+
+    /// Whether the inspector drew the declared table since this was last
+    /// taken.
+    pub fn take_asked(&self) -> bool {
+        self.asked.replace(false)
     }
 }
 
@@ -500,6 +519,7 @@ impl Item<ChartDoc> for InspectorPane {
             // A table a later step makes, on the canvas: the dashboard's tiles
             // are of the file's table, so no tile can be selected for it, and
             // the table is what there is to describe.
+            self.inspected.ask();
             table_body(ui, &inspected, cx.mode);
             ui.add_space(spacing::SECTION_GAP);
         } else {

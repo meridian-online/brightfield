@@ -55,49 +55,102 @@ pub struct ProfileKey {
     pub chain: (String, Vec<(String, PreviewOp)>),
 }
 
+/// Why a worker found no columns: the sentence the inspector shows, and
+/// whether asking again could answer otherwise.
+struct Refused {
+    sentence: String,
+    /// A read that ran out of time, was stopped, or ended without an answer:
+    /// the table is not what failed, so the next ask reads it again.
+    passing: bool,
+}
+
 /// The answer a worker sends: the table's columns, or why there are none.
-type Answer = Result<Vec<ColumnFacts>, String>;
+type Answer = Result<Vec<ColumnFacts>, Refused>;
 
 /// The most profiles kept at once. A profile is a table's worth of column
 /// facts, and the inspector is asked about the tables a reader visits, so a
 /// handful covers going back and forth between them.
 const PROFILES_KEPT: usize = 8;
 
+/// A read under way.
+struct Reading {
+    key: ProfileKey,
+    answer: Receiver<Answer>,
+    stop: PreviewStop,
+    /// Whether the inspector started it, so the inspector may stop it once
+    /// the canvas no longer holds the table. A read a caller asked for by name
+    /// is left to finish.
+    for_inspector: bool,
+}
+
 /// The profiles read so far, and the one being read.
 #[derive(Default)]
 pub struct ColumnProfiles {
+    /// Each profile read, or the refusal that will not change by asking again.
     kept: Vec<(ProfileKey, ProfileRead)>,
-    reading: Option<(ProfileKey, Receiver<Answer>, PreviewStop)>,
+    /// A refusal that may: shown until the table is next asked about, then
+    /// read again.
+    passing: Option<(ProfileKey, String)>,
+    reading: Option<Reading>,
     started: usize,
 }
 
 impl ColumnProfiles {
-    /// Where the profile of `table` of `source` stands, starting a read of it
-    /// on a worker when none is kept or under way. A read under way for
-    /// another table is stopped: the inspector describes one table at a time,
-    /// and the one asked about now is the one it is describing.
-    pub(crate) fn read(
-        &mut self,
-        table: &str,
-        content_hash: Option<&str>,
-        source: &TypedSource,
-        hooks: &crate::data_grid::PreviewHooks,
-    ) -> ProfileRead {
-        let chain = source.read_over(source.chain_reading(&[table.to_string()]));
-        let key = ProfileKey {
+    /// What a profile of `table` of `source` is kept against.
+    pub(crate) fn key(table: &str, content_hash: Option<&str>, source: &TypedSource) -> ProfileKey {
+        ProfileKey {
             table: table.to_string(),
             content_hash: content_hash.map(str::to_owned),
-            chain,
-        };
+            chain: source.read_over(source.chain_reading(&[table.to_string()])),
+        }
+    }
+
+    /// Where the profile under `key` stands, without starting a read: `None`
+    /// when nothing is kept for it and none is under way.
+    pub(crate) fn peek(&mut self, key: &ProfileKey) -> Option<ProfileRead> {
         self.poll();
-        if let Some((_, read)) = self.kept.iter().find(|(k, _)| *k == key) {
-            return read.clone();
+        if let Some((_, read)) = self.kept.iter().find(|(k, _)| k == key) {
+            return Some(read.clone());
         }
-        if self.reading.as_ref().is_some_and(|(k, _, _)| *k == key) {
-            return ProfileRead::Reading;
+        if self.reading.as_ref().is_some_and(|r| r.key == *key) {
+            return Some(ProfileRead::Reading);
         }
-        self.start(key, source, hooks.clone());
+        self.passing
+            .as_ref()
+            .filter(|(k, _)| k == key)
+            .map(|(_, sentence)| ProfileRead::Failed(sentence.clone()))
+    }
+
+    /// Where the profile under `key` stands, starting a read of it on a worker
+    /// when none is kept or under way. A refusal that may pass is read again.
+    /// A read under way for another table is stopped: one table is asked
+    /// about at a time, and the one asked about now is the one wanted.
+    pub(crate) fn read(
+        &mut self,
+        key: ProfileKey,
+        source: &TypedSource,
+        hooks: &crate::data_grid::PreviewHooks,
+        for_inspector: bool,
+    ) -> ProfileRead {
+        let known = self.peek(&key);
+        let passing_here = self.passing.as_ref().is_some_and(|(k, _)| *k == key);
+        if let Some(read) = known.filter(|_| !passing_here) {
+            return read;
+        }
+        self.passing = None;
+        self.start(key, source, hooks.clone(), for_inspector);
         ProfileRead::Reading
+    }
+
+    /// Stop the read under way when the inspector started it: the canvas has
+    /// moved off the table it was reading, and a preview of the table now in
+    /// view should not wait behind it.
+    pub(crate) fn stop_the_inspectors(&mut self) {
+        if self.reading.as_ref().is_some_and(|r| r.for_inspector) {
+            if let Some(reading) = self.reading.take() {
+                reading.stop.stop();
+            }
+        }
     }
 
     /// The kept columns `read` holds, borrowed from the cache.
@@ -116,20 +169,37 @@ impl ColumnProfiles {
         self.started
     }
 
+    /// Whether a read is under way.
+    #[must_use]
+    pub const fn is_reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
     /// Keep the answer of the read under way, once it has one.
     fn poll(&mut self) {
-        let Some((_, answer, _)) = &self.reading else {
+        let Some(reading) = &self.reading else {
             return;
         };
-        let read = match answer.try_recv() {
-            Ok(Ok(columns)) => ProfileRead::Read(columns.into()),
-            Ok(Err(reason)) => ProfileRead::Failed(reason),
+        let answer = match reading.answer.try_recv() {
+            Ok(answer) => answer,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                ProfileRead::Failed("The read of the columns stopped without an answer.".into())
-            }
+            Err(TryRecvError::Disconnected) => Err(Refused {
+                sentence: "The read of the columns stopped without an answer.".into(),
+                passing: true,
+            }),
         };
-        let (key, _, _) = self.reading.take().expect("a read is under way");
+        let key = self.reading.take().expect("a read is under way").key;
+        let read = match answer {
+            Ok(columns) => ProfileRead::Read(columns.into()),
+            Err(Refused {
+                sentence,
+                passing: true,
+            }) => {
+                self.passing = Some((key, sentence));
+                return;
+            }
+            Err(Refused { sentence, .. }) => ProfileRead::Failed(sentence),
+        };
         if self.kept.len() >= PROFILES_KEPT {
             self.kept.remove(0);
         }
@@ -141,9 +211,10 @@ impl ColumnProfiles {
         key: ProfileKey,
         source: &TypedSource,
         hooks: crate::data_grid::PreviewHooks,
+        for_inspector: bool,
     ) {
-        if let Some((_, _, stop)) = self.reading.take() {
-            stop.stop();
+        if let Some(reading) = self.reading.take() {
+            reading.stop.stop();
         }
         let (tell, answer) = channel();
         let stop = PreviewStop::default();
@@ -172,19 +243,31 @@ impl ColumnProfiles {
                         .map(crate::one_step::facts_of_column)
                         .collect()
                 })
-                .map_err(|refusal| format!("The columns could not be read: {refusal}."))
+                .map_err(|refusal| Refused {
+                    passing: matches!(
+                        refusal,
+                        brightfield_engine::PreviewRefusal::TookTooLong { .. }
+                            | brightfield_engine::PreviewRefusal::Superseded
+                    ),
+                    sentence: format!("The columns could not be read: {refusal}."),
+                })
             });
             let _ = tell.send(answer);
         });
-        self.reading = Some((key, answer, stop));
+        self.reading = Some(Reading {
+            key,
+            answer,
+            stop,
+            for_inspector,
+        });
         self.started += 1;
     }
 }
 
 impl Drop for ColumnProfiles {
     fn drop(&mut self) {
-        if let Some((_, _, stop)) = self.reading.take() {
-            stop.stop();
+        if let Some(reading) = self.reading.take() {
+            reading.stop.stop();
         }
     }
 }

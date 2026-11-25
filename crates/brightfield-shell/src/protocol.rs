@@ -2548,7 +2548,15 @@ impl ProtocolModel {
     /// no step makes, such as a file.
     #[must_use]
     pub fn column_table(&self, node: &AssetId) -> Option<crate::inspector::ColumnTable> {
-        let facts = self.inspector(Some(node));
+        // Of `node` itself: `inspector` answers for the spine's selection
+        // first, which may be another table.
+        let facts = inspector_for(
+            &self.graph_collapsed,
+            &self.assets,
+            &self.steps,
+            &self.statuses,
+            Some(node),
+        );
         let step = facts.producing_step?;
         Some(crate::inspector::ColumnTable {
             table: facts.label,

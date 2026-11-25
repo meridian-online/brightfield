@@ -330,7 +330,7 @@ pub fn preview_first_page_stoppable(
         file_limit_bytes,
         deadline,
         stop,
-        |conn, last, refused| {
+        |conn, last, refused, _| {
             let rows_sql = format!("SELECT * FROM {}", quote(last));
             let sql = match chain.last() {
                 Some((_, PreviewOp::OrderBy(order))) => {
@@ -382,7 +382,7 @@ pub fn preview_row_count_stoppable(
         file_limit_bytes,
         deadline,
         stop,
-        |conn, last, refused| {
+        |conn, last, refused, _| {
             let count: i64 = conn
                 .query_row(&format!("SELECT count(*) FROM {}", quote(last)), [], |r| {
                     r.get(0)
@@ -427,9 +427,12 @@ pub fn preview_profile_stoppable(
         file_limit_bytes,
         deadline,
         stop,
-        |conn, _last, _refused| match crate::Profiler::plain(conn).profile_table(table) {
+        |conn, _last, _, refused_in| match crate::Profiler::plain(conn).profile_table(table) {
             crate::ProfileOutcome::Profiled { row_count, columns } => Ok((row_count, columns)),
-            crate::ProfileOutcome::Failed(reason) => Err(PreviewRefusal::Engine(reason)),
+            // The profile pass speaks in DuckDB's words rather than its
+            // errors, so its failure is read as the other reads' are: the
+            // deadline and the stop first, then running out of memory.
+            crate::ProfileOutcome::Failed(reason) => Err(refused_in(&reason)),
             crate::ProfileOutcome::Unsupported => Err(PreviewRefusal::Engine(
                 "the table cannot be profiled".to_string(),
             )),
@@ -438,8 +441,9 @@ pub fn preview_profile_stoppable(
 }
 
 /// Loads `data`, shuts and locks the connection, makes each step of `chain`
-/// as a table, and hands `read` the connection, the last table's name and the
-/// map from a DuckDB error to a refusal. One watch of `deadline` and `stop`
+/// as a table, and hands `read` the connection, the last table's name, the
+/// map from a DuckDB error to a refusal, and the same map from DuckDB's words.
+/// One watch of `deadline` and `stop`
 /// covers the load, the steps and `read`.
 #[allow(clippy::too_many_arguments)]
 fn with_chain<T>(
@@ -454,6 +458,7 @@ fn with_chain<T>(
         &Connection,
         &str,
         &dyn Fn(duckdb::Error) -> PreviewRefusal,
+        &dyn Fn(&str) -> PreviewRefusal,
     ) -> Result<T, PreviewRefusal>,
 ) -> Result<T, PreviewRefusal> {
     let bytes = size_within(data, file_limit_bytes)?;
@@ -461,11 +466,12 @@ fn with_chain<T>(
     // Taken before any SQL runs, and dropped (stopping the watch) on every
     // way out of this function.
     let watch = Watchdog::start(&conn, deadline, stop.clone());
-    let refused = |e: duckdb::Error| {
+    let refused_in = |msg: &str| {
         watch
             .refusal(deadline)
-            .unwrap_or_else(|| refusal(&e.to_string(), bytes))
+            .unwrap_or_else(|| refusal(msg, bytes))
     };
+    let refused = |e: duckdb::Error| refused_in(&e.to_string());
     load_and_shut(
         &conn,
         data,
@@ -482,7 +488,7 @@ fn with_chain<T>(
         previous = name;
     }
 
-    let out = read(&conn, previous, &refused)?;
+    let out = read(&conn, previous, &refused, &refused_in)?;
     // An interrupt that landed between statements is not an error from any
     // of them, and the result it leaves is not to be trusted as complete.
     if let Some(why) = watch.refusal(deadline) {

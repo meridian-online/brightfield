@@ -456,6 +456,14 @@ fn the_inspector_names_the_step_that_made_the_column_and_its_state() {
     assert_eq!(table.kind, "sql", "arc records a limit as a SQL model");
     assert_eq!(table.state, NOT_RUN, "no run has recorded the step");
 
+    // The spine's selection is another table's, and `top` is still `top`.
+    win.select_made_by("old");
+    assert_eq!(
+        win.app.column_table_for("top").map(|t| t.step),
+        Some("top".to_string()),
+        "a table is described by its own step, whatever the spine has selected"
+    );
+
     let root = win
         .app
         .column_table_for(ROOT)
@@ -480,14 +488,18 @@ fn a_profile_still_reading_says_so_rather_than_showing_nothing() {
     win.app.chart_doc().hold_preview_reads(true);
     click_grid_of(&mut win, "old");
     wait_to_draw(&mut win, &reading_line("old"));
-    // The Outline lists the file's own columns whatever the inspector says, so
-    // a column of `old` is one more of the name than the Outline draws.
-    let drawn = |win: &OpWindow| win.texts.iter().filter(|t| *t == "median_income").count();
-    let while_reading = drawn(&win);
+    // The pane asks as it draws, and the read starts on the frame after.
+    win.settle();
+    let started = win.app.column_profiles_started();
+    assert_eq!(started, 1, "the inspector's ask started the one read");
+    assert!(
+        win.texts.iter().any(|t| *t == reading_line("old")),
+        "the line stays while the read is held"
+    );
 
     win.app.chart_doc().hold_preview_reads(false);
     let deadline = Instant::now() + Duration::from_secs(60);
-    while drawn(&win) == while_reading {
+    while win.texts.iter().any(|t| *t == reading_line("old")) {
         assert!(
             Instant::now() < deadline,
             "the columns of old never arrived"
@@ -495,8 +507,41 @@ fn a_profile_still_reading_says_so_rather_than_showing_nothing() {
         std::thread::sleep(Duration::from_millis(5));
         win.run(Vec::new());
     }
-    assert!(
-        !win.texts.iter().any(|t| *t == reading_line("old")),
-        "the reading line goes once the columns are in"
+    let columns = win
+        .app
+        .column_facts_for("old")
+        .expect("the inspector's read of old is kept")
+        .to_vec();
+    assert_eq!(
+        win.app.column_profiles_started(),
+        started,
+        "the columns drawn are the read the inspector started"
     );
+    let drawn = columns.iter().all(|c| win.texts.contains(&c.column));
+    assert!(
+        drawn,
+        "the columns replace the reading line: {:?}",
+        win.texts
+    );
+}
+
+/// **The inspector's read stops when the canvas leaves the table**: a profile
+/// nobody is looking at does not hold the preview gate the grid reads behind.
+#[test]
+fn leaving_a_steps_table_stops_the_inspectors_read_of_it() {
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, two_steps);
+    win.app.chart_doc().hold_preview_reads(true);
+    click_grid_of(&mut win, "old");
+    wait_to_draw(&mut win, &reading_line("old"));
+    assert!(
+        win.app.column_profile_under_way(),
+        "the inspector asked for old"
+    );
+
+    win.graph_to_canvas();
+    assert!(
+        !win.app.column_profile_under_way(),
+        "the read of old went on after the canvas left it"
+    );
+    win.app.chart_doc().hold_preview_reads(false);
 }

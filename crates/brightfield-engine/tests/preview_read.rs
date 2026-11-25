@@ -488,3 +488,24 @@ fn a_steps_table_is_profiled_on_the_previews_own_connection() {
     let upper = moments.upper_quartile.expect("an upper quartile");
     assert!(moments.median <= upper && upper <= moments.max);
 }
+
+/// **A profile that runs past its deadline says so**, as a page read does,
+/// rather than handing on DuckDB's words for the interrupt. One millisecond
+/// may run out during the load or during the profile, and either way the
+/// answer is the deadline's.
+#[test]
+fn a_profile_past_its_deadline_took_too_long() {
+    let deadline = Duration::from_millis(1);
+    let refused = preview_profile_stoppable(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[],
+        ROOT,
+        PREVIEW_FILE_LIMIT_BYTES,
+        deadline,
+        &PreviewStop::default(),
+    )
+    .expect_err("one millisecond is too short to load and profile the file");
+    assert_eq!(refused, PreviewRefusal::TookTooLong { deadline });
+}

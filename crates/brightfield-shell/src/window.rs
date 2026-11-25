@@ -3479,6 +3479,19 @@ impl ModelDoc {
     }
 }
 
+/// How a profile of a table is asked for.
+#[derive(Clone, Copy)]
+enum ProfileAsk {
+    /// Say where it stands, and start nothing.
+    Peek,
+    /// Start its read when none is kept or under way.
+    Read {
+        /// Whether the inspector is asking, so the read stops when the canvas
+        /// leaves the table.
+        for_inspector: bool,
+    },
+}
+
 /// The window.
 pub struct MeridianApp {
     /// The live layout — the arrangement, the window geometry, and what is
@@ -5351,15 +5364,20 @@ impl MeridianApp {
         {
             return Some(self.protocol.doc.model.columns());
         }
-        match self.column_profile_for(table) {
+        match self.column_profile_for(
+            table,
+            ProfileAsk::Read {
+                for_inspector: false,
+            },
+        ) {
             ProfileRead::Read(columns) => self.charts.column_profiles.kept(&columns),
             ProfileRead::Reading | ProfileRead::Failed(_) => None,
         }
     }
 
-    /// Where the profile of `table` stands, starting its read when none is
-    /// kept or under way. See [`Self::column_facts_for`].
-    pub fn column_profile_for(&mut self, table: &str) -> ProfileRead {
+    /// Where the profile of `table` stands, starting its read under `ask`
+    /// when none is kept or under way. See [`Self::column_facts_for`].
+    fn column_profile_for(&mut self, table: &str, ask: ProfileAsk) -> ProfileRead {
         let Some(source) = self.typed_source(None) else {
             return ProfileRead::Failed(
                 "Brightfield reads the columns of a step's table in a Protocol made from a \
@@ -5370,14 +5388,24 @@ impl MeridianApp {
         let model = &self.protocol.doc.model;
         let hash = model
             .node_of_step_table(table)
-            .and_then(|node| model.content_hash_of(node))
-            .map(str::to_owned);
-        self.charts.column_profiles.read(
-            table,
-            hash.as_deref(),
-            &source,
-            self.charts.doc.preview_hooks(),
-        )
+            .and_then(|node| model.content_hash_of(node));
+        let key = ColumnProfiles::key(table, hash, &source);
+        let profiles = &mut self.charts.column_profiles;
+        match ask {
+            // Until the inspector draws the table, nothing is read, and what
+            // it will draw first is the reading line.
+            ProfileAsk::Peek => profiles.peek(&key).unwrap_or(ProfileRead::Reading),
+            ProfileAsk::Read { for_inspector } => {
+                profiles.read(key, &source, self.charts.doc.preview_hooks(), for_inspector)
+            }
+        }
+    }
+
+    /// Whether a column profile is being read.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn column_profile_under_way(&self) -> bool {
+        self.charts.column_profiles.is_reading()
     }
 
     /// How many column profiles the window has started reading.
@@ -5400,14 +5428,32 @@ impl MeridianApp {
     /// one a step after the load makes: what makes it, and its columns as far
     /// as they have been read. The file's own table is described by its
     /// tiles, so it is not among them.
-    fn inspected_table(&mut self) -> Option<InspectedTable> {
+    ///
+    /// The columns are read only once the inspector has drawn the table
+    /// (`asked`), and a read the inspector started is stopped once the canvas
+    /// no longer holds a table to describe, so the grid's own reads of the
+    /// table in view do not wait behind it.
+    fn inspected_table(&mut self, asked: bool) -> Option<InspectedTable> {
         let model = &self.protocol.doc.model;
-        let node = self.protocol.doc.canvas_holds.node()?;
-        if model.table() == Some(node) || !model.is_viewable(node) {
+        let table = self
+            .protocol
+            .doc
+            .canvas_holds
+            .node()
+            .filter(|node| model.table() != Some(*node) && model.is_viewable(node))
+            .and_then(|node| model.column_table(node));
+        let Some(table) = table else {
+            self.charts.column_profiles.stop_the_inspectors();
             return None;
-        }
-        let table = model.column_table(node)?;
-        let columns = self.column_profile_for(&table.table);
+        };
+        let ask = if asked {
+            ProfileAsk::Read {
+                for_inspector: true,
+            }
+        } else {
+            ProfileAsk::Peek
+        };
+        let columns = self.column_profile_for(&table.table, ask);
         Some(InspectedTable { table, columns })
     }
 
@@ -7595,7 +7641,8 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
-            let inspected = self.inspected_table();
+            let asked = self.charts.inspector_inspected.take_asked();
+            let inspected = self.inspected_table(asked);
             self.charts.inspector_inspected.set(inspected);
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
