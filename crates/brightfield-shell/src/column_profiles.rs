@@ -66,8 +66,8 @@ pub struct ProfileKey {
     pub files: Vec<Option<(Option<std::time::SystemTime>, u64)>>,
 }
 
-/// The modified time and length of the file at `path`, or `None` when there
-/// is none.
+/// The modified time and length of the file at `path`, or `None` when its
+/// metadata cannot be read.
 fn stamp_of(path: &std::path::Path) -> Option<(Option<std::time::SystemTime>, u64)> {
     std::fs::metadata(path)
         .ok()
