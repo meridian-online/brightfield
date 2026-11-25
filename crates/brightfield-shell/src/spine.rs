@@ -198,7 +198,7 @@ pub struct Timing {
 pub fn timings(times: &BTreeMap<String, StepTimes>) -> BTreeMap<String, Timing> {
     let span_ms = times
         .values()
-        .filter_map(|t| Some(t.start_ms? + t.duration_ms?))
+        .filter_map(|t| Some(t.start_ms?.saturating_add(t.duration_ms?)))
         .max()
         .unwrap_or(0);
     times
@@ -210,7 +210,7 @@ pub fn timings(times: &BTreeMap<String, StepTimes>) -> BTreeMap<String, Timing> 
                 // f32's precision is far finer than a pixel.
                 #[allow(clippy::cast_precision_loss)]
                 let fraction = |ms: u64| (ms as f64 / span_ms as f64) as f32;
-                (fraction(start), fraction(start + duration))
+                (fraction(start), fraction(start.saturating_add(duration)))
             });
             Some((
                 step.clone(),
@@ -232,7 +232,7 @@ pub fn duration_text(ms: u64) -> String {
         let tenths = (ms + 50) / 100;
         return format!("{}.{}s", tenths / 10, tenths % 10);
     }
-    let seconds = (ms + 500) / 1000;
+    let seconds = ms.saturating_add(500) / 1000;
     if seconds < 3600 {
         return format!("{}m {:02}s", seconds / 60, seconds % 60);
     }
@@ -362,6 +362,18 @@ mod tests {
         assert_eq!(got["older"].span, None, "no start, so no bar");
         assert_eq!(got["older"].duration, "0.5s");
         assert!(!got.contains_key("skipped"), "no duration, so no timing");
+    }
+
+    #[test]
+    fn a_record_with_absurd_times_draws_without_overflowing() {
+        let times = BTreeMap::from([(
+            "load".to_string(),
+            StepTimes {
+                start_ms: Some(u64::MAX),
+                duration_ms: Some(u64::MAX),
+            },
+        )]);
+        assert!(timings(&times).contains_key("load"));
     }
 
     #[test]

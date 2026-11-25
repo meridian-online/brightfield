@@ -2368,15 +2368,21 @@ impl ProtocolModel {
 
     /// The graph the spine lists: the collapsed graph, with each family the
     /// spine has unfolded ([`Self::toggle_spine_fold`]) listed by its members.
+    ///
+    /// A family the collapsed graph keeps open, as a model built with its
+    /// collapsed graph set to the full one keeps every family, stays open.
     fn spine_graph(&self) -> std::borrow::Cow<'_, AssetGraph> {
         if self.spine_expanded.is_empty() {
-            std::borrow::Cow::Borrowed(&self.graph_collapsed)
-        } else {
-            std::borrow::Cow::Owned(collapse_families_except(
-                &self.graph_full,
-                &self.spine_expanded,
-            ))
+            return std::borrow::Cow::Borrowed(&self.graph_collapsed);
         }
+        let mut open = self.spine_expanded.clone();
+        open.extend(
+            brightfield_protocol::families(&self.graph_full)
+                .into_iter()
+                .map(|family| family.id)
+                .filter(|id| !self.graph_collapsed.nodes.contains_key(id)),
+        );
+        std::borrow::Cow::Owned(collapse_families_except(&self.graph_full, &open))
     }
 
     /// The families the spine lists unfolded, by their tiles' ids.

@@ -112,7 +112,8 @@ pub struct StepView {
 /// negative or non-finite value, which no timing can be drawn from.
 fn millis(seconds: Option<f64>) -> Option<u64> {
     let seconds = seconds.filter(|s| s.is_finite() && *s >= 0.0)?;
-    // A step's seconds fit a u64 of milliseconds many times over.
+    // A value past what a u64 of milliseconds holds saturates, and the
+    // timings that add these saturate too.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     Some((seconds * 1000.0).round() as u64)
 }
