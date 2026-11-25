@@ -5695,8 +5695,9 @@ impl MeridianApp {
     }
 
     /// Where the trailing action of rail `id`'s strip drew in the last frame
-    /// this window drew, or `None` on a frame that strip was given no action, as
-    /// every strip is now that Run sits in the title band.
+    /// this window drew, or `None` on a frame that strip was given no action. The
+    /// ledger's strip has none since Run moved to the title band
+    /// (`the_housing_file_offers_run_in_the_title_band`).
     ///
     /// Recorded and read back for the reason [`Self::rail_summary_rect`] is.
     #[must_use]
@@ -15188,9 +15189,8 @@ impl MeridianApp {
         self.run_rect
     }
 
-    /// Where the title band drew the activity area on the last frame: `None` where it drew
-    /// none, on the front door, over a document with no run to tell of, and on a band too
-    /// narrow to hold it.
+    /// Where the title band drew the activity area on the last frame: `None` on the front door,
+    /// over a document with no run to tell of, and on a band too narrow to hold it.
     #[must_use]
     pub fn activity_area_rect(&self) -> Option<egui::Rect> {
         self.activity_rect
@@ -22393,8 +22393,8 @@ pub const ACTIVITY_CONTROL_NAME: &str = "Open the run log";
 /// The activity area's words before any run.
 pub const NOT_RUN_YET: &str = "Not run yet";
 
-/// The mark the activity area gives a run that left the Protocol in `state`, or `None` for a
-/// state that is no run at all.
+/// The mark the activity area gives a run that left the Protocol in `state`, or `None` for
+/// `RunState::NeverRun`.
 fn run_mark(state: RunState) -> Option<meridian_egui::run_status::StepMark> {
     use meridian_egui::run_status::StepMark;
     match state {
