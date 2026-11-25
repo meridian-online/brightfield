@@ -14,9 +14,12 @@
 //! time limits.
 //!
 //! **What a kept profile is kept against** ([`ProfileKey`]): the table's name,
-//! the content hash the run record gives it, and the steps it is made through.
-//! A run that changes the table changes its hash, and an edit to one of its
-//! steps changes the steps, so either reads the table again.
+//! the content hash the run record gives it, the steps it is made through, and
+//! the modified time and length of each file it reads. A run that changes the
+//! table changes its hash, an edit to one of its steps changes the steps, and
+//! another data file or one rewritten changes the files, so each reads the
+//! table again (`a_rewritten_data_file_profiles_the_table_again` in
+//! `tests/inspector_contract.rs`).
 //!
 //! **A read under way is said to be under way** ([`ProfileRead::Reading`]), so
 //! the inspector draws a line saying so rather than drawing nothing while the
@@ -43,7 +46,8 @@ pub enum ProfileRead {
 }
 
 /// What a kept profile was read for: the table, the content hash the run
-/// record gives it, and the steps it is made through.
+/// record gives it, the steps it is made through, and the files it was read
+/// from as they stood.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileKey {
     /// The table's name.
@@ -53,6 +57,21 @@ pub struct ProfileKey {
     /// The table the data file loads as, and each step the read makes after
     /// it, in order.
     pub chain: (String, Vec<(String, PreviewOp)>),
+    /// The data file the table loads from.
+    pub data: std::path::PathBuf,
+    /// The modified time and length of the data file, then of each file a
+    /// [`PreviewOp::ReadFile`] of the chain loads, in the chain's order;
+    /// `None` for one that is not there. A file opened in its place, or
+    /// rewritten, reads the table again.
+    pub files: Vec<Option<(Option<std::time::SystemTime>, u64)>>,
+}
+
+/// The modified time and length of the file at `path`, or `None` when there
+/// is none.
+fn stamp_of(path: &std::path::Path) -> Option<(Option<std::time::SystemTime>, u64)> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.modified().ok(), meta.len()))
 }
 
 /// Why a worker found no columns: the sentence the inspector shows, and
@@ -111,10 +130,19 @@ const WORKERS_AWAITED: std::time::Duration = std::time::Duration::from_secs(10);
 impl ColumnProfiles {
     /// What a profile of `table` of `source` is kept against.
     pub(crate) fn key(table: &str, content_hash: Option<&str>, source: &TypedSource) -> ProfileKey {
+        let chain = source.read_over(source.chain_reading(&[table.to_string()]));
+        let files = std::iter::once(stamp_of(&source.data))
+            .chain(chain.1.iter().filter_map(|(_, op)| match op {
+                PreviewOp::ReadFile { path, .. } => Some(stamp_of(path)),
+                _ => None,
+            }))
+            .collect();
         ProfileKey {
             table: table.to_string(),
             content_hash: content_hash.map(str::to_owned),
-            chain: source.read_over(source.chain_reading(&[table.to_string()])),
+            chain,
+            data: source.data.clone(),
+            files,
         }
     }
 
@@ -327,6 +355,8 @@ mod tests {
             table: table.to_string(),
             content_hash: None,
             chain: (table.to_string(), Vec::new()),
+            data: std::path::PathBuf::from("data.csv"),
+            files: Vec::new(),
         }
     }
 

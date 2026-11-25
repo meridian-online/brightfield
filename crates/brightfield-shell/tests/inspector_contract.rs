@@ -437,6 +437,37 @@ fn a_column_of_a_steps_table_is_profiled_when_first_inspected() {
     assert_eq!(win.app.column_profiles_started(), 1);
 }
 
+/// **A data file rewritten under a kept profile is read again.** The profile
+/// of `top` is kept against the file as it stood; once the file holds three
+/// rows, the next ask starts a new read, and its answer is of those rows.
+#[test]
+fn a_rewritten_data_file_profiles_the_table_again() {
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, two_steps);
+    let before = read_columns(&mut win, "top");
+    assert_eq!(before.first().map(|c| c.rows), Some(10));
+
+    let data = win.dir().join(SAMPLE);
+    let text = std::fs::read_to_string(&data).expect("the sample reads");
+    let shorter: String = text
+        .lines()
+        .take(4)
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&data, shorter).expect("the sample is rewritten");
+
+    assert!(
+        win.app.column_facts_for("top").is_none(),
+        "the rewritten file is read again rather than served from the cache"
+    );
+    assert_eq!(win.app.column_profiles_started(), 2);
+    let after = read_columns(&mut win, "top");
+    assert_eq!(
+        after.first().map(|c| c.rows),
+        Some(3),
+        "the new read is of the rewritten file's rows"
+    );
+}
+
 /// **The inspector names the step that made the table, and where that step
 /// stands**: `top` and not the load, its kind in the steps sheet's word, and
 /// `not run`, since no run has recorded it. The inspector draws both under the
