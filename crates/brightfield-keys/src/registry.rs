@@ -1630,7 +1630,7 @@ pub fn registry() -> Vec<VerbEntry> {
             status: VerbStatus::Built,
             reserved_reason: None,
             help: "Show the ribbon's tab for what the canvas holds",
-            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and X, since the contextual tab's name changes with the canvas" }),
         },
         VerbEntry {
             longname: "toggle-ribbon",
