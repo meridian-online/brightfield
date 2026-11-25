@@ -917,8 +917,8 @@ fn a_run_under_way_counts_its_steps_on_its_own_stream() {
 /// the window that says the run failed. The Protocol refused before a run starts, untrusted, is
 /// held the same way by `keep_editing_after_untrusting_refuses_a_run`.
 ///
-/// Watched redden, one mutation: `note_run_landed` noting nothing without a record, so `last_run`
-/// reads no run.
+/// Watched redden, one mutation: `note_run_landed`'s insert without a record removed, so
+/// `last_run` reads no run.
 #[test]
 fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
     let dir = TempDir::new("refused");
