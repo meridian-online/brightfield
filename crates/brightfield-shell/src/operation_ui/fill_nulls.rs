@@ -4,8 +4,9 @@
 //! It starts from a click on the header's missing count, from `f` with the
 //! grid's cursor on a cell, or from "Fill missing values" on a header's menu,
 //! and only on a column that has missing values: on any other it says so
-//! ([`Need::ColumnHasNulls`]). `column` is given bare, since arc takes it as a
-//! name; `value` is SQL, recorded as typed.
+//! ([`Need::ColumnHasNulls`],
+//! `fill_nulls_is_greyed_on_a_column_with_no_missing_values`). `column` is
+//! given bare, since arc takes it as a name; `value` is SQL, recorded as typed.
 //!
 //! The value opens on a fill that suits the column's storage type, selected
 //! whole: `0` for a number, `'unknown'` for text, `false` for a boolean, and
@@ -19,7 +20,7 @@
 //!
 //! Which columns have missing values is known for the loaded table's grid
 //! alone, so a fill does not start over a step's preview, a kept fill's
-//! included.
+//! included (`fill_nulls_over_a_kept_fills_grid_says_it_needs_missing_values`).
 
 use super::{
     Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi, Stage, Start,
