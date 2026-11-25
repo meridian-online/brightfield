@@ -917,7 +917,7 @@ fn a_run_under_way_counts_its_steps_on_its_own_stream() {
 /// the window that says the run failed. The Protocol refused before a run starts, untrusted, is
 /// held the same way by `keep_editing_after_untrusting_refuses_a_run`.
 ///
-/// Watched redden, one mutation: `land_run`'s `unrecorded_failure` left unset, so `last_run`
+/// Watched redden, one mutation: `note_run_landed` noting nothing without a record, so `last_run`
 /// reads no run.
 #[test]
 fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
@@ -959,18 +959,20 @@ fn after_a_run_the_last_run_says_when_and_how_long_ago() {
     );
 }
 
-/// **A run that records clears the folder's unrecorded failure, and a run that does not sets it,
-/// whichever document is open when it lands.**
+/// **A run that records clears its folder's unrecorded failure, and a run that does not sets it,
+/// whichever document is open when it lands, and leaves every other folder's alone.**
 ///
-/// The runner is a script that refuses a run of the housing file's folder while the test's mark
-/// is in place, writing no record, and otherwise hands it to the real runner, so the CSV's own
-/// run on its open is never refused. Four runs of the housing file, refused and
-/// recorded in turn: the first two land while it is open, and the last two while a CSV in another
-/// folder is, the housing file opened again after each with the mark taken away.
+/// The runner is a script that refuses a run of whichever folder the test's mark names, writing
+/// no record, and hands every other run to the real runner, so a file's own run on its open is
+/// refused only when the test means it to be. The housing file is run four times, refused and
+/// recorded in turn: twice landing while it is open, and twice while a CSV in another folder is,
+/// the housing file opened again after each. Last, the housing file's run is refused while it is
+/// open, and then a refused run of the CSV lands while the housing file is open again.
 ///
-/// Watched redden, two mutations, each alone: `note_run_landed`'s clearing branch removed (the
-/// second run reads failed), and its call in `land_run` moved back after the `holds_protocol`
-/// return (the third run reads fresh).
+/// Watched redden, three mutations, each alone: `note_run_landed`'s removal on a record dropped
+/// (the second run reads failed); its call in `land_run` moved back after the `holds_protocol`
+/// return (the third run reads fresh); and one failure kept for the window rather than one a
+/// folder (the CSV's refusal takes the housing file's).
 #[cfg(unix)]
 #[test]
 fn the_last_run_follows_the_folders_runs_whichever_document_is_open() {
@@ -983,46 +985,66 @@ fn the_last_run_follows_the_folders_runs_whichever_document_is_open() {
     let csv = elsewhere.path().join("tiny.csv");
     std::fs::write(&csv, "a,b\n1,2\n3,4\n").expect("the CSV writes");
     let tools = TempDir::new("follows-tools");
-    let refuse = tools.path().join("refuse");
-    let script = tools.path().join("every-other-run");
+    let mark = tools.path().join("refuse");
+    let script = tools.path().join("refuse-the-marked-folder");
     std::fs::write(
         &script,
         format!(
             "#!/bin/sh\n\
-             if [ -e '{refuse}' ] && [ \"$(pwd -P)\" = '{housing_dir}' ]; then\n\
+             if [ -e '{mark}' ] && [ \"$(pwd -P)\" = \"$(cat '{mark}')\" ]; then\n\
                echo 'refused by the test' >&2; exit 1\n\
              fi\n\
              exec '{real}' \"$@\"\n",
-            refuse = refuse.display(),
-            housing_dir = std::fs::canonicalize(dir.path())
-                .expect("the housing folder resolves")
-                .display(),
+            mark = mark.display(),
             real = env!("CARGO_BIN_EXE_brightfield-shell"),
         ),
     )
     .expect("the script writes");
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
         .expect("the script is executable");
-    let state = |win: &Window| win.app.last_run().map(|last| last.state);
-
-    let mut win = Window::over_file(&housing, Some(Runner::at(&script)));
-    let marked = |on: bool| {
-        if on {
-            std::fs::write(&refuse, b"").expect("the mark writes");
-        } else {
-            let _ = std::fs::remove_file(&refuse);
+    let refuse = |folder: Option<&Path>| match folder {
+        Some(folder) => std::fs::write(
+            &mark,
+            std::fs::canonicalize(folder)
+                .expect("the folder resolves")
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .expect("the mark writes"),
+        None => {
+            let _ = std::fs::remove_file(&mark);
         }
     };
-    marked(true);
-    win.take_run_control();
+    let state = |win: &Window| win.app.last_run().map(|last| last.state);
+    let open = |win: &mut Window, file: &Path| {
+        win.app
+            .open_data_file(&win.ctx.clone(), &file.to_string_lossy());
+        win.settle();
+        assert_eq!(
+            win.app.held_protocol_dir().as_deref(),
+            file.parent(),
+            "{} did not open",
+            file.display()
+        );
+    };
+    let run = |win: &mut Window, which: &str| {
+        assert!(
+            win.app.run_protocol(&win.ctx.clone()),
+            "the {which} run did not start"
+        );
+    };
+
+    let mut win = Window::over_file(&housing, Some(Runner::at(&script)));
+    refuse(Some(dir.path()));
+    run(&mut win, "first");
     win.drive_until_landed();
     assert_eq!(
         state(&win),
         Some(RunState::Failed),
         "the first run, refused"
     );
-    marked(false);
-    win.take_run_control();
+    refuse(None);
+    run(&mut win, "second");
     win.drive_until_landed();
     assert_eq!(
         state(&win),
@@ -1030,36 +1052,42 @@ fn the_last_run_follows_the_folders_runs_whichever_document_is_open() {
         "the second run, recorded"
     );
 
-    for (run, refused, expected) in [
+    for (which, refused, expected) in [
         ("third", true, RunState::Failed),
         ("fourth", false, RunState::Fresh),
     ] {
-        marked(refused);
-        assert!(
-            win.app.run_protocol(&win.ctx.clone()),
-            "the {run} run did not start"
-        );
-        win.app
-            .open_data_file(&win.ctx.clone(), &csv.to_string_lossy());
-        win.settle();
-        assert!(
-            !win.app.run_in_progress(),
-            "the CSV's window reads the {run} run as its own"
-        );
-        assert_ne!(
-            win.app.held_protocol_dir().as_deref(),
-            Some(dir.path()),
-            "the CSV did not open, so the {run} run lands on the housing file"
-        );
+        refuse(refused.then_some(dir.path()));
+        run(&mut win, which);
+        open(&mut win, &csv);
         frames_until(&mut win, "the run landing", |app| !app.run_outstanding());
-        marked(false);
-        win.app
-            .open_data_file(&win.ctx.clone(), &housing.to_string_lossy());
-        win.settle();
+        refuse(None);
+        open(&mut win, &housing);
         assert_eq!(
             state(&win),
             Some(expected),
-            "the {run} run, landed while another file was open"
+            "the {which} run, landed while another file was open"
         );
     }
+
+    refuse(Some(dir.path()));
+    run(&mut win, "fifth");
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the fifth run, refused"
+    );
+    refuse(None);
+    open(&mut win, &csv);
+    refuse(Some(elsewhere.path()));
+    run(&mut win, "CSV's");
+    open(&mut win, &housing);
+    frames_until(&mut win, "the CSV's run landing", |app| {
+        !app.run_outstanding()
+    });
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the CSV's refused run, landed while the housing file was open, took its failure"
+    );
 }

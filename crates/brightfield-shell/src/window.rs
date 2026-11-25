@@ -513,16 +513,6 @@ struct PendingRun {
     earlier: BTreeSet<PathBuf>,
 }
 
-/// A run of the Protocol in [`Self::dir`] that ended without a record: refused before `arc`
-/// reached its steps, or not started. No record says it happened, so the window keeps it,
-/// for [`MeridianApp::last_run`] to say the run failed rather than show the record before it.
-struct UnrecordedFailure {
-    /// The Protocol folder the run was of.
-    dir: PathBuf,
-    /// When it ended.
-    at: chrono::DateTime<chrono::Local>,
-}
-
 /// Read what `arc` has added to `pending`'s live stream since the last frame: find the stream
 /// once it is there, then read only what was appended. A stream that will not read is reported
 /// and read again next frame, since the run's record is what lands it either way.
@@ -3704,9 +3694,12 @@ pub struct MeridianApp {
     /// The runs this window started and has not landed, at most one per
     /// Protocol folder — see [`PendingRun`] and [`MeridianApp::run_protocol`].
     running: Vec<PendingRun>,
-    /// The last run of a Protocol folder that ended without a record, until a run of that folder
-    /// records one — see [`UnrecordedFailure`].
-    unrecorded_failure: Option<UnrecordedFailure>,
+    /// When the last run of each Protocol folder ended, for a folder whose last run ended without
+    /// a record: refused before `arc` reached its steps, or not started. No record says it
+    /// happened, so the window keeps it, for [`MeridianApp::last_run`] to say the run failed
+    /// rather than show the record before it, until a run of that folder records one. Keyed by
+    /// folder, since runs of two folders can be under way at once and each lands on its own.
+    unrecorded_failures: std::collections::BTreeMap<PathBuf, chrono::DateTime<chrono::Local>>,
     /// The shipped Protocol start waiting on its run in [`Self::running`] to
     /// open its first panel — see [`PendingLanding`]. Only the start on
     /// screen waits: a run whose start the reader left is settled when it
@@ -4401,7 +4394,7 @@ impl MeridianApp {
             door_help: None,
             fetching: None,
             running: Vec::new(),
-            unrecorded_failure: None,
+            unrecorded_failures: std::collections::BTreeMap::new(),
             landing: None,
             runner: None,
             descriptions: None,
@@ -17486,12 +17479,11 @@ impl MeridianApp {
     #[must_use]
     pub fn last_run(&self) -> Option<crate::run::LastRun> {
         let now = chrono::Local::now();
-        if let Some(failure) = self
-            .unrecorded_failure
-            .as_ref()
-            .filter(|failure| self.held_protocol_dir().as_ref() == Some(&failure.dir))
+        if let Some(at) = self
+            .held_protocol_dir()
+            .and_then(|dir| self.unrecorded_failures.get(&dir))
         {
-            let (when, age) = crate::run::describe_ran(&failure.at.to_rfc3339(), now)?;
+            let (when, age) = crate::run::describe_ran(&at.to_rfc3339(), now)?;
             return Some(crate::run::LastRun {
                 when,
                 age,
@@ -17510,17 +17502,11 @@ impl MeridianApp {
     /// Note how a run of the Protocol folder `dir` ended, whichever document the window holds:
     /// with a record, which clears the folder's unrecorded failure, or without one, which is it.
     fn note_run_landed(&mut self, dir: &Path, recorded: bool) {
-        if !recorded {
-            self.unrecorded_failure = Some(UnrecordedFailure {
-                dir: dir.to_path_buf(),
-                at: chrono::Local::now(),
-            });
-        } else if self
-            .unrecorded_failure
-            .as_ref()
-            .is_some_and(|failure| failure.dir == dir)
-        {
-            self.unrecorded_failure = None;
+        if recorded {
+            self.unrecorded_failures.remove(dir);
+        } else {
+            self.unrecorded_failures
+                .insert(dir.to_path_buf(), chrono::Local::now());
         }
     }
 
@@ -17528,10 +17514,7 @@ impl MeridianApp {
     /// started, for [`Self::last_run`] to say it failed.
     fn note_run_not_started(&mut self) {
         if let Some(dir) = self.held_protocol_dir() {
-            self.unrecorded_failure = Some(UnrecordedFailure {
-                dir,
-                at: chrono::Local::now(),
-            });
+            self.unrecorded_failures.insert(dir, chrono::Local::now());
         }
     }
 
