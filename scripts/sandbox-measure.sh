@@ -114,7 +114,10 @@ baseline() {
         shift 2
     fi
     # brightfield-shot boots the real shell and renders offscreen: no window opens.
-    local bin="${1:-$root/target/release/brightfield-shot}"
+    local default="$root/target/release/brightfield-shot"
+    # The package's own renderer, which package-store.sh leaves beside it.
+    [ -n "$package" ] && default="$(dirname "$package")/brightfield-shot"
+    local bin="${1:-$default}"
     [ -x "$bin" ] || { echo "no binary at $bin; build with: cargo build --release -p brightfield-shell" >&2; exit 2; }
     fresh_subject
     # models/ is set to mode 000 below; an interrupted run puts it back.
