@@ -76,7 +76,7 @@ fn lane(at: usize) -> u8 {
 
 /// The gutter's lanes for a list of `rows` rows.
 ///
-/// `nodes[r]` is the node row `r` stands for, or `None` for a row with none;
+/// `nodes[r]` is the node row `r` stands for, or `None` for a caption or view row;
 /// `edges` are `(from, to)` pairs of nodes. An edge is drawn down the list
 /// from its producer's row to its consumer's, so one whose consumer is not
 /// listed below its producer is left out.
@@ -84,9 +84,10 @@ fn lane(at: usize) -> u8 {
 /// The lanes are assigned in one pass down the list. Each lane is held by one
 /// edge from the row it leaves until the row it reaches. A row's node sits on
 /// the lowest of the lanes reaching it, or on the lowest free lane when none
-/// does, and each edge leaving it takes the lowest lane free at that row, in
-/// the order of the rows it reaches. So a chain stays on one lane, a fork opens
-/// a lane beside it, and a join closes it again.
+/// does. The first edge leaving it, to the nearest row it reaches, keeps the
+/// node's own lane; each further edge takes the lowest lane free at that row,
+/// in the order of the rows it reaches. So a chain stays on one lane, a fork
+/// opens a lane beside it, and a join closes it again.
 #[must_use]
 pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> Vec<Lanes> {
     let mut row_of: BTreeMap<usize, usize> = BTreeMap::new();
@@ -140,9 +141,17 @@ pub fn lanes(rows: usize, nodes: &[Option<usize>], edges: &[(usize, usize)]) -> 
             .map(|(at, _)| lane(at))
             .collect();
         let mut to_below = Vec::new();
-        if node.is_some() {
+        if let Some(own) = node {
             for &consumer in below.get(&row).into_iter().flatten() {
-                let at = lowest_free(&pending);
+                let own = usize::from(own);
+                let at = if pending.get(own).is_none_or(Option::is_none) {
+                    own
+                } else {
+                    lowest_free(&pending)
+                };
+                if at >= pending.len() {
+                    pending.resize(at, None);
+                }
                 if at == pending.len() {
                     pending.push(Some(consumer));
                 } else {
@@ -279,6 +288,21 @@ mod tests {
         assert_eq!(got[3].from_above, [0, 1]);
         assert_eq!(got[3].node, Some(0));
         assert!(got[3].through.is_empty());
+    }
+
+    #[test]
+    fn a_chain_below_a_fork_keeps_its_lane() {
+        // a → {b, c}, then c → d: c sits on lane 1 and its edge to d stays
+        // there, though lane 0 is free again at c.
+        let got = lanes(
+            4,
+            &[Some(0), Some(1), Some(2), Some(3)],
+            &[(0, 1), (0, 2), (2, 3)],
+        );
+        assert_eq!(got[2].node, Some(1));
+        assert_eq!(got[2].to_below, [1]);
+        assert_eq!(got[3].from_above, [1]);
+        assert_eq!(got[3].node, Some(1));
     }
 
     #[test]

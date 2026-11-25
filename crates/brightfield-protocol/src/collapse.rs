@@ -196,7 +196,7 @@ pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
     collapse_families_except(graph, &BTreeSet::new())
 }
 
-/// Fold every detected parameterised family to one `Family` tile, except the
+/// Fold each detected parameterised family to one `Family` tile, except the
 /// families whose tile id is in `open`, which keep their members.
 #[must_use]
 pub fn collapse_families_except(graph: &AssetGraph, open: &BTreeSet<String>) -> AssetGraph {

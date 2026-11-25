@@ -940,10 +940,10 @@ pub struct SpineRow {
     /// removal not yet saved, on the step's row and the rows of what it makes.
     pub struck: bool,
     /// The step's state, on a step row: the fact [`Self::kind`] spells in
-    /// words, as the state the spine's mark draws. `None` on every other row.
+    /// words, as the state the spine's mark draws. `None` on the other rows.
     pub state: Option<SpineState>,
     /// What the row's thing produced: a table's row count, or how many tables
-    /// a step that ran made. `None` where nothing is measured.
+    /// a step that ran made. `None` on a row whose thing a run has not measured.
     pub output: Option<String>,
     /// When the step ran within the run and how long it took, on a step row
     /// whose record measured it.
