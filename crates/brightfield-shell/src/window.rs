@@ -7221,8 +7221,10 @@ impl MeridianApp {
         if let Some((said, width)) = bar.activity_said.take() {
             if bar.activity_rect.is_none() {
                 // Measured unseen: run the pass again with the width known, so the frame shown
-                // is the one that places it.
+                // is the one that places it. egui refuses a discard once its passes are spent,
+                // and the repaint then places it on the next frame.
                 ctx.request_discard("the activity area was measured");
+                ctx.request_repaint();
             }
             self.activity_measured = Some((said, width));
         }
