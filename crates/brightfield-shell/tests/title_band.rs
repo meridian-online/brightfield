@@ -1,14 +1,19 @@
 //! The unified title band: it leaves the window's own controls their corner on macOS, where the
 //! window draws under a hidden title bar; there its empty stretch moves the window when dragged and
 //! zooms it when double-clicked, as a title bar does, and elsewhere it leaves both to the window's
-//! own title bar; and it keeps the open Protocol's name and the
-//! folder it is kept in, which used to sit in the locator band below it.
+//! own title bar; it keeps the open Protocol's name and the
+//! folder it is kept in, which used to sit in the locator band below it; and it carries Run, with
+//! its key and, where it cannot act, the sentence that says why, and the activity area, which says
+//! what the Protocol's runs have done. A run under way, and the runs that land, are driven in
+//! `run_control.rs`, which has a runner to give a window.
 
 #[path = "support/scenes.rs"]
 mod scenes;
 
+use brightfield_keys::{keys_label, Availability, KeyPlatform};
 use brightfield_shell::menu_bar::MenuHost;
-use brightfield_workbench::arrangement::{LOCATOR_BAND, TITLE_BAND};
+use brightfield_shell::window::{ACTIVITY_CONTROL_NAME, RUN_LABEL, RUN_PROTOCOL};
+use brightfield_workbench::arrangement::{LEDGER_RAIL, LOCATOR_BAND, TITLE_BAND};
 use scenes::Window;
 
 /// A point on the title band's empty stretch: left of the Protocol's name field, clear of the
@@ -246,4 +251,185 @@ fn on_a_narrow_window_the_place_fields_keep_off_the_mark() {
     win.key(egui::Key::Escape);
     win.click(mark.center());
     assert!(win.app.front_door_is_live(), "the mark took the click home");
+}
+
+/// Every text the next frame draws inside `rect`, with the pointer at `pointer` when one is given.
+fn text_in(win: &mut Window, rect: egui::Rect, pointer: Option<egui::Pos2>) -> Vec<String> {
+    win.run(vec![pointer
+        .map(egui::Event::PointerMoved)
+        .into_iter()
+        .collect()]);
+    win.drawn
+        .iter()
+        .filter(|(r, _)| rect.expand(1.0).contains_rect(*r))
+        .map(|(_, t)| t.clone())
+        .collect()
+}
+
+/// **A Protocol's title band offers Run at its right end, with the key that runs it.**
+///
+/// The key is the one the registry binds, as the platform writes it, so a rebinding cannot leave
+/// the control naming a key that no longer runs.
+#[test]
+fn the_title_band_offers_run_with_its_key() {
+    let mut win = scenes::data_file();
+    let band = win.app.region_rect(TITLE_BAND).expect("the title band");
+    let run = win.app.run_control_rect().expect("the title band drew Run");
+    assert!(
+        band.contains_rect(run),
+        "Run at {run:?} lies outside the band {band:?}"
+    );
+    let place = win.app.title_place_rects().expect("the place");
+    for field in [place.name, place.location].into_iter().flatten() {
+        assert!(
+            field.right() <= run.left(),
+            "the place field at {field:?} runs into Run at {run:?}"
+        );
+    }
+    assert!(
+        win.app
+            .named_controls()
+            .iter()
+            .any(|c| c.name == RUN_LABEL && c.rect == run),
+        "Run is not among the band's named controls"
+    );
+    let words = text_in(&mut win, run, None);
+    assert!(words.iter().any(|w| w == RUN_LABEL), "Run reads {words:?}");
+    let key = keys_label("cmd-enter", KeyPlatform::host());
+    assert!(words.contains(&key), "Run shows no {key}: {words:?}");
+    assert_eq!(
+        win.app.availability_of(RUN_PROTOCOL),
+        Some(Availability::Available)
+    );
+}
+
+/// **The front door draws neither Run nor the activity area**: it holds no Protocol to run.
+#[test]
+fn the_front_door_draws_no_run_and_no_activity() {
+    let win = scenes::door();
+    assert_eq!(win.app.run_control_rect(), None);
+    assert_eq!(win.app.activity_area_rect(), None);
+}
+
+/// **Over a shipped start, Run is greyed, and pointing at it says the sentence its needs
+/// declare**, the same sentence the palette and the menus give.
+#[test]
+fn on_a_shipped_start_run_is_greyed_with_its_declared_sentence() {
+    let mut win = scenes::crosswalk();
+    let Some(Availability::Missing(sentence)) = win.app.availability_of(RUN_PROTOCOL) else {
+        panic!("Run can act over a shipped start");
+    };
+    let run = win
+        .app
+        .run_control_rect()
+        .expect("the band drew Run, greyed");
+    win.run(vec![vec![egui::Event::PointerMoved(run.center())]]);
+    let screen = win.screen;
+    let words = text_in(&mut win, screen, Some(run.center()));
+    assert!(
+        words.iter().any(|w| w.contains(&sentence)),
+        "pointing at greyed Run did not say {sentence:?}: {words:?}"
+    );
+    // Taking it runs nothing.
+    win.click(run.center());
+    assert!(!win.app.run_in_progress(), "a greyed Run started a run");
+}
+
+/// **The activity area sits between the Protocol's name and Run, and says when the Protocol last
+/// ran**: a data file's Protocol runs as it opens, so it reads today's date and "just now".
+#[test]
+fn the_activity_area_says_when_the_protocol_last_ran() {
+    let mut win = scenes::data_file();
+    let area = win
+        .app
+        .activity_area_rect()
+        .expect("the band drew the activity area");
+    let band = win.app.region_rect(TITLE_BAND).expect("the title band");
+    assert!(
+        band.contains_rect(area),
+        "the area at {area:?} lies outside the band {band:?}"
+    );
+    let run = win.app.run_control_rect().expect("Run");
+    assert!(
+        area.right() <= run.left(),
+        "the area at {area:?} runs into Run at {run:?}"
+    );
+    let words = text_in(&mut win, area, None);
+    assert_eq!(
+        words,
+        vec![
+            chrono::Local::now().format("ran %-d %b").to_string(),
+            "just now".to_string()
+        ]
+    );
+}
+
+/// **A click on the activity area opens the ledger on its Log**, where the runs it tells of are
+/// written out.
+#[test]
+fn clicking_the_activity_area_opens_the_run_log() {
+    let mut win = scenes::data_file();
+    // Off Log first, which is where the ledger opens, so the click has somewhere to move it.
+    let other = win
+        .app
+        .rail_name_rect(LEDGER_RAIL, 1)
+        .expect("the ledger names a second pane");
+    win.click(other.center());
+    let before = win.app.rail_pane_title(LEDGER_RAIL);
+    assert!(
+        before
+            .as_deref()
+            .is_some_and(|t| !t.to_lowercase().contains("log")),
+        "the ledger is still on {before:?}"
+    );
+    let collapse = win
+        .app
+        .rail_collapse_rect(LEDGER_RAIL)
+        .expect("the ledger drew its collapse control");
+    win.click(collapse.center());
+    assert!(
+        win.app.rail_is_collapsed(LEDGER_RAIL),
+        "the ledger did not close"
+    );
+    let area = win.app.activity_area_rect().expect("the activity area");
+    assert!(
+        win.app
+            .named_controls()
+            .iter()
+            .any(|c| c.name == ACTIVITY_CONTROL_NAME && c.rect == area),
+        "the activity area is not among the band's named controls"
+    );
+    win.click(area.center());
+    assert!(
+        !win.app.rail_is_collapsed(LEDGER_RAIL),
+        "the click left the ledger closed"
+    );
+    let title = win.app.rail_pane_title(LEDGER_RAIL);
+    assert!(
+        title
+            .as_deref()
+            .is_some_and(|t| t.to_lowercase().contains("log")),
+        "the ledger opened on {title:?}"
+    );
+}
+
+/// **On a narrow window the activity area gives way, and Run stays whole in the band.**
+#[test]
+fn on_a_narrow_window_the_activity_area_goes_first_and_run_stays() {
+    let mut win = scenes::data_file();
+    win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 820.0));
+    win.settle();
+    let band = win.app.region_rect(TITLE_BAND).expect("the title band");
+    let run = win
+        .app
+        .run_control_rect()
+        .expect("Run is drawn at any width");
+    assert!(
+        band.contains_rect(run),
+        "Run at {run:?} is cut by the band {band:?}"
+    );
+    if let Some(area) = win.app.activity_area_rect() {
+        let mark = win.app.mark_rect().expect("the mark");
+        assert!(area.left() >= mark.right() && area.right() <= run.left());
+    }
 }

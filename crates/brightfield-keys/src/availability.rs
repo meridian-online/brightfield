@@ -99,6 +99,8 @@ pub enum Condition {
     FileToReload,
     /// The chart's shelf is drawn.
     ShelfDrawn,
+    /// No run of the Protocol is under way.
+    NotRunning,
 }
 
 impl Need {
@@ -166,6 +168,7 @@ impl Need {
             }
             Need::Condition(Condition::FileToReload) => "{command} needs a data file open.",
             Need::Condition(Condition::ShelfDrawn) => "{command} needs the chart's shelf.",
+            Need::Condition(Condition::NotRunning) => "{command} waits for the run under way.",
         }
     }
 }
@@ -338,7 +341,11 @@ mod tests {
     #[test]
     fn save_waits_on_something_to_write_where_run_can_act() {
         let s = Situation {
-            conditions: vec![Condition::ProtocolToRun, Condition::Trusted],
+            conditions: vec![
+                Condition::ProtocolToRun,
+                Condition::Trusted,
+                Condition::NotRunning,
+            ],
             ..Situation::default()
         };
         assert_eq!(
@@ -383,14 +390,32 @@ mod tests {
                 "Run needs the Protocol trusted: trust it from the band over its canvas.".into()
             )
         );
-        // Both held: it can act.
+        // Both held, and no run under way: it can act.
+        let s = Situation {
+            conditions: vec![
+                Condition::ProtocolToRun,
+                Condition::Trusted,
+                Condition::NotRunning,
+            ],
+            ..Situation::default()
+        };
+        assert_eq!(
+            availability(&verb("run-protocol"), &s),
+            Availability::Available
+        );
+    }
+
+    /// A second Run while one is under way would start a run over the one still writing its
+    /// record, so Run says it is waiting instead.
+    #[test]
+    fn run_waits_for_the_run_in_progress() {
         let s = Situation {
             conditions: vec![Condition::ProtocolToRun, Condition::Trusted],
             ..Situation::default()
         };
         assert_eq!(
             availability(&verb("run-protocol"), &s),
-            Availability::Available
+            Availability::Missing("The Protocol is running.".into())
         );
     }
 

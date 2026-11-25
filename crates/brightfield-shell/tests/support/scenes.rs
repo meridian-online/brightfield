@@ -103,6 +103,8 @@ pub struct Window {
     pub applied: Vec<&'static str>,
     /// The table of the data file the scene opened, when it opened one.
     pub table: Option<String>,
+    /// Every text the last frame drew, with the rect it landed in.
+    pub drawn: Vec<(egui::Rect, String)>,
     /// The frame clock, at sixty frames a second, so a toast a test reads does
     /// not age out within it.
     time: f64,
@@ -125,6 +127,7 @@ impl Window {
             answered: Vec::new(),
             applied: Vec::new(),
             table: None,
+            drawn: Vec::new(),
             time: 0.0,
         };
         win.settle();
@@ -158,6 +161,10 @@ impl Window {
             answered.extend_from_slice(app.keys_answered());
             applied.extend_from_slice(app.verbs_applied());
         });
+        self.drawn.clear();
+        for clipped in &out.shapes {
+            collect_placed_text(&clipped.shape, &mut self.drawn);
+        }
         self.commands.extend(out.platform_output.commands);
         if let Some(root) = out.viewport_output.get(&egui::ViewportId::ROOT) {
             self.viewport_commands.extend(root.commands.iter().cloned());
@@ -250,6 +257,22 @@ impl Window {
             .map(|n| format!("{}: {}", n.title, n.body.clone().unwrap_or_default()))
             .collect::<Vec<_>>()
             .join("; ")
+    }
+}
+
+/// Every text in `shape`, with where it was drawn.
+fn collect_placed_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Rect, String)>) {
+    match shape {
+        egui::epaint::Shape::Text(t) => into.push((
+            t.galley.rect.translate(t.pos.to_vec2()),
+            t.galley.text().to_string(),
+        )),
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_placed_text(s, into);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -367,7 +390,8 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Condition::Trusted
             | Condition::TakesSources
             | Condition::FileToReload
-            | Condition::ShelfDrawn => true,
+            | Condition::ShelfDrawn
+            | Condition::NotRunning => true,
         },
     }
 }
