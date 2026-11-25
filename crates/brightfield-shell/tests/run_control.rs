@@ -839,8 +839,8 @@ fn frames_until(win: &mut Window, what: &str, until: impl Fn(&MeridianApp) -> bo
 /// window that read it would count the step before the script wrote its line.
 ///
 /// Watched redden, two mutations, each alone: `live_stream`'s `modified >= since` filter dropped
-/// (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count never
-/// reaches 1).
+/// (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count stays
+/// at 0).
 #[cfg(unix)]
 #[test]
 fn a_run_under_way_counts_its_steps_on_its_own_stream() {

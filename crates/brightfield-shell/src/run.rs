@@ -736,7 +736,8 @@ pub fn without_colour_codes(text: &str) -> String {
 /// `arc` names the stream by a run id it chooses itself and does not hand back, so the window
 /// finds it by time. A stream older than `since` is an earlier run's, and is not this one. `None`
 /// until `arc` has written the file, which it opens as the step loop begins, so a run refused
-/// before that loop has none.
+/// before that loop reads as having no stream
+/// (`the_live_stream_is_the_newest_jsonl_written_since_the_run_began`).
 #[must_use]
 pub fn live_stream(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
     let entries = std::fs::read_dir(runs_dir(dir)).ok()?;

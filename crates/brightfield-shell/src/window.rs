@@ -513,7 +513,7 @@ struct PendingRun {
 }
 
 /// A run of the Protocol in [`Self::dir`] that ended without a record: refused before `arc`
-/// reached its steps, or never started. Nothing on disk says it happened, so the window keeps it,
+/// reached its steps, or not started. No record says it happened, so the window keeps it,
 /// for [`MeridianApp::last_run`] to say the run failed rather than show the record before it.
 struct UnrecordedFailure {
     /// The Protocol folder the run was of.
