@@ -38,7 +38,7 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 5. **Keeping.** Enter keeps the draft once each value arc requires is given and the reads hold arc's model for the draft as it stands. An operation that asks nothing is kept on its first answer. Esc drops the draft. A kept draft is an unsaved step; no file is written.
 6. **Saving.** ⌘S keeps an open draft first when Enter would, then records the kept steps through arc in the order they were made. A draft that cannot be kept stays open, saying why, and the rest is saved. A refusal from arc at Save leaves the step kept, with arc's words on a banner.
 
-Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name. An operation kept at once asks for nothing a correction could change, so over its own kept step it makes a new step that reads that one: a second hide hides another column.
+Starting an operation over the grid of a kept step of the same operation corrects that step: the draft begins from what was kept, and Enter replaces it in place under its name. An operation kept at once with no form asks for nothing a correction could change, so over its own kept step it makes a new step that reads that one: a second hide hides another column. An operation kept at once with a form of its own, as dedupe is, opens its kept step in that form as soon as it is kept, and over its own kept step corrects it there; a correction is kept on Enter, never at once, and Esc leaves the step as it was kept.
 
 ## The spine's pick
 
@@ -96,6 +96,8 @@ Each of these is reversible, and each is the owner's to overturn.
 34. **Cast column opens on the type FineType reads, when it is not the type the column is stored as and a plain cast reaches it.** That is the DuckDB type FineType's transforms give the column's label, selected whole, so Enter keeps it and typing replaces it. FineType reaches some types through a format, such as a `strptime` for a day-first date in a file too large to be cast at open, and arc's `cast-column` is a plain `CAST`, which those values fail; such a label is not the default. A column with no label, one whose label reads as its storage type, one whose type FineType reaches through a format, or a step's column the window holds no profile for, opens empty, and Enter on it says `cast-column needs type`.
 35. **Cast column offers FineType's type, then `VARCHAR`, `BIGINT`, `DOUBLE`, `DECIMAL(18, 3)`, `DATE`, `TIMESTAMP` and `BOOLEAN`, less the type the column is stored as**, each once, compared in upper case with spaces dropped. The whole list is offered while the field is empty or holds FineType's type as it opened, and once anything else is typed, the types that contain it. A type taken from the list replaces the value whole. The menu row reads "Change type", and the column is given bare, since arc takes it as a name, so a step's name holds it whole (`with_nulls_cast_median_income`).
 
+36. **Dedupe rows keeps `SELECT DISTINCT *` at once, then opens its form over the kept step.** `shift-u`, or "Remove duplicate rows" on a header's menu, asks nothing, and the step is named `<table>_deduped`. The form in the Operation section refines it: "One row per" lists the table's columns, a click putting one in the key or taking it out, kept in the table's order; "The first by" is the order, typed. The order is the key's first column, descending, until it is typed over, since arc takes `key` and `order_by` together or not at all. The step keeps the name it was kept under when the key is set, since a name is fixed when a draft is kept.
+
 ## What arc lacks
 
 These are arcform's to close. Until then the workarounds above stand.
@@ -118,5 +120,7 @@ An operation is three files, so operations can be built side by side.
 The tests in `tests/operation_registry.rs` then bite: the slot holds its own operation, its verb is in the key registry, its draft names only what arc describes, its needs agree with what arc says it reads, and it is filed under its stage.
 
 An operation that reads a second table lists `Start::Spine { role }` first in its `starts`, with the role arc reads that table under, and declares `Need::AnotherTable` (or `Need::AnotherTableSharingAColumn`) among its needs. Its `begin` then finds the tables in `Begin::taken`. Its test starts it with `start_operation_spec` and reads the pick through `MeridianApp::spine_pick`, as `tests/spine_pick.rs` does.
+
+An operation that is kept at once and has a form (`keeps: Keeps::AtOnce` with `form: Some(..)`) needs nothing more: the window opens its kept step in the form as a correction.
 
 One thing the shared code does not do yet. The palette lists an unavailable operation without greying it, and choosing it says its sentence; a header's menu does grey it, with the sentence under it.

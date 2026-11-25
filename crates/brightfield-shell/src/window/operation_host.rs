@@ -85,6 +85,21 @@ fn static_key(key: &str) -> &'static str {
     leaked
 }
 
+/// The draft that corrects a kept step of `spec`'s, begun from what it asked arc to record.
+fn correcting(spec: &'static OperationUi, request: &crate::operation::StepRequest) -> Draft {
+    Draft {
+        long_name: spec.long_name,
+        on: request.on.clone(),
+        reads: request.reads.clone(),
+        values: request
+            .args
+            .iter()
+            .map(|(key, value)| (static_key(key), value.clone()))
+            .collect(),
+        focus: spec.field.as_ref().and_then(|f| f.keys.last().copied()),
+    }
+}
+
 /// How long a grid copy that was not current when a preview asked for it is
 /// left before it is written again: long enough that a Protocol being run,
 /// whose database changes as it runs, is not copied on each frame.
@@ -496,12 +511,13 @@ impl MeridianApp {
 
         // A kept step of the same operation in front is corrected: the draft
         // begins from what was kept, on the table that step is on. An operation
-        // kept at once asks for nothing a correction could change, so over its own
-        // step it makes a new step reading that one, as a second hide hides another
-        // column (`hide_column_over_a_hidden_columns_step_hides_another_from_it`).
+        // kept at once with no form asks for nothing a correction could change, so
+        // over its own step it makes a new step reading that one, as a second hide
+        // hides another column (`hide_column_over_a_hidden_columns_step_hides_another_from_it`).
+        // One kept at once with a form is corrected in its form, as a dedupe is.
         let corrects = self
             .typed_step_in_front()
-            .filter(|_| spec.keeps == Keeps::OnEnter)
+            .filter(|_| spec.keeps == Keeps::OnEnter || spec.form.is_some())
             .filter(|step| {
                 step.operation
                     .as_ref()
@@ -526,20 +542,10 @@ impl MeridianApp {
             model,
         };
         let draft = match &corrects {
-            Some(step) => {
-                let request = step.operation.as_ref().expect("filtered on it");
-                Ok(Draft {
-                    long_name: spec.long_name,
-                    on: request.on.clone(),
-                    reads: request.reads.clone(),
-                    values: request
-                        .args
-                        .iter()
-                        .map(|(key, value)| (static_key(key), value.clone()))
-                        .collect(),
-                    focus: spec.field.as_ref().and_then(|f| f.keys.last().copied()),
-                })
-            }
+            Some(step) => Ok(correcting(
+                spec,
+                step.operation.as_ref().expect("filtered on it"),
+            )),
             None => with.with_begin(|begin| (spec.begin)(begin)),
         };
         let draft = match draft {
@@ -549,7 +555,30 @@ impl MeridianApp {
                 return false;
             }
         };
-        let Some(source) = self.typed_source(corrects.as_ref().map(|s| s.name.as_str())) else {
+        self.begin_making(
+            ctx,
+            Making {
+                spec,
+                draft,
+                start,
+                column,
+                corrects: corrects.map(|step| step.name),
+                with,
+                suggestions: Vec::new(),
+                suggestion: None,
+                whole: false,
+                answer: None,
+                form_event: operation_ui::FormEvent::None,
+            },
+        )
+    }
+
+    /// **Begin making `making`**: start the reads of its draft over the Protocol
+    /// (less the kept step it corrects), and open the rail on its form when it has
+    /// one. Whether it began; when it did not, the status band says why.
+    fn begin_making(&mut self, ctx: &egui::Context, mut making: Making) -> bool {
+        let (spec, draft) = (making.spec, &making.draft);
+        let Some(source) = self.typed_source(making.corrects.as_deref()) else {
             self.say_operation(
                 ctx,
                 operation_ui::open::sentence(
@@ -570,26 +599,14 @@ impl MeridianApp {
         ));
         self.operation.in_grid = None;
         self.operation.began_over = Some(self.canvas_holds().clone());
-        let whole = spec.field.is_some_and(|field| {
+        making.whole = spec.field.is_some_and(|field| {
             draft
                 .focus
                 .or_else(|| field.keys.first().copied())
                 .and_then(|focus| draft.value(focus))
                 .is_some_and(|value| !value.is_empty())
         });
-        self.charts.doc.set_making(Making {
-            spec,
-            draft,
-            start,
-            column,
-            corrects: corrects.map(|step| step.name),
-            with,
-            suggestions: Vec::new(),
-            suggestion: None,
-            whole,
-            answer: None,
-            form_event: operation_ui::FormEvent::None,
-        });
+        self.charts.doc.set_making(making);
         if spec.form.is_some() {
             self.open_rail_on_form();
         }
@@ -936,7 +953,8 @@ impl MeridianApp {
             reads.refusal().map(str::to_string),
             reads.current().cloned(),
         );
-        if making.spec.keeps == Keeps::AtOnce {
+        // A correction of a step kept at once is kept on Enter, from its form.
+        if making.spec.keeps == Keeps::AtOnce && making.corrects.is_none() {
             if let Some(why) = refusal {
                 self.drop_making(ctx);
                 self.say_operation(ctx, why);
@@ -954,7 +972,21 @@ impl MeridianApp {
                     // A refusal to keep is on a banner; the action asked for no value, so
                     // there is no draft to leave open.
                     let done = kept_at_once_words(&making.draft, &answer.name);
+                    let (name, request) = (answer.name.clone(), answer.request.clone());
                     if self.keep_draft(ctx, answer.name, answer.request, answer.model.model) {
+                        // An operation with a form opens its kept step in it, to refine
+                        // it in place: a dedupe's key and order.
+                        if making.spec.form.is_some() {
+                            self.begin_making(
+                                ctx,
+                                Making {
+                                    draft: correcting(making.spec, &request),
+                                    corrects: Some(name),
+                                    answer: None,
+                                    ..making.clone()
+                                },
+                            );
+                        }
                         self.say_operation(ctx, done);
                     }
                 }
@@ -1558,7 +1590,15 @@ impl MeridianApp {
             };
             if reads.poll() {
                 self.operation.answers += 1;
+                // The draft's form reads its answer, as the window's frame hands it over.
+                let answer = reads.current().cloned();
+                if let Some(making) = self.charts.doc.making_mut() {
+                    making.answer = answer;
+                }
             }
+            let Some(reads) = &self.operation.reads else {
+                return true;
+            };
             if reads.settled() {
                 return true;
             }
