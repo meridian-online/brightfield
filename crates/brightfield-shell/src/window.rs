@@ -5395,9 +5395,12 @@ impl MeridianApp {
             // Until the inspector draws the table, nothing is read, and what
             // it will draw first is the reading line.
             ProfileAsk::Peek => profiles.peek(&key).unwrap_or(ProfileRead::Reading),
-            ProfileAsk::Read { for_inspector } => {
-                profiles.read(key, &source, self.charts.doc.preview_hooks(), for_inspector)
-            }
+            ProfileAsk::Read { for_inspector } => profiles.read(
+                key,
+                &source,
+                &self.charts.doc.preview_hooks().beside_the_grid(),
+                for_inspector,
+            ),
         }
     }
 

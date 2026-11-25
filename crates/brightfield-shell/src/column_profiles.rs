@@ -96,8 +96,17 @@ pub struct ColumnProfiles {
     /// those asks is a fresh one.
     viewing: Option<ProfileKey>,
     reading: Option<Reading>,
+    /// Each worker started and not yet seen to finish, the stopped ones
+    /// among them, so dropping the profiles can wait for them.
+    workers: Vec<std::thread::JoinHandle<()>>,
     started: usize,
 }
+
+/// How long dropping the profiles waits for its stopped workers to finish
+/// before leaving them. A stopped read ends at its next check of the stop,
+/// so this is a bound for a worker held at the preview gate, not the wait
+/// a read normally takes.
+const WORKERS_AWAITED: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl ColumnProfiles {
     /// What a profile of `table` of `source` is kept against.
@@ -239,7 +248,8 @@ impl ColumnProfiles {
         let reader = source.reader;
         let hidden = source.raw_columns();
         let stopped = stop.clone();
-        std::thread::spawn(move || {
+        self.workers.retain(|worker| !worker.is_finished());
+        let worker = std::thread::spawn(move || {
             let answer: Answer = hooks.read_inside(|| {
                 brightfield_engine::preview_profile_stoppable(
                     &data,
@@ -269,6 +279,7 @@ impl ColumnProfiles {
             });
             let _ = tell.send(answer);
         });
+        self.workers.push(worker);
         self.reading = Some(Reading {
             key,
             answer,
@@ -287,10 +298,22 @@ fn is_fresh_ask(viewing: Option<&ProfileKey>, key: &ProfileKey, for_inspector: b
     !for_inspector || viewing != Some(key)
 }
 
+/// Dropping the profiles stops the read under way and waits for every
+/// worker to finish: a worker still inside DuckDB when the process exits
+/// crashes it on the way out.
 impl Drop for ColumnProfiles {
     fn drop(&mut self) {
         if let Some(reading) = self.reading.take() {
             reading.stop.stop();
+        }
+        let until = std::time::Instant::now() + WORKERS_AWAITED;
+        for worker in self.workers.drain(..) {
+            while !worker.is_finished() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
         }
     }
 }

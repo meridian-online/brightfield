@@ -1987,6 +1987,18 @@ impl Default for PreviewHooks {
 }
 
 impl PreviewHooks {
+    /// Hooks for reads that are not this document's grid previews, such as
+    /// the inspector's column profiles: they wait at the same gate and behind
+    /// the same hold, but are not counted among the grid's preview workers,
+    /// and a panic set for the grid's next worker is not theirs to take.
+    pub(crate) fn beside_the_grid(&self) -> Self {
+        Self {
+            gate: self.gate.clone(),
+            held: self.held.clone(),
+            ..Self::default()
+        }
+    }
+
     /// Run `read` on this worker inside the gate: counted from now until it
     /// returns, after the gate lets this worker in, and once `held` is off.
     pub(crate) fn read_inside<T>(&self, read: impl FnOnce() -> T) -> T {
