@@ -730,6 +730,130 @@ pub fn without_colour_codes(text: &str) -> String {
     out
 }
 
+/// The live streams, `*.jsonl`, in the [`runs_dir`] of the Protocol in `dir`.
+#[must_use]
+pub fn streams_in(dir: &Path) -> BTreeSet<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(runs_dir(dir)) else {
+        return BTreeSet::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect()
+}
+
+/// The live stream of a run over the Protocol in `dir` that began when the streams there were
+/// `earlier`: the newest `*.jsonl` in [`runs_dir`] that is not one of them.
+///
+/// `arc` names the stream by a run id it chooses itself and does not hand back, so the window
+/// finds it as the file that was not there before. Not by time: a file system that keeps
+/// modification times to the second or two would date a stream written just after the run began
+/// before it. `None` until `arc` has written the file, which it opens as the step loop begins, so
+/// a run refused before that loop reads as having no stream
+/// (`the_live_stream_is_the_newest_jsonl_not_there_when_the_run_began`).
+#[must_use]
+pub fn live_stream(dir: &Path, earlier: &BTreeSet<PathBuf>) -> Option<PathBuf> {
+    streams_in(dir)
+        .into_iter()
+        .filter(|path| !earlier.contains(path))
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (modified, path)
+        })
+        .max()
+        .map(|(_, path)| path)
+}
+
+/// How far a run under way has got, as its live stream says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunProgress {
+    /// The step the stream says is running, when it says one is.
+    ///
+    /// `arc` writes a step's line when the step finishes, and writes no `running` line, so a
+    /// stream from today's `arc` leaves this `None`: the count is what it reports.
+    pub running: Option<String>,
+    /// How many steps the stream has seen finish, whatever their outcome.
+    pub done: usize,
+    /// How many steps the Protocol has.
+    pub total: usize,
+}
+
+/// The progress a stream folded to `state` reports, for a Protocol of `total` steps.
+///
+/// A step counts as done once its latest line names a state other than `running`. The count is
+/// held to `total`, so a stream that names a step the Protocol no longer has does not report more
+/// done than there are.
+#[must_use]
+pub fn progress(state: &brightfield_protocol::stream::StreamState, total: usize) -> RunProgress {
+    let running = state
+        .steps
+        .iter()
+        .find(|(_, entry)| entry.state == "running")
+        .map(|(step, _)| step.clone());
+    let done = state
+        .steps
+        .values()
+        .filter(|entry| entry.state != "running")
+        .count()
+        .min(total);
+    RunProgress {
+        running,
+        done,
+        total,
+    }
+}
+
+/// When the Protocol last ran, and how that run went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastRun {
+    /// The day it ran, as "ran 23 Oct", with the year when it is not this one.
+    pub when: String,
+    /// How long ago it ran, as "29 days ago".
+    pub age: String,
+    /// The run's state, as the window draws it.
+    pub state: brightfield_workbench::RunState,
+}
+
+/// The day a run that finished at `finished_at`, an RFC 3339 time as `arc` records it, ran, and
+/// how long before `now` that was; `None` for a time that does not parse.
+///
+/// The day is in local time: "ran 23 Oct" in `now`'s year, and "ran 23 Oct 2025" otherwise. The
+/// age reads "just now" under a minute, then "N minutes ago", "N hours ago" and "N days ago",
+/// singular at one. A time after `now`, from a clock that moved back, reads "just now".
+#[must_use]
+pub fn describe_ran(
+    finished_at: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<(String, String)> {
+    use chrono::Datelike;
+    let ran = chrono::DateTime::parse_from_rfc3339(finished_at)
+        .ok()?
+        .with_timezone(&chrono::Local);
+    let when = if ran.year() == now.year() {
+        ran.format("ran %-d %b").to_string()
+    } else {
+        ran.format("ran %-d %b %Y").to_string()
+    };
+    let seconds = (now - ran).num_seconds().max(0);
+    let ago = |n: i64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+    let age = match seconds {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3_600 => ago(s / 60, "minute"),
+        s if s < 86_400 => ago(s / 3_600, "hour"),
+        s => ago(s / 86_400, "day"),
+    };
+    Some((when, age))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -908,5 +1032,138 @@ echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init|${DUCKDB_AGENT_MODE:
             "✓ 1/1 steps succeeded."
         );
         assert_eq!(without_colour_codes("no codes [here]"), "no codes [here]");
+    }
+    #[test]
+    fn progress_counts_the_steps_done_and_names_the_one_running() {
+        let s = brightfield_protocol::stream::fold_stream(
+            "{\"step\":\"fetch\",\"state\":\"success\",\"ts\":\"t\"}\n\
+             {\"step\":\"rank\",\"state\":\"running\",\"ts\":\"t\"}\n",
+        );
+        assert_eq!(
+            progress(&s, 3),
+            RunProgress {
+                running: Some("rank".into()),
+                done: 1,
+                total: 3
+            }
+        );
+    }
+
+    /// arc writes a line as each step finishes, a failed one included, and no `running` line.
+    #[test]
+    fn a_stream_of_finished_steps_counts_each_and_names_none_running() {
+        let s = brightfield_protocol::stream::fold_stream(
+            "{\"step\":\"a\",\"state\":\"success\"}\n{\"step\":\"b\",\"state\":\"error\"}\n",
+        );
+        assert_eq!(
+            progress(&s, 4),
+            RunProgress {
+                running: None,
+                done: 2,
+                total: 4
+            }
+        );
+        assert_eq!(progress(&s, 1).done, 1, "done is held to the step count");
+    }
+
+    #[test]
+    fn a_run_is_described_by_its_day_and_its_age() {
+        use chrono::TimeZone;
+        // An instant, then read in the local zone: the age is time elapsed, whatever the zone.
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 21, 10, 0, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let at = |t: chrono::DateTime<chrono::Local>| t.to_rfc3339();
+        assert_eq!(
+            describe_ran("2026-10-23T09:14:00+00:00", now).map(|(w, _)| w),
+            Some("ran 23 Oct".into())
+        );
+        assert_eq!(
+            describe_ran("2026-10-23T09:14:00+00:00", now).map(|(_, a)| a),
+            Some("29 days ago".into())
+        );
+        let before = |d: chrono::TimeDelta| describe_ran(&at(now - d), now).map(|(_, a)| a);
+        assert_eq!(
+            before(chrono::TimeDelta::seconds(59)),
+            Some("just now".into())
+        );
+        assert_eq!(
+            before(chrono::TimeDelta::minutes(1)),
+            Some("1 minute ago".into())
+        );
+        assert_eq!(
+            before(chrono::TimeDelta::minutes(59)),
+            Some("59 minutes ago".into())
+        );
+        assert_eq!(
+            before(chrono::TimeDelta::hours(1)),
+            Some("1 hour ago".into())
+        );
+        assert_eq!(
+            before(chrono::TimeDelta::hours(23)),
+            Some("23 hours ago".into())
+        );
+        assert_eq!(before(chrono::TimeDelta::days(1)), Some("1 day ago".into()));
+        assert_eq!(
+            before(chrono::TimeDelta::seconds(-30)),
+            Some("just now".into())
+        );
+        let last_year = chrono::Local
+            .with_ymd_and_hms(2025, 10, 23, 12, 0, 0)
+            .unwrap();
+        assert_eq!(
+            describe_ran(&at(last_year), now).map(|(w, _)| w),
+            Some("ran 23 Oct 2025".into())
+        );
+        assert_eq!(describe_ran("not a time", now), None);
+    }
+
+    #[test]
+    fn the_live_stream_is_the_newest_jsonl_not_there_when_the_run_began() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bf-live-stream-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        assert_eq!(
+            live_stream(&tmp, &BTreeSet::new()),
+            None,
+            "no runs folder, no stream"
+        );
+        let runs = runs_dir(&tmp);
+        std::fs::create_dir_all(&runs).unwrap();
+        assert_eq!(live_stream(&tmp, &BTreeSet::new()), None);
+
+        let old = runs.join("old.jsonl");
+        std::fs::write(&old, b"").unwrap();
+        let earlier = streams_in(&tmp);
+        assert_eq!(earlier, BTreeSet::from([old.clone()]));
+        assert_eq!(
+            live_stream(&tmp, &earlier),
+            None,
+            "an earlier run's stream is not this one, however recent"
+        );
+
+        let new = runs.join("new.jsonl");
+        std::fs::write(&new, b"").unwrap();
+        std::fs::write(runs.join("new.json"), b"{}").unwrap();
+        assert_eq!(live_stream(&tmp, &earlier), Some(new.clone()));
+        let later = runs.join("later.jsonl");
+        std::fs::write(&later, b"").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&later)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            live_stream(&tmp, &earlier),
+            Some(later),
+            "of two new streams, the newer"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

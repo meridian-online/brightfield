@@ -812,3 +812,282 @@ fn a_run_that_lands_after_another_file_opened_lands_on_nothing() {
         "a record appeared beside the CSV"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Run progress, read from arc's live stream, and when the Protocol last ran
+// ---------------------------------------------------------------------------
+
+/// Draw frames until `until` holds of the window, or fail after [`PATIENCE`].
+fn frames_until(win: &mut Window, what: &str, until: impl Fn(&MeridianApp) -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    while !until(&win.app) {
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not happen inside {PATIENCE:?}"
+        );
+        win.frame(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A run under way counts its steps off the stream it writes, and not off an earlier run's.**
+///
+/// The runner is a script standing in for `arc`, so each moment of the run is the test's to
+/// choose: it waits for one mark, writes the stream line `arc` writes as the Protocol's one step
+/// finishes, waits for a second mark, and exits having written no record. An earlier run's stream
+/// is already in the runs folder, written moments before this run began, and names the same step
+/// done, so a window that read it would count the step before the script wrote its line.
+///
+/// Watched redden, two mutations, each alone: `live_stream`'s `!earlier.contains(path)` filter
+/// dropped (the first count reads 1), and `poll_run`'s `follow_stream` loop removed (the count stays
+/// at 0).
+#[cfg(unix)]
+#[test]
+fn a_run_under_way_counts_its_steps_on_its_own_stream() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("progress");
+    let path = dir.housing();
+    let runs = run::runs_dir(dir.path());
+    std::fs::create_dir_all(&runs).expect("the runs folder");
+    let earlier = runs.join("earlier.jsonl");
+    std::fs::write(
+        &earlier,
+        format!("{{\"step\":\"{STEP}\",\"state\":\"success\"}}\n"),
+    )
+    .expect("an earlier run's stream writes");
+
+    let first = dir.path().join("write-the-line");
+    let second = dir.path().join("finish");
+    let script = dir.path().join("stand-in-arc");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             while [ ! -e '{first}' ]; do sleep 0.01; done\n\
+             printf '{{\"step\":\"{STEP}\",\"state\":\"success\",\"ts\":\"t\"}}\\n' > '{stream}'\n\
+             while [ ! -e '{second}' ]; do sleep 0.01; done\n\
+             echo 'the stand-in wrote no record' >&2\n\
+             exit 1\n",
+            first = first.display(),
+            second = second.display(),
+            stream = runs.join("this-run.jsonl").display(),
+        ),
+    )
+    .expect("the stand-in runner writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the stand-in runner is executable");
+
+    let mut win = Window::over_file(&path, Some(Runner::at(&script)));
+    assert_eq!(win.app.run_progress(), None, "no run, so no progress");
+    win.take_run_control();
+    for _ in 0..5 {
+        win.frame(Vec::new());
+    }
+    assert_eq!(
+        win.app.run_progress(),
+        Some(run::RunProgress {
+            running: None,
+            done: 0,
+            total: 1
+        }),
+        "before the run wrote its stream, none of its one step is done"
+    );
+
+    std::fs::write(&first, b"").expect("the first mark");
+    frames_until(&mut win, "the stream's step counting as done", |app| {
+        app.run_progress().is_some_and(|p| p.done == 1)
+    });
+    assert_eq!(win.app.run_progress().map(|p| p.total), Some(1));
+
+    std::fs::write(&second, b"").expect("the second mark");
+    win.drive_until_landed();
+    assert_eq!(
+        win.app.run_progress(),
+        None,
+        "a landed run leaves no progress"
+    );
+}
+
+/// **A run that ends before its step loop leaves no progress standing, and the last run reads
+/// failed.**
+///
+/// The runner is a path with no program at it, so the run ends without starting, as a manifest
+/// `arc` refuses ends it: no record and no stream. The window has a record of nothing, so it is
+/// the window that says the run failed. The Protocol refused before a run starts, untrusted, is
+/// held the same way by `keep_editing_after_untrusting_refuses_a_run`.
+///
+/// Watched redden, one mutation: `note_run_landed`'s insert without a record removed, so
+/// `last_run` reads no run.
+#[test]
+fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
+    let dir = TempDir::new("refused");
+    let path = dir.housing();
+    let mut win = Window::over_file(&path, Some(Runner::at(dir.path().join("no-runner-here"))));
+    assert_eq!(win.app.last_run(), None, "a file never run has no last run");
+    win.take_run_control();
+    win.drive_until_landed();
+
+    assert_eq!(win.app.run_progress(), None);
+    let last = win.app.last_run().expect("the refused run is the last run");
+    assert_eq!(last.state, brightfield_workbench::RunState::Failed);
+    assert_eq!(last.age, "just now");
+    assert!(
+        records(dir.path()).is_empty(),
+        "the refused run wrote a record"
+    );
+}
+
+/// **After a run, the Protocol says the day it ran and how long ago.**
+///
+/// A real run of the housing file: its record's finish time is read back as today's date and
+/// "just now", in the state the strip draws.
+#[test]
+fn after_a_run_the_last_run_says_when_and_how_long_ago() {
+    let dir = TempDir::new("last-run");
+    let path = dir.housing();
+    let mut win = Window::over_file(&path, Some(runner()));
+    win.take_run_control();
+    win.drive_until_landed();
+
+    let last = win.app.last_run().expect("the run landed a record");
+    assert_eq!(last.state, brightfield_workbench::RunState::Fresh);
+    assert_eq!(last.age, "just now");
+    assert_eq!(
+        last.when,
+        chrono::Local::now().format("ran %-d %b").to_string()
+    );
+}
+
+/// **A run that records clears its folder's unrecorded failure, and a run that does not sets it,
+/// whichever document is open when it lands, and leaves every other folder's alone.**
+///
+/// The runner is a script that refuses a run of whichever folder the test's mark names, writing
+/// no record, and hands every other run to the real runner, so a file's own run on its open is
+/// refused only when the test means it to be. The housing file is run four times, refused and
+/// recorded in turn: twice landing while it is open, and twice while a CSV in another folder is,
+/// the housing file opened again after each. Last, the housing file's run is refused while it is
+/// open, and then a refused run of the CSV lands while the housing file is open again.
+///
+/// Watched redden, three mutations, each alone: `note_run_landed`'s removal on a record dropped
+/// (the second run reads failed); its call in `land_run` moved back after the `holds_protocol`
+/// return (the third run reads fresh); and one failure kept for the window rather than one a
+/// folder (the CSV's refusal takes the housing file's).
+#[cfg(unix)]
+#[test]
+fn the_last_run_follows_the_folders_runs_whichever_document_is_open() {
+    use brightfield_workbench::RunState;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("follows");
+    let housing = dir.housing();
+    let elsewhere = TempDir::new("follows-elsewhere");
+    let csv = elsewhere.path().join("tiny.csv");
+    std::fs::write(&csv, "a,b\n1,2\n3,4\n").expect("the CSV writes");
+    let tools = TempDir::new("follows-tools");
+    let mark = tools.path().join("refuse");
+    let script = tools.path().join("refuse-the-marked-folder");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             if [ -e '{mark}' ] && [ \"$(pwd -P)\" = \"$(cat '{mark}')\" ]; then\n\
+               echo 'refused by the test' >&2; exit 1\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            mark = mark.display(),
+            real = env!("CARGO_BIN_EXE_brightfield-shell"),
+        ),
+    )
+    .expect("the script writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the script is executable");
+    let refuse = |folder: Option<&Path>| match folder {
+        Some(folder) => std::fs::write(
+            &mark,
+            std::fs::canonicalize(folder)
+                .expect("the folder resolves")
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .expect("the mark writes"),
+        None => {
+            let _ = std::fs::remove_file(&mark);
+        }
+    };
+    let state = |win: &Window| win.app.last_run().map(|last| last.state);
+    let open = |win: &mut Window, file: &Path| {
+        win.app
+            .open_data_file(&win.ctx.clone(), &file.to_string_lossy());
+        win.settle();
+        assert_eq!(
+            win.app.held_protocol_dir().as_deref(),
+            file.parent(),
+            "{} did not open",
+            file.display()
+        );
+    };
+    let run = |win: &mut Window, which: &str| {
+        assert!(
+            win.app.run_protocol(&win.ctx.clone()),
+            "the {which} run did not start"
+        );
+    };
+
+    let mut win = Window::over_file(&housing, Some(Runner::at(&script)));
+    refuse(Some(dir.path()));
+    run(&mut win, "first");
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the first run, refused"
+    );
+    refuse(None);
+    run(&mut win, "second");
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Fresh),
+        "the second run, recorded"
+    );
+
+    for (which, refused, expected) in [
+        ("third", true, RunState::Failed),
+        ("fourth", false, RunState::Fresh),
+    ] {
+        refuse(refused.then_some(dir.path()));
+        run(&mut win, which);
+        open(&mut win, &csv);
+        frames_until(&mut win, "the run landing", |app| !app.run_outstanding());
+        refuse(None);
+        open(&mut win, &housing);
+        assert_eq!(
+            state(&win),
+            Some(expected),
+            "the {which} run, landed while another file was open"
+        );
+    }
+
+    refuse(Some(dir.path()));
+    run(&mut win, "fifth");
+    win.drive_until_landed();
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the fifth run, refused"
+    );
+    refuse(None);
+    open(&mut win, &csv);
+    refuse(Some(elsewhere.path()));
+    run(&mut win, "CSV's");
+    open(&mut win, &housing);
+    frames_until(&mut win, "the CSV's run landing", |app| {
+        !app.run_outstanding()
+    });
+    assert_eq!(
+        state(&win),
+        Some(RunState::Failed),
+        "the CSV's refused run, landed while the housing file was open, took its failure"
+    );
+}
