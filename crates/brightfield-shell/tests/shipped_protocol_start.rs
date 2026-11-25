@@ -129,9 +129,11 @@ fn nothing_listening(path: &str) -> String {
     format!("http://{addr}/{path}")
 }
 
-fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+fn collect_text(shape: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
     match shape {
-        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Text(text) => {
+            out.push((text.visual_bounding_rect(), text.galley.text().to_owned()))
+        }
         egui::Shape::Vec(shapes) => {
             for shape in shapes {
                 collect_text(shape, out);
@@ -147,6 +149,8 @@ struct Window {
     app: MeridianApp,
     ctx: egui::Context,
     texts: Vec<String>,
+    /// The same text, with where each was drawn.
+    placed: Vec<(egui::Rect, String)>,
 }
 
 impl Window {
@@ -161,6 +165,7 @@ impl Window {
                 .running_with(Some(runner)),
             ctx: egui::Context::default(),
             texts: Vec::new(),
+            placed: Vec::new(),
         };
         win.settle();
         win
@@ -175,10 +180,11 @@ impl Window {
             ..Default::default()
         };
         let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
-        self.texts.clear();
+        self.placed.clear();
         for clipped in &out.shapes {
-            collect_text(&clipped.shape, &mut self.texts);
+            collect_text(&clipped.shape, &mut self.placed);
         }
+        self.texts = self.placed.iter().map(|(_, t)| t.clone()).collect();
     }
 
     fn settle(&mut self) {
@@ -766,12 +772,19 @@ fn a_running_start_says_what_it_fetches_and_offers_no_run() {
         "the tiles do not name what the run fetches: {:?}",
         win.texts
     );
+    // The title band's Run stands greyed while the run goes; the tiles offer none of their own.
+    let title_run = win
+        .app
+        .run_control_rect()
+        .expect("the title band draws Run over a shipped start");
+    let tiles_run: Vec<_> = win
+        .placed
+        .iter()
+        .filter(|(at, t)| (t == "Run" || t.starts_with("Run ")) && !title_run.contains_rect(*at))
+        .collect();
     assert!(
-        !win.texts
-            .iter()
-            .any(|t| t == "Run" || t.starts_with("Run ")),
-        "the tiles offer a Run while the run is going: {:?}",
-        win.texts
+        tiles_run.is_empty(),
+        "the tiles offer a Run while the run is going: {tiles_run:?}"
     );
     assert!(
         !win.texts.iter().any(|t| t.contains("has not run")),
