@@ -2061,9 +2061,11 @@ const MENU_ITEMS: [(&str, Option<&str>, Option<&str>); 4] = [
 
 /// `menu_item` and `menu_separator`, in the card `Popover::show_menu` draws:
 /// keyed items, a greyed one, a toggle and a submenu, walked with the
-/// caller's cursor as a menu is. Open at rest so the goldens draw it.
+/// caller's cursor as a menu is. Open at rest so the goldens draw it; the
+/// button opens it again once dismissed.
 #[derive(Default)]
 struct MenuItemDemo {
+    closed: bool,
     cursor: usize,
     wrap: bool,
     chosen: bool,
@@ -2100,18 +2102,31 @@ impl Component for MenuItemDemo {
 
     fn ui(&mut self, ui: &mut egui::Ui) {
         let anchor = button(ui, Button::new("Column").icon(&icons::CHEVRON_DOWN));
+        if anchor.clicked {
+            self.closed = !self.closed;
+        }
         if self.chosen {
             ui.label(MENU_EVIDENCE);
         }
+        // Closed, the menu draws nothing and reads no keys, so Escape, Enter
+        // and the arrows reach the rest of the window.
+        if self.closed {
+            return;
+        }
         // A menu item takes no keyboard focus: the caller's cursor is where
-        // the keys act, so the keys are read here and not by the items.
-        let (down, up, enter) = ui.input(|i| {
-            (
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::Enter),
-            )
-        });
+        // the keys act, so the keys are read here and not by the items. The
+        // Enter that opened the menu from its button chooses nothing.
+        let (down, up, enter) = if anchor.clicked {
+            (false, false, false)
+        } else {
+            ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowDown),
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::Enter),
+                )
+            })
+        };
         if down {
             self.cursor = (self.cursor + 1) % Self::ITEMS;
         }
@@ -2164,6 +2179,9 @@ impl Component for MenuItemDemo {
                 self.wrap = !self.wrap;
             }
             self.chosen = true;
+        }
+        if shown.dismissed {
+            self.closed = true;
         }
     }
 }
