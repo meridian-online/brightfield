@@ -2253,8 +2253,9 @@ struct TopBar {
     activity_rect: Option<egui::Rect>,
     /// Whether the activity area was clicked.
     activity: bool,
-    /// What the activity area said, on a frame that drew it.
-    activity_said: Option<TitleActivity>,
+    /// What the activity area said and how wide it drew, on a frame that drew it, seen or only
+    /// measured.
+    activity_said: Option<(TitleActivity, f32)>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -3907,8 +3908,9 @@ pub struct MeridianApp {
     activity_rect: Option<egui::Rect>,
     /// What the activity area said the last time it was drawn, and how wide that drew. The band
     /// leaves that width for it while it says the same thing: the area lays its words out as it
-    /// draws, so its width is known only after. Anything else it has to say is drawn once to be
-    /// measured, so an area hidden for words too wide comes back when shorter ones fit.
+    /// draws, so its width is known only after. Anything else it has to say is first drawn unseen
+    /// to be measured, so an area hidden for words too wide comes back when shorter ones fit, and
+    /// words too wide are never painted over the band's other controls.
     activity_measured: Option<(TitleActivity, f32)>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
     /// as the open picker is, and only where dialogs are allowed.
@@ -7216,18 +7218,12 @@ impl MeridianApp {
             self.open_queue.ask_verb(choice);
         }
         self.run_rect = bar.run_rect;
-        if let (Some(rect), Some(said)) = (bar.activity_rect, bar.activity_said.take()) {
-            let placed_at = self
-                .activity_measured
-                .as_ref()
-                .filter(|(before, _)| *before == said)
-                .map(|(_, width)| *width);
-            if placed_at.is_none_or(|width| (rect.width() - width).abs() > f32::EPSILON) {
-                // The band placed the area at a width it had not measured; place it again at
-                // the one it drew.
+        if let Some((said, width)) = bar.activity_said.take() {
+            if bar.activity_rect.is_none() {
+                // Measured unseen: place it on the next frame.
                 ctx.request_repaint();
             }
-            self.activity_measured = Some((said, rect.width()));
+            self.activity_measured = Some((said, width));
         }
         self.activity_rect = bar.activity_rect;
         let placed = bar.placed.take();
@@ -12113,7 +12109,7 @@ impl MeridianApp {
             .activity_measured
             .as_ref()
             .filter(|(said, _)| Some(said) == activity.as_ref())
-            .map_or(0.0, |(_, width)| *width);
+            .map(|(_, width)| *width);
         let band = ui.max_rect();
         ui.horizontal_centered(|ui| {
             // On macOS the window's close, minimise and zoom buttons sit over this corner.
@@ -12266,22 +12262,30 @@ impl MeridianApp {
             let gap_right = stretch_end - spacing::SPACE_4;
             let mut stretch_ends = vec![(name.right() + spacing::SPACE_2, stretch_end)];
             if let Some(activity) = &activity {
-                let width = activity_width.min(gap_right - gap_left);
-                if gap_right - gap_left >= activity_width {
-                    let left = (gap_left + gap_right - width) / 2.0;
-                    let drawn = title_activity_ui(ui, band, left, activity)
-                        .on_hover_text(ACTIVITY_CONTROL_NAME);
-                    bar.activity_rect = Some(drawn.rect);
-                    bar.activity = drawn.clicked();
-                    bar.activity_said = Some(activity.clone());
-                    bar.controls.push(chrome::NamedControl::hovered(
-                        drawn.rect,
-                        ACTIVITY_CONTROL_NAME,
-                    ));
-                    stretch_ends = vec![
-                        (name.right() + spacing::SPACE_2, drawn.rect.left()),
-                        (drawn.rect.right(), stretch_end),
-                    ];
+                match activity_width {
+                    // Words the band has not measured are drawn unseen and untouchable, for
+                    // their width alone, and placed on the next frame.
+                    None => {
+                        let drawn = title_activity_ui(ui, band, gap_left, activity, false);
+                        bar.activity_said = Some((activity.clone(), drawn.rect.width()));
+                    }
+                    Some(width) if gap_right - gap_left >= width => {
+                        let left = (gap_left + gap_right - width) / 2.0;
+                        let drawn = title_activity_ui(ui, band, left, activity, true)
+                            .on_hover_text(ACTIVITY_CONTROL_NAME);
+                        bar.activity_rect = Some(drawn.rect);
+                        bar.activity = drawn.clicked();
+                        bar.activity_said = Some((activity.clone(), drawn.rect.width()));
+                        bar.controls.push(chrome::NamedControl::hovered(
+                            drawn.rect,
+                            ACTIVITY_CONTROL_NAME,
+                        ));
+                        stretch_ends = vec![
+                            (name.right() + spacing::SPACE_2, drawn.rect.left()),
+                            (drawn.rect.right(), stretch_end),
+                        ];
+                    }
+                    Some(_) => {}
                 }
             }
             for (index, (from, to)) in stretch_ends.into_iter().enumerate() {
@@ -22422,21 +22426,25 @@ fn run_mark(state: RunState) -> Option<meridian_egui::run_status::StepMark> {
     }
 }
 
-/// Draw the activity area with its left edge at `left`, centred on `band`'s height.
+/// Draw the activity area with its left edge at `left`, centred on `band`'s height; when not
+/// `seen`, unpainted and not interactive, to measure it.
 fn title_activity_ui(
     ui: &mut egui::Ui,
     band: egui::Rect,
     left: f32,
     activity: &TitleActivity,
+    seen: bool,
 ) -> egui::Response {
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(egui::Rect::from_min_max(
-                egui::pos2(left, band.top()),
-                band.right_bottom(),
-            ))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
+    let mut builder = egui::UiBuilder::new()
+        .max_rect(egui::Rect::from_min_max(
+            egui::pos2(left, band.top()),
+            band.right_bottom(),
+        ))
+        .layout(egui::Layout::left_to_right(egui::Align::Center));
+    if !seen {
+        builder = builder.invisible();
+    }
+    let mut child = ui.new_child(builder);
     let status = match activity {
         TitleActivity::Running { step, done, total } => meridian_egui::RunStatus::Running {
             step: step.as_deref(),
