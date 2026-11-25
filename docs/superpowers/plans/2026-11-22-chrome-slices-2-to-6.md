@@ -171,6 +171,13 @@ A design review in `meridian-online/design` builds these in `meridian-egui`, wit
 - **§13**, `PickerRow::unavailable(reason)`, landed as proposed, with one change: Enter or a click on an unavailable row picks nothing, rather than reaching the delegate's confirm, and the reason is already drawn as the row's detail. Task 9 follows the landed behaviour.
 - The review also replaced ADR 0011's cap with an inventory, so no entry was composed away for the cap's sake.
 
+**What the review landed for slice 3.** The same design revision carries slice 3's components under general names, and Tasks 12 to 15 call these:
+
+- **§7**, the spine row, is `step_row(ui, StepRow) -> StepRowResponse { response, clicked, fold_clicked }`, with `StepRow::new(StepEntry::{Step, Table}, Gutter, StepMark, label)` and the `output`, `timeline`, `fold`, `focused` and `cursor` builders as proposed. `Gutter` gains `lanes: u8`, the list's widest row, so every row's gutter is one width; a lane at or past it is ignored. The row is `ROW_GRID` (24) tall, and its node is a `Row` named `"<name>, <state word>"`, selected while focused. The fold control is a `Button` named by the row's name.
+- **§7's thin form** is `step_mark(ui, StepMark, focused) -> egui::Response`, in a `control::STEP_MARK_CELL` (24) square. Its node carries no role of its own (egui reads it as `Unknown`) and is named by the state word.
+- **§7's mark data** landed as proposed, in `meridian_design::marks`: `StepMark`, `STEP_MARKS`, `glyph(mark, dark) -> MarkGlyph { shape: MarkShape, ink, fill }` and `word(mark)`. The state vocabulary stays in the design system.
+- **§8**, the open place, is `vertical_tab(ui, VerticalTab) -> VerticalTabResponse { response, clicked, close_clicked }`, with `VerticalTab::new(node, activity).current(..).dirty(..)`. Its node is a `Tab` named `"<node> · <activity>"`.
+
 ### Rules the components share
 
 These follow `meridian-egui`'s existing style (`line_tabs`, `list_row`, `key_chip`, `overlay_frame`):
@@ -1206,35 +1213,35 @@ The slice is finished when the left rail shows the spine thin, as a list or as a
 
 ### Task 12: Adopt slice 3's components
 
-**Blocked by:** `spine_row`, `spine_mark`, `open_place`, `meridian_design::marks` and `control::SPINE_MARK_CELL`.
+**Blocked by:** `step_row`, `step_mark`, `vertical_tab`, `meridian_design::marks` and `control::STEP_MARK_CELL`.
 
-Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `open-place`. Bump the pin, add Draft demos, draw the goldens on the Mac Studio, promote the entries, and commit with the message "Take the spine's components from the design system".
+Do the same as Task 2, with the gallery entries `step-row`, `step-mark` and `vertical-tab`, named for the components the review landed. The pin Task 2 took already carries them, so there is no bump. The gallery's probe roles gain `Row`, and `Unknown` for the step mark. Add Draft demos, draw the goldens on the Mac Studio, promote the entries, and commit with the message "Take the spine's components from the design system".
 
 ### Task 13: The list width, drawn with the spine row
 
-**Blocked by:** `spine_row` (Task 12). It also needs Task 11.
+**Blocked by:** `step_row` (Task 12). It also needs Task 11.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/protocol.rs` (`spine_list_ui`; the private `spine_row` is removed; `SpineRowDrawn`)
 - Test: `crates/brightfield-shell/tests/navigator_spine.rs`, `spine_beside_the_model.rs`, `outline_list.rs`
 
 **Interfaces:**
-- Consumes: `meridian_egui::{spine_row, SpineRow, Gutter, StepMark, Timeline, Fold, SpineEntry}`.
+- Consumes: `meridian_egui::{step_row, StepRow, Gutter, StepMark, Timeline, Fold, StepEntry}`.
 - Produces: `SpineRowDrawn` keeps `rect`, `name_rect`, `washed` and `on_canvas`, and gains `fold_rect: Option<egui::Rect>`. `spine_state_mark(SpineState) -> StepMark` maps the states one to one.
 
 - [ ] **Step 1: Write the failing tests.**
   - `a_step_row_shows_its_duration_and_a_table_row_its_row_count`
   - `the_focused_nodes_row_is_marked_apart_from_the_cursor`
   - `clicking_a_rows_fold_control_unfolds_its_family`
-  - `the_spines_measurements_hold_at_both_windows` is re-pinned to `spine_row`'s rung.
+  - `the_spines_measurements_hold_at_both_windows` is re-pinned to `step_row`'s rung.
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test navigator_spine --test spine_beside_the_model --test outline_list`.
-- [ ] **Step 3: Implement.** Replace the row drawing inside `spine_list_ui` with `spine_row`. Caption rows and head rows stay. View rows ("grid") stay as rows with `Gutter { node: None, .. }`, carrying their lanes through.
+- [ ] **Step 3: Implement.** Replace the row drawing inside `spine_list_ui` with `step_row`. Caption rows and head rows stay. View rows ("grid") stay as rows with `Gutter { node: None, .. }`, carrying their lanes through.
 - [ ] **Step 4: Run the tests, and expect them to pass.** Then redraw `workflow_graph_baseline` and `dashboard_baseline` on the Mac Studio, if their regions show the spine.
 - [ ] **Step 5: Commit.** Message: "The spine lists its steps as Flight Explainer does".
 
 ### Task 14: The three widths, by one key
 
-**Blocked by:** `spine_mark`, `marks::glyph` and `SPINE_MARK_CELL` (Task 12). It also needs Task 13.
+**Blocked by:** `step_mark`, `marks::glyph` and `STEP_MARK_CELL` (Task 12). It also needs Task 13.
 
 **Files:**
 - Modify:
@@ -1249,7 +1256,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
 **Interfaces:**
 - Produces:
   - In `arrangement.rs`:
-    - `pub const NAVIGATOR_THIN_WIDTH: f32 = SPINE_MARK_CELL + 2.0 * SPACE_2`.
+    - `pub const NAVIGATOR_THIN_WIDTH: f32 = STEP_MARK_CELL + 2.0 * SPACE_2`.
     - `pub const NAVIGATOR_GRAPH_WIDTH: f32`, a ladder sum the builder picks, about twice `NAVIGATOR_RAIL_WIDTH`.
     - The navigator collapses to `Collapse::To(NAVIGATOR_THIN_WIDTH)`.
   - `pub enum SpineWidth { Thin, List, Graph }` with `next()`.
@@ -1265,7 +1272,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
   - In `arrangement.rs`, `each_rail_collapses_to_the_measure_it_declares` is re-pinned to `NAVIGATOR_THIN_WIDTH`.
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test spine_widths --test arrangement`.
 - [ ] **Step 3: Implement.**
-  - **Thin** replaces `rail_stub` in the navigator: a column of `spine_mark`s in the collapsed extent.
+  - **Thin** replaces `rail_stub` in the navigator: a column of `step_mark`s in the collapsed extent.
   - **Graph** presents the asset graph in a second slot of `ProtocolDoc`'s canvas host, keyed apart from the canvas's, and laid out at rail width with `brightfield_protocol::layout`.
   - `toggle-outline-rail` (⌘B) keeps its focus round trip.
 - [ ] **Step 4: Run the tests, and expect them to pass.** Then redraw the asset-graph baselines on the Mac Studio, since the marks moved to `marks::glyph`.
@@ -1273,7 +1280,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
 
 ### Task 15: The open places, above the spine
 
-**Blocked by:** `open_place` (Task 12). It also needs Task 13.
+**Blocked by:** `vertical_tab` (Task 12). It also needs Task 13.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/spine.rs`, `crates/brightfield-shell/src/window.rs`, `crates/brightfield-keys/src/registry.rs`, `crates/brightfield-keys/src/menus.rs`, `crates/brightfield-keys/src/keystroke.rs` (`[` and `]` join `KEY_NAMES`)
@@ -1737,10 +1744,10 @@ The slice is finished when:
 | 9 Greyed palette rows drawn greyed | `PickerRow`'s disabled state | 2; slice 1 (`PaletteCandidate::missing`) |
 | 10 Palette by stage | none | 1; slice 1 (`palette_filter` with a situation); forms phase 1 (`forms::by_verb`) |
 | 11 Spine facts | none | none |
-| 12 Adopt slice 3's components | spine row, spine mark, marks data, `SPINE_MARK_CELL`, open place | none |
-| 13 List width | spine row | 11, 12 |
-| 14 Three widths | spine mark, marks data | 13; slice 1 (`menus.rs`) |
-| 15 Open places | open place | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
+| 12 Adopt slice 3's components | step row, step mark, marks data, `STEP_MARK_CELL`, vertical tab | none |
+| 13 List width | step row | 11, 12 |
+| 14 Three widths | step mark, marks data | 13; slice 1 (`menus.rs`) |
+| 15 Open places | vertical tab | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
 | 16 Quick open | none | slice 1 (`label`, `needs`, `menus.rs`) |
 | 17 Activities | none | 1; slice 1 (`availability_of`) |
 | 18 Pane header; locator band goes | activity switcher | 17 |
