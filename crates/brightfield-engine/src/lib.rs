@@ -9,6 +9,7 @@
 
 pub mod coordinator;
 pub mod error;
+pub mod extensions;
 pub mod facts;
 pub mod nearest;
 pub mod preagg;
@@ -26,6 +27,7 @@ pub use brightfield_sql::ir::Predicate as SqlPredicate;
 pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
+pub use extensions::Extensions;
 pub use preview::{
     preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
     preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
@@ -309,6 +311,16 @@ pub enum NetworkPolicy {
 pub struct LoadOptions {
     /// Whether missing DuckDB extensions may be downloaded.
     pub network: NetworkPolicy,
+    /// Where the session's extensions come from. The default is the DuckDB
+    /// this build links ([`Extensions::linked`]).
+    ///
+    /// With [`Extensions::BuiltIn`] the engine issues no `INSTALL`, whatever
+    /// [`LoadOptions::network`] says; automatic install and load are off; the
+    /// extension repository cannot resolve; and a source whose SQL installs an
+    /// extension, updates extensions, or loads a file or an extension that is
+    /// not built in is refused before it runs ([`EngineError::ExtensionRefused`]),
+    /// as `managed_refuses_install_and_load_of_anything_else` holds.
+    pub extensions: Extensions,
     /// Override DuckDB's extension cache directory (its default is
     /// `~/.duckdb`). This is where `LOAD` looks for already-installed
     /// extensions — pointing it at a bundle directory is the packaging
@@ -465,7 +477,7 @@ impl Engine {
         let relax_signatures = options
             .type_source
             .as_ref()
-            .is_some_and(semantic::TypeSourceSpec::needs_unsigned_extensions);
+            .is_some_and(|spec| spec.needs_unsigned_extensions_for(options.extensions));
         let conn = if relax_signatures {
             duckdb::Config::default()
                 .allow_unsigned_extensions()
@@ -526,6 +538,19 @@ impl Engine {
             let quoted = dir.to_string_lossy().replace('\'', "''");
             conn.execute_batch(&format!("SET extension_directory='{quoted}';"))
                 .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
+        if options.extensions == Extensions::BuiltIn {
+            // The extensions are in the library, so nothing is acquired: no
+            // automatic install or load, and a repository that cannot resolve.
+            // Explicit statements are refused by the DDL loop below, since no
+            // DuckDB setting short of `enable_external_access` stops
+            // `INSTALL <name> FROM core` or a `LOAD` of a signed file by path.
+            conn.execute_batch(
+                "SET autoinstall_known_extensions=false; \
+                 SET autoload_known_extensions=false; \
+                 SET custom_extension_repository='/dev/null/brightfield-no-network';",
+            )
+            .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
         }
         if options.network == NetworkPolicy::Disabled {
             // autoinstall/autoload off: no query-time fetch. The repository
@@ -643,7 +668,7 @@ impl Engine {
             if let Err(e) = conn.execute_batch("SET autoload_known_extensions=false;") {
                 eprintln!("warning: autoload could not be switched off for the type source: {e}");
             }
-            let opened = spec.open(&conn);
+            let opened = spec.open_for(&conn, options.extensions);
             if let Some(previous) = restore {
                 if let Err(e) =
                     conn.execute_batch(&format!("SET autoload_known_extensions={previous};"))
@@ -675,11 +700,13 @@ impl Engine {
             .iter()
             .any(|s| s.source_kind == SourceKindTag::Spatial);
         if needs_spatial {
-            if let Err(e) = conn.execute_batch(match options.network {
-                NetworkPolicy::Auto => "INSTALL spatial; LOAD spatial;",
+            if let Err(e) = conn.execute_batch(match (options.extensions, options.network) {
+                // Compiled in and already loaded.
+                (Extensions::BuiltIn, _) => "",
+                (Extensions::Installable, NetworkPolicy::Auto) => "INSTALL spatial; LOAD spatial;",
                 // Air-gapped: LOAD only — from the local extension cache,
                 // never the network.
-                NetworkPolicy::Disabled => "LOAD spatial;",
+                (Extensions::Installable, NetworkPolicy::Disabled) => "LOAD spatial;",
             }) {
                 eprintln!(
                     "warning: DuckDB spatial extension unavailable (autoinstall \
@@ -715,9 +742,13 @@ impl Engine {
             if !needed {
                 continue;
             }
-            let batch = match options.network {
-                NetworkPolicy::Auto => format!("INSTALL {ext}; LOAD {ext};"),
-                NetworkPolicy::Disabled => format!("LOAD {ext};"),
+            let batch = match (options.extensions, options.network) {
+                // Compiled in and already loaded.
+                (Extensions::BuiltIn, _) => continue,
+                (Extensions::Installable, NetworkPolicy::Auto) => {
+                    format!("INSTALL {ext}; LOAD {ext};")
+                }
+                (Extensions::Installable, NetworkPolicy::Disabled) => format!("LOAD {ext};"),
             };
             if let Err(e) = conn.execute_batch(&batch) {
                 failed_extensions.push((
@@ -807,6 +838,29 @@ impl Engine {
                         reason,
                     },
                 });
+            }
+            if options.extensions == Extensions::BuiltIn {
+                if let Some(statement) = extensions::refused_when_built_in(&ddl.sql) {
+                    return Err(EngineError::ExtensionRefused {
+                        source_name: ddl.view_name.clone(),
+                        refusal: statement.refusal(),
+                    });
+                }
+                // Each source's DDL is emitted as one statement, a `CREATE
+                // VIEW` or an `ATTACH`, so a second one is the spec's text
+                // reaching past it: SQL after a query source's query, or a
+                // source name holding a quote. It could turn automatic install
+                // back on with a `SET` before a reader that is not built in.
+                // DuckDB's own parser counts them, so no quoting hides one; a
+                // text that does not parse fails below, in DuckDB's words.
+                if let Ok(count) = probe_statement_count(&ddl.sql, "source") {
+                    if count > 1 {
+                        return Err(EngineError::ExtensionRefused {
+                            source_name: ddl.view_name.clone(),
+                            refusal: extensions::ONE_STATEMENT.to_string(),
+                        });
+                    }
+                }
             }
             if let Err(e) = conn.execute_batch(&ddl.sql) {
                 return Err(match &ddl.remote_location {

@@ -53,23 +53,9 @@ pub enum Reason {
     Extension(String),
 }
 
-/// The DuckDB extensions built into the managed edition, which a step may install and load: those
-/// `scripts/duckdb-managed/extensions.cmake` compiles into its library, by the names a statement
-/// may give them. The sqlite extension answers to `sqlite` and to `sqlite_scanner`.
-pub const BUILT_IN_EXTENSIONS: &[&str] = &[
-    "core_functions",
-    "parquet",
-    "json",
-    "icu",
-    "autocomplete",
-    "excel",
-    "sqlite",
-    "sqlite_scanner",
-    "httpfs",
-    "ducklake",
-    "spatial",
-    "finetype",
-];
+/// The DuckDB extensions built into the managed edition, which a step may install and load: the
+/// engine's list, since the engine reads with the same library.
+pub use brightfield_engine::extensions::BUILT_IN as BUILT_IN_EXTENSIONS;
 
 /// The program FineType's operators start, which the managed edition ships as a helper.
 pub const FINETYPE: &str = "finetype";
@@ -239,74 +225,11 @@ fn is_assignment(word: &str) -> bool {
 /// as written: a bare name not in [`BUILT_IN_EXTENSIONS`], or any file path, since the managed
 /// edition loads no extension from a file. Comments are not read.
 fn sql_extension_beyond(sql: &str) -> Option<String> {
-    let text = without_comments(sql);
-    for statement in text.split(';') {
-        let words: Vec<&str> = statement.split_whitespace().collect();
-        let named = match words.as_slice() {
-            [force, install, name, ..]
-                if force.eq_ignore_ascii_case("force")
-                    && install.eq_ignore_ascii_case("install") =>
-            {
-                name
-            }
-            [verb, name, ..]
-                if verb.eq_ignore_ascii_case("install") || verb.eq_ignore_ascii_case("load") =>
-            {
-                name
-            }
-            _ => continue,
-        };
-        let name = named.trim_matches(|c| c == '\'' || c == '"');
-        let is_file = name.contains('/') || name.ends_with(".duckdb_extension");
-        let built_in = BUILT_IN_EXTENSIONS
-            .iter()
-            .any(|b| b.eq_ignore_ascii_case(name));
-        if is_file || !built_in {
-            return Some(name.to_string());
-        }
-    }
-    None
-}
-
-/// `sql` with its `--` and `/* */` comments taken out, and its quoted text kept as written, so a
-/// comment's words are not read as a statement and a path in quotes is not cut at a `--`.
-fn without_comments(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' | '"' => {
-                out.push(c);
-                for d in chars.by_ref() {
-                    out.push(d);
-                    if d == c {
-                        break;
-                    }
-                }
-            }
-            '-' if chars.peek() == Some(&'-') => {
-                for d in chars.by_ref() {
-                    if d == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut last = '\0';
-                for d in chars.by_ref() {
-                    if last == '*' && d == '/' {
-                        break;
-                    }
-                    last = d;
-                }
-                out.push(' ');
-            }
-            _ => out.push(c),
-        }
-    }
-    out
+    use brightfield_engine::extensions::{statements, Verb};
+    statements(sql)
+        .into_iter()
+        .find(|s| s.verb != Verb::Update && !s.names_a_built_in())
+        .map(|s| s.target)
 }
 
 #[cfg(test)]

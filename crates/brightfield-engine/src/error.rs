@@ -12,6 +12,18 @@ pub enum EngineError {
         cause: duckdb::Error,
     },
 
+    /// A source's SQL installs a DuckDB extension, updates extensions, or
+    /// loads one that is not built in, on a session whose extensions are
+    /// built in ([`crate::Extensions::BuiltIn`]); or, on such a session, a
+    /// source reads as more than one statement. Nothing of it ran.
+    #[error("'{source_name}' was not read: {refusal}")]
+    ExtensionRefused {
+        /// The data source name from the spec.
+        source_name: String,
+        /// The sentence the analyst reads, naming the extension.
+        refusal: String,
+    },
+
     /// A data source DDL statement failed to execute.
     #[error("DDL failed for source '{source_name}': {cause}\n  SQL: {sql}")]
     DdlFailed {

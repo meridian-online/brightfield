@@ -449,7 +449,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "managed-duckdb-test",
-        runs: "cargo test --locked --features managed-duckdb, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link",
+        runs: "cargo test --locked --features managed-duckdb, -p brightfield-engine --test managed_duckdb --test built_in_extensions and -p brightfield-shell --test managed_duckdb_link",
         only_in_ci: None,
         only_at_night: Some(
             "it links the library the duckdb-managed step builds; the nightly runs it \
@@ -465,6 +465,8 @@ pub static STEPS: &[Step] = &[
                 "managed-duckdb",
                 "--test",
                 "managed_duckdb",
+                "--test",
+                "built_in_extensions",
             ])?;
             c.run_cargo(&[
                 "test",
