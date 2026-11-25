@@ -15,6 +15,7 @@
 //! capability). The live windowed wiring that consumes it is verified by the
 //! shell's scripted-keystroke capture tier and on-device eyeballs.
 
+pub mod activity;
 pub mod altitude;
 pub mod availability;
 pub mod dispatch;

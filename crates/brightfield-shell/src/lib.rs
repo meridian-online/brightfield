@@ -154,6 +154,7 @@ pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;
 pub mod navigation;
+pub mod node_activity;
 pub mod one_step;
 pub mod open_queue;
 pub mod operation;

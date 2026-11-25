@@ -2479,6 +2479,30 @@ impl ProtocolModel {
         })
     }
 
+    /// Every chart that reads `table`: each dashboard node an edge out of it
+    /// reaches in the collapsed graph, in the order the graph lists its edges.
+    ///
+    /// [`Self::dashboard`] answers the first of these for the held table, which
+    /// is the page the canvas opens on. This answers all of them for any node,
+    /// which is what the Chart activity asks: none, one, or several.
+    #[must_use]
+    pub fn charts_reading(&self, table: &AssetId) -> Vec<AssetId> {
+        let graph = &self.graph_collapsed;
+        let mut charts: Vec<AssetId> = Vec::new();
+        for edge in &graph.edges {
+            if edge.from == *table
+                && graph
+                    .nodes
+                    .get(&edge.to)
+                    .is_some_and(|n| n.kind == AssetKind::Dashboard)
+                && !charts.contains(&edge.to)
+            {
+                charts.push(edge.to.clone());
+            }
+        }
+        charts
+    }
+
     /// Whether `node` is a node of the collapsed graph a grid can list — the
     /// nodes the spine gives a `grid` row.
     #[must_use]
