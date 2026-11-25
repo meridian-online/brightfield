@@ -4,8 +4,9 @@
 //! It starts from `shift-l` with the grid's cursor on a cell, or from "Top
 //! rows by this column" on a column header's menu, and opens on ten rows,
 //! largest first: `count` is `10` and `order_by` is the column as SQL spells
-//! it, with `desc`. It asks nothing at first, since the preview is already the
-//! answer, and Enter keeps it ([`Keeps::OnEnter`]).
+//! it, with `desc`. The preview is already an answer, and Enter keeps it
+//! ([`Keeps::OnEnter`],
+//! `limit_rows_opens_on_ten_rows_largest_first_and_keeps_on_enter`).
 //!
 //! The form holds the count, a number field where Up and Down change it by
 //! one and Shift with them by ten; the direction, as the two words *largest
