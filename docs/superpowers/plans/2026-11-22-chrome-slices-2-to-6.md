@@ -1745,9 +1745,9 @@ The slice is finished when:
 | 10 Palette by stage | none | 1; slice 1 (`palette_filter` with a situation); forms phase 1 (`forms::by_verb`) |
 | 11 Spine facts | none | none |
 | 12 Adopt slice 3's components | step row, step mark, marks data, `STEP_MARK_CELL`, vertical tab | none |
-| 13 List width | spine row | 11, 12 |
-| 14 Three widths | spine mark, marks data | 13; slice 1 (`menus.rs`) |
-| 15 Open places | open place | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
+| 13 List width | step row | 11, 12 |
+| 14 Three widths | step mark, marks data | 13; slice 1 (`menus.rs`) |
+| 15 Open places | vertical tab | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
 | 16 Quick open | none | slice 1 (`label`, `needs`, `menus.rs`) |
 | 17 Activities | none | 1; slice 1 (`availability_of`) |
 | 18 Pane header; locator band goes | activity switcher | 17 |
