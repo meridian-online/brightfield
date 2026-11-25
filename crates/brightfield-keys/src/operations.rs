@@ -151,7 +151,7 @@ fn dedupe_rows() -> VerbEntry {
 }
 
 // ---- limit-rows ----
-const LIMIT_ROWS_BUILT: bool = false;
+const LIMIT_ROWS_BUILT: bool = true;
 fn limit_rows() -> VerbEntry {
     entry(
         "limit-rows",

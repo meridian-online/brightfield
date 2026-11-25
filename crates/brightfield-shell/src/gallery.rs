@@ -87,10 +87,11 @@ use brightfield_workbench::{
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
     align, button, icons, key_chip, key_tip, list_row, overlay_frame, query_line, ribbon_row,
-    ribbon_tabs, run_status, tooltip_for_action, widgets, Anchor, Button, ListRow, MeridianUi,
-    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, Popover,
-    RibbonRow, RibbonTab, RibbonTabs, RowHeight, RunStatus, Severity, StepMark, TabPick, Toast,
-    ToastLayer, Weight, PROMPT_GLYPH,
+    ribbon_tabs, run_status, step_mark, step_row, tooltip_for_action, vertical_tab, widgets,
+    Anchor, Button, Fold, Gutter, ListRow, MeridianUi, ModalChrome, ModalLayer, Notification,
+    NotificationId, NotificationLayer, Picker, Popover, RibbonRow, RibbonTab, RibbonTabs,
+    RowHeight, RunStatus, Severity, StepEntry, StepMark, StepRow, TabPick, Timeline, Toast,
+    ToastLayer, VerticalTab, Weight, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -206,6 +207,11 @@ pub enum ProbeRole {
     Status,
     /// A floating card that explains, such as a greyed command's reason.
     Tooltip,
+    /// One row of a list read as a table, such as a spine row.
+    Row,
+    /// A node the design system gives no role of its own, such as the thin
+    /// spine's step mark, which is read by its state word alone.
+    Unknown,
 }
 
 /// How the gate finds the specimen: role plus label. This is the first gate
@@ -389,6 +395,9 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(ReasonPopoverDemo),
         Box::new(PopoverDemo::default()),
         Box::new(RunStatusDemo::default()),
+        Box::new(StepRowDemo::default()),
+        Box::new(StepMarkDemo::default()),
+        Box::new(VerticalTabDemo::default()),
     ]
 }
 
@@ -1635,6 +1644,254 @@ impl Component for RunStatusDemo {
         }
         if self.opened {
             ui.label(RUN_STATUS_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`StepRowDemo`] shows once a row has been opened.
+const STEP_ROW_EVIDENCE: &str = "step opened";
+
+/// The evidence label [`StepRowDemo`] shows once its group has been unfolded.
+const STEP_FOLD_EVIDENCE: &str = "group unfolded";
+
+/// The label the gate reads the probe row by: its name, then the state word
+/// the component adds.
+const STEP_ROW_PROBE: &str = "by_hour, ok";
+
+/// `step_row`: the spine's list form, over a fork and its join, so the gutter
+/// shows a lane opening, passing and closing. One row is a table with its row
+/// count, one a running step under the cursor, and the last a folded family
+/// that is the node the canvas shows.
+#[derive(Default)]
+struct StepRowDemo {
+    opened: bool,
+    unfolded: bool,
+}
+
+impl Component for StepRowDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "step-row",
+            name: "Step row",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Row,
+                label: STEP_ROW_PROBE,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: STEP_ROW_EVIDENCE,
+            }),
+            solo_size: (460.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        // trips → {by_hour, by_route} → ranking: the shape `lanes` gives a
+        // fork and its join.
+        let fold = if self.unfolded {
+            Fold::Unfolded
+        } else {
+            Fold::Folded { members: 3 }
+        };
+        let rows = [
+            StepRow::new(
+                StepEntry::Table,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[],
+                    from_above: &[],
+                    to_below: &[0, 1],
+                },
+                StepMark::Ok,
+                "trips",
+            )
+            .output("19,028 rows"),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[1],
+                    from_above: &[0],
+                    to_below: &[0],
+                },
+                StepMark::Ok,
+                "by_hour",
+            )
+            .output("24 rows")
+            .timeline(
+                Timeline {
+                    start: 0.0,
+                    end: 0.35,
+                },
+                "2.3s",
+            ),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(1),
+                    through: &[0],
+                    from_above: &[1],
+                    to_below: &[1],
+                },
+                StepMark::Running,
+                "by_route",
+            )
+            .timeline(
+                Timeline {
+                    start: 0.35,
+                    end: 0.8,
+                },
+                "1m 04s",
+            )
+            .cursor(true),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[],
+                    from_above: &[0, 1],
+                    to_below: &[],
+                },
+                StepMark::Stale,
+                "ranking",
+            )
+            .fold(fold)
+            .focused(true),
+        ];
+        // The rows touch, so each lane runs on unbroken from row to row.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for row in rows {
+            let response = step_row(ui, row);
+            if response.clicked {
+                self.opened = true;
+            }
+            if response.fold_clicked {
+                self.unfolded = !self.unfolded;
+            }
+        }
+        if self.opened {
+            ui.label(STEP_ROW_EVIDENCE);
+        }
+        if self.unfolded {
+            ui.label(STEP_FOLD_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`StepMarkDemo`] shows once a mark has been picked.
+const STEP_MARK_EVIDENCE: &str = "mark picked";
+
+/// `step_mark`: the spine's thin form, one mark per state in a column, with
+/// the focused one in the selection wash.
+#[derive(Default)]
+struct StepMarkDemo {
+    picked: bool,
+}
+
+impl Component for StepMarkDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "step-mark",
+            name: "Step mark",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Unknown,
+                label: "failed",
+            },
+            height: GateHeight::Intrinsic(
+                "the thin mark is a square cell of control::STEP_MARK_CELL, \
+                 a cell the thin rail's width is declared from rather than a \
+                 rung of the row ladder",
+            ),
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: STEP_MARK_EVIDENCE,
+            }),
+            solo_size: (200.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let marks = [
+            StepMark::NotRun,
+            StepMark::Running,
+            StepMark::Ok,
+            StepMark::Failed,
+            StepMark::Stale,
+        ];
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for mark in marks {
+            if step_mark(ui, mark, mark == StepMark::Ok).clicked() {
+                self.picked = true;
+            }
+        }
+        if self.picked {
+            ui.label(STEP_MARK_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`VerticalTabDemo`] shows once a place has been opened.
+const VERTICAL_TAB_EVIDENCE: &str = "place opened";
+
+/// The label the gate reads the probe tab by: the node, then the activity.
+const VERTICAL_TAB_PROBE: &str = "trips · Chart";
+
+/// `vertical_tab`: the open places above the spine, one current, one holding
+/// an unsaved draft, and one at rest.
+#[derive(Default)]
+struct VerticalTabDemo {
+    opened: bool,
+}
+
+impl Component for VerticalTabDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "vertical-tab",
+            name: "Vertical tab",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Tab,
+                label: VERTICAL_TAB_PROBE,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: VERTICAL_TAB_EVIDENCE,
+            }),
+            solo_size: (300.0, 140.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let places = [
+            VerticalTab::new("ranking", "Grid").current(true),
+            VerticalTab::new("trips", "Chart").dirty(true),
+            VerticalTab::new("by_hour", "SQL"),
+        ];
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for place in places {
+            if vertical_tab(ui, place).clicked {
+                self.opened = true;
+            }
+        }
+        if self.opened {
+            ui.label(VERTICAL_TAB_EVIDENCE);
         }
     }
 }
