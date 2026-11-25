@@ -107,21 +107,30 @@ fn dedupe_rows_keeps_select_distinct_at_once_and_opens_its_form() {
 fn dedupe_rows_shows_no_form_before_its_step_is_kept() {
     let mut win = with_a_duplicate();
     win.cursor_on("house_age");
-    // Whenever the first draft is open, before its step is kept, it asks with no form.
+    // Press until the first draft begins, or its step is already kept.
     for _ in 0..600 {
         win.press("shift-u");
-        if let Some(making) = win.app.making() {
-            if making.corrects.is_none() {
-                assert!(making.form().is_none(), "the first draft asks nothing");
-                assert!(!win.texts.iter().any(|t| t.contains("One row per")));
-            }
-        }
-        if !win.kept().is_empty() {
+        if win.app.making().is_some() || !win.kept().is_empty() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
         win.run(Vec::new());
     }
+    // Then, on each frame until its step is kept, the first draft asks with no form.
+    let mut frames = 0;
+    while win.kept().is_empty() && frames < 1500 {
+        let making = win
+            .app
+            .making()
+            .expect("the first draft stays open until kept");
+        assert!(making.corrects.is_none());
+        assert!(making.form().is_none(), "the first draft asks nothing");
+        assert!(!win.texts.iter().any(|t| t.contains("One row per")));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        win.run(Vec::new());
+        frames += 1;
+    }
+    assert_eq!(win.kept().len(), 1, "kept within {frames} frames");
     win.settle_reads();
     let making = win.app.making().expect("the kept step opens in its form");
     assert!(making.form().is_some());
