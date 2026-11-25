@@ -79,20 +79,27 @@ pub struct ActivityOffer {
     /// The verb that switches to it.
     pub verb: &'static str,
     /// Why it cannot be taken now, when it cannot: the sentence its verb's
-    /// declared needs say, or, for a chart, that no chart reads the node.
+    /// declared needs say, read through the window's availability, so the
+    /// switcher, the ribbon and the menus say one sentence.
     pub unavailable: Option<String>,
 }
 
-/// The activities `node` offers in `app`, each with the sentence it says when
-/// it cannot be taken.
+/// The activities the node in focus offers in `app`, each with the sentence it
+/// says when it cannot be taken. Empty when no node is in focus.
 #[must_use]
-pub fn offers(node: &FocusedNode, app: &MeridianApp) -> Vec<ActivityOffer> {
+pub fn offers(app: &MeridianApp) -> Vec<ActivityOffer> {
+    let Some(node) = app.node_in_focus() else {
+        return Vec::new();
+    };
     node.activities()
         .iter()
         .map(|&activity| ActivityOffer {
             activity,
             verb: activity.verb(),
-            unavailable: app.activity_unavailable(activity.verb(), node),
+            unavailable: match app.availability_of(activity.verb()) {
+                Some(brightfield_keys::Availability::Missing(sentence)) => Some(sentence),
+                _ => None,
+            },
         })
         .collect()
 }

@@ -9051,11 +9051,17 @@ impl MeridianApp {
                 node: node.clone(),
                 table: table.clone(),
             }),
-            CanvasHolds::Graph => model
-                .selected()
-                .filter(|node| model.is_viewable(node))
-                .cloned()
-                .map(FocusedNode::Table),
+            CanvasHolds::Graph => {
+                let node = model.selected()?;
+                if model.is_viewable(node) {
+                    return Some(FocusedNode::Table(node.clone()));
+                }
+                let table = model.table_read_by(node)?;
+                Some(FocusedNode::Chart {
+                    node: node.clone(),
+                    table: table.clone(),
+                })
+            }
             CanvasHolds::Chart => None,
         }
     }
@@ -9072,45 +9078,34 @@ impl MeridianApp {
             .then(|| held.clone())
     }
 
-    /// Why the activity `verb` cannot be taken for `node`, when it cannot: the
-    /// sentence its declared needs say, or, for Chart, that no chart reads the
-    /// node. `None` when it can.
+    /// **The chart Chart puts on the canvas for `node`**, with the table it
+    /// reads: for a table or view, the chart that reads it
+    /// ([`Self::chart_reading`]); for a chart, itself, when it is the one the
+    /// window holds. `None` when the window has no such chart to show.
     #[must_use]
-    pub fn activity_unavailable(
+    pub fn chart_for(
         &self,
-        verb: &str,
         node: &crate::node_activity::FocusedNode,
-    ) -> Option<String> {
-        if let Some(brightfield_keys::Availability::Missing(sentence)) = self.availability_of(verb)
-        {
-            return Some(sentence);
+    ) -> Option<(AssetId, AssetId)> {
+        use crate::node_activity::FocusedNode;
+        let model = &self.protocol.doc.model;
+        match node {
+            FocusedNode::Table(table) => self
+                .chart_reading(table)
+                .map(|chart| (chart, table.clone())),
+            FocusedNode::Chart { node, table } => (model.dashboard() == Some(node)
+                && model.table() == Some(table))
+            .then(|| (node.clone(), table.clone())),
+            FocusedNode::Model => None,
         }
-        if verb == brightfield_keys::activity::SHOW_CHART {
-            let table = node.table()?;
-            if self.chart_reading(table).is_none() {
-                return Some(self.no_chart_sentence(table));
-            }
-        }
-        None
-    }
-
-    /// What Chart says over a table no chart the window holds reads.
-    fn no_chart_sentence(&self, table: &AssetId) -> String {
-        let name = self
-            .protocol
-            .doc
-            .model
-            .label_of(table)
-            .unwrap_or(table.as_str());
-        format!("No chart reads {name} yet.")
     }
 
     /// **Switch the node in focus to the activity `verb` names**, where the
     /// window can. Answers whether the canvas now shows it.
     ///
     /// Grid puts the node's rows on the canvas, or the rows a chart reads.
-    /// Chart puts on the chart that reads the node, and says so in a toast when
-    /// none does. Relate brings the model pane back from behind a table's grid,
+    /// Chart puts on the chart that reads the node, or the chart in focus.
+    /// Relate brings the model pane back from behind a table's grid,
     /// and is already taken while the pane holds the canvas. The node, the
     /// selected column and the grid's cursor are left as they were, so a trip
     /// from the chart to the grid and back comes back to the same place.
@@ -9141,19 +9136,12 @@ impl MeridianApp {
                 }
                 None => false,
             },
-            SHOW_CHART => match table {
-                Some(table) => match self.chart_reading(&table) {
-                    Some(node) => {
-                        self.graph_reached_from = None;
-                        self.canvas_holds = CanvasHolds::Dashboard { node, table };
-                        true
-                    }
-                    None => {
-                        let sentence = self.no_chart_sentence(&table);
-                        self.say_activity_refused(ctx, sentence);
-                        false
-                    }
-                },
+            SHOW_CHART => match focus.as_ref().and_then(|f| self.chart_for(f)) {
+                Some((node, table)) => {
+                    self.graph_reached_from = None;
+                    self.canvas_holds = CanvasHolds::Dashboard { node, table };
+                    true
+                }
                 None => false,
             },
             RELATE => self.model.as_ref().is_some_and(ModelDoc::shown) || self.back_to_model(),
@@ -10284,6 +10272,11 @@ impl MeridianApp {
             Selected::Asset,
         );
         hold(protocol.removable_step().is_some(), Selected::Step);
+        let focus = self.node_in_focus();
+        hold(
+            focus.as_ref().and_then(|f| f.table()).is_some(),
+            Selected::NodeRows,
+        );
         if let Some(pane) = model_pane {
             use brightfield_render::model_scene::Selection;
             selected.push(Selected::Model);
@@ -10331,6 +10324,10 @@ impl MeridianApp {
             Condition::FileToReload,
         );
         when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        when(
+            focus.as_ref().and_then(|f| self.chart_for(f)).is_some(),
+            Condition::ChartReadsFocus,
+        );
         when(
             self.held_protocol_dir().is_some(),
             Condition::ProtocolFolder,

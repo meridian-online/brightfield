@@ -2503,6 +2503,26 @@ impl ProtocolModel {
         charts
     }
 
+    /// The table the chart `chart` reads: the tabular node an edge into it
+    /// comes from in the collapsed graph. `None` for a node that is not a chart,
+    /// or a chart no table feeds.
+    #[must_use]
+    pub fn table_read_by(&self, chart: &AssetId) -> Option<&AssetId> {
+        let graph = &self.graph_collapsed;
+        graph
+            .nodes
+            .get(chart)
+            .filter(|n| n.kind == AssetKind::Dashboard)?;
+        graph.edges.iter().find_map(|edge| {
+            (edge.to == *chart
+                && graph
+                    .nodes
+                    .get(&edge.from)
+                    .is_some_and(|n| n.kind.is_tabular()))
+            .then_some(&edge.from)
+        })
+    }
+
     /// Whether `node` is a node of the collapsed graph a grid can list — the
     /// nodes the spine gives a `grid` row.
     #[must_use]

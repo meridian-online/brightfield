@@ -335,13 +335,19 @@ const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Select
 // The node's activities. Grid and Chart look at a table or view; Relate is the
 // model's, and a model relates two sources or more.
 const NEEDS_GRID: &[Requirement] = &[Requirement::new(
-    Need::Selected(Selected::Rows),
+    Need::Selected(Selected::NodeRows),
     "Grid needs a table or view in focus.",
 )];
-const NEEDS_CHART_ACTIVITY: &[Requirement] = &[Requirement::new(
-    Need::Selected(Selected::Rows),
-    "Chart needs a table or view in focus.",
-)];
+const NEEDS_CHART_ACTIVITY: &[Requirement] = &[
+    Requirement::new(
+        Need::Selected(Selected::NodeRows),
+        "Chart needs a table or view in focus.",
+    ),
+    Requirement::new(
+        Need::Condition(Condition::ChartReadsFocus),
+        "No chart reads this table or view yet.",
+    ),
+];
 const NEEDS_RELATE: &[Requirement] = &[Requirement::new(
     Need::Sources(2),
     "Relate needs two sources.",

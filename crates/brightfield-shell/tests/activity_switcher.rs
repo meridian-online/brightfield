@@ -103,9 +103,16 @@ fn a_table_and_a_chart_each_offer_grid_then_chart_and_both_can_be_taken() {
         node: chart,
         table: table.clone(),
     };
-    assert_eq!(win.app.node_in_focus(), Some(on_chart.clone()));
-    for node in [on_chart, FocusedNode::Table(table)] {
-        let offered = offers(&node, &win.app);
+    assert_eq!(win.app.node_in_focus(), Some(on_chart));
+    for step in [None, Some("cmd-alt-g")] {
+        if let Some(keys) = step {
+            win.press(keys);
+            assert_eq!(
+                win.app.node_in_focus(),
+                Some(FocusedNode::Table(table.clone()))
+            );
+        }
+        let offered = offers(&win.app);
         assert_eq!(
             offered.iter().map(|o| o.activity).collect::<Vec<_>>(),
             [NodeActivity::Grid, NodeActivity::Chart]
@@ -119,32 +126,82 @@ fn a_table_and_a_chart_each_offer_grid_then_chart_and_both_can_be_taken() {
             "{offered:?}"
         );
     }
-    win.press("cmd-alt-g");
     assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
 }
 
-#[test]
-fn chart_over_a_node_no_chart_reads_is_greyed_and_says_so() {
-    let win = scenes::data_file();
-    let (table, _) = table_and_chart(&win);
-    let model = win.app.protocol_model();
-    let other = model
-        .spine()
+/// The menu row `longname` draws, with the sentence it is greyed with.
+fn menu_missing(win: &scenes::Window, longname: &str) -> Option<String> {
+    win.app
+        .menu_rows()
         .into_iter()
-        .filter(|row| row.role == SpineRole::Asset)
-        .filter_map(|row| row.id)
-        .find(|id| *id != table && model.charts_reading(id).is_empty())
-        .expect("the data file's Protocol lists its source beside its table");
-    let label = model.label_of(&other).unwrap_or(&other).to_owned();
-    let offered = offers(&FocusedNode::Table(other), &win.app);
+        .find(|row| row.longname == longname)
+        .unwrap_or_else(|| panic!("{longname} is on no menu"))
+        .missing
+}
+
+#[test]
+fn over_the_graph_with_nothing_selected_grid_and_chart_are_greyed_and_do_nothing() {
+    let mut win = scenes::data_file();
+    assert!(win.graph_to_canvas(), "the graph did not take the canvas");
+    assert_eq!(win.app.protocol_model().selected(), None);
+    assert_eq!(win.app.node_in_focus(), None);
+    assert!(offers(&win.app).is_empty());
+    assert_eq!(
+        menu_missing(&win, SHOW_GRID).as_deref(),
+        Some("Grid needs a table or view in focus.")
+    );
+    assert_eq!(
+        menu_missing(&win, SHOW_CHART).as_deref(),
+        Some("Chart needs a table or view in focus.")
+    );
+    win.press("cmd-alt-g");
+    assert_eq!(win.answered, [SHOW_GRID]);
+    assert_eq!(
+        win.app.menu_said(),
+        Some("Grid needs a table or view in focus.")
+    );
+    assert_eq!(win.app.canvas_holds(), &CanvasHolds::Graph);
+}
+
+#[test]
+fn chart_over_a_node_no_chart_reads_is_greyed_on_the_menu_and_by_its_offer() {
+    let mut win = scenes::data_file();
+    let (table, _) = table_and_chart(&win);
+    assert!(win.graph_to_canvas(), "the graph did not take the canvas");
+    let assets: Vec<_> = win
+        .app
+        .spine_rows()
+        .iter()
+        .filter(|r| r.role == SpineRole::Asset)
+        .map(|r| r.rect.center())
+        .collect();
+    let mut found = false;
+    for at in assets {
+        win.click(at);
+        if !win.app.graph_on_canvas() {
+            assert!(win.graph_to_canvas());
+        }
+        match win.app.node_in_focus() {
+            Some(FocusedNode::Table(node)) if node != table => {
+                found = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(found, "no asset beside the table could be put in focus");
+    let sentence = "No chart reads this table or view yet.";
+    assert_eq!(menu_missing(&win, SHOW_CHART).as_deref(), Some(sentence));
+    assert_eq!(menu_missing(&win, SHOW_GRID), None);
+    let offered = offers(&win.app);
     let chart = offered
         .iter()
         .find(|o| o.activity == NodeActivity::Chart)
         .expect("a table is offered Chart");
-    assert_eq!(
-        chart.unavailable.as_deref(),
-        Some(format!("No chart reads {label} yet.").as_str())
-    );
+    assert_eq!(chart.unavailable.as_deref(), Some(sentence));
+    win.press("cmd-alt-c");
+    assert_eq!(win.app.menu_said(), Some(sentence));
+    assert_eq!(win.app.canvas_holds(), &CanvasHolds::Graph);
 }
 
 #[test]
@@ -168,7 +225,7 @@ fn relate_needs_two_sources() {
 fn the_model_step_offers_model_and_relate_is_taken_there() {
     let mut win = scenes::own_files();
     assert_eq!(win.app.node_in_focus(), Some(FocusedNode::Model));
-    let offered = offers(&FocusedNode::Model, &win.app);
+    let offered = offers(&win.app);
     assert_eq!(offered.len(), 1);
     assert_eq!(offered[0].activity, NodeActivity::Model);
     assert_eq!(offered[0].unavailable, None);
