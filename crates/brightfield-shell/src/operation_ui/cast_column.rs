@@ -60,9 +60,10 @@ fn types_of<'b>(b: &'b Begin<'_>) -> (Option<&'b str>, Option<&'b str>) {
     (Some(facts.storage.as_str()), fine_type)
 }
 
-/// Whether FineType reaches `fine_type` with nothing but a cast, as arc's
+/// Whether FineType reaches `fine_type` with a plain cast, as arc's
 /// `cast-column` does: no transform, `CAST({col} AS <type>)` or
-/// `{col}::<type>`.
+/// `{col}::<type>`
+/// (`cast_column_opens_empty_where_fine_type_reads_its_type_through_a_format`).
 fn plain_cast(transform: Option<&str>, fine_type: &str) -> bool {
     let Some(transform) = transform else {
         return true;
