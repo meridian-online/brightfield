@@ -118,7 +118,9 @@ baseline() {
     # The package's own renderer, which package-store.sh leaves beside it.
     [ -n "$package" ] && default="$(dirname "$package")/brightfield-shot"
     local bin="${1:-$default}"
-    [ -x "$bin" ] || { echo "no binary at $bin; build with: cargo build --release -p brightfield-shell" >&2; exit 2; }
+    local hint="cargo build --release -p brightfield-shell"
+    [ -n "$package" ] && hint="scripts/package-store.sh, which writes the managed edition's brightfield-shot beside the app"
+    [ -x "$bin" ] || { echo "no binary at $bin; build with: $hint" >&2; exit 2; }
     fresh_subject
     # models/ is set to mode 000 below; an interrupted run puts it back.
     # A CSV is put in ~/Downloads for the Store case below; it goes too.
