@@ -203,6 +203,20 @@ fn a_built_in_load_step_names_no_extension() {
     }
 }
 
+/// The one folder both FineType tests build their bundles in, and the lock
+/// they take while they use it. A FineType open seals the process's model
+/// folder the first time it gets that far, which on the managed library it
+/// does, and refuses a different folder after that; so the tests share one
+/// folder, one at a time.
+fn bundle_dir() -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = std::env::temp_dir().join(format!("bf-built-in-bundle-{}", std::process::id()));
+    (guard, dir)
+}
+
 /// **A FineType bundle opened on a built-in session loads no extension file.**
 ///
 /// The bundle carries a file where the extension would be, which is not a
@@ -212,7 +226,7 @@ fn a_built_in_load_step_names_no_extension() {
 /// is the bundled one, has no FineType compiled in.
 #[test]
 fn a_built_in_finetype_bundle_loads_no_file() {
-    let dir = std::env::temp_dir().join(format!("bf-built-in-finetype-{}", std::process::id()));
+    let (_lock, dir) = bundle_dir();
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(dir.join(semantic::MODEL_DIR)).unwrap();
     std::fs::write(dir.join(semantic::EXTENSION_FILE), b"not a library").unwrap();
@@ -292,7 +306,7 @@ fn open_built_in(dir: &Path) -> String {
 /// with the refusal remembered.
 #[test]
 fn a_built_in_open_refuses_a_bad_bundle_before_asking_for_finetype() {
-    let dir = std::env::temp_dir().join(format!("bf-built-in-refusals-{}", std::process::id()));
+    let (_lock, dir) = bundle_dir();
     let agreed = r#"["identity.person.email"]"#;
 
     fake_bundle(
