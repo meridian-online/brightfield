@@ -190,6 +190,7 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | `hide-column` | `-` | 3 / 4 / 4 | `-` is VisiData's hide; the Grid context keeps it apart from the Workspace's `-` zoom-out |
 | `rename-column` | `shift-r` | 3 / 4 / 2 | `R` = rename; bare `r` stays free for the grid's movement, and a double-click on a header's name does the same |
 | `derive-column` | `=` | 3 / 4 / 4 | `=` is VisiData's new column from an expression; the Grid context keeps it apart from the Workspace's `=` zoom-in |
+| `fill-nulls` | `f` | 2 / 4 / 3 | `f` is VisiData's fill; the grid's filter is `w`, and a click on a header's missing count does the same |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 
@@ -463,7 +464,7 @@ keys for the built verbs an author can exercise now.
 - **Tier 2 (per-mark core):** set-channel, change-mark-type, add-mark, filter-view, clear-selection,
   set-param, save-spec.
 - **Tier 3 (per-chart occasional):** set-colour-scheme, add-view, remove-mark, toggle-point-select,
-  zoom-extent, toggle-presentation, reload-spec, undo, rename/hide/derive-column.
+  zoom-extent, toggle-presentation, reload-spec, undo, rename/hide/derive-column, fill-nulls.
 - **Tier 4 (tuning, once/twice per chart):** set-inset/bandwidth/scale-domain/thresholds,
   reverse-scale, add-interactor/param-widget/legend, pan-extent, type-column, search-jump,
   cancel-query, remove-view.
