@@ -130,24 +130,24 @@ fn value_item(function: usize, column: &str, column_sql: &str) -> String {
 }
 
 /// The function a value of a column opens on: `avg` for a decimal, `sum` for
-/// an integer and `count(DISTINCT …)` for anything else, read from FineType's
-/// label and, for a column with none, from its storage type.
+/// an integer and `count(DISTINCT …)` for anything else. Only a column stored
+/// as a number is averaged or summed, since DuckDB does neither to text, which
+/// FineType may still label a number (`45%`, `1,5`). For one, FineType's label
+/// decides between the two, and a label that is not a number, such as a year,
+/// counts it distinct; without a label, the storage type decides.
 fn function_for(label: Option<&str>, storage: &str) -> usize {
-    if let Some(label) = label {
-        return if label.starts_with("representation.numeric.integer") {
-            1
-        } else if label.starts_with("representation.numeric.") {
-            0
-        } else {
-            DISTINCT
-        };
-    }
     let upper = storage.trim().to_ascii_uppercase();
-    match upper.split('(').next().unwrap_or_default().trim() {
+    let stored = match upper.split('(').next().unwrap_or_default().trim() {
         "FLOAT" | "REAL" | "DOUBLE" | "DECIMAL" | "NUMERIC" => 0,
         "TINYINT" | "SMALLINT" | "INTEGER" | "INT" | "BIGINT" | "HUGEINT" | "UTINYINT"
         | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" => 1,
-        _ => DISTINCT,
+        _ => return DISTINCT,
+    };
+    match label {
+        None => stored,
+        Some(label) if label.starts_with("representation.numeric.integer") => 1,
+        Some(label) if label.starts_with("representation.numeric.") => 0,
+        Some(_) => DISTINCT,
     }
 }
 
@@ -217,20 +217,26 @@ fn name_of(item: &str) -> Option<String> {
     (quoted || bare).then(|| unquoted(item))
 }
 
-/// `item` under a name free of the columns the items `taken` make, with `_2`,
-/// `_3`.
+/// `item` under a name free of the columns the items `taken` make, compared
+/// without case, with `_2`, `_3`.
 fn free_alias(item: String, taken: &[String]) -> String {
     let Some((call, alias)) = item.rsplit_once(" AS ") else {
         return item;
     };
-    let names: Vec<String> = taken.iter().filter_map(|t| name_of(t)).collect();
+    // DuckDB reads names alike in all but case as one, quoted or not.
+    let names: Vec<String> = taken
+        .iter()
+        .filter_map(|t| name_of(t))
+        .map(|name| name.to_lowercase())
+        .collect();
     let bare = unquoted(alias.trim());
-    if !names.contains(&bare) {
+    let taken = |name: &str| names.contains(&name.to_lowercase());
+    if !taken(&bare) {
         return item;
     }
     (2..)
         .map(|n| format!("{bare}_{n}"))
-        .find(|candidate| !names.contains(candidate))
+        .find(|candidate| !taken(candidate))
         .map_or(item.clone(), |free| format!("{call} AS {}", spelled(&free)))
 }
 
@@ -594,6 +600,11 @@ mod tests {
             &["sum_a".to_string()],
         );
         assert_eq!(list, ["sum(a) AS sum_a_2"]);
+        // A name alike in all but case is taken.
+        assert_eq!(
+            free_alias("count(*) AS n".to_string(), &["\"N\"".to_string()]),
+            "count(*) AS n_2"
+        );
     }
 
     #[test]
@@ -601,6 +612,14 @@ mod tests {
         let decimal = Some("representation.numeric.decimal_number");
         let integer = Some("representation.numeric.integer_number");
         assert_eq!(function_for(decimal, "DOUBLE"), 0);
+        // Text FineType reads as a number is not averaged.
+        assert_eq!(
+            function_for(Some("representation.numeric.percentage"), "VARCHAR"),
+            DISTINCT
+        );
+        assert_eq!(function_for(decimal, "VARCHAR"), DISTINCT);
+        // On a number, the label decides between the two.
+        assert_eq!(function_for(integer, "DOUBLE"), 1);
         assert_eq!(function_for(integer, "BIGINT"), 1);
         assert_eq!(
             function_for(Some("representation.text.word"), "VARCHAR"),
