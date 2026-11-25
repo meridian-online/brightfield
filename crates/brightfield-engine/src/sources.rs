@@ -194,7 +194,8 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
 
 /// [`load_sql`], for a session whose extensions come from `extensions`.
 ///
-/// With [`Extensions::BuiltIn`] the step names no extension at all, because `INSTALL` would go to
+/// With [`Extensions::BuiltIn`] the step names no extension
+/// (`a_built_in_load_step_names_no_extension`), because `INSTALL` would go to
 /// the network even for an extension that is compiled in. Its reader is then found by DuckDB:
 /// compiled in, in the managed edition's DuckDB, and installed and loaded on first use by DuckDB's
 /// release command line, whose automatic install and load are on. So a Protocol made in the
@@ -339,7 +340,7 @@ impl Probe {
     }
 
     fn extension(&mut self, ext: &'static str) -> Result<(), String> {
-        // Compiled in, and already loaded: an `INSTALL` would go to the network for nothing.
+        // Compiled in, and already loaded: an `INSTALL` would go to the network to no purpose.
         if self.loaded.contains(ext) || !Extensions::linked().installs() {
             return Ok(());
         }

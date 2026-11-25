@@ -5,8 +5,10 @@
 //! full edition links, has none of the extensions Brightfield reads with, and
 //! the engine installs them from DuckDB's repository as a source needs them.
 //! The managed edition's build (`docs/managed-duckdb.md`) has them compiled in,
-//! and a Mac App Store app may not download code, so there the engine installs
-//! nothing and loads nothing from a file: [`Extensions::BuiltIn`].
+//! and a Mac App Store app may not download code, so there the engine neither
+//! installs an extension nor loads one from a file: [`Extensions::BuiltIn`],
+//! which `managed_refuses_install_and_load_of_anything_else` in
+//! `tests/built_in_extensions.rs` holds.
 //!
 //! Which one a session gets follows the DuckDB the engine links, as
 //! [`Extensions::linked`] says, because "built in" is a fact about that library
@@ -106,8 +108,8 @@ impl ExtensionStatement {
                 .any(|b| b.eq_ignore_ascii_case(&self.target))
     }
 
-    /// Whether a session with [`Extensions::BuiltIn`] refuses it: every
-    /// install and update, since either would download code, and a load of a
+    /// Whether a session with [`Extensions::BuiltIn`] refuses it: an install
+    /// or an update, since either would download code, and a load of a
     /// file or of an extension that is not built in. A load of a built-in
     /// extension is allowed, and does nothing, since it is already loaded.
     #[must_use]

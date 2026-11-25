@@ -226,8 +226,8 @@ fn a_built_in_finetype_bundle_loads_no_file() {
 ///
 /// Discovery and the load steps it writes run under `sandbox-exec` with the
 /// network denied and `HOME` and the extension directory at empty folders, on
-/// a connection with automatic install and load off, so a reader can come
-/// only from the library. The parent then requires the child to have run
+/// a connection with automatic install and load off, so a reader has to come
+/// from the library. The parent then requires the child to have run
 /// exactly this test and passed, and both folders to still be empty.
 #[cfg(all(feature = "managed-duckdb", target_os = "macos"))]
 #[test]

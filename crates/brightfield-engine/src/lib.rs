@@ -317,8 +317,9 @@ pub struct LoadOptions {
     /// With [`Extensions::BuiltIn`] the engine issues no `INSTALL`, whatever
     /// [`LoadOptions::network`] says; automatic install and load are off; the
     /// extension repository cannot resolve; and a source whose SQL installs an
-    /// extension, updates extensions, or loads anything but a built-in one is
-    /// refused before it runs ([`EngineError::ExtensionRefused`]).
+    /// extension, updates extensions, or loads a file or an extension that is
+    /// not built in is refused before it runs ([`EngineError::ExtensionRefused`]),
+    /// as `managed_refuses_install_and_load_of_anything_else` holds.
     pub extensions: Extensions,
     /// Override DuckDB's extension cache directory (its default is
     /// `~/.duckdb`). This is where `LOAD` looks for already-installed

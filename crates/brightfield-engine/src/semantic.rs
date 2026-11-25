@@ -309,7 +309,8 @@ impl TypeSourceSpec {
 
     /// [`Self::needs_unsigned_extensions`], on a session whose extensions come
     /// from `extensions`. A bundle opened with [`Extensions::BuiltIn`] loads
-    /// no file, so it needs nothing relaxed.
+    /// no file, so it needs no signature checks relaxed
+    /// (`a_built_in_finetype_bundle_loads_no_file`).
     #[must_use]
     pub fn needs_unsigned_extensions_for(&self, extensions: Extensions) -> bool {
         match self {
@@ -703,8 +704,8 @@ impl FinetypeBundle {
     /// on, as in the managed edition: the bundle carries the model and the
     /// schema catalogue, and no extension file is read or loaded.
     ///
-    /// Everything [`Self::open`] checks that is not about the extension file is
-    /// checked here too: the manifest's hashes of the files it names that are
+    /// These checks of [`Self::open`]'s, which are not about the extension
+    /// file, are made here too: the manifest's hashes of the files it names that are
     /// not the extension's, the model, the catalogue and their coverage of each
     /// other, and the canary.
     ///
