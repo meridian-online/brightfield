@@ -1564,20 +1564,20 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: Some(Scores { frequency: 4, mnemonic: 2, convention: 5, motor_note: "cmd-b = the left dock (Zed workspace::ToggleLeftDock, VS Code toggleSidebarVisibility); round-trip focus, never a numeric" }),
         },
         // The ribbon's tabs and its collapse. Each is ⌥ and the tab's initial,
-        // so the keys are learnt as the tabs are read; the contextual tab takes
-        // C, and the collapse R. A tab is a motion, so only the collapse is on
-        // a menu.
+        // so the keys are learnt as the tabs are read. The contextual tab, whose
+        // name changes with the canvas, takes X, and the collapse R. A tab is a
+        // motion, so only the collapse is on a menu.
         VerbEntry {
-            longname: "show-bring-in-tab",
-            label: "Bring in tab",
+            longname: "show-connect-tab",
+            label: "Connect tab",
             needs: NEEDS_RIBBON,
             tier: CommandTier::View,
-            binding_specs: vec![global("alt-b")],
+            binding_specs: vec![global("alt-c")],
             scope_applicability: vec![Dashboard, View, Protocol, Model],
             drives: D::PaletteMeta,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Show the ribbon's Bring in tab",
+            help: "Show the ribbon's Connect tab",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
         },
         VerbEntry {
@@ -1624,13 +1624,13 @@ pub fn registry() -> Vec<VerbEntry> {
             label: "Contextual tab",
             needs: NEEDS_RIBBON,
             tier: CommandTier::View,
-            binding_specs: vec![global("alt-c")],
+            binding_specs: vec![global("alt-x")],
             scope_applicability: vec![Dashboard, View, Protocol, Model],
             drives: D::PaletteMeta,
             status: VerbStatus::Built,
             reserved_reason: None,
             help: "Show the ribbon's tab for what the canvas holds",
-            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and the tab's initial, the Office KeyTip move" }),
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "⌥ and X, since the contextual tab's name changes with the canvas" }),
         },
         VerbEntry {
             longname: "toggle-ribbon",
@@ -2559,7 +2559,7 @@ mod tests {
             "take-picked-table",
             "back-out-of-pick",
             "toggle-outline-rail",
-            "show-bring-in-tab",
+            "show-connect-tab",
             "show-shape-tab",
             "show-model-tab",
             "show-publish-tab",

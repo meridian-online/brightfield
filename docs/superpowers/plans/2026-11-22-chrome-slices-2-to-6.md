@@ -202,7 +202,7 @@ These follow `meridian-egui`'s existing style (`line_tabs`, `list_row`, `key_chi
 ### 1. A ribbon tab and a contextual tab
 
 **What it draws:**
-- One row of stage tabs (Bring in, Shape, Model, Publish).
+- One row of stage tabs (Connect, Shape, Model, Publish).
 - Then the contextual tab, set apart by a divider and a tint and named for the focused activity and node, for example `Grid · ranking`.
 - The open tab is marked.
 - While the ribbon is collapsed, the selected tab still reads as selected but not as open.
@@ -612,8 +612,8 @@ The reason: the spec says the inspector "describes the selection", and a stack o
 
 | Verb | Key (Global) | Label | Needs | Menu | Task |
 |---|---|---|---|---|---|
-| `show-bring-in-tab`, `show-shape-tab`, `show-model-tab`, `show-publish-tab` | `alt-b`, `alt-s`, `alt-m`, `alt-p` | Bring in tab, Shape tab, Model tab, Publish tab | `Selected::Protocol`, because the front door draws no ribbon | none, since a tab is a motion | 1 |
-| `show-context-tab` | `alt-c` | Contextual tab | `Selected::Protocol` | none | 1 |
+| `show-connect-tab`, `show-shape-tab`, `show-model-tab`, `show-publish-tab` | `alt-c`, `alt-s`, `alt-m`, `alt-p` | Connect tab, Shape tab, Model tab, Publish tab | `Selected::Protocol`, because the front door draws no ribbon | none, since a tab is a motion | 1 |
+| `show-context-tab` | `alt-x` | Contextual tab | `Selected::Protocol` | none | 1 |
 | `toggle-ribbon` | `alt-r` | Toggle ribbon | `Selected::Protocol` | View | 1, 7 |
 | `cycle-spine-width` | `cmd-shift-b` | Spine width | none | Window, after `toggle-outline-rail` | 14 |
 | `next-place`, `prev-place`, `close-place` | `cmd-shift-]`, `cmd-shift-[`, `cmd-w` | Next place, Previous place, Close place | `Selected::Protocol` | Window | 15 |
@@ -635,7 +635,7 @@ The mockup's bare G and C would collide with the chart grammar's `c`. Tasks 15 a
   - The contextual Grid tab lists the built forms asked from the grid (`AsksIn::FootField` and `AsksIn::QuestionLine`), read the same way.
 - **Everything else is listed in the ribbon's own taxonomy** (`crates/brightfield-keys/src/ribbon.rs`), which holds no operation verb. These are Built verbs only.
 - **Stages, after their forms:**
-  - Bring in: `open`, `open-sources-browser`.
+  - Connect: `open`, `open-sources-browser`.
   - Shape: nothing of its own.
   - Model: `organise-joins`, and `relate` from Task 17.
   - Publish: `copy-chart-picture`, `export-chart-picture`.
@@ -796,14 +796,14 @@ Linux and Windows already reach the menus from the mark (slice 1 Task 10). The l
 - Consumes: slice 1's `VerbEntry::{label, needs}`, `Requirement`, `KeyPlatform`, `menu_bar`, `keys_answered`; `registry()`; `fires`.
 - Produces:
   - `ribbon::{Stage, Context, Group, RibbonEntry, stage_groups, context_groups, stage_of}`, where:
-    - `Stage::{BringIn, Shape, Model, Publish}`, with `Stage::ALL`, `label()` and `tab_verb()`;
+    - `Stage::{Connect, Shape, Model, Publish}`, with `Stage::ALL`, `label()` and `tab_verb()`;
     - `Context::{Grid, Chart, Model, Graph}`, with `label()`;
     - `pub struct RibbonEntry { pub longname: &'static str, pub icon: &'static str }`;
     - `pub type Group = &'static [RibbonEntry]`;
     - `stage_groups(Stage) -> &'static [Group]` and `context_groups(Context) -> &'static [Group]`;
     - `stage_of(&str) -> Option<Stage>`, for the taxonomy's own verbs only. A form's stage is its `FormSpec`'s.
   - `impl KeyPlatform { pub const fn host() -> Self }`: `Mac` on macOS and `Other` elsewhere.
-  - The six verbs `show-bring-in-tab`, `show-shape-tab`, `show-model-tab`, `show-publish-tab`, `show-context-tab` and `toggle-ribbon`, with the keys, labels, needs and menu from "Decisions". Each is Global, `CommandTier::View`, `Drives::PaletteMeta`, `VerbStatus::Built`, and scored, with the motor note "⌥ and the tab's initial, the Office KeyTip move". Each applies at Dashboard, View, Protocol and Model.
+  - The six verbs `show-connect-tab`, `show-shape-tab`, `show-model-tab`, `show-publish-tab`, `show-context-tab` and `toggle-ribbon`, with the keys, labels, needs and menu from "Decisions". Each is Global, `CommandTier::View`, `Drives::PaletteMeta`, `VerbStatus::Built`, and scored, with the motor note "⌥ and the tab's initial, the Office KeyTip move". Each applies at Dashboard, View, Protocol and Model.
   - In `crates/brightfield-shell/src/ribbon.rs`: `pub enum RibbonPick { Stage(Stage), Context }` and `pub struct RibbonState { pub selected: RibbonPick, pub collapsed: bool }`, so the tab verbs have something to act on. Task 6 draws it, and Tasks 6 and 7 add its other fields.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -828,7 +828,7 @@ Linux and Windows already reach the menus from the mark (slice 1 Task 10). The l
   - If the forms plan's Task 2 has landed, replace `forms::Stage` with a re-export of `ribbon::Stage`, which adds Publish. The forms plan's `each_built_form_is_filed_under_its_stage` stays green.
   - Add the six verbs, each with its `label` and `needs`.
   - Add `toggle-ribbon` to slice 1's View menu.
-  - Add `consume_token` arms for `alt-b`, `alt-s`, `alt-m`, `alt-p`, `alt-c` and `alt-r`, as `consume_key(Modifiers::ALT, Key::_)`.
+  - Add `consume_token` arms for `alt-c`, `alt-s`, `alt-m`, `alt-p`, `alt-x` and `alt-r`, as `consume_key(Modifiers::ALT, Key::_)`.
   - Add handlers that set `RibbonState.selected` (or toggle `collapsed`, a no-op until Task 7) and record the verb in `keys_answered`.
   - Add `apply` arms for the same verbs, so the queue and the palette reach them, recorded in `verbs_applied`.
 
@@ -1144,7 +1144,7 @@ This takes on what slice 1 Task 5 leaves to slice 2. The in-window menus from th
 - Produces: `overlays::stage_of_verb(longname: &str) -> Option<Stage>`, which is `forms::by_verb(longname).map(|f| f.stage)`, else `ribbon::stage_of(longname)`.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `the_empty_palette_reads_in_stage_order_under_each_stages_name`: `header_before` gives "Bring in", "Shape", "Model", "Publish" and then "Other", at the first row of each.
+  - `the_empty_palette_reads_in_stage_order_under_each_stages_name`: `header_before` gives "Connect", "Shape", "Model", "Publish" and then "Other", at the first row of each.
   - `a_typed_query_ranks_by_match_and_draws_no_headers`
   - `the_palette_shows_keys_as_keycaps`: `PickerRow.keystroke == Some(keys_label(primary_key, KeyPlatform::host()))`.
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell overlays::`.

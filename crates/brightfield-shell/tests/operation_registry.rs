@@ -196,7 +196,7 @@ fn each_built_operations_needs_agree_with_what_arc_says_it_reads() {
 fn each_built_operation_is_filed_under_its_stage() {
     for ui in operation_ui::built() {
         let stage = match ui.long_name {
-            "read-file" => Stage::BringIn,
+            "read-file" => Stage::Connect,
             "join-tables" | "append-rows" => Stage::Model,
             _ => Stage::Shape,
         };

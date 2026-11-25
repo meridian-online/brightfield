@@ -1312,7 +1312,7 @@ mod tests {
         for (p, expected) in [
             (
                 palette_at(Altitude::Protocol),
-                vec!["Bring in", "Model", "Other"],
+                vec!["Connect", "Model", "Other"],
             ),
             (chart_palette(), vec!["Shape", "Publish", "Other"]),
         ] {

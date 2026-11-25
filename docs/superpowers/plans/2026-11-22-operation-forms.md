@@ -81,7 +81,7 @@ Each is reversible by a sentence, and each goes into `docs/operation-forms.md` w
 - A join's second table, and a union's list, are picked in the spine. A file is brought in through the sources browser.
 - Live edit, explicit save: nothing is written to the Protocol before ⌘S.
 - Save asks for no name. A name is the rule's, slugged, with `_2`, `_3` for a name taken, and it says only what that one step did. It is fixed when the draft is kept.
-- Brightfield holds the stage mapping: Bring in `read-file`; Shape `filter-rows`, `sort-rows`, `hide-column`, `rename-column`, `derive-column`, `cast-column`, `fill-nulls`, `dedupe-rows`, `limit-rows`, `summarise-rows`; Model `join-tables`, `append-rows`.
+- Brightfield holds the stage mapping: Connect `read-file`; Shape `filter-rows`, `sort-rows`, `hide-column`, `rename-column`, `derive-column`, `cast-column`, `fill-nulls`, `dedupe-rows`, `limit-rows`, `summarise-rows`; Model `join-tables`, `append-rows`.
 - Every key is a registry default, and every key the window shows acts. A command joins the registry when its operation is built: a reserved verb shows greyed in the palette and the help sheet, and greyed means a missing input, never a missing feature.
 - A command the window cannot take says in a sentence what it needs. Its key, a header's menu row and a palette row say the same sentence.
 - The look comes from `meridian-design`'s tokens and the pieces `meridian-egui` already has: `field_row`, `key_chip`, `list_row`, `pane_header`, `picker`, and the theme's `TextEdit`. Add no new component and no colour literal (`tests/token_discipline.rs`, `tests/colour_literals.rs`).
@@ -262,7 +262,7 @@ pub struct OperationUi {
     pub form: Option<fn(&mut Draft, &mut egui::Ui, &FormCx<'_>) -> FormEvent>,   // its form in the Operation section, when it has one
     pub name: NameRule,
 }
-pub enum Stage { BringIn, Shape, Model }
+pub enum Stage { Connect, Shape, Model }
 pub enum Start { Cell, Header(HeaderPart), Spine { role: &'static str }, FootField(FootField), SourcesBrowser }
 pub enum HeaderPart { Menu, Name, Type, Missing, NewColumn }
 pub enum Keeps { AtOnce, OnEnter }
@@ -353,7 +353,7 @@ In `operation_registry.rs`, with the suite's runner:
     // ProtocolSource or TakesSources always; Rows iff a required `table` role; AnotherTable iff a required single `other`;
     // AnotherTableSharingAColumn iff a required list `other`
 }
-#[test] fn each_built_operation_is_filed_under_its_stage() { /* read-file BringIn; join-tables, append-rows Model; the rest Shape */ }
+#[test] fn each_built_operation_is_filed_under_its_stage() { /* read-file Connect; join-tables, append-rows Model; the rest Shape */ }
 ```
 
 - [ ] **Step 2: Run them to see them fail.** Run: `cargo test -p brightfield-keys` then `cargo test -p brightfield-shell --test operation_registry`. Expected: FAIL to compile.
@@ -978,11 +978,11 @@ The housing sample (`tests/data/california_housing_sample.csv`) loads as the tab
 
 **Files:** `crates/brightfield-shell/src/operation_ui/read_file.rs`; `crates/brightfield-shell/tests/operation_read_file.rs` (new). No `*_BUILT` line.
 
-- **Starts:** the sources browser, `open-sources-browser`'s key, palette row and, later, its ribbon command under Bring in. `starts: &[Start::SourcesBrowser]`.
+- **Starts:** the sources browser, `open-sources-browser`'s key, palette row and, later, its ribbon command under Connect. `starts: &[Start::SourcesBrowser]`.
 - **Asks:** what the browser asks, which already proposes a folder's joins through dovetail.
-- **Spec:** `verb: "open-sources-browser"`, `stage: Stage::BringIn`, `icon: "file-import"`, `needs: &[Need::TakesSources]`, `begin` unused (`Err` for any start but the browser's), `keeps: Keeps::OnEnter`, no field or form. Its `name` is unused, since the browser names its tables.
+- **Spec:** `verb: "open-sources-browser"`, `stage: Stage::Connect`, `icon: "file-import"`, `needs: &[Need::TakesSources]`, `begin` unused (`Err` for any start but the browser's), `keeps: Keeps::OnEnter`, no field or form. Its `name` is unused, since the browser names its tables.
 - **Tests:**
-  - `the_bring_in_command_opens_the_sources_browser`.
+  - `the_connect_command_opens_the_sources_browser`.
   - `a_protocol_brightfield_did_not_make_says_sources_are_not_added_to_it`: slice 1's sentence.
   - `an_agents_read_file_step_opens_and_previews_its_file`: record `read-file` for `with_nulls.csv`, copied beside the housing sample, through `record_step`, then reopen. The step's grid previews 3 rows and 4 columns through `PreviewOp::ReadFile`.
   - `an_agents_read_file_of_a_url_says_it_previews_local_files_only`.

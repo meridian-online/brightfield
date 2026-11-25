@@ -111,7 +111,7 @@ The arrangement, open and collapsed:
 
 ```
 open
-┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐  title band
+┌ ● ● ●  ≡ brewtrend   Connect · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐  title band
 │ [Filter rows W] [Sort O] [Columns K] │ [Derive =] [Retype ⇧T] [Summarise ⇧S]                       hold ⌥ for key tips │  command row
 ├ open places ───────┬ rank › ranking   [Grid G] Chart C                         ┬ inspector ───────────────┤
 │ ranking · Grid     │                                                          │ column installs_30d      │
@@ -125,7 +125,7 @@ open
 └ ranking · Grid · column installs_30d    Filter rows · next time, press W         19,028 rows · idle ────────┘  status band
 
 collapsed
-┌ ● ● ●  ≡ brewtrend   Bring in · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐
+┌ ● ● ●  ≡ brewtrend   Connect · Shape · Model · Publish │ Grid · ranking    ◐ ran 23 Oct · 29 days ago    ▶ Run ⌘↩ ┐
 ```
 
 ### 1. The menu bar
@@ -143,7 +143,7 @@ One band, in the macOS unified style, holding from left to right:
 1. **The window's controls.**
 2. **The mark,** which leads home to the front door.
 3. **The Protocol's name and where it is kept.**
-4. **The ribbon's stage tabs, then the contextual tab.** The stage tabs are Bring in, Shape, Model and Publish. They read arcform's operation stages (acquire, shape, model, publish) as the reasons an analyst reaches for an operator: bring data in, work it out, act on it. The contextual tab, set apart by a divider and a tint, is named for the focused activity and node, such as `Grid · ranking`.
+4. **The ribbon's stage tabs, then the contextual tab.** The stage tabs are Connect, Shape, Model and Publish. They read arcform's operation stages (acquire, shape, model, publish) as the reasons an analyst reaches for an operator: connect to data where it lives, work it out, act on it. The first tab is Connect because Brightfield reads data where it lives: Import was turned down because it suggests a copy, Load because it reads as the far end of an ETL pipeline, and Add because it competes with the add commands inside the other stages. The contextual tab, set apart by a divider and a tint, is named for the focused activity and node, such as `Grid · ranking`.
 5. **The activity area, in the centre.** While a run is in progress it shows the step running, how many steps are done and a progress bar. Otherwise it shows when the Protocol last ran and how long ago that was, with a state mark: fresh, stale or failed. Stale keeps today's meaning: a step's definition, or one upstream of it, changed since it ran. This design adds no detection of age or of changed sources.
 6. **Run, with its key ⌘↩.**
 
@@ -252,7 +252,7 @@ Each of arcform's operations gets an input form in the window, which its ribbon 
 
 | Stage tab | Operations |
 |---|---|
-| Bring in | `read-file` |
+| Connect | `read-file` |
 | Shape | `filter-rows`, `sort-rows`, `hide-column`, `rename-column`, `derive-column`, `cast-column`, `fill-nulls`, `dedupe-rows`, `limit-rows`, `summarise-rows` |
 | Model | `join-tables`, `append-rows` |
 

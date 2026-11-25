@@ -11,8 +11,8 @@
 /// A stage of the work, and the ribbon tab that holds its commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
-    /// Bringing data in.
-    BringIn,
+    /// Connecting to data where it lives.
+    Connect,
     /// Shaping one table.
     Shape,
     /// Relating tables.
@@ -23,13 +23,13 @@ pub enum Stage {
 
 impl Stage {
     /// The four stages, in the order their tabs are drawn.
-    pub const ALL: [Stage; 4] = [Stage::BringIn, Stage::Shape, Stage::Model, Stage::Publish];
+    pub const ALL: [Stage; 4] = [Stage::Connect, Stage::Shape, Stage::Model, Stage::Publish];
 
     /// The tab's name.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Stage::BringIn => "Bring in",
+            Stage::Connect => "Connect",
             Stage::Shape => "Shape",
             Stage::Model => "Model",
             Stage::Publish => "Publish",
@@ -40,7 +40,7 @@ impl Stage {
     #[must_use]
     pub const fn tab_verb(self) -> &'static str {
         match self {
-            Stage::BringIn => SHOW_BRING_IN_TAB,
+            Stage::Connect => SHOW_CONNECT_TAB,
             Stage::Shape => SHOW_SHAPE_TAB,
             Stage::Model => SHOW_MODEL_TAB,
             Stage::Publish => SHOW_PUBLISH_TAB,
@@ -94,8 +94,8 @@ pub struct RibbonEntry {
 /// A run of commands drawn together, between dividers.
 pub type Group = &'static [RibbonEntry];
 
-/// The verb that selects the Bring in tab.
-pub const SHOW_BRING_IN_TAB: &str = "show-bring-in-tab";
+/// The verb that selects the Connect tab.
+pub const SHOW_CONNECT_TAB: &str = "show-connect-tab";
 /// The verb that selects the Shape tab.
 pub const SHOW_SHAPE_TAB: &str = "show-shape-tab";
 /// The verb that selects the Model tab.
@@ -109,7 +109,7 @@ pub const TOGGLE_RIBBON: &str = "toggle-ribbon";
 
 /// The six verbs that move about the ribbon.
 pub const RIBBON_VERBS: [&str; 6] = [
-    SHOW_BRING_IN_TAB,
+    SHOW_CONNECT_TAB,
     SHOW_SHAPE_TAB,
     SHOW_MODEL_TAB,
     SHOW_PUBLISH_TAB,
@@ -121,7 +121,7 @@ const fn entry(longname: &'static str, icon: &'static str) -> RibbonEntry {
     RibbonEntry { longname, icon }
 }
 
-const BRING_IN: &[Group] = &[&[
+const CONNECT: &[Group] = &[&[
     entry("open", "folder"),
     entry("open-sources-browser", "database"),
 ]];
@@ -174,7 +174,7 @@ const GRAPH: &[Group] = &[
 #[must_use]
 pub const fn stage_groups(stage: Stage) -> &'static [Group] {
     match stage {
-        Stage::BringIn => BRING_IN,
+        Stage::Connect => CONNECT,
         Stage::Shape => SHAPE,
         Stage::Model => MODEL,
         Stage::Publish => PUBLISH,
@@ -311,11 +311,11 @@ mod tests {
                 .and_then(crate::VerbEntry::primary_key)
                 .map(|k| crate::keys_label(k, KeyPlatform::Mac))
         };
-        assert_eq!(key(SHOW_BRING_IN_TAB).as_deref(), Some("⌥B"));
+        assert_eq!(key(SHOW_CONNECT_TAB).as_deref(), Some("⌥C"));
         assert_eq!(key(SHOW_SHAPE_TAB).as_deref(), Some("⌥S"));
         assert_eq!(key(SHOW_MODEL_TAB).as_deref(), Some("⌥M"));
         assert_eq!(key(SHOW_PUBLISH_TAB).as_deref(), Some("⌥P"));
-        assert_eq!(key(SHOW_CONTEXT_TAB).as_deref(), Some("⌥C"));
+        assert_eq!(key(SHOW_CONTEXT_TAB).as_deref(), Some("⌥X"));
         assert_eq!(key(TOGGLE_RIBBON).as_deref(), Some("⌥R"));
     }
 

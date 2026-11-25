@@ -2939,12 +2939,12 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R))
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
-        // The ribbon's keys: ⌥ and the tab's initial.
-        "alt-b" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::B)),
+        // The ribbon's keys: ⌥ and the tab's initial, X for the contextual tab.
         "alt-s" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::S)),
         "alt-m" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::M)),
         "alt-p" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::P)),
         "alt-c" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::C)),
+        "alt-x" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::X)),
         "alt-r" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
