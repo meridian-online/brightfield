@@ -4,7 +4,8 @@
 //! It starts from `shift-u` with the grid's cursor on a cell, or from "Remove
 //! duplicate rows" on a column header's menu, and asks nothing at first: its
 //! draft gives no value, so arc's model is `SELECT DISTINCT *`, and the step is
-//! kept as soon as arc admits it and DuckDB has run it ([`Keeps::AtOnce`]). A
+//! kept as soon as arc admits it and DuckDB has run it ([`Keeps::AtOnce`],
+//! `dedupe_rows_keeps_select_distinct_at_once_and_opens_its_form`). A
 //! table with no duplicate rows keeps no step, and the status band says so.
 //!
 //! Once kept, the step is opened again as a correction, with its form in the
