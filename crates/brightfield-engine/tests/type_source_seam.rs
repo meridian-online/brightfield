@@ -112,7 +112,7 @@ impl OpenTypeSource for OpenBackwardsNative {
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn the_unsigned_extension_restriction_follows_what_a_source_declares() {
     let load = |spec: TypeSourceSpec| -> (Option<String>, Option<String>, String) {

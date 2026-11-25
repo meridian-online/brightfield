@@ -131,7 +131,7 @@ const ONE_LABEL_CATALOGUE: &str =
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn a_bundle_whose_catalogue_does_not_describe_its_model_is_refused_by_open() {
     let dir = std::env::temp_dir().join(format!("bf-skew-{}", std::process::id()));
@@ -182,7 +182,7 @@ fn a_bundle_whose_catalogue_does_not_describe_its_model_is_refused_by_open() {
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loads() {
     let dir = std::env::temp_dir().join(format!("bf-tamper-{}", std::process::id()));
@@ -235,7 +235,7 @@ fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loa
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn a_native_type_source_costs_the_session_acquisition_but_not_autoload() {
     let dir = std::env::temp_dir().join(format!("bf-settings-{}", std::process::id()));
@@ -300,7 +300,7 @@ fn a_native_type_source_costs_the_session_acquisition_but_not_autoload() {
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn a_directory_that_is_not_a_bundle_is_refused_and_the_load_survives() {
     let dir = std::env::temp_dir().join(format!("bf-not-a-bundle-{}", std::process::id()));
@@ -321,7 +321,7 @@ fn a_directory_that_is_not_a_bundle_is_refused_and_the_load_survives() {
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn an_unstamped_extension_is_refused_by_the_abi_check() {
     let dir = std::env::temp_dir().join(format!("bf-unstamped-{}", std::process::id()));

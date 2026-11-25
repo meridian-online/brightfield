@@ -252,6 +252,105 @@ fn a_built_in_finetype_bundle_loads_no_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A bundle in `dir` with a fake extension file and model, the label map
+/// `labels`, and a catalogue describing one label.
+fn fake_bundle(dir: &Path, labels: &str) {
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir.join(semantic::MODEL_DIR)).unwrap();
+    std::fs::write(dir.join(semantic::EXTENSION_FILE), b"not a library").unwrap();
+    std::fs::write(
+        dir.join(semantic::MODEL_DIR).join("model.safetensors"),
+        b"fake",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(semantic::MODEL_DIR).join(semantic::LABEL_MAP_FILE),
+        labels,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(semantic::SCHEMA_CATALOGUE),
+        r#"[{"x-finetype-label": "identity.person.email", "type": "string", "pattern": "^.+@.+$"}]"#,
+    )
+    .unwrap();
+}
+
+fn open_built_in(dir: &Path) -> String {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    match TypeSourceSpec::Bundle(dir.to_path_buf()).open_for(&conn, Extensions::BuiltIn) {
+        Ok(_) => panic!("a bundle with a fake model opened"),
+        Err(e) => e,
+    }
+}
+
+/// **A built-in open refuses a bundle by its files before it asks DuckDB for
+/// FineType**: a catalogue that does not describe the model, a file the
+/// manifest contradicts, and a missing model. Each is refused naming its cause
+/// and not `ft_version()`; the same bundle put right gets past that check. A
+/// manifest entry for the extension file, which a built-in open neither needs
+/// nor reads, is passed over. A session whose bundle is refused still loads,
+/// with the refusal remembered.
+#[test]
+fn a_built_in_open_refuses_a_bad_bundle_before_asking_for_finetype() {
+    let dir = std::env::temp_dir().join(format!("bf-built-in-refusals-{}", std::process::id()));
+    let agreed = r#"["identity.person.email"]"#;
+
+    fake_bundle(
+        &dir,
+        r#"["a.b.c", "d.e.f", "g.h.i", "identity.person.email"]"#,
+    );
+    let e = open_built_in(&dir);
+    assert!(
+        e.contains("different FineType versions") && !e.contains("ft_version()"),
+        "{e}"
+    );
+    fake_bundle(&dir, agreed);
+    let e = open_built_in(&dir);
+    assert!(!e.contains("different FineType versions"), "{e}");
+
+    std::fs::write(
+        dir.join(semantic::MANIFEST_FILE),
+        format!("{}  {}\n", "0".repeat(64), semantic::SCHEMA_CATALOGUE),
+    )
+    .unwrap();
+    let e = open_built_in(&dir);
+    assert!(
+        e.contains("not the file that was packaged")
+            && e.contains(semantic::SCHEMA_CATALOGUE)
+            && !e.contains("ft_version()"),
+        "{e}"
+    );
+    std::fs::write(
+        dir.join(semantic::MANIFEST_FILE),
+        format!("{}  {}\n", "0".repeat(64), semantic::EXTENSION_FILE),
+    )
+    .unwrap();
+    let e = open_built_in(&dir);
+    assert!(!e.contains("not the file that was packaged"), "{e}");
+
+    std::fs::remove_file(dir.join(semantic::MODEL_DIR).join("model.safetensors")).unwrap();
+    let e = open_built_in(&dir);
+    assert!(
+        e.contains("no model.safetensors") && !e.contains("ft_version()"),
+        "{e}"
+    );
+
+    let options = LoadOptions {
+        type_source: Some(TypeSourceSpec::Bundle(dir.clone())),
+        ..built_in()
+    };
+    let session = load(&spec_with_query("SELECT 'a@b.c' AS email"), &options)
+        .expect("a refused bundle does not stop the load");
+    assert!(
+        session
+            .type_source_error()
+            .is_some_and(|e| e.contains("no model.safetensors")),
+        "{:?}",
+        session.type_source_error()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// **The managed edition reads a workbook and a SQLite file with no install
 /// and no network.**
 ///

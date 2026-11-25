@@ -235,7 +235,7 @@ fn duckdb_file_lists_its_tables() {
 #[test]
 #[cfg_attr(
     feature = "managed-duckdb",
-    ignore = "the full edition's extension loading; built_in_extensions.rs covers the managed library's"
+    ignore = "the full edition's extension loading; built_in_extensions.rs tests the managed library's"
 )]
 fn xlsx_load_step_installs_excel() {
     let table = SourceTable {
