@@ -7220,8 +7220,9 @@ impl MeridianApp {
         self.run_rect = bar.run_rect;
         if let Some((said, width)) = bar.activity_said.take() {
             if bar.activity_rect.is_none() {
-                // Measured unseen: place it on the next frame.
-                ctx.request_repaint();
+                // Measured unseen: run the pass again with the width known, so the frame shown
+                // is the one that places it.
+                ctx.request_discard("the activity area was measured");
             }
             self.activity_measured = Some((said, width));
         }
@@ -12264,7 +12265,7 @@ impl MeridianApp {
             if let Some(activity) = &activity {
                 match activity_width {
                     // Words the band has not measured are drawn unseen and untouchable, for
-                    // their width alone, and placed on the next frame.
+                    // their width alone, and placed when the pass runs again.
                     None => {
                         let drawn = title_activity_ui(ui, band, gap_left, activity, false);
                         bar.activity_said = Some((activity.clone(), drawn.rect.width()));
