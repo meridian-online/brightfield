@@ -491,6 +491,17 @@ pub static STEPS: &[Step] = &[
         ),
         run: |c| c.script("scripts/check-duckdb-parity.sh", &[]),
     },
+    Step {
+        name: "package-store-selftest",
+        runs: "./scripts/package-store-selftest.sh: the Mac App Store package, built ad-hoc by ./scripts/package-store.sh unless BRIGHTFIELD_STORE_APP names one, has exactly its entitlements, its helpers, the pinned DuckDB and a valid signature",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it makes a release build of the managed edition on the library the duckdb-managed \
+             step builds, 30 to 60 minutes cold; the nightly runs it after that step, and \
+             --step runs it here once the library is built",
+        ),
+        run: |c| c.script("scripts/package-store-selftest.sh", &[]),
+    },
 ];
 
 /// Where the managed DuckDB build is kept: `BRIGHTFIELD_DUCKDB_MANAGED_DIR`
@@ -1310,7 +1321,8 @@ mod tests {
                 "nightly-network",
                 "duckdb-managed",
                 "managed-duckdb-test",
-                "duckdb-parity"
+                "duckdb-parity",
+                "package-store-selftest"
             ]
         );
         assert!(STEPS[STEPS.len() - night.len()..]
