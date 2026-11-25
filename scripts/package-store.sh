@@ -71,7 +71,7 @@
 # makes it). FineType's model and catalogue from BRIGHTFIELD_FINETYPE_BUNDLE, a
 # directory scripts/fetch-finetype-bundle.sh assembled, and its command line
 # from BRIGHTFIELD_FINETYPE_CLI; either one unset is fetched at the pin, which
-# needs the network.
+# needs the network the first time, and kept beside the DuckDB build.
 #
 # scripts/package-store-selftest.sh checks what this produces.
 set -euo pipefail
@@ -121,17 +121,38 @@ rm -rf "$OUT"
 mkdir -p "$WORK"
 
 echo "== FineType"
+# A fetch is kept beside the managed DuckDB build, under the pin's tag and
+# model revision, so a later package on the same pin reads no network: the
+# nightly keeps that directory between runs, and a host that is down at night
+# must not turn main red. A changed pin is a new directory. Each fetch checks
+# what it downloads against its published hashes before it is kept, and is
+# renamed into place whole, so a fetch that stopped half way is never read.
+FT_KEPT="${MANAGED}/finetype-kept/$(scripts/finetype-pin.sh --tag)-$(scripts/finetype-pin.sh --revision)"
+mkdir -p "$(dirname "$FT_KEPT")"
 FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
 if [ -z "$FINETYPE_BUNDLE" ]; then
-  FINETYPE_BUNDLE="${WORK}/finetype-bundle"
-  scripts/fetch-finetype-bundle.sh "$HOST" "$FINETYPE_BUNDLE"
+  FINETYPE_BUNDLE="${FT_KEPT}/bundle"
+  if [ -d "$FINETYPE_BUNDLE" ]; then
+    echo "   the bundle fetched for this pin: ${FINETYPE_BUNDLE}"
+  else
+    rm -rf "${FT_KEPT}/bundle.partial"
+    scripts/fetch-finetype-bundle.sh "$HOST" "${FT_KEPT}/bundle.partial"
+    mv "${FT_KEPT}/bundle.partial" "$FINETYPE_BUNDLE"
+  fi
 fi
 [ -f "$FINETYPE_BUNDLE/model/model.safetensors" ] && [ -f "$FINETYPE_BUNDLE/taxonomy-schemas.json" ] \
   || fail "${FINETYPE_BUNDLE} holds no model/model.safetensors and taxonomy-schemas.json"
 FINETYPE_CLI="${BRIGHTFIELD_FINETYPE_CLI:-}"
 if [ -z "$FINETYPE_CLI" ]; then
-  FINETYPE_CLI="${WORK}/finetype"
-  scripts/fetch-finetype-bundle.sh --cli "$HOST" "$FINETYPE_CLI"
+  FINETYPE_CLI="${FT_KEPT}/finetype"
+  if [ -x "$FINETYPE_CLI" ]; then
+    echo "   the command line fetched for this pin: ${FINETYPE_CLI}"
+  else
+    rm -f "${FT_KEPT}/finetype.partial"
+    mkdir -p "$FT_KEPT"
+    scripts/fetch-finetype-bundle.sh --cli "$HOST" "${FT_KEPT}/finetype.partial"
+    mv "${FT_KEPT}/finetype.partial" "$FINETYPE_CLI"
+  fi
 fi
 [ -x "$FINETYPE_CLI" ] || fail "no FineType command line at ${FINETYPE_CLI}"
 
