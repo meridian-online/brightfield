@@ -413,10 +413,16 @@ fn clicking_the_activity_area_opens_the_run_log() {
     );
 }
 
-/// **On a narrow window the activity area gives way, and Run stays whole in the band.**
+/// **On a narrow window the activity area gives way first: Run and the Protocol's place stay
+/// whole in the band, and the area comes back when the window is wide again.**
 #[test]
 fn on_a_narrow_window_the_activity_area_goes_first_and_run_stays() {
     let mut win = scenes::data_file();
+    assert!(
+        win.app.activity_area_rect().is_some(),
+        "a wide band draws the area"
+    );
+    let wide = win.screen;
     win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 820.0));
     win.settle();
     let band = win.app.region_rect(TITLE_BAND).expect("the title band");
@@ -428,8 +434,20 @@ fn on_a_narrow_window_the_activity_area_goes_first_and_run_stays() {
         band.contains_rect(run),
         "Run at {run:?} is cut by the band {band:?}"
     );
-    if let Some(area) = win.app.activity_area_rect() {
-        let mark = win.app.mark_rect().expect("the mark");
-        assert!(area.left() >= mark.right() && area.right() <= run.left());
-    }
+    let place = win.app.title_place_rects().expect("the place");
+    assert!(
+        place.name.is_some(),
+        "the name field went before the activity area"
+    );
+    assert_eq!(
+        win.app.activity_area_rect(),
+        None,
+        "the activity area stayed on a band too narrow for it"
+    );
+    win.screen = wide;
+    win.settle();
+    assert!(
+        win.app.activity_area_rect().is_some(),
+        "the activity area did not come back on a wide band"
+    );
 }

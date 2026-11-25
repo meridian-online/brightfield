@@ -2253,6 +2253,8 @@ struct TopBar {
     activity_rect: Option<egui::Rect>,
     /// Whether the activity area was clicked.
     activity: bool,
+    /// What the activity area said, on a frame that drew it.
+    activity_said: Option<TitleActivity>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -3903,9 +3905,11 @@ pub struct MeridianApp {
     run_rect: Option<egui::Rect>,
     /// Where the title band drew the activity area on the last frame.
     activity_rect: Option<egui::Rect>,
-    /// How wide the activity area drew on the last frame, which is what the band leaves for it
-    /// on this one: the area lays its words out as it draws, so its width is known only after.
-    activity_width: f32,
+    /// What the activity area said the last time it was drawn, and how wide that drew. The band
+    /// leaves that width for it while it says the same thing: the area lays its words out as it
+    /// draws, so its width is known only after. Anything else it has to say is drawn once to be
+    /// measured, so an area hidden for words too wide comes back when shorter ones fit.
+    activity_measured: Option<(TitleActivity, f32)>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
     /// as the open picker is, and only where dialogs are allowed.
     location_pick_requested: bool,
@@ -4468,7 +4472,7 @@ impl MeridianApp {
             choose_rect: None,
             run_rect: None,
             activity_rect: None,
-            activity_width: 0.0,
+            activity_measured: None,
             location_pick_requested: false,
             dialogs_allowed: false,
             overlay: None,
@@ -7212,12 +7216,18 @@ impl MeridianApp {
             self.open_queue.ask_verb(choice);
         }
         self.run_rect = bar.run_rect;
-        if let Some(rect) = bar.activity_rect {
-            if (rect.width() - self.activity_width).abs() > f32::EPSILON {
-                // The band placed the area at last frame's width; draw again at this one's.
+        if let (Some(rect), Some(said)) = (bar.activity_rect, bar.activity_said.take()) {
+            let placed_at = self
+                .activity_measured
+                .as_ref()
+                .filter(|(before, _)| *before == said)
+                .map(|(_, width)| *width);
+            if placed_at.is_none_or(|width| (rect.width() - width).abs() > f32::EPSILON) {
+                // The band placed the area at a width it had not measured; place it again at
+                // the one it drew.
                 ctx.request_repaint();
             }
-            self.activity_width = rect.width();
+            self.activity_measured = Some((said, rect.width()));
         }
         self.activity_rect = bar.activity_rect;
         let placed = bar.placed.take();
@@ -12097,7 +12107,13 @@ impl MeridianApp {
             },
         });
         let activity = if door { None } else { self.activity() };
-        let activity_width = self.activity_width;
+        // The width the area drew at while it said what it says now; nothing for words it has
+        // not drawn, which are drawn to be measured.
+        let activity_width = self
+            .activity_measured
+            .as_ref()
+            .filter(|(said, _)| Some(said) == activity.as_ref())
+            .map_or(0.0, |(_, width)| *width);
         let band = ui.max_rect();
         ui.horizontal_centered(|ui| {
             // On macOS the window's close, minimise and zoom buttons sit over this corner.
@@ -12257,6 +12273,7 @@ impl MeridianApp {
                         .on_hover_text(ACTIVITY_CONTROL_NAME);
                     bar.activity_rect = Some(drawn.rect);
                     bar.activity = drawn.clicked();
+                    bar.activity_said = Some(activity.clone());
                     bar.controls.push(chrome::NamedControl::hovered(
                         drawn.rect,
                         ACTIVITY_CONTROL_NAME,
