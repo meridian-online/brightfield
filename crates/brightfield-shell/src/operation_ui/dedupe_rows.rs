@@ -19,6 +19,7 @@ use brightfield_workbench::chrome;
 use meridian_design::{semantic, spacing};
 use meridian_egui::{list_row, text_field, ListRow, RowHeight, TextField};
 
+use super::scan::top_level_items;
 use super::{
     Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
     Start,
@@ -31,12 +32,11 @@ fn begin(b: &Begin<'_>) -> Result<Draft, String> {
     Ok(draft)
 }
 
-/// The key's items, trimmed, without an empty one.
+/// The key's items, trimmed, without an empty one, split only at commas
+/// outside quotes and parentheses, so `"price, usd"` and `coalesce(a, b)`
+/// are one item each.
 fn key_items(key: &str) -> Vec<&str> {
-    key.split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .collect()
+    top_level_items(key)
 }
 
 /// The order a key is given until the order is typed over: its first item,
@@ -191,6 +191,17 @@ mod tests {
             toggled("lower(city)", "city", &columns, &quote),
             "lower(city), city"
         );
+    }
+
+    #[test]
+    fn a_comma_in_a_name_or_an_expression_is_one_item_of_the_key() {
+        let columns = columns(&["price, usd", "city"]);
+        let key = toggled("", "price, usd", &columns, &quote);
+        assert_eq!(key, "\"price, usd\"");
+        assert_eq!(key_items(&key), vec!["\"price, usd\""]);
+        assert_eq!(order_for(&key), "\"price, usd\" desc");
+        assert_eq!(toggled(&key, "price, usd", &columns, &quote), "");
+        assert_eq!(order_for("coalesce(a, b), city"), "coalesce(a, b) desc");
     }
 
     #[test]
