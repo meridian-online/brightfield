@@ -269,6 +269,18 @@ pub fn value_offers(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
         .collect()
 }
 
+/// Put `made` in place of the value at `at`, under a name free of the other
+/// values', as an added value's is.
+fn retype_value(list: &mut [String], at: usize, made: String) {
+    let others: Vec<String> = list
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != at)
+        .map(|(_, item)| item.clone())
+        .collect();
+    list[at] = free_alias(made, &others);
+}
+
 /// Add the value `item` to the draft's aggregates, under a name free of theirs.
 pub fn add_value(draft: &mut Draft, item: String) {
     let mut list = items(draft.value("aggregates").unwrap_or_default());
@@ -417,7 +429,7 @@ fn form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEvent {
     if dropped.is_some() || retyped.is_some() {
         let mut list = values;
         if let Some((at, made)) = retyped {
-            list[at] = made;
+            retype_value(&mut list, at, made);
         }
         if let Some(at) = dropped {
             list.remove(at);
@@ -522,6 +534,18 @@ mod tests {
             draft.value("aggregates"),
             Some("count(*) AS n, avg(a) AS avg_a, avg(a) AS avg_a_2")
         );
+    }
+
+    #[test]
+    fn a_values_new_function_takes_a_name_free_of_the_other_values() {
+        let mut list = vec!["sum(a) AS sum_a".to_string(), "avg(a) AS avg_a".to_string()];
+        let made = with_function(&list[1], 1).expect("a function of one column");
+        retype_value(&mut list, 1, made);
+        assert_eq!(list, ["sum(a) AS sum_a", "sum(a) AS sum_a_2"]);
+        // Its own name is no clash.
+        let mut list = vec!["avg(a) AS avg_a".to_string()];
+        retype_value(&mut list, 0, "avg(a) AS avg_a".to_string());
+        assert_eq!(list, ["avg(a) AS avg_a"]);
     }
 
     #[test]
