@@ -49,8 +49,8 @@ fn built_in() -> LoadOptions {
 
 /// **A session whose extensions are built in refuses a source that installs
 /// an extension, updates them, or loads one that is not built in, with the
-/// edition's sentence; and a query source that holds a second statement, such
-/// as a `SET` that turns automatic install back on.**
+/// edition's sentence; and a source that reads as a second statement, such as
+/// a `SET` that turns automatic install back on, after a query or in a name.**
 #[test]
 fn managed_refuses_install_and_load_of_anything_else() {
     for (sql, sentence) in [
@@ -62,6 +62,10 @@ fn managed_refuses_install_and_load_of_anything_else() {
         (
             "SELECT 1 AS x; INSTALL h3 FROM community",
             "This edition can't install the DuckDB extension h3",
+        ),
+        (
+            "SELECT 1 AS x; LOAD h3",
+            "This edition can't load the DuckDB extension h3",
         ),
         (
             "SELECT 1 AS x; LOAD '/x.duckdb_extension'",
@@ -106,6 +110,16 @@ fn managed_refuses_install_and_load_of_anything_else() {
             Ok(_) => panic!("{sql:?} loaded on a session whose extensions are built in"),
         }
     }
+    // A source name holding a quote reaches past the view it names.
+    let named = "data:\n  'a\" AS SELECT 1; SET autoinstall_known_extensions = true; CREATE VIEW \"b':\n    - { x: 1 }\nplot:\n  - mark: dot\n    data: { from: a }\n";
+    match load(named, &built_in()) {
+        Err(EngineError::ExtensionRefused { refusal, .. }) => {
+            assert_eq!(refusal, brightfield_engine::extensions::ONE_STATEMENT);
+        }
+        Err(other) => panic!("the quoted name failed, but not as refused: {other}"),
+        Ok(_) => panic!("a name carrying a SET loaded on a built-in session"),
+    }
+
     // One query, even one whose text mentions the words, loads.
     load(
         &spec_with_query("SELECT 'INSTALL h3; SET x = 1' AS x"),

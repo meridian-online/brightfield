@@ -846,20 +846,19 @@ impl Engine {
                         refusal: statement.refusal(),
                     });
                 }
-                // A query source is wrapped in one `CREATE VIEW`, so a second
-                // statement is SQL the author put after it, which could turn
-                // automatic install back on with a `SET` before a reader that
-                // is not built in. DuckDB's own parser counts them, so no
-                // quoting hides one; a text that does not parse fails below,
-                // in DuckDB's words.
-                if ddl.source_kind == SourceKindTag::Query {
-                    if let Ok(count) = probe_statement_count(&ddl.sql, "query source") {
-                        if count > 1 {
-                            return Err(EngineError::ExtensionRefused {
-                                source_name: ddl.view_name.clone(),
-                                refusal: extensions::ONE_STATEMENT.to_string(),
-                            });
-                        }
+                // Each source's DDL is emitted as one statement, a `CREATE
+                // VIEW` or an `ATTACH`, so a second one is the spec's text
+                // reaching past it: SQL after a query source's query, or a
+                // source name holding a quote. It could turn automatic install
+                // back on with a `SET` before a reader that is not built in.
+                // DuckDB's own parser counts them, so no quoting hides one; a
+                // text that does not parse fails below, in DuckDB's words.
+                if let Ok(count) = probe_statement_count(&ddl.sql, "source") {
+                    if count > 1 {
+                        return Err(EngineError::ExtensionRefused {
+                            source_name: ddl.view_name.clone(),
+                            refusal: extensions::ONE_STATEMENT.to_string(),
+                        });
                     }
                 }
             }

@@ -134,11 +134,11 @@ impl ExtensionStatement {
     }
 }
 
-/// What an analyst reads when a query source on a session with
-/// [`Extensions::BuiltIn`] holds more than its one query: a statement after it
+/// What an analyst reads when a source on a session with
+/// [`Extensions::BuiltIn`] reads as more than one statement: one after its own
 /// could change the settings that keep the session to its built-in extensions.
-pub const ONE_STATEMENT: &str = "This edition reads a query source as one query, and this one \
-     holds more than one statement.";
+pub const ONE_STATEMENT: &str = "This edition reads a source as one statement, and this one \
+     holds more than one.";
 
 /// The first statement in `sql` that a session with [`Extensions::BuiltIn`]
 /// refuses, if any.
