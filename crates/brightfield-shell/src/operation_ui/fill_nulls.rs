@@ -30,7 +30,10 @@ use crate::one_step::ColumnFacts;
 /// What a DuckDB storage type is, as far as a fill's default goes.
 #[derive(Debug, PartialEq, Eq)]
 enum Kind {
-    Number,
+    /// A whole number: a fill with a fraction would widen it.
+    Integer,
+    /// A number that holds fractions.
+    Fractional,
     Text,
     Boolean,
     Other,
@@ -42,8 +45,8 @@ fn kind(storage: &str) -> Kind {
     let base = upper.split('(').next().unwrap_or_default().trim();
     match base {
         "TINYINT" | "SMALLINT" | "INTEGER" | "INT" | "BIGINT" | "HUGEINT" | "UTINYINT"
-        | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" | "FLOAT" | "REAL" | "DOUBLE"
-        | "DECIMAL" | "NUMERIC" => Kind::Number,
+        | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" => Kind::Integer,
+        "FLOAT" | "REAL" | "DOUBLE" | "DECIMAL" | "NUMERIC" => Kind::Fractional,
         "VARCHAR" | "TEXT" | "STRING" => Kind::Text,
         "BOOLEAN" | "BOOL" => Kind::Boolean,
         _ => Kind::Other,
@@ -53,25 +56,26 @@ fn kind(storage: &str) -> Kind {
 /// The fill a column of `storage` opens on.
 fn default_fill(storage: &str) -> &'static str {
     match kind(storage) {
-        Kind::Number => "0",
+        Kind::Integer | Kind::Fractional => "0",
         Kind::Text => "'unknown'",
         Kind::Boolean => "false",
         Kind::Other => "",
     }
 }
 
-/// A median as SQL writes it: a whole number without its `.0`, so a fill of an
-/// integer column keeps its type. `None` for a median that is not finite.
-fn spelled(median: f64) -> Option<String> {
+/// The median a column of `storage` is offered as a fill, as SQL writes it:
+/// rounded to a whole number for an integer column, so taking it keeps the
+/// column's type, and exact for any other number. `None` for a column that is
+/// not a number, and for a median that is not finite.
+fn median_fill(storage: &str, median: f64) -> Option<String> {
     if !median.is_finite() {
         return None;
     }
-    if median.fract() == 0.0 && median.abs() < 1e15 {
-        // A whole number well inside the range an f64 holds exactly.
-        #[allow(clippy::cast_possible_truncation)]
-        return Some(format!("{}", median as i64));
+    match kind(storage) {
+        Kind::Integer => Some(median.round().to_string()),
+        Kind::Fractional => Some(median.to_string()),
+        Kind::Text | Kind::Boolean | Kind::Other => None,
     }
-    Some(format!("{median}"))
 }
 
 /// What Brightfield knows of the column the draft fills.
@@ -104,11 +108,13 @@ fn suggestions(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
     if !default.is_empty() {
         offered.push(default.to_string());
     }
-    if kind(&facts.storage) == Kind::Number {
-        if let Some(median) = facts.moments.as_ref().and_then(|m| spelled(m.median)) {
-            if !offered.contains(&median) {
-                offered.push(median);
-            }
+    if let Some(median) = facts
+        .moments
+        .as_ref()
+        .and_then(|m| median_fill(&facts.storage, m.median))
+    {
+        if !offered.contains(&median) {
+            offered.push(median);
         }
     }
     let typed = draft.value("value").unwrap_or_default().trim();
@@ -158,7 +164,7 @@ pub fn ui() -> Option<&'static OperationUi> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_fill, spelled};
+    use super::{default_fill, median_fill};
 
     #[test]
     fn a_fill_opens_on_a_value_its_storage_type_takes() {
@@ -178,11 +184,15 @@ mod tests {
     }
 
     #[test]
-    fn a_median_is_spelled_without_a_whole_numbers_point() {
-        assert_eq!(spelled(34.0).as_deref(), Some("34"));
-        assert_eq!(spelled(-2.0).as_deref(), Some("-2"));
-        assert_eq!(spelled(2.25).as_deref(), Some("2.25"));
-        assert_eq!(spelled(f64::NAN), None);
-        assert_eq!(spelled(f64::INFINITY), None);
+    fn a_median_is_offered_whole_for_an_integer_column_and_exact_otherwise() {
+        assert_eq!(median_fill("BIGINT", 34.0).as_deref(), Some("34"));
+        // An even count of values can give an integer column a fractional median.
+        assert_eq!(median_fill("BIGINT", 2.5).as_deref(), Some("3"));
+        assert_eq!(median_fill("INTEGER", -2.0).as_deref(), Some("-2"));
+        assert_eq!(median_fill("DOUBLE", 2.3125).as_deref(), Some("2.3125"));
+        assert_eq!(median_fill("DECIMAL(18,3)", 34.0).as_deref(), Some("34"));
+        assert_eq!(median_fill("VARCHAR", 1.0), None);
+        assert_eq!(median_fill("DOUBLE", f64::NAN), None);
+        assert_eq!(median_fill("DOUBLE", f64::INFINITY), None);
     }
 }

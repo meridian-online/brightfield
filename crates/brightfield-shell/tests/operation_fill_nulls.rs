@@ -332,3 +332,17 @@ fn fill_nulls_over_a_kept_fills_grid_says_it_needs_missing_values() {
     );
     assert_eq!(win.kept().len(), 1);
 }
+
+#[test]
+fn fill_nulls_offers_an_integer_columns_median_whole() {
+    // 28 and 41 have a median of 34.5, which as a fill would widen the column.
+    let mut win = OpWindow::on_copy_prepared(WITH_NULLS, |dir| {
+        std::fs::write(
+            dir.join(WITH_NULLS),
+            "city,house_age,order,median income\nAlameda,28,1,1.5\nBerkeley,,2,2.25\nConcord,41,3,3.125\n",
+        )
+        .expect("the fixture writes");
+    });
+    fill_from_header(&mut win, "house_age");
+    assert_eq!(win.suggestions(), ["35"]);
+}
