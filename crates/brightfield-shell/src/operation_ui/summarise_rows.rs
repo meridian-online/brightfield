@@ -177,8 +177,14 @@ fn as_function(item: &str) -> Option<(usize, String, bool)> {
     if !one {
         return None;
     }
+    // A name the function gave, or that name made free with `_2`, `_3`.
+    let given = format!("{}_{}", FUNCTIONS[at].1, unquoted(column));
     let named = alias.is_some_and(|alias| {
-        alias == spelled(&format!("{}_{}", FUNCTIONS[at].1, unquoted(column)))
+        let alias = unquoted(alias);
+        alias == given
+            || alias
+                .strip_prefix(&format!("{given}_"))
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
     });
     Some((at, column.to_string(), named))
 }
@@ -198,23 +204,34 @@ fn with_function(item: &str, function: usize) -> Option<String> {
     })
 }
 
-/// `item` under a name free of those the items `taken` carry, with `_2`, `_3`.
+/// The name of the column an item makes: its alias, or the item itself when
+/// it is a column given bare or in quotes; without quotes either way. `None`
+/// for an expression with no alias.
+fn name_of(item: &str) -> Option<String> {
+    if let Some((_, alias)) = item.rsplit_once(" AS ") {
+        return Some(unquoted(alias.trim()));
+    }
+    let item = item.trim();
+    let quoted = item.len() > 1 && item.starts_with('"') && item.ends_with('"');
+    let bare = !item.is_empty() && item.chars().all(|c| c.is_alphanumeric() || c == '_');
+    (quoted || bare).then(|| unquoted(item))
+}
+
+/// `item` under a name free of the columns the items `taken` make, with `_2`,
+/// `_3`.
 fn free_alias(item: String, taken: &[String]) -> String {
     let Some((call, alias)) = item.rsplit_once(" AS ") else {
         return item;
     };
-    let aliases: Vec<String> = taken
-        .iter()
-        .filter_map(|t| t.rsplit_once(" AS ").map(|(_, a)| a.trim().to_string()))
-        .collect();
-    if !aliases.iter().any(|a| a == alias) {
+    let names: Vec<String> = taken.iter().filter_map(|t| name_of(t)).collect();
+    let bare = unquoted(alias.trim());
+    if !names.contains(&bare) {
         return item;
     }
-    let bare = unquoted(alias);
     (2..)
-        .map(|n| spelled(&format!("{bare}_{n}")))
-        .find(|candidate| !aliases.contains(candidate))
-        .map_or(item.clone(), |alias| format!("{call} AS {alias}"))
+        .map(|n| format!("{bare}_{n}"))
+        .find(|candidate| !names.contains(candidate))
+        .map_or(item.clone(), |free| format!("{call} AS {}", spelled(&free)))
 }
 
 /// Whether a column reads as a category or a date: by its chart tile, or by
@@ -270,21 +287,25 @@ pub fn value_offers(b: &Begin<'_>, draft: &Draft) -> Vec<String> {
 }
 
 /// Put `made` in place of the value at `at`, under a name free of the other
-/// values', as an added value's is.
-fn retype_value(list: &mut [String], at: usize, made: String) {
+/// values' and of the items `groups` makes, as an added value's is.
+fn retype_value(list: &mut [String], at: usize, made: String, groups: &[String]) {
     let others: Vec<String> = list
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != at)
         .map(|(_, item)| item.clone())
+        .chain(groups.iter().cloned())
         .collect();
     list[at] = free_alias(made, &others);
 }
 
-/// Add the value `item` to the draft's aggregates, under a name free of theirs.
+/// Add the value `item` to the draft's aggregates, under a name free of theirs
+/// and of the columns it groups by.
 pub fn add_value(draft: &mut Draft, item: String) {
     let mut list = items(draft.value("aggregates").unwrap_or_default());
-    let item = free_alias(item, &list);
+    let groups = items(draft.value("group_by").unwrap_or_default());
+    let taken: Vec<String> = list.iter().chain(&groups).cloned().collect();
+    let item = free_alias(item, &taken);
     list.push(item);
     draft.set("aggregates", joined(&list));
 }
@@ -302,8 +323,11 @@ fn begin(b: &Begin<'_>) -> Result<Draft, String> {
         .ok_or_else(|| "Summarise rows needs a column.".to_string())?;
     let mut draft = Draft::empty("summarise-rows");
     draft.on = b.table.map(str::to_string);
-    draft.set("group_by", (b.quote)(column));
-    draft.set("aggregates", "count(*) AS n".to_string());
+    let group = (b.quote)(column);
+    // The count is `n`, or `n_2` over a column already named `n`.
+    let count = free_alias("count(*) AS n".to_string(), std::slice::from_ref(&group));
+    draft.set("group_by", group);
+    draft.set("aggregates", count);
     Ok(draft)
 }
 
@@ -429,7 +453,8 @@ fn form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEvent {
     if dropped.is_some() || retyped.is_some() {
         let mut list = values;
         if let Some((at, made)) = retyped {
-            retype_value(&mut list, at, made);
+            let groups = items(draft.value("group_by").unwrap_or_default());
+            retype_value(&mut list, at, made, &groups);
         }
         if let Some(at) = dropped {
             list.remove(at);
@@ -534,18 +559,41 @@ mod tests {
             draft.value("aggregates"),
             Some("count(*) AS n, avg(a) AS avg_a, avg(a) AS avg_a_2")
         );
+        // A column grouped by is a name taken too, bare or quoted.
+        draft.set("group_by", "\"sum_b\"".to_string());
+        add_value(&mut draft, "sum(b) AS sum_b".to_string());
+        assert!(draft
+            .value("aggregates")
+            .unwrap_or_default()
+            .ends_with("sum(b) AS sum_b_2"));
     }
 
     #[test]
     fn a_values_new_function_takes_a_name_free_of_the_other_values() {
         let mut list = vec!["sum(a) AS sum_a".to_string(), "avg(a) AS avg_a".to_string()];
         let made = with_function(&list[1], 1).expect("a function of one column");
-        retype_value(&mut list, 1, made);
+        retype_value(&mut list, 1, made, &[]);
         assert_eq!(list, ["sum(a) AS sum_a", "sum(a) AS sum_a_2"]);
-        // Its own name is no clash.
+        // A name made free is still the function's, so it follows the next change.
+        let made = with_function(&list[1], 0).expect("a function of one column");
+        retype_value(&mut list, 1, made, &[]);
+        assert_eq!(list, ["sum(a) AS sum_a", "avg(a) AS avg_a"]);
+        // A name typed stays.
+        assert_eq!(
+            with_function("avg(a) AS total", 1).as_deref(),
+            Some("sum(a) AS total")
+        );
+        // Its own name is no clash; a column grouped by is.
         let mut list = vec!["avg(a) AS avg_a".to_string()];
-        retype_value(&mut list, 0, "avg(a) AS avg_a".to_string());
+        retype_value(&mut list, 0, "avg(a) AS avg_a".to_string(), &[]);
         assert_eq!(list, ["avg(a) AS avg_a"]);
+        retype_value(
+            &mut list,
+            0,
+            "sum(a) AS sum_a".to_string(),
+            &["sum_a".to_string()],
+        );
+        assert_eq!(list, ["sum(a) AS sum_a_2"]);
     }
 
     #[test]
