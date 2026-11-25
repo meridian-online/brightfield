@@ -1768,6 +1768,8 @@ impl Component for StepRowDemo {
             .fold(fold)
             .focused(true),
         ];
+        // The rows touch, so each lane runs on unbroken from row to row.
+        ui.spacing_mut().item_spacing.y = 0.0;
         for row in rows {
             let response = step_row(ui, row);
             if response.clicked {
