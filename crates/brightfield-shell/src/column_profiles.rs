@@ -106,7 +106,7 @@ impl ColumnProfiles {
     }
 
     /// Where the profile under `key` stands, without starting a read: `None`
-    /// when nothing is kept for it and none is under way.
+    /// when no profile is kept for it and no read of it is under way.
     pub(crate) fn peek(&mut self, key: &ProfileKey) -> Option<ProfileRead> {
         self.poll();
         if let Some((_, read)) = self.kept.iter().find(|(k, _)| k == key) {
@@ -122,7 +122,7 @@ impl ColumnProfiles {
     }
 
     /// Where the profile under `key` stands, starting a read of it on a worker
-    /// when none is kept or under way. A refusal that may pass is read again.
+    /// unless a profile is kept for it or a read of it is under way. A refusal that may pass is read again.
     /// A read under way for another table is stopped: one table is asked
     /// about at a time, and the one asked about now is the one wanted.
     pub(crate) fn read(

@@ -5376,7 +5376,7 @@ impl MeridianApp {
     }
 
     /// Where the profile of `table` stands, starting its read under `ask`
-    /// when none is kept or under way. See [`Self::column_facts_for`].
+    /// unless a profile is kept for it or a read of it is under way. See [`Self::column_facts_for`].
     fn column_profile_for(&mut self, table: &str, ask: ProfileAsk) -> ProfileRead {
         let Some(source) = self.typed_source(None) else {
             return ProfileRead::Failed(
