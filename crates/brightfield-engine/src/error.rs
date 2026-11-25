@@ -14,7 +14,8 @@ pub enum EngineError {
 
     /// A source's SQL installs a DuckDB extension, updates extensions, or
     /// loads one that is not built in, on a session whose extensions are
-    /// built in ([`crate::Extensions::BuiltIn`]). Nothing of it ran.
+    /// built in ([`crate::Extensions::BuiltIn`]); or, on such a session, a
+    /// query source holds more than its one query. Nothing of it ran.
     #[error("'{source_name}' was not read: {refusal}")]
     ExtensionRefused {
         /// The data source name from the spec.

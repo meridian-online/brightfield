@@ -48,13 +48,9 @@ fn built_in() -> LoadOptions {
 }
 
 /// **A session whose extensions are built in refuses a source that installs
-/// one, updates them, or loads one that is not built in, with the edition's
-/// sentence, before any of its SQL runs.**
-///
-/// The refused statement comes after a `CREATE TABLE` in the same source, so a
-/// refusal that ran the source first would leave the table behind; the test
-/// reads the catalog of a session that loaded the same `CREATE TABLE` alone to
-/// show it would have been there.
+/// an extension, updates them, or loads one that is not built in, with the
+/// edition's sentence; and a query source that holds a second statement, such
+/// as a `SET` that turns automatic install back on.**
 #[test]
 fn managed_refuses_install_and_load_of_anything_else() {
     for (sql, sentence) in [
@@ -95,6 +91,27 @@ fn managed_refuses_install_and_load_of_anything_else() {
             Ok(_) => panic!("{sql:?} loaded on a session whose extensions are built in"),
         }
     }
+
+    // A second statement is refused whatever it is, and however it is quoted,
+    // since it could change the settings that keep the session built in.
+    for sql in [
+        "SELECT 1 AS x; SET autoinstall_known_extensions = true",
+        "SELECT $$'$$ AS x; RESET custom_extension_repository; SELECT $$'$$",
+    ] {
+        match load(&spec_with_query(sql), &built_in()) {
+            Err(EngineError::ExtensionRefused { refusal, .. }) => {
+                assert_eq!(refusal, brightfield_engine::extensions::ONE_STATEMENT);
+            }
+            Err(other) => panic!("{sql:?} failed, but not as refused: {other}"),
+            Ok(_) => panic!("{sql:?} loaded on a session whose extensions are built in"),
+        }
+    }
+    // One query, even one whose text mentions the words, loads.
+    load(
+        &spec_with_query("SELECT 'INSTALL h3; SET x = 1' AS x"),
+        &built_in(),
+    )
+    .expect("a single query loads");
 
     // A load of a built-in extension is not refused: it is already loaded.
     // (Whether it then loads depends on the DuckDB this build links, so the
