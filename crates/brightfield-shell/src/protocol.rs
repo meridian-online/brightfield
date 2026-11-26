@@ -3979,8 +3979,11 @@ pub struct SpineRowDrawn {
     /// is its name — rather than a readout. On a spine row it is the rule the
     /// click was answered by; elsewhere, the sense the row was allocated with.
     pub control: bool,
-    /// Whether the row was drawn struck through, its name in the secondary
-    /// ink: a step removed and not yet saved, and what it makes.
+    /// Whether the row was drawn struck through: a step removed and not yet
+    /// saved, and what it makes. On a spine row the name keeps the step row's
+    /// own ink, primary for a step and secondary for a table, and the rule
+    /// alone marks it as going; on an Outline row the name is in the
+    /// secondary ink.
     pub struck: bool,
     /// Whether the row's name was drawn in the muted ink: a row that is not a
     /// table, while the spine picks a table for an operation.
@@ -5167,7 +5170,8 @@ pub const GRAPH_CHIP_HINT: &str =
 /// - A row the spine mutes while it picks a table is drawn disabled, so the
 ///   tables are what the eye lands on.
 /// - A step removed and not yet saved has a rule drawn through its name, in
-///   the name's ink, as before.
+///   the name's ink. The step row has no secondary ink for a step's name, so
+///   the rule alone marks it as going.
 /// - The join curves stay Brightfield's, in `gutter` of room left of the row.
 fn spine_row(
     ui: &mut egui::Ui,
