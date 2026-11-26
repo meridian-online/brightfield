@@ -711,11 +711,13 @@ struct Run {
 /// not wait on that.
 const STOP_PATIENCE: Duration = Duration::from_millis(250);
 
-/// Wait for `runs` to end, for at most `patience`: every millisecond, take
-/// each run that has `finished` to `reap`, and `interrupt` each one left.
-/// Returns the runs still going when the patience ran out.
+/// Wait for `runs` to end, for at most `patience`: each millisecond, take
+/// each run that has `finished` to `reap`, and `interrupt` each one left
+/// (`a_run_whose_first_interrupt_is_lost_ends_on_a_later_one`). Returns the
+/// runs still going when the patience ran out
+/// (`a_run_no_interrupt_reaches_is_left_after_the_patience`).
 ///
-/// The interrupt is sent again on every pass because a single one can be
+/// The interrupt is sent again on each pass because a single one can be
 /// lost: DuckDB clears it when a statement starts, so a run that read its
 /// stop flag just before the flag was set, and then began its next query,
 /// would run that query to the end. Sent until the run ends, one lands
