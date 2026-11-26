@@ -260,7 +260,7 @@ impl Live {
     }
 
     /// The selected rows the layer `mark` counts across its groups, or `None`
-    /// when its query has no selected count (nothing is selected).
+    /// when its query has no selected count, as when no selection is held.
     fn selected_total(&mut self, mark: usize) -> Option<f64> {
         let batches = self
             .app

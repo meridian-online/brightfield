@@ -811,8 +811,8 @@ impl Drop for RegionsWorker {
 /// found on, or `None` where no region is drawn.
 ///
 /// The answer read is the one drawn now ([`RegionsWorker::drawn_on`]), so a click
-/// made while a zoom's regions are still being found selects nothing rather
-/// than cells of a view no longer shown. The point is inverted through the
+/// made while a zoom's regions are still being found is a plain click, not a
+/// choice of cells from a view no longer shown. The point is inverted through the
 /// displayed scales without unprojecting, because the grid is laid over those
 /// scales' domains ([`displayed_extent`]).
 #[must_use]
