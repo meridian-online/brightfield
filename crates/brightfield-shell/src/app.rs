@@ -3016,6 +3016,11 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                // The new session holds no gesture's clause, so the document
+                // forgets the ones it recorded; the grid's is published again
+                // below.
+                self.active_selections
+                    .retain(|(_, c)| c.0 == GRID_CONTRIBUTOR);
                 self.publish_grid_condition();
                 if changed {
                     self.pending_edits.push(edit);
@@ -4204,6 +4209,21 @@ impl ChartDoc {
         contributor: &ComponentPath,
     ) -> Option<brightfield_engine::SqlPredicate> {
         self.live.as_ref()?.held_clause(name, contributor).cloned()
+    }
+
+    /// The selection a click at raster-local `p` on plot `plot` makes on a
+    /// region drawn there, or `None` where none is drawn — see
+    /// [`crate::regions::region_clause_at`]. `None` on a document with no live
+    /// session, which draws no regions.
+    #[must_use]
+    pub fn region_clause_at(
+        &self,
+        plot: usize,
+        p: kurbo::Point,
+    ) -> Option<brightfield_engine::SqlPredicate> {
+        let handle = self.composed.plots.get(plot)?;
+        let local = (p.x - handle.rect.x, p.y - handle.rect.y);
+        self.live.as_ref()?.region_clause_at(handle, local)
     }
 
     /// **The SQL the gestures on this chart are currently holding**, as one

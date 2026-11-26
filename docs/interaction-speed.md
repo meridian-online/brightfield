@@ -83,6 +83,8 @@ matters rather than the row count.
 back to querying the source directly. It returns exactly the right answer; it is
 just not accelerated. This is a known gap rather than a design decision.
 
+**A region selected by clicking it.** A region's clause is a set of grid cells over the plot's two columns, and no cube is built for it, so the plots that follow it query the source directly. That one is a design decision: a click is one query, not a stream of them, and its answer is exact.
+
 ## What is never traded
 
 None of this changes what a query returns. A cube is a substitution the engine

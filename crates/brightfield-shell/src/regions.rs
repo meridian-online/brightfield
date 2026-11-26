@@ -40,7 +40,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::kde::{kde_2d, silverman_2d_per_axis_weighted};
 use brightfield_render::mark::Projection;
 use brightfield_render::regions::{
-    find_regions, label_anchor, region_outline, DensityGrid, Region,
+    find_regions, label_anchor, region_at, region_outline, DensityGrid, Region,
 };
 use brightfield_render::scale::Scale;
 use brightfield_render::text::{draw_text, measure_width, TextAnchor, LABEL_SIZE};
@@ -50,6 +50,7 @@ use brightfield_spec::parse::REGIONS_KEY;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::Spec;
 use brightfield_sql::emit::{collect_marks, collect_plot_groups};
+use brightfield_sql::ir::Predicate;
 use brightfield_sql::regions::{region_grid_sql, region_label_sql, GridExtent};
 use duckdb::arrow::array::{Array, Float64Array, Int32Array, Int64Array, StringArray};
 use kurbo::{Affine, BezPath, Rect, Stroke};
@@ -80,6 +81,11 @@ pub const MIN_DRAWN_SHARE: f64 = 0.01;
 /// The width of a region's outline, in pixels: a hairline, so the points
 /// under it stay the picture.
 const OUTLINE_WIDTH: f64 = 1.0;
+
+/// The width of the outline of the region a click has selected: heavy enough
+/// to tell from the hairlines beside it at a glance, still a line rather than
+/// a fill, so the selected points stay visible inside it.
+const HELD_OUTLINE_WIDTH: f64 = 2.5;
 
 /// The space kept clear around a name, in pixels, when names are placed apart.
 const NAME_PAD: f64 = 2.0;
@@ -364,7 +370,7 @@ impl RegionJob {
             }
         };
         let Some(grid_sql) = region_grid_sql(&self.rows_sql, &self.x, &self.y, &self.extent) else {
-            return Some(PlotRegions::none(self.extent));
+            return Some(PlotRegions::none(self.x, self.y, self.extent));
         };
         let grid = density_grid(&read(&grid_sql)?, &self.extent, self.bandwidth_scale);
         let mut regions = find_regions(&grid);
@@ -397,6 +403,8 @@ impl RegionJob {
             }
         };
         Some(PlotRegions {
+            x: self.x,
+            y: self.y,
             extent: self.extent,
             grid,
             regions,
@@ -570,6 +578,9 @@ fn profile_rows(
 /// One plot's regions over one extent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlotRegions {
+    /// The columns the grid is laid over, x then y: the layer's own.
+    pub x: String,
+    pub y: String,
     pub extent: GridExtent,
     pub grid: DensityGrid,
     /// Highest peak first, each holding at least [`MIN_DRAWN_SHARE`].
@@ -584,8 +595,10 @@ pub struct PlotRegions {
 
 impl PlotRegions {
     /// No regions over `extent`, which has no grid.
-    fn none(extent: GridExtent) -> Self {
+    fn none(x: String, y: String, extent: GridExtent) -> Self {
         Self {
+            x,
+            y,
             grid: DensityGrid {
                 cols: 0,
                 rows: 0,
@@ -793,6 +806,77 @@ impl Drop for RegionsWorker {
     }
 }
 
+/// The selection a click at `local` (pixels inside `plot`'s own rect) makes:
+/// the cells of the region drawn under it, over the extent that region was
+/// found on, or `None` where no region is drawn.
+///
+/// Only the answer drawn now is read ([`RegionsWorker::drawn_on`]), so a click
+/// made while a zoom's regions are still being found selects nothing rather
+/// than cells of a view no longer shown. The point is inverted through the
+/// displayed scales without unprojecting, because the grid is laid over those
+/// scales' domains ([`displayed_extent`]).
+#[must_use]
+pub fn region_clause_at(
+    worker: &RegionsWorker,
+    plot: &PlotHandle,
+    local: (f64, f64),
+) -> Option<Predicate> {
+    let answer = worker.drawn_on(plot)?;
+    let x = plot.scales.get(Channel::X)?.inverse_f64(local.0)?;
+    let y = plot.scales.get(Channel::Y)?.inverse_f64(local.1)?;
+    let region = &answer.regions[region_at(&answer.grid, &answer.regions, x, y)?];
+    let cells = region
+        .cells
+        .iter()
+        .map(|&c| u32::try_from(c).ok())
+        .collect::<Option<Vec<u32>>>()?;
+    Predicate::cells(&answer.x, &answer.y, answer.extent.clone(), cells)
+}
+
+/// The region of `regions` that `held` selects: the one whose cells it holds,
+/// over the same columns and extent. `None` for any other clause, and for
+/// cells chosen over another extent, whose region is not among these.
+#[must_use]
+pub fn region_held(regions: &PlotRegions, held: &Predicate) -> Option<usize> {
+    let Predicate::Cells {
+        x,
+        y,
+        extent,
+        cells,
+    } = held
+    else {
+        return None;
+    };
+    if *x != regions.x || *y != regions.y || *extent != regions.extent {
+        return None;
+    }
+    regions.regions.iter().position(|r| {
+        r.cells.len() == cells.len()
+            && r.cells
+                .iter()
+                .zip(cells)
+                .all(|(&a, &b)| u32::try_from(a).is_ok_and(|a| a == b))
+    })
+}
+
+/// The region drawn on `plot` that the plot's own gesture holds in a
+/// selection, read as `pipeline::plot_selection` reads the plot's own clause:
+/// keyed on the contributor, which is the plot's path.
+fn held_on(session: &Session, regions: &PlotRegions, plot: &PlotHandle) -> Option<usize> {
+    session
+        .current_selections()
+        .values()
+        .flatten()
+        .filter(|(contributor, _)| contributor.0 == plot.path)
+        .find_map(|(_, predicate)| region_held(regions, predicate))
+}
+
+/// [`held_on`] for the answer drawn on `plot` now.
+#[must_use]
+pub fn held_region(worker: &RegionsWorker, session: &Session, plot: &PlotHandle) -> Option<usize> {
+    held_on(session, worker.drawn_on(plot)?, plot)
+}
+
 /// A name placed on a plot: its region, its text, the box kept clear around it
 /// and the point its baseline is centred on, in the plot's own pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -865,8 +949,11 @@ pub fn place_names(plot: &PlotHandle, regions: &PlotRegions) -> Vec<PlacedName> 
 /// Draw each plot's regions over the composed page: the outlines, then the
 /// names with knockout ink so they read over dense points, inside the plot
 /// area. A plot whose answer is for another extent, or that has none yet, is
-/// drawn without regions.
-pub(crate) fn ink_regions(composed: &mut Composed, worker: &RegionsWorker) {
+/// drawn without regions. The region the plot's own selection holds is
+/// outlined heavier, and only while the extent it was selected on is the one
+/// drawn: after a zoom the selection keeps its cells, and the regions drawn
+/// over the new view are new regions, none of them held.
+pub(crate) fn ink_regions(composed: &mut Composed, worker: &RegionsWorker, session: &Session) {
     for plot in &composed.plots {
         let Some(regions) = worker.drawn_on(plot) else {
             continue;
@@ -874,8 +961,9 @@ pub(crate) fn ink_regions(composed: &mut Composed, worker: &RegionsWorker) {
         if regions.regions.is_empty() {
             continue;
         }
+        let held = held_on(session, regions, plot);
         let mut overlay = Scene::new();
-        draw_regions(&mut overlay, plot, regions);
+        draw_regions(&mut overlay, plot, regions, held);
         composed.scene.append(
             &overlay,
             Some(Affine::translate((plot.rect.x, plot.rect.y))),
@@ -883,7 +971,7 @@ pub(crate) fn ink_regions(composed: &mut Composed, worker: &RegionsWorker) {
     }
 }
 
-fn draw_regions(scene: &mut Scene, plot: &PlotHandle, regions: &PlotRegions) {
+fn draw_regions(scene: &mut Scene, plot: &PlotHandle, regions: &PlotRegions, held: Option<usize>) {
     let (Some(sx), Some(sy)) = (plot.scales.get(Channel::X), plot.scales.get(Channel::Y)) else {
         return;
     };
@@ -899,8 +987,8 @@ fn draw_regions(scene: &mut Scene, plot: &PlotHandle, regions: &PlotRegions) {
     // knockout in the chart surface.
     let ink = plot.scales.ink();
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
-    let stroke = Stroke::new(OUTLINE_WIDTH);
-    for rings in &regions.outlines {
+    let (stroke, heavy) = (Stroke::new(OUTLINE_WIDTH), Stroke::new(HELD_OUTLINE_WIDTH));
+    for (region, rings) in regions.outlines.iter().enumerate() {
         let mut path = BezPath::new();
         for ring in rings {
             let mut corners = ring.iter().map(|&(x, y)| (sx.map_f64(x), sy.map_f64(y)));
@@ -913,7 +1001,12 @@ fn draw_regions(scene: &mut Scene, plot: &PlotHandle, regions: &PlotRegions) {
             }
             path.close_path();
         }
-        scene.stroke(&stroke, Affine::IDENTITY, ink.title, None, &path);
+        let stroke = if held == Some(region) {
+            &heavy
+        } else {
+            &stroke
+        };
+        scene.stroke(stroke, Affine::IDENTITY, ink.title, None, &path);
     }
     for name in place_names(plot, regions) {
         let (x, y) = name.baseline;

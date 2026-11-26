@@ -1549,7 +1549,7 @@ impl LiveDashboard {
         )?
         .with_diagnostics(self.diagnostics.clone())
         .with_row_count(rows);
-        ink_regions(&mut composed, &self.regions);
+        ink_regions(&mut composed, &self.regions, self.coordinator.session());
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
     }
@@ -1799,6 +1799,21 @@ impl LiveDashboard {
     #[must_use]
     pub fn regions(&self) -> &RegionsWorker {
         &self.regions
+    }
+
+    /// The region drawn on `plot` that the plot's own selection holds, which
+    /// the page outlines heavier: `None` when it holds none, or holds cells
+    /// selected over an extent other than the one drawn.
+    #[must_use]
+    pub fn held_region(&self, plot: &PlotHandle) -> Option<usize> {
+        crate::regions::held_region(&self.regions, self.coordinator.session(), plot)
+    }
+
+    /// The selection a click at `local` (pixels inside `plot`'s own rect)
+    /// makes on a drawn region: [`crate::regions::region_clause_at`].
+    #[must_use]
+    pub fn region_clause_at(&self, plot: &PlotHandle, local: (f64, f64)) -> Option<Predicate> {
+        crate::regions::region_clause_at(&self.regions, plot, local)
     }
 
     /// [`Self::regions`], to set its wake or take its answers.
@@ -2182,8 +2197,11 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
         | Predicate::Or(_)
         | Predicate::True
         | Predicate::False => {}
-        // A set of grid cells is not a band on either axis, so it is left
-        // undrawn.
+        // A region's cells are not a band on either axis. Their picture is
+        // the region's heavier outline, which `crate::regions::ink_regions`
+        // draws; leaving them out here also leaves the plot no committed
+        // rectangle, so a second click on the region is a click and toggles
+        // it off rather than starting a move.
         Predicate::Cells { .. } => {}
     }
 }

@@ -723,7 +723,14 @@ impl ChartItem {
                     // borrows the document mutably, and before the gesture
                     // that is about to replace it.
                     let held = doc.held_clause(&binding.selection, &binding.contributor);
-                    if let Some(interaction) = resolve_gesture(&binding, plot, drag, held.as_ref())
+                    // The region under the press, on a plot whose brush takes
+                    // both axes: a region's clause names both of its columns,
+                    // and only a two-axis selection is listened for that way.
+                    let region = (binding.kind == BrushKind::IntervalXY)
+                        .then(|| doc.region_clause_at(drag.plot, drag.start))
+                        .flatten();
+                    if let Some(interaction) =
+                        resolve_gesture(&binding, plot, drag, held.as_ref(), region)
                     {
                         doc.apply_interaction(interaction);
                         repaint = true;
@@ -2358,6 +2365,12 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
 ///   the hand did not carry anywhere — leaves the selection exactly as it
 ///   was: `None`, not a clear, because the press landed on a selection that
 ///   is still there to leave alone.
+/// - An interval click **inside a drawn region** — `region`, the region's
+///   [`SqlPredicate::Cells`], which the caller offers only on an
+///   `intervalXY` plot — selects the region's rows in place of whatever the
+///   plot held, and a click that would publish the clause already held clears
+///   it, the point click's toggle below. A press on a committed rectangle
+///   still leaves the rectangle alone.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
 ///   band scale places under the pointer.
 fn resolve_gesture(
@@ -2365,6 +2378,7 @@ fn resolve_gesture(
     plot: &PlotHandle,
     drag: Drag,
     held: Option<&SqlPredicate>,
+    region: Option<SqlPredicate>,
 ) -> Option<Interaction> {
     /// A drag shorter than this on both axes is a click, not a sweep.
     const CLICK_SLOP: f64 = 3.0;
@@ -2373,14 +2387,20 @@ fn resolve_gesture(
     match gesture_for(binding.kind) {
         GestureClass::Interval => {
             if !swept {
-                return if drag.move_from.is_some() {
-                    None
-                } else {
-                    Some(Interaction::ClearSelect {
+                if drag.move_from.is_some() {
+                    return None;
+                }
+                return Some(match region {
+                    Some(predicate) if held != Some(&predicate) => Interaction::Select {
                         name: binding.selection.clone(),
                         contributor: binding.contributor.clone(),
-                    })
-                };
+                        predicate,
+                    },
+                    _ => Interaction::ClearSelect {
+                        name: binding.selection.clone(),
+                        contributor: binding.contributor.clone(),
+                    },
+                });
             }
             let (a, b) = drag.corners();
             let predicate = interval_predicate(binding, plot, a, b)?;
@@ -2899,7 +2919,7 @@ mod tests {
         };
         let binding = interval.gesture.clone().expect("bound");
         assert!(matches!(
-            resolve_gesture(&binding, &interval, click, None),
+            resolve_gesture(&binding, &interval, click, None, None),
             Some(Interaction::ClearSelect { .. })
         ));
 
@@ -2912,7 +2932,7 @@ mod tests {
             move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
-        assert_eq!(resolve_gesture(&binding, &point, sweep, None), None);
+        assert_eq!(resolve_gesture(&binding, &point, sweep, None, None), None);
     }
 
     /// Two plots placed side by side on one raster, as a root `hconcat` of
