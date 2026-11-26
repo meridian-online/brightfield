@@ -17,6 +17,10 @@
 #                         its rpaths: @executable_path/../lib here, and
 #                         @executable_path/../Frameworks for an app bundle's
 #                         Contents/Helpers/
+#   licenses/             the licence notices of the third-party code in lib/
+#                         and of FineType's command line, which
+#                         scripts/package-store.sh puts in the app
+#                         (scripts/duckdb-managed/notices/notices.py)
 #   sizes.txt             the sizes of the libraries and the shell
 #
 # WHY ONE LIBRARY. The Mac App Store edition runs DuckDB twice: in process, in
@@ -100,10 +104,11 @@ JOBS="${BRIGHTFIELD_DUCKDB_JOBS:-6}"
 case "$JOBS" in ''|*[!0-9]*) fail "BRIGHTFIELD_DUCKDB_JOBS='${JOBS}' is not a number" ;; esac
 
 [ "$(uname -s)" = "Darwin" ] || fail "the managed edition is built on macOS only"
-for tool in git cmake ninja python3 cc c++ cargo install_name_tool otool codesign; do
+for tool in git cmake ninja python3 cc c++ cargo cargo-deny install_name_tool otool codesign; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     case "$tool" in
       cmake|ninja) fail "needs ${tool} on the search path: brew install cmake ninja" ;;
+      cargo-deny) fail "needs cargo-deny, which checks the licences of FineType's crates: cargo install --locked cargo-deny" ;;
       *) fail "needs ${tool} on the search path" ;;
     esac
   fi
@@ -342,6 +347,17 @@ for lib in "${OUT}"/lib/*.dylib; do
   codesign --force --sign - "$lib" >&2
 done
 codesign --force --sign - "${OUT}/bin/duckdb" >&2
+
+# The licence notices of what this build put in lib/, and of FineType's
+# command line, which the app carries beside it: the C libraries vcpkg built,
+# GEOS's licence with where its source is, DuckDB's and its extensions', and
+# FineType's crates, which cargo-deny first holds to Brightfield's licence
+# policy. A vcpkg port the script does not know stops the build.
+rm -rf "${OUT}/licenses"
+python3 "${CONFIG_DIR}/notices/notices.py" managed "${OUT}/licenses" \
+  --duckdb-src "$SRC" --duckdb-build "$BUILD" --lib-dir "${OUT}/lib" \
+  --extensions-cmake "${CONFIG_DIR}/extensions.cmake" --vcpkg-commit "$VCPKG_COMMIT" \
+  --finetype-src "$FINETYPE_SRC" --deny-config "${ROOT}/deny.toml" >&2
 
 {
   for lib in "${OUT}"/lib/*.dylib; do

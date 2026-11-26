@@ -21,12 +21,17 @@
 #     it in Contents/Frameworks;
 #   - FineType's manifest names files, none of them an extension file, and
 #     they hash as recorded;
+#   - Resources/licenses carries the third-party notices: GEOS's LGPL-2.1
+#     text, and a SOURCE.txt that names each GEOS library in Frameworks and
+#     the commit its source is at; the C libraries' licences; and the Rust
+#     crates compiled into Brightfield, into the library with FineType and
+#     into FineType's command line;
 #   - Info.plist answers App Store Connect's encryption question;
 #   - codesign --verify --strict --deep passes on the app.
 #
 # Then it shows the checks can fail: a copy of the bundle with one helper
-# re-signed with the app's entitlements, and a copy carrying an extension file,
-# are each refused.
+# re-signed with the app's entitlements, a copy carrying an extension file, and
+# a copy whose GEOS notice is gone, are each refused.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,6 +130,28 @@ check() {
     ok "FineType's manifest names $(wc -l < "$manifest" | tr -d ' ') files, no extension file, and they hash as recorded"
   else bad "a file in Resources/finetype does not hash as its manifest records"; fi
 
+  local notices="$app/Contents/Resources/licenses" lib named=1 file
+  if [ -f "$notices/README.txt" ]; then ok "Resources/licenses/README.txt says what the notices are"
+  else bad "no Resources/licenses/README.txt"; fi
+  if grep -q 'GNU LESSER GENERAL PUBLIC LICENSE' "$notices/GEOS/COPYING" 2>/dev/null \
+     && grep -q 'Version 2.1' "$notices/GEOS/COPYING"; then ok "Resources/licenses/GEOS/COPYING is the LGPL version 2.1"
+  else bad "Resources/licenses/GEOS/COPYING is missing or is not the LGPL version 2.1"; fi
+  for lib in "$app"/Contents/Frameworks/libgeos*.dylib; do
+    grep -qF "Contents/Frameworks/$(basename "$lib")" "$notices/GEOS/SOURCE.txt" 2>/dev/null || named=0
+  done
+  if [ "$named" = 1 ] && grep -Eq 'libgeos/geos/tree/[0-9a-f]{40}' "$notices/GEOS/SOURCE.txt" \
+     && grep -q 'OFFER OF THE SOURCE' "$notices/GEOS/SOURCE.txt"; then
+    ok "Resources/licenses/GEOS/SOURCE.txt names each GEOS library, its source's commit, and the offer of it"
+  else bad "Resources/licenses/GEOS/SOURCE.txt does not name each GEOS library in Frameworks, its source's commit and the offer"; fi
+  if [ -n "$(find "$notices/c-libraries" -name '*.txt' 2>/dev/null)" ]; then
+    ok "Resources/licenses/c-libraries holds $(find "$notices/c-libraries" -name '*.txt' | wc -l | tr -d ' ') C libraries' licences"
+  else bad "no C library licences in Resources/licenses/c-libraries"; fi
+  for file in brightfield finetype-in-libduckdb finetype-command-line; do
+    if grep -q '^Licence: ' "$notices/rust-crates/$file.txt" 2>/dev/null; then
+      ok "Resources/licenses/rust-crates/$file.txt lists $(grep -c '^Licence: ' "$notices/rust-crates/$file.txt") crates"
+    else bad "no crates in Resources/licenses/rust-crates/$file.txt"; fi
+  done
+
   if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Contents/Info.plist" 2>/dev/null)" = false ]; then
     ok "Info.plist sets ITSAppUsesNonExemptEncryption to false"
   else bad "Info.plist does not set ITSAppUsesNonExemptEncryption to false"; fi
@@ -159,6 +186,14 @@ refused="$(check "$SCRATCH/extension.app")"
 if grep -q '^FAIL extension files in the bundle' <<<"$refused"; then
   echo "ok   refused"
 else echo "FAIL a bundle with an extension file passed"; status=1; fi
+
+echo "== the checks refuse a bundle without GEOS's source notice"
+cp -R "$APP" "$SCRATCH/no-source.app"
+rm "$SCRATCH/no-source.app/Contents/Resources/licenses/GEOS/SOURCE.txt"
+refused="$(check "$SCRATCH/no-source.app")"
+if grep -q '^FAIL Resources/licenses/GEOS/SOURCE.txt' <<<"$refused"; then
+  echo "ok   refused"
+else echo "FAIL a bundle without GEOS's source notice passed"; status=1; fi
 
 if [ "$status" -eq 0 ]; then echo "package-store-selftest: all checks passed"
 else echo "package-store-selftest: FAILED" >&2; fi
