@@ -23,7 +23,7 @@
 //! replaces, and hands the answers over on a later frame. [`ink_regions`] draws
 //! an answer while its extent is the one the plot is drawn at, and not after a
 //! zoom moves the plot, so the old regions are hidden until the new ones
-//! arrive (`a_settled_zoom_recomputes_over_the_view` in
+//! arrive (`old_regions_are_hidden_while_a_zoom_is_answered` in
 //! `tests/regions_overlay.rs`).
 //!
 //! Regions are a render-time overlay rather than a mark injected into the spec,
@@ -207,23 +207,32 @@ fn displayed_extent(plot: &PlotHandle) -> Option<GridExtent> {
     })
 }
 
-/// What a run answers: the layer, its columns and the extent. A request for
-/// what is already answered, or being answered, starts nothing.
+/// What a run answers: the layer, its columns, its rows and the extent. A
+/// request for what is already answered, or being answered, starts nothing.
+///
+/// The rows are the layer's rows SQL, which carries the spec's parameters as
+/// they stand and no selection: a slider that filters the layer changes the
+/// rows, and so asks again, even when the drawn extent stays where it was,
+/// while a brush on another plot changes nothing here.
 #[derive(Clone, Debug, PartialEq)]
 struct JobKey {
     mark: usize,
     x: String,
     y: String,
+    rows_sql: String,
     extent: GridExtent,
 }
 
-fn key_for(spec: &Spec, plot: &PlotHandle) -> Option<JobKey> {
+/// The key for `plot` as it is drawn now. Builds SQL text and runs nothing.
+fn key_for(session: &Session, spec: &Spec, plot: &PlotHandle) -> Option<JobKey> {
     let (mark, x, y) = qualifying_layer(spec, &plot.path)?;
+    let extent = displayed_extent(plot)?;
     Some(JobKey {
         mark,
         x,
         y,
-        extent: displayed_extent(plot)?,
+        rows_sql: session.region_rows_sql(mark).ok()?,
+        extent,
     })
 }
 
@@ -263,14 +272,13 @@ impl RegionJob {
         plot: &PlotHandle,
         known: &[KnownColumn],
     ) -> Option<Self> {
-        let key = key_for(spec, plot)?;
-        let rows_sql = session.region_rows_sql(key.mark).ok()?;
+        let key = key_for(session, spec, plot)?;
         let reader = session.region_reader().ok()?;
         Some(Self {
             plot_path: plot.path.clone(),
             mark: key.mark,
             extent: key.extent,
-            rows_sql,
+            rows_sql: key.rows_sql,
             x: key.x,
             y: key.y,
             profiles: (!known.is_empty())
@@ -290,6 +298,7 @@ impl RegionJob {
             mark: self.mark,
             x: self.x.clone(),
             y: self.y.clone(),
+            rows_sql: self.rows_sql.clone(),
             extent: self.extent.clone(),
         }
     }
@@ -647,7 +656,7 @@ impl RegionsWorker {
         known: &[KnownColumn],
     ) {
         for plot in plots {
-            let Some(key) = key_for(spec, plot) else {
+            let Some(key) = key_for(session, spec, plot) else {
                 self.forget(&plot.path);
                 continue;
             };
@@ -656,7 +665,12 @@ impl RegionsWorker {
             }
             match RegionJob::for_plot(session, spec, plot, known) {
                 Some(job) => self.request(job),
-                None => self.forget(&plot.path),
+                None => {
+                    // No reader opened. Remember the key all the same, so the
+                    // next frame does not try again until the plot changes.
+                    self.forget(&plot.path);
+                    self.asked.insert(plot.path.clone(), key);
+                }
             }
         }
     }
@@ -693,9 +707,11 @@ impl RegionsWorker {
         self.answered.get(plot_path)
     }
 
-    /// The answer to draw on `plot`: the last one, while its extent is the one
-    /// the plot is drawn at.
-    fn drawn_on(&self, plot: &PlotHandle) -> Option<&PlotRegions> {
+    /// The answer drawn on `plot`: the last one, while its extent is the one
+    /// the plot is drawn at, and none once a zoom or pan has moved the plot
+    /// and the new answer has not landed.
+    #[must_use]
+    pub fn drawn_on(&self, plot: &PlotHandle) -> Option<&PlotRegions> {
         let answer = self.answered.get(&plot.path)?;
         (displayed_extent(plot).as_ref() == Some(&answer.extent)).then_some(answer)
     }
@@ -727,8 +743,9 @@ impl RegionsWorker {
         self.asked.remove(plot_path);
     }
 
-    /// Stop every run under way. Their plots are asked again by the next
-    /// [`Self::request_for`].
+    /// Signal every run under way to stop, without waiting for them to end:
+    /// each gives up at its next step, and a query under way is interrupted.
+    /// Their plots are asked again by the next [`Self::request_for`].
     pub fn stop_all(&mut self) {
         for (path, flight) in std::mem::take(&mut self.in_flight) {
             flight.stop();

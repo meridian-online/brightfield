@@ -278,3 +278,61 @@ fn two_names_never_overlap() {
         }
     }
 }
+
+/// Two square clusters of a hundred points, at (20, 20) and (75, 75), drawn on
+/// axes fixed at 0–100, and filtered by `$threshold`.
+const FILTERED: &str = "params:\n  threshold: 0\n\
+data:\n  t:\n    query: |\n      \
+SELECT 20 + i % 10 AS x, 20 + (i // 10) % 10 AS y FROM range(100) r(i)\n      \
+UNION ALL SELECT 75 + i % 10, 75 + (i // 10) % 10 FROM range(100) r(i)\n\
+plot:\n  - mark: dot\n    data: { from: t, filter: \"x > $threshold\" }\n    x: x\n    y: y\n\
+xDomain: [0, 100]\nyDomain: [0, 100]\n";
+
+#[test]
+fn a_parameter_that_filters_the_layer_finds_the_regions_again() {
+    let mut doc = doc_over(FILTERED);
+    let path = doc.composed.plots[0].path.clone();
+    settle_regions(&mut doc);
+    let before = worker(&doc).regions(&path).expect("regions").clone();
+    assert_eq!(before.regions.len(), 2, "both clusters are regions");
+    assert_eq!(worker(&doc).started(), 1);
+
+    assert!(doc.set_param("threshold", 50.0));
+    assert_eq!(
+        displayed(&doc, 0, Channel::X),
+        (0.0, 100.0),
+        "the fixed axes keep the extent where it was"
+    );
+    settle_regions(&mut doc);
+    assert_eq!(worker(&doc).started(), 2, "the new rows start a run");
+    let after = worker(&doc).regions(&path).expect("regions");
+    assert_eq!(after.extent, before.extent);
+    assert_eq!(after.regions.len(), 1, "one cluster is left");
+    assert_ne!(after.regions, before.regions);
+}
+
+#[test]
+fn old_regions_are_hidden_while_a_zoom_is_answered() {
+    let mut doc = doc_over(&earthquake_scatter());
+    let path = doc.composed.plots[0].path.clone();
+    settle_regions(&mut doc);
+    assert!(
+        worker(&doc).drawn_on(&doc.composed.plots[0]).is_some(),
+        "the wide map draws its regions"
+    );
+
+    // The zoom settles and starts a run; no frame has taken its answer yet.
+    assert!(doc.zoom_view(4.0));
+    assert!(doc.regions_pending());
+    assert!(
+        worker(&doc).regions(&path).is_some(),
+        "the wide answer is still held"
+    );
+    assert!(
+        worker(&doc).drawn_on(&doc.composed.plots[0]).is_none(),
+        "the wide answer is not drawn over the zoomed map"
+    );
+
+    settle_regions(&mut doc);
+    assert!(worker(&doc).drawn_on(&doc.composed.plots[0]).is_some());
+}

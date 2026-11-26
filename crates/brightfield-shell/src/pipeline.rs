@@ -1566,8 +1566,10 @@ impl LiveDashboard {
     /// is the budget doing its job: a table that does not fit `budget_bytes`.
     /// The source is left as it was, serving the file.
     pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), String> {
-        // The copy narrows the database's memory settings while it runs, so
-        // no region read may run beside it.
+        // The copy narrows the database's memory settings while it runs.
+        // This signals any region run to stop and does not wait for it; every
+        // caller today materialises during an open, before a document is
+        // attached and so before any region run has started.
         self.regions.stop_all();
         self.coordinator
             .session_mut()
