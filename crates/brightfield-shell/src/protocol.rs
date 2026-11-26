@@ -2747,6 +2747,26 @@ impl ProtocolModel {
         self.table.is_some() && viewable_nodes(&self.graph_collapsed).any(|id| id == node)
     }
 
+    /// **Every table and view of the Protocol**, for quick open: each node
+    /// whose content is rows, in the outline's order, with its DuckDB name
+    /// (the node's label) and the step that produces it.
+    ///
+    /// Read off the collapsed graph, the one the spine and the canvas draw, so
+    /// a node quick open finds is a node the selection can land on.
+    #[must_use]
+    pub fn tables(&self) -> Vec<(AssetId, String, Option<StepId>)> {
+        let graph = &self.graph_collapsed;
+        brightfield_protocol::panel::outline_order(graph)
+            .into_iter()
+            .filter_map(|id| {
+                let node = graph.nodes.get(&id)?;
+                node.kind
+                    .is_tabular()
+                    .then(|| (id.clone(), node.label.clone(), node.step.clone()))
+            })
+            .collect()
+    }
+
     /// The label the collapsed graph gives `node`, when it has one.
     #[must_use]
     pub fn label_of(&self, node: &AssetId) -> Option<&str> {
