@@ -286,6 +286,81 @@ fn silverman_axis(samples: &[f64]) -> f64 {
     0.9 * scale * n_f.powf(-1.0 / 6.0)
 }
 
+/// Silverman's 2D per-axis rule from **weighted** samples `(position, weight)`
+/// on each axis.
+///
+/// Equivalent to [`silverman_2d_per_axis`] over the expanded samples, to
+/// floating-point rounding, but O(distinct positions): a 2D histogram's bin
+/// counts need not be expanded into one sample per row. `xs` and `ys` carry
+/// the same bins, so their weights must sum to the same total. Returns `0.0`
+/// for an axis that is degenerate, and `(0.0, 0.0)` when the total weight is
+/// below 2.
+pub fn silverman_2d_per_axis_weighted(xs: &[(f64, f64)], ys: &[(f64, f64)]) -> (f64, f64) {
+    let n: f64 = xs.iter().map(|(_, w)| *w).sum();
+    if n < 2.0 {
+        return (0.0, 0.0);
+    }
+    (silverman_axis_weighted(xs), silverman_axis_weighted(ys))
+}
+
+fn silverman_axis_weighted(samples: &[(f64, f64)]) -> f64 {
+    let n: f64 = samples.iter().map(|(_, w)| *w).sum();
+    if n < 2.0 {
+        return 0.0;
+    }
+    let mean = samples.iter().map(|(x, w)| x * w).sum::<f64>() / n;
+    let var = samples
+        .iter()
+        .map(|(x, w)| {
+            let d = x - mean;
+            w * d * d
+        })
+        .sum::<f64>()
+        / (n - 1.0);
+    let sigma = var.sqrt();
+
+    let mut sorted: Vec<(f64, f64)> = samples.iter().copied().filter(|(_, w)| *w > 0.0).collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let iqr = weighted_quantile(&sorted, n, 0.75) - weighted_quantile(&sorted, n, 0.25);
+
+    let scale = if sigma == 0.0 && iqr == 0.0 {
+        return 0.0;
+    } else if sigma == 0.0 {
+        iqr / 1.34
+    } else if iqr == 0.0 {
+        sigma
+    } else {
+        sigma.min(iqr / 1.34)
+    };
+
+    0.9 * scale * n.powf(-1.0 / 6.0)
+}
+
+/// [`quantile`] over the expanded sample list, read off cumulative weights.
+/// `sorted` is ascending by position with positive weights; `n` is their sum.
+fn weighted_quantile(sorted: &[(f64, f64)], n: f64, p: f64) -> f64 {
+    // Value of the k-th (0-based) expanded sample: the first position whose
+    // cumulative weight exceeds k.
+    let at = |k: f64| -> f64 {
+        let mut cum = 0.0;
+        for &(x, w) in sorted {
+            cum += w;
+            if cum > k {
+                return x;
+            }
+        }
+        sorted[sorted.len() - 1].0
+    };
+    let pos = p * (n - 1.0);
+    let lo = pos.floor();
+    let hi = pos.ceil();
+    if lo == hi {
+        return at(lo);
+    }
+    let frac = pos - lo;
+    at(lo) * (1.0 - frac) + at(hi) * frac
+}
+
 /// Linear-interpolation quantile on a pre-sorted ascending slice.
 fn quantile(sorted: &[f64], p: f64) -> f64 {
     let n = sorted.len();
@@ -367,6 +442,40 @@ mod tests {
         // Heavier-weighted left cluster (5 vs 5 here is equal) — total mass split
         // by weight: both clusters present.
         assert!(density[1] > 0.0 && density[9] > 0.0);
+    }
+
+    #[test]
+    fn silverman_2d_weighted_matches_expanded() {
+        // 50 deterministic bins with counts 1-9 on a skewed layout.
+        let mut bins: Vec<(f64, f64, f64)> = Vec::new();
+        for i in 0..50u32 {
+            let x = ((i * 7) % 13) as f64 * 0.5 + (i % 3) as f64;
+            let y = ((i * 11) % 17) as f64 * 1.5 - (i % 5) as f64;
+            let count = (i * 5 % 9 + 1) as f64;
+            bins.push((x, y, count));
+        }
+        let (mut ex, mut ey) = (Vec::new(), Vec::new());
+        for &(x, y, c) in &bins {
+            for _ in 0..(c as usize) {
+                ex.push(x);
+                ey.push(y);
+            }
+        }
+        let wx: Vec<(f64, f64)> = bins.iter().map(|&(x, _, c)| (x, c)).collect();
+        let wy: Vec<(f64, f64)> = bins.iter().map(|&(_, y, c)| (y, c)).collect();
+        let (hx, hy) = silverman_2d_per_axis_weighted(&wx, &wy);
+        let (ex_h, ey_h) = silverman_2d_per_axis(&ex, &ey);
+        assert!(hx > 0.0 && hy > 0.0);
+        assert!((hx - ex_h).abs() <= 1e-12 * ex_h, "x: {hx} vs {ex_h}");
+        assert!((hy - ey_h).abs() <= 1e-12 * ey_h, "y: {hy} vs {ey_h}");
+    }
+
+    #[test]
+    fn silverman_2d_weighted_degenerate_returns_zero() {
+        assert_eq!(
+            silverman_2d_per_axis_weighted(&[(3.0, 1.0)], &[(4.0, 1.0)]),
+            (0.0, 0.0)
+        );
     }
 
     #[test]
