@@ -114,7 +114,7 @@ fn form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEvent {
     // The tables are keyed by number, so the grid stays as narrow as the rail
     // however long their names are.
     let mut named: Vec<&str> = vec![front.as_str()];
-    named.extend(known.iter().map(|(table, _)| *table));
+    named.extend(others.iter().copied());
     egui::Grid::new("append-rows-tables")
         .spacing(egui::vec2(spacing::SPACE_2, spacing::SPACE_1))
         .show(ui, |ui| {
@@ -125,6 +125,15 @@ fn form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEvent {
             }
         });
     ui.add_space(spacing::SPACE_2);
+    // A kept step being corrected knows neither the other tables' columns nor
+    // the table in front's: the columns in front are the appended result's.
+    if known.len() != others.len() {
+        ui.label(text(
+            "The columns of a kept append are not read here.",
+            muted,
+        ));
+        return FormEvent::None;
+    }
     let mut tables: Vec<&[String]> = vec![cx.begin.columns];
     tables.extend(known.iter().map(|(_, columns)| *columns));
     let rows = matching(&tables);
@@ -148,15 +157,6 @@ fn form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEvent {
                 ui.end_row();
             }
         });
-    for table in others
-        .iter()
-        .filter(|table| !known.iter().any(|(k, _)| k == *table))
-    {
-        ui.label(text(
-            &format!("{table}'s columns are not read here."),
-            muted,
-        ));
-    }
     FormEvent::None
 }
 
