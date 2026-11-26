@@ -29,7 +29,6 @@ use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::arrangement::LOCATOR_BAND;
 use brightfield_workbench::{GridLayout, GridSpot, RunState, SavedLayout};
 
 /// Held for the whole of any test that changes the working directory.
@@ -342,34 +341,6 @@ impl Window {
         );
         self.settle();
     }
-
-    /// Every string the next frame hands the painter inside `rect`.
-    fn drawn_text_in(&mut self, rect: egui::Rect) -> Vec<String> {
-        let raw = egui::RawInput {
-            screen_rect: Some(self.screen),
-            ..Default::default()
-        };
-        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
-        let mut text = Vec::new();
-        for clipped in &out.shapes {
-            collect_text_in(&clipped.shape, rect, &mut text);
-        }
-        text
-    }
-}
-
-fn collect_text_in(shape: &egui::epaint::Shape, rect: egui::Rect, into: &mut Vec<String>) {
-    match shape {
-        egui::epaint::Shape::Text(t) if rect.contains(t.pos) => {
-            into.push(t.galley.text().to_string());
-        }
-        egui::epaint::Shape::Vec(shapes) => {
-            for s in shapes {
-                collect_text_in(s, rect, into);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -487,22 +458,25 @@ fn a_protocol_saved_over_a_relative_path_reopens_from_a_third_directory() {
         "the reopened window lists another file's columns"
     );
 
-    // The locator band's file name, off the drawn frame: the crumb that
-    // leads `file › load › table › dashboard`. The title band above draws the
-    // same name as the window's title, so the read is kept to the band's own
-    // rect; and the band paints its right-hand source note before its crumbs,
-    // so the crumb is found by what follows it rather than by position.
-    let band = next
+    // The pane header's crumbs, off the drawn frame: the table the data file
+    // loads into, named after its stem, then the dashboard that reads it. A
+    // Protocol reopened over another file, or over a temporary copy, would
+    // name another table here.
+    let stem = std::path::Path::new(HOUSING_FILE)
+        .file_stem()
+        .expect("the housing file has a stem")
+        .to_string_lossy()
+        .into_owned();
+    let header = next
         .app
-        .region_rect(LOCATOR_BAND)
-        .expect("the locator band drew");
-    let drawn = next.drawn_text_in(band);
-    assert!(
-        drawn
-            .windows(3)
-            .any(|w| w[0] == HOUSING_FILE && w[1] == "\u{203a}" && w[2] == "load"),
-        "the locator band's crumbs do not lead with the saved Protocol's data file, \
-         {HOUSING_FILE}: {drawn:?}"
+        .pane_header()
+        .expect("the canvas drew a pane header");
+    let drawn: Vec<&str> = header.crumbs.iter().map(|(c, _)| c.as_str()).collect();
+    assert_eq!(
+        drawn.first().copied(),
+        Some(stem.as_str()),
+        "the pane header's crumbs do not lead with the table the saved \
+         Protocol's data file, {HOUSING_FILE}, loads into: {drawn:?}"
     );
 }
 

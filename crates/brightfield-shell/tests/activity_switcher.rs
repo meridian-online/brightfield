@@ -10,6 +10,7 @@ use brightfield_keys::{Availability, Need};
 use brightfield_shell::node_activity::{offers, FocusedNode, NodeActivity};
 use brightfield_shell::protocol::{NodeView, SpineRole};
 use brightfield_shell::window::CanvasHolds;
+use brightfield_workbench::arrangement;
 
 /// The data file's table and the chart that reads it, off the canvas it opens
 /// on.
@@ -308,5 +309,273 @@ fn the_chart_chord_as_the_mac_delivers_it_shows_the_chart_and_the_picture_chord_
     assert_eq!(
         win.app.canvas_holds(),
         &CanvasHolds::Dashboard { node: chart, table }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The pane header: the node and the step that made it, the switcher, and the
+// node's kind and size
+// ---------------------------------------------------------------------------
+
+/// The table's label, as the spine names it.
+fn label_of(win: &scenes::Window, node: &str) -> String {
+    win.app
+        .protocol_model()
+        .label_of(&node.to_string())
+        .unwrap_or(node)
+        .to_string()
+}
+
+#[test]
+fn the_pane_header_names_the_node_and_the_step_that_made_it() {
+    let mut win = scenes::data_file();
+    let (table, _) = table_and_chart(&win);
+    win.press("cmd-alt-g");
+    let crumbs = win.app.header_crumbs();
+    assert_eq!(
+        crumbs.len(),
+        2,
+        "the header names a step and a node: {crumbs:?}"
+    );
+    assert_eq!(crumbs[1], label_of(&win, &table), "{crumbs:?}");
+    let drawn = win.app.pane_header().expect("the grid drew a pane header");
+    let labels: Vec<&str> = drawn.crumbs.iter().map(|(c, _)| c.as_str()).collect();
+    assert_eq!(labels, crumbs, "the header drew other crumbs than it names");
+    assert!(
+        drawn.crumbs[0].1.right() < drawn.crumbs[1].1.left(),
+        "the step is not drawn before the node: {:?}",
+        drawn.crumbs
+    );
+}
+
+#[test]
+fn the_header_offers_grid_and_chart_with_their_keys() {
+    let mut win = scenes::data_file();
+    let (choices, selected) = win
+        .app
+        .canvas_header()
+        .activities
+        .expect("the dashboard's header offers its activities");
+    let platform = brightfield_keys::KeyPlatform::host();
+    assert_eq!(
+        choices
+            .iter()
+            .map(|c| (c.label, c.keystroke.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "Grid",
+                Some(brightfield_keys::keys_label("cmd-alt-g", platform))
+            ),
+            (
+                "Chart",
+                Some(brightfield_keys::keys_label("cmd-alt-c", platform))
+            ),
+        ]
+    );
+    assert_eq!(
+        choices[selected].label, "Chart",
+        "the dashboard shows Chart"
+    );
+
+    // A click on Grid, the switcher's first option, performs Grid's command.
+    let switcher = win
+        .app
+        .pane_header()
+        .and_then(|h| h.switcher)
+        .expect("the header drew the switcher");
+    let header = win.app.pane_header().cloned().unwrap();
+    let after_crumbs = header.crumbs.last().map(|(_, r)| r.right()).unwrap();
+    assert!(
+        switcher.left() > after_crumbs,
+        "the switcher is not after the breadcrumb"
+    );
+    win.applied.clear();
+    win.click(egui::pos2(
+        switcher.left() + switcher.width() / 4.0,
+        switcher.center().y,
+    ));
+    assert_eq!(win.applied, [SHOW_GRID]);
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+    let (_, selected) = win.app.canvas_header().activities.unwrap();
+    assert_eq!(selected, 0, "the grid's header does not show Grid");
+
+    // …and Chart, its second, brings the chart back.
+    let switcher = win.app.pane_header().and_then(|h| h.switcher).unwrap();
+    win.applied.clear();
+    win.click(egui::pos2(
+        switcher.right() - switcher.width() / 4.0,
+        switcher.center().y,
+    ));
+    assert_eq!(win.applied, [SHOW_CHART]);
+    assert!(matches!(
+        win.app.canvas_holds(),
+        CanvasHolds::Dashboard { .. }
+    ));
+}
+
+#[test]
+fn an_activity_the_node_cannot_take_is_greyed_with_its_reason() {
+    let mut win = scenes::data_file();
+    let (table, _) = table_and_chart(&win);
+    assert!(win.graph_to_canvas(), "the graph did not take the canvas");
+    let assets: Vec<_> = win
+        .app
+        .spine_rows()
+        .iter()
+        .filter(|r| r.role == SpineRole::Asset)
+        .map(|r| r.rect.center())
+        .collect();
+    let mut other = None;
+    for at in assets {
+        win.click(at);
+        if !win.app.graph_on_canvas() {
+            assert!(win.graph_to_canvas());
+        }
+        if let Some(FocusedNode::Table(node)) = win.app.node_in_focus() {
+            if node != table {
+                other = Some(node);
+                break;
+            }
+        }
+    }
+    let other = other.expect("no asset beside the table could be put in focus");
+    win.press("cmd-alt-g");
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: other,
+            view: NodeView::Grid,
+        }
+    );
+    let sentence = "There is no chart to show for this node yet.";
+    let (choices, _) = win
+        .app
+        .canvas_header()
+        .activities
+        .expect("the grid's header offers its activities");
+    let chart = choices
+        .iter()
+        .find(|c| c.label == "Chart")
+        .expect("a table is offered Chart");
+    assert_eq!(chart.unavailable.as_deref(), Some(sentence));
+
+    // A click on the greyed option performs nothing.
+    let holds = win.app.canvas_holds().clone();
+    let switcher = win.app.pane_header().and_then(|h| h.switcher).unwrap();
+    win.applied.clear();
+    win.click(egui::pos2(
+        switcher.right() - switcher.width() / 4.0,
+        switcher.center().y,
+    ));
+    assert!(win.applied.is_empty(), "{:?}", win.applied);
+    assert_eq!(win.app.canvas_holds(), &holds, "the canvas moved");
+}
+
+#[test]
+fn the_headers_right_end_says_the_nodes_kind_and_size() {
+    let mut win = scenes::data_file();
+    win.press("cmd-alt-g");
+    let rows = win
+        .app
+        .chart_doc()
+        .composed
+        .rows
+        .map(|rows| rows.total)
+        .expect("the data file's rows are counted");
+    let note = win
+        .app
+        .canvas_header()
+        .size_note
+        .expect("the grid's header says the table's size");
+    assert_eq!(
+        note,
+        format!(
+            "table \u{b7} {} rows",
+            brightfield_shell::column_header::thousands(rows)
+        )
+    );
+    let drawn = win.app.pane_header().cloned().expect("the pane header");
+    let at = drawn.size_note.expect("the note was drawn");
+    let switcher = drawn.switcher.expect("the switcher was drawn");
+    assert!(
+        at.left() > switcher.right(),
+        "the note is not at the right end"
+    );
+    let pane = win.app.canvas_panes().panes[0];
+    assert!(
+        (pane.header.right() - at.right()) < 24.0,
+        "the note is not at the header's right end: {at:?} in {:?}",
+        pane.header
+    );
+}
+
+#[test]
+fn the_open_header_is_two_rows() {
+    let win = scenes::data_file();
+    let title = win
+        .app
+        .region_rect(arrangement::TITLE_BAND)
+        .expect("the title band drew");
+    // Nothing is drawn between the title band and the canvas, the rails and
+    // the panes: the band that carried the breadcrumb is gone, and the pane
+    // header carries it.
+    for region in [
+        arrangement::CANVAS,
+        arrangement::NAVIGATOR_RAIL,
+        arrangement::INSPECTOR_RAIL,
+    ] {
+        let rect = win.app.region_rect(region).expect("the region drew");
+        assert!(
+            (rect.top() - title.bottom()).abs() < 1.0,
+            "{region:?} starts at {} below a title band ending at {}",
+            rect.top(),
+            title.bottom()
+        );
+    }
+    assert!(
+        win.app
+            .drawn_regions()
+            .iter()
+            .all(|(id, _)| id.as_str() != "locator-band"),
+        "a locator band was drawn"
+    );
+}
+
+/// The grid's "N of M columns" note keeps off the switcher and the crumbs as
+/// the window narrows, and is left out when there is no room for it.
+#[test]
+fn the_columns_note_never_lands_on_the_switcher_or_the_crumbs() {
+    let mut win = scenes::data_file();
+    win.press("cmd-alt-g");
+    assert_eq!(win.answered, [SHOW_GRID]);
+    let mut noted = 0;
+    for width in [1280.0, 1000.0, 800.0, 700.0, 620.0, 560.0] {
+        win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 820.0));
+        win.settle();
+        let header = win
+            .app
+            .pane_header()
+            .cloned()
+            .expect("the grid drew a pane header");
+        let Some((note, text)) = win.app.canvas_panes().rows_note.clone() else {
+            continue;
+        };
+        noted += 1;
+        let switcher = header.switcher.expect("the grid's header has a switcher");
+        assert!(
+            !note.intersects(switcher),
+            "at {width}: {text:?} at {note:?} lands on the switcher {switcher:?}"
+        );
+        for (crumb, rect) in &header.crumbs {
+            assert!(
+                !note.intersects(*rect),
+                "at {width}: {text:?} at {note:?} lands on the crumb {crumb:?}"
+            );
+        }
+    }
+    assert!(
+        noted > 0,
+        "no width drew the columns note, so this held nothing"
     );
 }

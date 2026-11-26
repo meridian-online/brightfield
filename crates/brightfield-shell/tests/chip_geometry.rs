@@ -175,7 +175,15 @@ fn recognise(rects: &[Boxed]) -> Vec<(egui::Rect, Primitive)> {
             chips.push((r, Primitive::Keycap));
         }
     }
-    chips
+    // A chip never holds another chip: a ringed box with one inside it is the
+    // frame of a control, such as a segmented control's selected option
+    // around its keycap, not a chip of its own.
+    let held = |outer: egui::Rect| {
+        chips
+            .iter()
+            .any(|(inner, _)| !same_rect(*inner, outer) && outer.contains_rect(*inner))
+    };
+    chips.iter().copied().filter(|(r, _)| !held(*r)).collect()
 }
 
 impl Painted {
@@ -377,8 +385,9 @@ const CHIP_SPECIMEN: [&str; 3] = ["Esc", "⌘S", "Space"];
 /// `every_chip_in_every_gallery_specimen_spends_the_named_padding` and says so
 /// in the failure, instead of being discovered as a golden nobody expected to
 /// move. Counts are per frame, and identical in light and dark.
-const CHIP_CENSUS: [(&str, usize, usize); 8] = [
+const CHIP_CENSUS: [(&str, usize, usize); 9] = [
     // (specimen id, pills, keycaps)
+    ("activity-switcher", 0, 3),
     ("key-chip", 0, 3),
     ("key-tip", 0, 1),
     ("menu-item", 0, 4),

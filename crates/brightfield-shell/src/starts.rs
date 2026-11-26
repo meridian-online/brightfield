@@ -284,8 +284,8 @@ pub const EPOCH_AI_MODELS: &str = "epoch-ai-models";
 /// belonging to another source misdescribes the one beside it. An
 /// `Option<FetchedData>` therefore has two states.
 pub struct FetchedData {
-    /// The name the file is written under — and therefore what the locator
-    /// band says, what the one SQL step reads, and (as its stem) what the
+    /// The name the file is written under — and therefore what the
+    /// window names the source by, what the one SQL step reads, and (as its stem) what the
     /// table the Protocol produces is called. See [`crate::one_step`].
     ///
     /// A **name**, not a path: [`dataset_path`] decides the directory, so a
@@ -867,7 +867,7 @@ pub enum Opened {
 /// The name [`CALIFORNIA_HOUSING`]'s file is written under.
 ///
 /// Underscored rather than hyphenated like the start's id, because this is the
-/// name a **reader** meets — in the locator band, in the one SQL step, and as
+/// name a **reader** meets — in the window, in the one SQL step, and as
 /// the table's own name, which [`crate::one_step`] derives from the stem by
 /// mapping a non-alphanumeric byte to `_`. A hyphen would make the file and
 /// the table read differently for no gain.
@@ -1285,7 +1285,7 @@ pub const FETCHED_DIR: &str = "fetched";
 /// for it before fetching: `fetched/v{revision}/{file_name}` under
 /// [`datasets_dir`].
 ///
-/// **A stable path, not a temporary one**: the locator band names a real
+/// **A stable path, not a temporary one**: the window names a real
 /// file, Save writes the Protocol beside it, and the next launch — which
 /// restores this start through
 /// [`SavedLayout::opened`](brightfield_workbench::persist::SavedLayout::opened)

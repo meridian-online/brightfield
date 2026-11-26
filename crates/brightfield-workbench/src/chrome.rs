@@ -326,6 +326,19 @@ const PANE_RADIUS: f32 = radius::NONE;
 /// review, and the reason to expect review to be enough is that no [`Subject`]
 /// field asks for a header — a pane wanting one is already off the contract.
 pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode) -> egui::Ui {
+    pane_frame_drawn(ui, subject, header, mode).0
+}
+
+/// [`pane_frame`], and what its header did this frame: a click on a linked
+/// crumb or on an activity, and where each was drawn.
+///
+/// A pane drawn with `header: false` reports [`HeaderDrawn::default`].
+pub fn pane_frame_drawn(
+    ui: &mut egui::Ui,
+    subject: &Subject,
+    header: bool,
+    mode: Mode,
+) -> (egui::Ui, HeaderDrawn) {
     let sem = semantic(mode.is_dark());
     let outer = ui.max_rect();
 
@@ -333,10 +346,11 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
         .rect_filled(outer, PANE_RADIUS, colour(sem.surfaces.raised));
 
     let mut content = outer;
+    let mut drawn = HeaderDrawn::default();
     if header {
         let band =
             egui::Rect::from_min_size(outer.min, egui::vec2(outer.width(), header_band_height()));
-        header_band(ui, band, subject, mode);
+        drawn = header_band(ui, band, subject, mode);
         content.min.y += band.height();
     }
 
@@ -361,7 +375,7 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     // paint straight over the header band with `ui.painter()`. Shrinking the
     // clip is what turns the doc comment above into a measured fact.
     child.shrink_clip_rect(content);
-    child
+    (child, drawn)
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,18 +1122,44 @@ pub fn module_frame(
     (child, drawn)
 }
 
-/// The pane header: icon, title, dirty marker.
+/// What a pane's header did in one frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HeaderDrawn {
+    /// Each crumb the header drew, by its label and where it landed, most
+    /// general first. Empty when the header drew the title instead.
+    pub crumbs: Vec<(String, egui::Rect)>,
+    /// The linked crumb, where it was drawn and whether it was clicked.
+    pub crumb_link: Option<(egui::Rect, bool)>,
+    /// Where the activity switcher was drawn, when it was.
+    pub switcher: Option<egui::Rect>,
+    /// Each of the switcher's options, by its label and where a pointer takes
+    /// it, left to right.
+    pub options: Vec<(String, egui::Rect)>,
+    /// The verb of the activity clicked this frame.
+    pub activity: Option<Verb>,
+    /// Where the size note was drawn, when it was.
+    pub size_note: Option<egui::Rect>,
+}
+
+/// The pane header: icon, then the breadcrumb (or the title when there is no
+/// breadcrumb), then the activity switcher, and at the right end the size
+/// note beside the dirty marker.
 ///
 /// Private, with exactly one call site. Three hand-written variants of this —
 /// one with a leading space and a separator, one strong inside a frame with a
 /// margin the others lacked, one with a trailing explanatory sentence — is
 /// what the workbench exists to collapse.
-fn header_band(ui: &egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) {
+///
+/// When the header is too narrow for all of it, the switcher gives up label
+/// width first (the design system's own rule), and the size note is dropped
+/// before it would touch the switcher, since the note restates what the
+/// spine already says.
+fn header_band(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> HeaderDrawn {
     let sem = semantic(mode.is_dark());
     let b = control::binding(HEADER_ROW);
-    let painter = ui.painter();
+    let mut drawn = HeaderDrawn::default();
 
-    painter.rect_filled(
+    ui.painter().rect_filled(
         rect,
         radius::outer(PANE_RADIUS, 0.0),
         colour(sem.surfaces.header),
@@ -1128,23 +1168,262 @@ fn header_band(ui: &egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) {
     let mut x = rect.left() + b.pad_x;
     x += icon_slot(ui, rect, x, subject.icon, b.icon, mode);
 
-    painter.text(
-        egui::pos2(x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        &subject.title,
-        ui_font(),
-        colour(sem.text.primary),
-    );
-
+    // The right end: the dirty marker's slot, then the size note left of it.
+    let mut right_edge = rect.right() - b.pad_x;
     if subject.dirty == crate::subject::Dirty::Edited {
-        let r = egui::pos2(rect.right() - b.pad_x - b.icon / 2.0, rect.center().y);
-        painter.circle_filled(r, b.icon / 4.0, colour(sem.borders.focus));
+        let r = egui::pos2(right_edge - b.icon / 2.0, rect.center().y);
+        ui.painter()
+            .circle_filled(r, b.icon / 4.0, colour(sem.borders.focus));
+        right_edge -= b.icon + spacing::ICON_LABEL_GAP;
     }
 
-    painter.line_segment(
+    let options: Vec<meridian_egui::segmented::SegmentedOption<'_>> = subject
+        .activities
+        .iter()
+        .flat_map(|(choices, _)| choices)
+        .map(|choice| {
+            let mut option = meridian_egui::segmented::SegmentedOption::new(choice.label);
+            if let Some(key) = &choice.keystroke {
+                option = option.keystroke(key);
+            }
+            if let Some(reason) = &choice.unavailable {
+                option = option.unavailable(reason);
+            }
+            option
+        })
+        .collect();
+    let switcher_width = subject.activities.as_ref().map(|(_, selected)| {
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("activity-switcher-sizing")
+                .max_rect(rect)
+                .sizing_pass()
+                .invisible()
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        meridian_egui::segmented::segmented(
+            &mut sizing,
+            meridian_egui::segmented::Segmented::new(&options, *selected),
+        )
+        .response
+        .rect
+        .width()
+    });
+
+    if subject.breadcrumb.is_empty() {
+        let galley =
+            ui.painter()
+                .layout_no_wrap(subject.title.clone(), ui_font(), colour(sem.text.primary));
+        let width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            colour(sem.text.primary),
+        );
+        x += width;
+    } else {
+        // The crumbs take what the switcher leaves: it is measured first, in
+        // a pass that paints and senses nothing, and the crumb that would
+        // run into it is cut short with an ellipsis.
+        let limit = right_edge - switcher_width.map_or(0.0, |w| w + spacing::SPACE_4);
+        x = header_crumbs(ui, rect, x, limit, &subject.breadcrumb, mode, &mut drawn);
+    }
+
+    let right = right_edge;
+    let mut switcher_right = x;
+    if let Some((choices, selected)) = &subject.activities {
+        let start = x + spacing::SPACE_4;
+        let room = egui::Rect::from_min_max(
+            egui::pos2(start, rect.top()),
+            egui::pos2(right.max(start), rect.bottom()),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(room)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let response = meridian_egui::segmented::segmented(
+            &mut child,
+            meridian_egui::segmented::Segmented::new(&options, *selected)
+                .accessible_name("Activity"),
+        );
+        let switcher = response.response.rect;
+        switcher_right = switcher.right();
+        drawn.switcher = Some(switcher);
+        // The control interacts each option under its box's id with
+        // `("segmented", index)`; read back, they are the rects a pointer
+        // takes. `the_switchers_options_tile_it_left_to_right` fails if that
+        // scheme moves and these come back empty.
+        drawn.options = choices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, choice)| {
+                let id = response.response.id.with(("segmented", i));
+                ui.ctx()
+                    .read_response(id)
+                    .map(|option| (choice.label.to_string(), option.rect))
+            })
+            .collect();
+        drawn.activity = response
+            .clicked
+            .and_then(|i| choices.get(i))
+            .map(|choice| choice.verb);
+        if let Some((i, at)) = response.pointed_unavailable {
+            if let Some(reason) = choices.get(i).and_then(|c| c.unavailable.as_deref()) {
+                let _ = meridian_egui::popover::Popover::show_reason(
+                    ui.ctx(),
+                    ui.id().with(("activity-reason", i)),
+                    at,
+                    reason,
+                    choices[i].keystroke.as_deref(),
+                );
+            }
+        }
+    }
+
+    if let Some(note) = &subject.size_note {
+        let galley = ui.painter().layout_no_wrap(
+            note.clone(),
+            egui::FontId::monospace(typography::UI_SIZE - 1.0),
+            colour(sem.text.muted),
+        );
+        let size = galley.size();
+        let at = egui::pos2(right - size.x, rect.center().y - size.y / 2.0);
+        if at.x >= switcher_right + spacing::SPACE_4 {
+            ui.painter().galley(at, galley, colour(sem.text.muted));
+            drawn.size_note = Some(egui::Rect::from_min_size(at, size));
+        }
+    }
+
+    ui.painter().line_segment(
         [rect.left_bottom(), rect.right_bottom()],
         egui::Stroke::new(1.0, colour(sem.borders.divider)),
     );
+    drawn
+}
+
+/// The header's breadcrumb, from `x`: each crumb in the secondary ink and the
+/// last in the primary, joined by a muted `›`, with a linked crumb in the
+/// focus ink and underlined while the pointer is over it. Returns where the
+/// trail ends.
+fn header_crumbs(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    mut x: f32,
+    limit: f32,
+    crumbs: &[Crumb],
+    mode: Mode,
+    drawn: &mut HeaderDrawn,
+) -> f32 {
+    let sem = semantic(mode.is_dark());
+    let last = crumbs.len() - 1;
+    let budgets = crumb_budgets(ui, crumbs, limit - x);
+    let mut first = true;
+    for (i, crumb) in crumbs.iter().enumerate() {
+        if i < last && budgets[i] <= 0.0 {
+            continue;
+        }
+        // A crumb with no room for a letter is left out, its separator with
+        // it, rather than drawn as a lone ellipsis.
+        if limit - x < spacing::SPACE_4 * 2.0 {
+            break;
+        }
+        if !first {
+            let sep = ui.painter().layout_no_wrap(
+                "\u{203a}".to_owned(),
+                ui_font(),
+                colour(sem.text.muted),
+            );
+            let width = sep.size().x;
+            x += spacing::ICON_LABEL_GAP;
+            ui.painter().galley(
+                egui::pos2(x, rect.center().y - sep.size().y / 2.0),
+                sep,
+                colour(sem.text.muted),
+            );
+            x += width + spacing::ICON_LABEL_GAP;
+        }
+        let ink = if crumb.link.is_some() {
+            sem.borders.focus
+        } else if i == last {
+            sem.text.primary
+        } else {
+            sem.text.secondary
+        };
+        let room = budgets[i].min(limit - x).max(0.0);
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(crumb.label.clone(), ui_font(), colour(ink));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let galley = ui.painter().layout_job(job);
+        let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
+        let hit = egui::Rect::from_min_size(at, galley.size());
+        if let Some(about) = &crumb.link {
+            let response = ui
+                .interact(
+                    hit,
+                    ui.id().with(("header-crumb-link", i)),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(about);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &crumb.label)
+            });
+            if response.hovered() {
+                ui.painter().line_segment(
+                    [hit.left_bottom(), hit.right_bottom()],
+                    egui::Stroke::new(1.0, colour(ink)),
+                );
+            }
+            drawn.crumb_link = Some((hit, response.clicked()));
+        }
+        x += galley.size().x;
+        ui.painter().galley(at, galley, colour(ink));
+        drawn.crumbs.push((crumb.label.clone(), hit));
+        first = false;
+    }
+    x
+}
+
+/// The width each crumb may take when the trail has `room`: its own width
+/// when all of them fit. When they do not, the general crumbs give way first,
+/// most general first, each down to a letter and its ellipsis, then left out
+/// (a budget of zero), and only then is the last one cut: it names what the
+/// pane shows, and its end may say which version.
+fn crumb_budgets(ui: &egui::Ui, crumbs: &[Crumb], room: f32) -> Vec<f32> {
+    let width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), ui_font(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let sep = width("\u{203a}") + 2.0 * spacing::ICON_LABEL_GAP;
+    let mut budgets: Vec<f32> = crumbs.iter().map(|c| width(&c.label)).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let seps = sep * crumbs.len().saturating_sub(1) as f32;
+    let mut excess = budgets.iter().sum::<f32>() + seps - room;
+    let last = budgets.len() - 1;
+    for budget in &mut budgets[..last] {
+        if excess <= 0.0 {
+            break;
+        }
+        let give = (*budget - spacing::SPACE_4 * 2.0).max(0.0).min(excess);
+        *budget -= give;
+        excess -= give;
+    }
+    // Still too long: leave general crumbs out, most general first, each
+    // taking its separator with it.
+    for budget in &mut budgets[..last] {
+        if excess <= 0.0 {
+            break;
+        }
+        excess -= *budget + sep;
+        *budget = 0.0;
+    }
+    if excess > 0.0 {
+        budgets[last] -= excess;
+    }
+    budgets
 }
 
 /// Reserve an icon's box and return the horizontal advance it consumed.

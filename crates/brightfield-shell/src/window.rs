@@ -69,7 +69,9 @@ use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
+use brightfield_workbench::behavior::NodeHeader;
 use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
+use brightfield_workbench::subject::{ActivityChoice, Crumb};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
@@ -817,14 +819,12 @@ fn window_around(composed: &Composed, page_h: f32) -> (f32, f32) {
 ///   is the split the graph canvas is drawn with — one measure, read from the
 ///   function that performs the split rather than restated as a second number.
 ///   The chart canvas is drawn with no split and carries no such term: each
-///   pane of its group has its own header band, and the locator band above the
-///   canvas already carries the document's name.
+///   pane of its group has its own header band, which names its node.
 fn chrome_budget(surface: Surface) -> (f32, f32) {
     let plan = arrangement::default_arrangement();
     let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
-        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_default(plan.expect_region(arrangement::LEDGER_RAIL));
     if surface == Surface::Graph {
         down += band_extent(plan.expect_region(arrangement::HINT_BAND))
@@ -846,7 +846,6 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
     let across = rail_collapsed(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_collapsed(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
-        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
 }
@@ -1204,7 +1203,7 @@ pub enum CanvasHolds {
     /// node of the Protocol graph with a mosaic spec of its own, not a way of
     /// looking at the table. What the canvas draws for it is the pane group a
     /// generated dashboard composes to; the spine marks the dashboard's asset
-    /// row for it, and the locator band names it as the node.
+    /// row for it, and the pane header names it as the node.
     ///
     /// The table is carried because the canvas draws that table's rows and the
     /// inspector and the `y` fallback describe it — see [`CanvasHolds::node`].
@@ -4129,9 +4128,11 @@ pub struct MeridianApp {
     /// Whether [`Self::apply_rail_defaults`] shut the navigator for panel
     /// tiles, so the next document opens it again.
     rails_shut_for_tiles: bool,
-    /// Where the locator band drew the Protocol's crumb as the way back to
-    /// every panel tile, on the last frame that drew one.
+    /// Where the canvas's pane header drew its linked first crumb, the way
+    /// back to every panel tile or to the model, on the last frame that drew one.
     crumb_link_rect: Option<egui::Rect>,
+    /// What the canvas's pane header drew on the last frame.
+    pane_header: Option<chrome::HeaderDrawn>,
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
@@ -4621,6 +4622,7 @@ impl MeridianApp {
             tiles,
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
+            pane_header: None,
             keyboard_held: false,
             keys_answered: Vec::new(),
             verbs_applied: Vec::new(),
@@ -4838,7 +4840,7 @@ impl MeridianApp {
     ///
     /// Everything that follows the graph reads this and therefore follows the
     /// chip: the bare-key grammar feed, the key-hint band, the status rail's
-    /// choice of which document's panes to report, the locator's drill trail,
+    /// choice of which document's panes to report, the canvas head's counts,
     /// the window title and the title band's flow toggle. That is the point —
     /// the graph on the canvas is the graph on the canvas however it got there,
     /// and a band that answered the old question would be describing the
@@ -5347,7 +5349,7 @@ impl MeridianApp {
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
     /// the places that say what the window holds rather than what state it is
-    /// in — the locator band's last crumb.
+    /// in — the last crumb of a chart's pane header.
     fn subject_title(&self) -> String {
         // The front door replaces the regions, so it has no document subject
         // to name — and the top bar draws this unconditionally. Reaching the
@@ -5360,7 +5362,7 @@ impl MeridianApp {
         }
         if self.tiles.is_some() {
             // The Protocol, and the panel open from its tile when one is: the
-            // crumbs the locator band draws, joined.
+            // crumbs of the open panel's pane header, joined.
             return self.crumb_line().join(" \u{203a} ");
         }
         // A Protocol of the analyst's own files, a folder's model or a Protocol New Protocol made
@@ -5724,39 +5726,15 @@ impl MeridianApp {
         }
     }
 
-    /// Where the document on the canvas came from, for the locator band's
-    /// right-hand note — the spec file's **name**, or `None` for a document
-    /// with no file behind it (a shipped start, an opened data file, an empty
-    /// window).
-    ///
-    /// The name rather than the path, and it is not a shortening for taste: a
-    /// path is where this machine keeps the file, so a window drawn on two
-    /// machines would say two different things and every pixel baseline that
-    /// photographs this band would be a baseline of one developer's home
-    /// directory. The file name is the part the reader wrote.
-    fn document_source(&self) -> Option<String> {
-        // A Protocol's panel is named as its tile names it, without `.yaml`;
-        // its path is the tooltip ([`Self::document_source_about`]).
-        if let Some(file) = self.open_tile_file() {
-            return Some(crate::panel_tiles::panel_name(&file));
-        }
-        self.charts
-            .doc
-            .spec_path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-    }
-
-    /// The breadcrumb the locator band draws: where the subject sits, most
-    /// general first.
+    /// Where the subject sits, most general first: what the window's title
+    /// and the graph canvas's head name it by.
     ///
     /// One arm per [`CanvasHolds`] — a bool cannot tell `View` from `Chart`,
     /// and the two read differently: a view of a node names the file that fed
     /// it, the step, the node and the view (`ProtocolModel::view_crumbs`); a
     /// dashboard names the table's file, step and name, then itself as the
     /// node (`ProtocolModel::dashboard_crumbs`); the graph names itself, and the
-    /// locator band's trailing counts (`Self::locator_counts`) say the rest; a
+    /// graph canvas head's counts (`Self::header_counts`) say the rest; a
     /// chart has no drill state, so its crumb line is the window's title,
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
@@ -5795,23 +5773,122 @@ impl MeridianApp {
         }
     }
 
-    /// The locator band's crumbs, off the model rather than the frame — a
-    /// test hook, for the reason [`Self::spine_rows`] is: proving what the
-    /// band actually painted needs the galleys `crumb_line` fed to
-    /// `locator_band_ui`, not a second call to `crumb_line` compared with
-    /// itself.
-    #[must_use]
-    pub fn locator_crumbs(&self) -> Vec<String> {
-        self.crumb_line()
+    /// The crumbs the canvas's pane header names its node with, most general
+    /// first: the step that made the node, then the node (`rank › ranking`).
+    ///
+    /// A Protocol's panel open from its tile reads the Protocol, then the
+    /// panel; the model's rows open in the grid read the model, then what the
+    /// grid holds. In both the first crumb is the way back, as a link. The
+    /// graph and the tiles draw no pane header, so they have no crumbs here:
+    /// the graph's head names it and [`Self::header_counts`] says the rest.
+    fn header_crumb_line(&self) -> Vec<Crumb> {
+        if let Some(showing) = self.model.as_ref().and_then(|m| m.in_grid.clone()) {
+            return vec![
+                Crumb::new("Model").linked("Back to the model"),
+                Crumb::new(showing),
+            ];
+        }
+        if let Some(tiles) = &self.tiles {
+            let open = tiles.panels().and_then(|panels| {
+                let tile = panels.tiles.get(tiles.selected()?)?;
+                Some(crate::panel_tiles::panel_name(&tile.file))
+            });
+            return match open {
+                Some(panel) => vec![
+                    Crumb::new(format!("Protocol \u{b7} {}", tiles.name()))
+                        .linked("Back to every panel"),
+                    Crumb::new(panel),
+                ],
+                None => Vec::new(),
+            };
+        }
+        let model = &self.protocol.doc.model;
+        let labels = match self.canvas_holds() {
+            CanvasHolds::Graph => Vec::new(),
+            CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. } => model
+                .header_crumbs(node)
+                .unwrap_or_else(|| vec![self.subject_title()]),
+            CanvasHolds::Chart => vec![self.subject_title()],
+        };
+        labels.into_iter().map(Crumb::new).collect()
     }
 
-    /// The locator band's trailing counts, when the graph holds the canvas —
-    /// `None` on a view of a node or a chart, where the band has no count to
-    /// add.
+    /// The labels of the crumbs the canvas's pane header draws — a test hook,
+    /// for the reason [`Self::spine_rows`] is. A test proving what the header
+    /// painted reads the galleys inside [`Self::pane_header`]'s rects.
     #[must_use]
-    pub fn locator_counts(&self) -> Option<String> {
+    pub fn header_crumbs(&self) -> Vec<String> {
+        self.header_crumb_line()
+            .into_iter()
+            .map(|crumb| crumb.label)
+            .collect()
+    }
+
+    /// The graph's own counts, which its head draws at its right end while
+    /// the graph holds the canvas — `None` on a view of a node or a chart,
+    /// whose pane header ends with the node's kind and size instead.
+    #[must_use]
+    pub fn header_counts(&self) -> Option<String> {
         self.graph_on_canvas()
             .then(|| self.protocol.doc.model.graph_counts())
+    }
+
+    /// What the canvas's pane header says of the node on the canvas: its
+    /// crumbs, its activities with the one shown, and its kind and size.
+    #[must_use]
+    pub fn canvas_header(&self) -> NodeHeader {
+        let breadcrumb = self.header_crumb_line();
+        let shown = if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            Some(crate::node_activity::NodeActivity::Model)
+        } else {
+            match self.canvas_holds() {
+                CanvasHolds::View {
+                    view: NodeView::Grid,
+                    ..
+                } => Some(crate::node_activity::NodeActivity::Grid),
+                CanvasHolds::Dashboard { .. } => Some(crate::node_activity::NodeActivity::Chart),
+                CanvasHolds::Graph | CanvasHolds::Chart => None,
+            }
+        };
+        let offers = crate::node_activity::offers(self);
+        let activities = shown
+            .and_then(|shown| offers.iter().position(|offer| offer.activity == shown))
+            .map(|selected| {
+                let choices = offers
+                    .iter()
+                    .map(|offer| ActivityChoice {
+                        label: offer.activity.label(),
+                        verb: Verb::new(offer.verb),
+                        keystroke: activity_keycap(offer.verb),
+                        unavailable: offer.unavailable.clone(),
+                    })
+                    .collect();
+                (choices, selected)
+            });
+        let held_rows = self.charts.doc.composed.rows.map(|rows| rows.total);
+        let model = &self.protocol.doc.model;
+        let size_note = match self.canvas_holds() {
+            CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. }
+                if self.tiles.is_none() && !self.model_behind_grid() =>
+            {
+                model.size_note(node, held_rows)
+            }
+            _ => None,
+        };
+        NodeHeader {
+            breadcrumb,
+            activities,
+            size_note,
+            titled: matches!(self.canvas_holds(), CanvasHolds::Dashboard { .. }),
+        }
+    }
+
+    /// What the canvas's pane header did on the last frame this window drew:
+    /// where each crumb, the switcher and the size note landed. `None` on a
+    /// frame whose canvas drew no node's header (the graph, the tiles).
+    #[must_use]
+    pub fn pane_header(&self) -> Option<&chrome::HeaderDrawn> {
+        self.pane_header.as_ref()
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this
@@ -7212,6 +7289,10 @@ impl MeridianApp {
         // switches, which a frame with the graph or the front door on the
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
+        // …and the canvas's pane header, which a frame with the front door,
+        // the graph or the tiles on the canvas does not draw.
+        self.pane_header = None;
+        self.crumb_link_rect = None;
 
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
@@ -7727,41 +7808,10 @@ impl MeridianApp {
             let asked = self.charts.inspector_inspected.take_asked();
             let inspected = self.inspected_table(asked);
             self.charts.inspector_inspected.set(inspected);
-            let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
-            let counts = self.locator_counts();
-            let source = self.document_source();
-            let source_about = self.document_source_about();
-            // With a Protocol's panel open from its tile, the Protocol's crumb
-            // is the way back to every tile; with the model's rows open in the
-            // grid, the model's crumb is the way back to the model.
-            let crumb_link = self
-                .tiles
-                .as_ref()
-                .is_some_and(|tiles| tiles.selected().is_some())
-                || self.model_behind_grid();
             let mut crumb_back = false;
-            let drawn = Panel::top(panel_id(locator, false))
-                .resizable(false)
-                .exact_size(band_extent(locator))
-                .frame(chrome::region_frame(locator.frame, ui, mode))
-                .show(ui, |ui| {
-                    locator_band_ui(
-                        ui,
-                        &crumbs,
-                        counts.as_deref(),
-                        source.as_deref(),
-                        source_about.as_deref(),
-                        crumb_link,
-                        mode,
-                    )
-                });
-            self.regions.push((locator.id, drawn.response.rect));
-            let link = drawn.inner;
-            self.crumb_link_rect = link.map(|(rect, _)| rect);
-            if link.is_some_and(|(_, clicked)| clicked) {
-                crumb_back = true;
-            }
+            let node_header = self.canvas_header();
+            let graph_counts = self.header_counts();
 
             // The key-hint band belongs to a key grammar, so it is drawn where
             // there is one. The chart projections have no bare-key grammar, and
@@ -7862,7 +7912,7 @@ impl MeridianApp {
                     .selected_column()
                     .map(|column| column.column.clone()),
             };
-            // What the canvas is showing, which is the leaf of the locator
+            // What the canvas is showing, which is the leaf of the crumb line
             // rather than the pane's own kind: each pane of the group below
             // already carries its own title in its own header band, so a head
             // band repeating one of them would name a part and not the whole.
@@ -7871,7 +7921,7 @@ impl MeridianApp {
                 .cloned()
                 .unwrap_or_else(|| self.pane_title_of(graph));
             // What a view of a node is named after: the **table**, not the
-            // locator's leaf. The locator names the document — the file that
+            // crumb line's leaf. That names the document — the file that
             // was opened — and the grid on the canvas is a view of the relation
             // that file loaded into, which is the name the spine's own row
             // carries. Read here, before the borrows below take the documents
@@ -7899,6 +7949,10 @@ impl MeridianApp {
                 ),
             };
             let previewed = preview.is_some() || typed.is_some();
+            // A statement's rows on the statement form are of no node yet, so
+            // the grid's header keeps its title, which names whose rows they
+            // are, rather than the node's crumbs.
+            let grid_typed = typed.is_some();
             if typed.is_none() {
                 self.typed_in_grid = None;
                 self.charts.doc.show_preview(preview, ui.ctx());
@@ -7927,6 +7981,10 @@ impl MeridianApp {
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
             let mut canvas_panes = CanvasPanes::default();
+            let mut head = CanvasHeader {
+                header: &node_header,
+                drawn: None,
+            };
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
             // Any document with no tile column draws its grid as a table
@@ -8278,14 +8336,13 @@ impl MeridianApp {
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
                     // **The chart canvas draws no band of its own.** Each pane
-                    // of the group below carries its own header band, and the
-                    // locator band above the canvas already carries the
-                    // document's name — so a head band here is that name a
+                    // of the group below carries its own header band, which
+                    // names its node — so a head band here would say it a
                     // second time, over panes that have each already said what
                     // they are. It went with the
                     // projection toggle it used to hold: with one projection
                     // declared there is nothing to toggle, and a band whose
-                    // only content repeats the locator is a rule and a fill.
+                    // only content repeats the pane headers is a rule and a fill.
                     //
                     // The graph canvas keeps it. Its occupant is one pane
                     // drawing a whole DAG, not a group of panes with headers,
@@ -8310,7 +8367,7 @@ impl MeridianApp {
                         // looks like.
                         charts.doc.grid_density = None;
                         let (head, body) = chrome::rail_split(ui.max_rect());
-                        canvas_head(ui, head, &canvas_name, mode);
+                        canvas_head(ui, head, &canvas_name, graph_counts.as_deref(), mode);
                         draw_protocol_pane(
                             ui,
                             body,
@@ -8326,7 +8383,14 @@ impl MeridianApp {
                     } else if let Some(label) = &grid_unheld {
                         charts.doc.grid_density = None;
                         canvas_scroll = 0.0;
-                        canvas_panes = draw_unheld_grid_pane(ui, ui.max_rect(), label, mode);
+                        canvas_panes = draw_unheld_grid_pane(
+                            ui,
+                            ui.max_rect(),
+                            label,
+                            &mut head,
+                            &mut requests,
+                            mode,
+                        );
                     } else if canvas_holds.view() == Some(NodeView::Grid) {
                         // **The table's grid, as the canvas.** One pane filling
                         // the canvas body, drawn through the same `pane_frame`
@@ -8354,6 +8418,7 @@ impl MeridianApp {
                             mode,
                             focused,
                             &grid_title,
+                            (!grid_typed).then_some(&mut head),
                             &mut requests,
                             affordances,
                         );
@@ -8515,6 +8580,7 @@ impl MeridianApp {
                                     focused,
                                     canvas_scroll,
                                     split,
+                                    &mut head,
                                     &mut requests,
                                     affordances,
                                 )
@@ -8532,6 +8598,7 @@ impl MeridianApp {
                                     drawn_layout,
                                     grid_here,
                                     ledger_grid_body,
+                                    &mut head,
                                     &mut requests,
                                     affordances,
                                 )
@@ -8563,7 +8630,7 @@ impl MeridianApp {
                             charts.doc.pane_views = None;
                             charts.doc.wheel_taken = false;
                             canvas_scroll = 0.0;
-                            draw_chart_pane(
+                            draw_canvas_chart_pane(
                                 ui,
                                 body,
                                 charts,
@@ -8572,6 +8639,7 @@ impl MeridianApp {
                                 mode,
                                 focused,
                                 &headed,
+                                &mut head,
                                 &mut requests,
                                 affordances,
                             );
@@ -8579,6 +8647,19 @@ impl MeridianApp {
                     }
                 });
             regions.push((canvas.id, drawn.response.rect));
+            let header_drawn = head.drawn;
+            self.crumb_link_rect = header_drawn
+                .as_ref()
+                .and_then(|drawn| drawn.crumb_link)
+                .map(|(rect, _)| rect);
+            if header_drawn
+                .as_ref()
+                .and_then(|drawn| drawn.crumb_link)
+                .is_some_and(|(_, clicked)| clicked)
+            {
+                crumb_back = true;
+            }
+            self.pane_header = header_drawn;
 
             self.regions = regions;
             self.strips = strips;
@@ -12588,6 +12669,10 @@ impl MeridianApp {
         // Read everything the band says before drawing it, so the closure
         // below borrows no more of `self` than the state it writes.
         let title = self.title();
+        // Where the document came from, offered on the name's hover: the
+        // band names the panel or the chart, and its file is what the name
+        // leaves out.
+        let title_about = self.document_source_about();
         let flow = self.protocol.doc.model.flow();
         let theme = match self.mode {
             Mode::Light => "light",
@@ -12696,9 +12781,12 @@ impl MeridianApp {
                 }
                 ui.add_space(spacing::SPACE_4);
             }
-            let name = ui
-                .label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)))
-                .rect;
+            let name = ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
+            let name = match title_about {
+                Some(about) => name.on_hover_text(about),
+                None => name,
+            }
+            .rect;
             // The renderer line is a developer diagnostic — a stranger's first
             // launch should not read "egui · Vello · wgpu 29". It appears only
             // under the devtools flag; the flow toggle is a real affordance and
@@ -12983,6 +13071,22 @@ impl MeridianApp {
         }
         for chip in &self.protocol.doc.canvas_chips {
             controls.push(chrome::NamedControl::labelled(chip.rect, chip.view.label()));
+        }
+        if let Some(header) = &self.pane_header {
+            controls.extend(
+                header
+                    .options
+                    .iter()
+                    .map(|(label, rect)| chrome::NamedControl::labelled(*rect, label)),
+            );
+            let link = header.crumb_link.map(|(rect, _)| rect);
+            controls.extend(
+                header
+                    .crumbs
+                    .iter()
+                    .filter(|(_, rect)| Some(*rect) == link)
+                    .map(|(label, rect)| chrome::NamedControl::labelled(*rect, label)),
+            );
         }
         let doc = &self.charts.doc;
         if let Some(switch) = &doc.grid_layout_switch {
@@ -15670,7 +15774,7 @@ impl MeridianApp {
         }
     }
 
-    /// Which of the locator band's place fields is open for typing — a test hook.
+    /// Which of the title band's place fields is open for typing — a test hook.
     #[must_use]
     pub fn place_field(&self) -> Option<PlaceField> {
         self.place_edit.as_ref().map(|e| e.field)
@@ -17512,8 +17616,9 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Where the locator band drew the Protocol's crumb as a link back to
-    /// every panel tile, on the last frame that drew one — a test hook.
+    /// Where the canvas's pane header drew its linked first crumb, the way back
+    /// to every panel tile or to the model, on the last frame that drew one — a
+    /// test hook.
     #[must_use]
     pub fn crumb_link_rect(&self) -> Option<egui::Rect> {
         self.crumb_link_rect
@@ -17559,11 +17664,22 @@ impl MeridianApp {
         Some(panels.tiles.get(tiles.selected()?)?.file.clone())
     }
 
-    /// What the locator band's source says when it is hovered: the open
-    /// panel's path and kind, the tooltip its tile carries.
-    fn document_source_about(&self) -> Option<String> {
+    /// What the title band's name offers on hover: where the document came
+    /// from. A panel open from its tile names its file; a chart composed from
+    /// a spec file names that file, without its folder, so a picture of the
+    /// window does not depend on the machine that drew it.
+    #[must_use]
+    pub fn document_source_about(&self) -> Option<String> {
         self.open_tile_file()
             .map(|file| crate::panel_tiles::panel_about(&file))
+            .or_else(|| {
+                self.charts
+                    .doc
+                    .spec_path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
     }
 
     /// The panel file of the tile open as the chart document, when one is.
@@ -20692,6 +20808,48 @@ fn draw_chart_pane(
     let _ = behavior.pane_ui(&mut child, tile, &mut key);
 }
 
+/// [`draw_chart_pane`] for the canvas's one chart pane, whose header names
+/// the node on the canvas: `head`'s crumbs, activities and size are folded
+/// into the item's own subject, and what the header did is kept in `head`.
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_chart_pane(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    head: &mut CanvasHeader<'_>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let mut key = PaneKey::new(item);
+    let Some(tile) = ws.tile_of(key) else {
+        return;
+    };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.shrink_clip_rect(body);
+    let mut behavior = PaneChrome::new(
+        &mut charts.doc,
+        &mut charts.items,
+        mode,
+        focused,
+        headed,
+        requests,
+        affordances,
+    )
+    .with_node_header(key, head.header.clone());
+    let _ = behavior.pane_ui(&mut child, tile, &mut key);
+    // The behaviour has already queued an activity the header was asked for.
+    head.drawn = behavior.header_drawn().cloned();
+}
+
 /// The two documents and the workspace the inspector's sections draw from.
 struct InspectorDocs<'a> {
     protocol: &'a mut ProtocolView,
@@ -20818,6 +20976,31 @@ fn draw_inspector_sections(
 /// the same sense, and a group drawn by the shell that seamed differently from
 /// one drawn by the dock would read as two different kinds of pane.
 pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
+
+/// The header the canvas's node pane draws, and what it did once drawn: the
+/// node's crumbs, activities and size going in, the header's clicks and rects
+/// coming out.
+struct CanvasHeader<'a> {
+    /// What the header says of the node.
+    header: &'a NodeHeader,
+    /// What it did, once the pane carrying it has drawn.
+    drawn: Option<chrome::HeaderDrawn>,
+}
+
+impl CanvasHeader<'_> {
+    /// Fold the node's header into `subject`.
+    fn apply(&self, subject: Subject) -> Subject {
+        self.header.apply(subject)
+    }
+
+    /// Keep what the header did, and queue an activity it was asked for.
+    fn keep(&mut self, drawn: chrome::HeaderDrawn, requests: &mut Vec<Request>) {
+        if let Some(verb) = drawn.activity {
+            requests.push(Request::Verb(verb));
+        }
+        self.drawn = Some(drawn);
+    }
+}
 
 /// One pane of the canvas's pane group, as it was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21160,6 +21343,7 @@ fn draw_canvas_pane_group(
     layout: crate::app::GridLayout,
     grid_here: bool,
     ledger_rect: Option<egui::Rect>,
+    head: &mut CanvasHeader<'_>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -21186,7 +21370,9 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
 
-    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_subject = head.apply(map_subject);
+    let (hero_body, hero_head) = pane_body_drawn(ui, map_rect, &map_subject, mode);
+    head.keep(hero_head, requests);
     let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
@@ -21390,6 +21576,7 @@ fn draw_transposed_pane_group(
     focused: Option<PaneKey>,
     scroll: f32,
     split: f32,
+    head: &mut CanvasHeader<'_>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -21406,7 +21593,9 @@ fn draw_transposed_pane_group(
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
-    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_subject = head.apply(map_subject);
+    let (hero_body, hero_head) = pane_body_drawn(ui, map_rect, &map_subject, mode);
+    head.keep(hero_head, requests);
     let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // Framed before the page rather than after it, which is the opposite of
     // the untransposed layout's order and for the same reason: this pane draws
@@ -21543,12 +21732,23 @@ fn draw_row_summaries(
 /// panes, in either arrangement, are drawn through this one call, so a pane
 /// cannot acquire a frame the others do not have.
 fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> egui::Rect {
+    pane_body_drawn(ui, rect, subject, mode).0
+}
+
+/// [`pane_body`], and what the pane's header did.
+fn pane_body_drawn(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    subject: &Subject,
+    mode: Mode,
+) -> (egui::Rect, chrome::HeaderDrawn) {
     let mut pane = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
+    let (body, drawn) = chrome::pane_frame_drawn(&mut pane, subject, true, mode);
+    (body.max_rect(), drawn)
 }
 
 /// **The shelf band, carved out of the head of the hero pane's body**, and the
@@ -21751,20 +21951,29 @@ fn draw_canvas_grid_pane(
     mode: Mode,
     focused: Option<PaneKey>,
     title: &str,
+    head: Option<&mut CanvasHeader<'_>>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> CanvasPanes {
-    let subject = Subject::new(
+    let mut subject = Subject::new(
         title.to_string(),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
-    let mut pane = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    if let Some(head) = head.as_ref() {
+        subject = head.apply(subject);
+    }
+    let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
+    let size_note = drawn.size_note;
+    let header_drawn_right = drawn
+        .switcher
+        .into_iter()
+        .chain(drawn.crumbs.iter().map(|(_, rect)| *rect))
+        .map(|rect| rect.right())
+        .reduce(f32::max);
+    if let Some(head) = head {
+        head.keep(drawn, requests);
+    }
     draw_chart_body(
         ui,
         body,
@@ -21778,17 +21987,23 @@ fn draw_canvas_grid_pane(
         affordances,
     );
     let header = pane_header_of(rect, body);
-    // …and what the grid could not fit, at the trailing end of its own band.
-    // Read off the cells the table drew this frame, exactly as the group's
-    // grid pane reads it.
+    // …and what the grid could not fit, at the trailing end of its own band,
+    // left of the node's size when the header drew one. Read off the cells
+    // the table drew this frame, exactly as the group's grid pane reads it.
+    let mut room = header;
+    if let Some(note) = size_note {
+        room.max.x = note.left();
+    }
+    room.min.x = header_drawn_right.map_or(room.min.x, |right| right + spacing::SPACE_4);
     let rows_note = charts
         .doc
         .grid_drawn()
         .filter(|drawn| drawn.some_column_is_off_screen())
-        .map(|drawn| {
-            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
-            (band_note(ui, header, &text, mode), text)
-        });
+        .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
+        // Left out, as the header leaves out its size note, rather than
+        // drawn over the switcher or the crumbs.
+        .filter(|text| band_note_fits(ui, room, text))
+        .map(|text| (band_note(ui, room, &text, mode), text));
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
@@ -21813,19 +22028,17 @@ fn draw_unheld_grid_pane(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     label: &str,
+    head: &mut CanvasHeader<'_>,
+    requests: &mut Vec<Request>,
     mode: Mode,
 ) -> CanvasPanes {
-    let subject = Subject::new(
+    let subject = head.apply(Subject::new(
         format!("Grid \u{b7} {label}"),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
-    );
-    let mut pane = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    ));
+    let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
+    head.keep(drawn, requests);
     let mut inside = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(body)
@@ -21883,6 +22096,17 @@ fn grid_pane_title(doc: &ChartDoc) -> String {
         Some(typed) => format!("{GRID_PANE_TITLE} \u{b7} {}", typed.step()),
         None => GRID_PANE_TITLE.to_string(),
     }
+}
+
+/// Whether [`band_note`] would draw `text` inside `band`, a `SPACE_4` in from
+/// each end.
+fn band_note_fits(ui: &egui::Ui, band: egui::Rect, text: &str) -> bool {
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), ui_font(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x;
+    width + 2.0 * spacing::SPACE_4 <= band.width()
 }
 
 /// A note at the **trailing end of a pane's header band**: muted, in the
@@ -22352,12 +22576,25 @@ fn draw_chart_body(
     }
 }
 
-/// The **graph** canvas's head band: what is on the canvas at its left, and a
-/// rule under it.
+/// The key an activity's switcher option draws, rendered for this platform:
+/// the verb's first binding, when that binding acts wherever the window's
+/// focus is. Every activity key is global, so a binding that is not would be
+/// a key the header could show while it does not act, and none is drawn.
+fn activity_keycap(verb: &'static str) -> Option<String> {
+    let registry = brightfield_keys::registry();
+    let entry = registry.iter().find(|entry| entry.longname == verb)?;
+    let binding = entry.binding_specs.first()?;
+    (binding.context == brightfield_keys::BindingContext::Global).then(|| {
+        brightfield_keys::keys_label(binding.keystrokes, brightfield_keys::KeyPlatform::host())
+    })
+}
+
+/// The **graph** canvas's head band: what is on the canvas at its left, the
+/// graph's own counts at its right, and a rule under it.
 ///
 /// One caller, and that is the whole of the change this is: the canvas showing
-/// a chart draws no band, because each pane of its group carries its own header
-/// and the locator band above already names the document. The graph canvas is
+/// a chart draws no band, because each pane of its group carries its own
+/// header, which names its node. The graph canvas is
 /// one pane drawing a DAG, so this is the only thing on screen naming what is
 /// on it.
 ///
@@ -22367,7 +22604,7 @@ fn draw_chart_body(
 /// there is nowhere on that surface for one to be drawn —
 /// `the_canvas_declares_one_projection_and_draws_no_head_band` in
 /// `tests/arrangement.rs` reads both halves off a laid-out frame.
-fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
+fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, counts: Option<&str>, mode: Mode) {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(head, radius::NONE, chrome::colour(sem.surfaces.header));
@@ -22382,6 +22619,21 @@ fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
         galley,
         chrome::colour(sem.text.primary),
     );
+    if let Some(counts) = counts {
+        let galley = ui.painter().layout_no_wrap(
+            counts.to_owned(),
+            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
+            chrome::colour(sem.text.muted),
+        );
+        ui.painter().galley(
+            egui::pos2(
+                head.right() - spacing::SPACE_4 - galley.size().x,
+                head.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            chrome::colour(sem.text.muted),
+        );
+    }
     ui.painter().line_segment(
         [head.left_bottom(), head.right_bottom()],
         egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
@@ -22468,111 +22720,6 @@ fn restricted_band_ui(
             });
         });
     asked
-}
-
-/// The locator band: where the subject sits, said as a breadcrumb, and where
-/// the document came from at its right.
-///
-/// The right-hand note is what stops this band repeating the title band on a
-/// window whose subject has no trail below it: a chart has no drill state, so
-/// its crumb line is one entry, and the file it was composed from is the thing
-/// a locator can say that the title cannot.
-///
-/// `counts` draws immediately after the last crumb, in the mono caption face
-/// rather than joined by `\u{203a}`: it is not one more step in the trail, it
-/// is what the trail's one entry — `Protocol` — expands to when there is no
-/// deeper crumb to draw.
-fn locator_band_ui(
-    ui: &egui::Ui,
-    crumbs: &[String],
-    counts: Option<&str>,
-    source: Option<&str>,
-    source_about: Option<&str>,
-    link_first: bool,
-    mode: Mode,
-) -> Option<(egui::Rect, bool)> {
-    let mut link = None;
-    let sem = semantic(mode.is_dark());
-    let rect = ui.max_rect();
-    if let Some(source) = source {
-        let drawn = ui.painter().text(
-            egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            source,
-            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
-            chrome::colour(sem.text.muted),
-        );
-        if let Some(about) = source_about {
-            let _ = ui
-                .interact(drawn, ui.id().with("locator-source"), egui::Sense::hover())
-                .on_hover_text(about);
-        }
-    }
-    let mut x = rect.left() + spacing::SPACE_4;
-    for (i, crumb) in crumbs.iter().enumerate() {
-        if i > 0 {
-            let sep = ui.painter().layout_no_wrap(
-                "\u{203a}".to_owned(),
-                ui_font(),
-                chrome::colour(sem.text.muted),
-            );
-            let width = sep.size().x;
-            ui.painter().galley(
-                egui::pos2(x, rect.center().y - sep.size().y / 2.0),
-                sep,
-                chrome::colour(sem.text.muted),
-            );
-            x += width + spacing::SPACE_3;
-        }
-        let linked = link_first && i == 0;
-        let ink = if linked {
-            sem.borders.focus
-        } else if i + 1 == crumbs.len() {
-            sem.text.primary
-        } else {
-            sem.text.secondary
-        };
-        let galley = ui
-            .painter()
-            .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
-        let width = galley.size().x;
-        let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
-        if linked {
-            // The crumb a reader goes back to: a link, underlined while the
-            // pointer is over it.
-            let hit = egui::Rect::from_min_size(at, galley.size());
-            let response = ui
-                .interact(
-                    hit,
-                    ui.id().with("locator-crumb-link"),
-                    egui::Sense::click(),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Back to every panel");
-            if response.hovered() {
-                ui.painter().line_segment(
-                    [hit.left_bottom(), hit.right_bottom()],
-                    egui::Stroke::new(1.0, chrome::colour(ink)),
-                );
-            }
-            link = Some((hit, response.clicked()));
-        }
-        ui.painter().galley(at, galley, chrome::colour(ink));
-        x += width + spacing::SPACE_3;
-    }
-    if let Some(counts) = counts {
-        let galley = ui.painter().layout_no_wrap(
-            counts.to_owned(),
-            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
-            chrome::colour(sem.text.muted),
-        );
-        ui.painter().galley(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            chrome::colour(sem.text.muted),
-        );
-    }
-    link
 }
 
 /// Where the title band drew the open Protocol's place on the last frame

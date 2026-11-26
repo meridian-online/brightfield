@@ -2173,7 +2173,7 @@ fn clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state() {
 #[test]
 fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
     use brightfield_workbench::arrangement::{
-        LEDGER_RAIL, LOCATOR_BAND, NAVIGATOR_RAIL, STATUS_BAND, TITLE_BAND,
+        LEDGER_RAIL, NAVIGATOR_RAIL, STATUS_BAND, TITLE_BAND,
     };
 
     let dir = TempDir::new("one-place");
@@ -2233,22 +2233,19 @@ fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
         "the one galley reading `not run` is not in the ledger rail: {whole:?}"
     );
 
-    // …and the bands the contract names, each read by its own rect. The title
-    // and locator bands draw on each frame of this window, so a missing rect
-    // is a failure rather than a skip. The status band is an
-    // `Extent::Overlay` and has a rect on a frame it has a line for,
-    // and `StatusDrawn::drawn` is what says whether this was one.
-    for band in [TITLE_BAND, LOCATOR_BAND] {
-        let rect = win
-            .app
-            .region_rect(band)
-            .unwrap_or_else(|| panic!("the {band:?} band drew no rect to read"));
-        let words = win.drawn_text_in(rect);
-        assert!(
-            !words.iter().any(|w| w.contains("not run")),
-            "the {band:?} band drew {words:?}, which carries the run's state"
-        );
-    }
+    // …and the title band, read by its own rect. It draws on each frame of
+    // this window, so a missing rect is a failure rather than a skip. The
+    // status band is an `Extent::Overlay` and has a rect on a frame it has a
+    // line for, and `StatusDrawn::drawn` is what says whether this was one.
+    let rect = win
+        .app
+        .region_rect(TITLE_BAND)
+        .unwrap_or_else(|| panic!("the title band drew no rect to read"));
+    let words = win.drawn_text_in(rect);
+    assert!(
+        !words.iter().any(|w| w.contains("not run")),
+        "the title band drew {words:?}, which carries the run's state"
+    );
     match win.app.region_rect(STATUS_BAND) {
         Some(rect) => {
             let words = win.drawn_text_in(rect);

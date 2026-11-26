@@ -87,12 +87,13 @@ use brightfield_workbench::{
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
     align, button, distribution_bar, icons, key_chip, key_tip, list_row, menu_item, menu_separator,
-    overlay_frame, query_line, ribbon_row, ribbon_tabs, run_status, section, step_mark, step_row,
-    tooltip_for_action, vertical_tab, widgets, Anchor, Bars, Button, DistributionBar, Fold, Gutter,
-    ListRow, MenuItem, MeridianUi, ModalChrome, ModalLayer, Notification, NotificationId,
-    NotificationLayer, Picker, Popover, RibbonRow, RibbonTab, RibbonTabs, RowHeight, RunStatus,
-    Section, Severity, StepEntry, StepMark, StepRow, TabPick, Timeline, Toast, ToastLayer,
-    VerticalTab, Weight, PROMPT_GLYPH,
+    overlay_frame, query_line, ribbon_row, ribbon_tabs, run_status, section,
+    segmented::{segmented, Segmented, SegmentedOption},
+    step_mark, step_row, tooltip_for_action, vertical_tab, widgets, Anchor, Bars, Button,
+    DistributionBar, Fold, Gutter, ListRow, MenuItem, MeridianUi, ModalChrome, ModalLayer,
+    Notification, NotificationId, NotificationLayer, Picker, Popover, RibbonRow, RibbonTab,
+    RibbonTabs, RowHeight, RunStatus, Section, Severity, StepEntry, StepMark, StepRow, TabPick,
+    Timeline, Toast, ToastLayer, VerticalTab, Weight, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -215,6 +216,8 @@ pub enum ProbeRole {
     Unknown,
     /// One item of a menu.
     MenuItem,
+    /// One option of a set of mutually exclusive options.
+    RadioButton,
 }
 
 /// How the gate finds the specimen: role plus label. This is the first gate
@@ -404,6 +407,7 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(SectionDemo::default()),
         Box::new(DistributionBarDemo),
         Box::new(MenuItemDemo::default()),
+        Box::new(ActivitySwitcherDemo::default()),
     ]
 }
 
@@ -1895,6 +1899,66 @@ impl Component for VerticalTabDemo {
         }
         if self.opened {
             ui.label(VERTICAL_TAB_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`ActivitySwitcherDemo`] shows once an activity has
+/// been chosen.
+const ACTIVITY_SWITCHER_EVIDENCE: &str = "activity switched";
+
+/// The accessible name of [`ActivitySwitcherDemo`]'s group.
+const ACTIVITY_SWITCHER_GROUP: &str = "Activity";
+
+/// `segmented`: the pane header's activity switcher, Grid and Chart with
+/// their keys and Model greyed with its reason.
+#[derive(Default)]
+struct ActivitySwitcherDemo {
+    selected: usize,
+    switched: bool,
+}
+
+impl Component for ActivitySwitcherDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "activity-switcher",
+            name: "Activity switcher",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::RadioButton,
+                label: "Chart",
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::ControlMd,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: ACTIVITY_SWITCHER_EVIDENCE,
+            }),
+            solo_size: (320.0, 100.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let options = [
+            SegmentedOption::new("Grid").keystroke("\u{2325}\u{2318}G"),
+            SegmentedOption::new("Chart").keystroke("\u{2325}\u{2318}C"),
+            SegmentedOption::new("Model")
+                .keystroke("\u{2325}\u{2318}M")
+                .unavailable("Relate needs two sources."),
+        ];
+        let drawn = segmented(
+            ui,
+            Segmented::new(&options, self.selected).accessible_name(ACTIVITY_SWITCHER_GROUP),
+        );
+        if let Some(i) = drawn.clicked {
+            self.selected = i;
+            self.switched = true;
+        }
+        if self.switched {
+            ui.label(ACTIVITY_SWITCHER_EVIDENCE);
         }
     }
 }
