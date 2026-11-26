@@ -7,7 +7,7 @@
 use crate::altitude::Altitude;
 use crate::availability::{availability, Situation};
 use crate::fuzzy::fuzzy_score;
-use crate::registry::{ReservedReason, VerbEntry};
+use crate::registry::{BindingContext, ReservedReason, VerbEntry};
 use std::collections::HashMap;
 
 /// How long a use takes to count half as much, in seconds: fourteen days.
@@ -157,6 +157,18 @@ pub struct PaletteCandidate {
     pub score: i32,
 }
 
+/// The key a palette at `altitude` shows beside `verb`: its first binding, less
+/// a Protocol-panel key when the palette is not the Protocol's. Over a grid or
+/// a chart that key is another context's, where it can start something else, as
+/// the Protocol's `shift-a` for Add sources is the grid's for Append rows
+/// (`a_protocol_key_is_not_shown_on_a_palette_away_from_the_protocol`).
+fn shown_key(verb: &VerbEntry, altitude: Altitude) -> Option<&'static str> {
+    verb.binding_specs
+        .iter()
+        .find(|b| altitude == Altitude::Protocol || b.context != BindingContext::Protocol)
+        .map(|b| b.keystrokes)
+}
+
 /// Filter and rank the registry for the palette at `altitude` with `query`.
 ///
 /// Candidate set = verbs applicable at the altitude whose longname or help fuzzy-
@@ -195,7 +207,7 @@ pub fn palette_filter(
             Some(PaletteCandidate {
                 longname: v.longname,
                 help: v.help,
-                primary_key: v.primary_key(),
+                primary_key: shown_key(v, altitude),
                 reserved_reason: v.reserved_reason,
                 enabled: !v.is_reserved() && missing.is_none(),
                 missing,
@@ -239,6 +251,20 @@ fn frequency_of(reg: &[VerbEntry], longname: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::registry::registry;
+
+    #[test]
+    fn a_protocol_key_is_not_shown_on_a_palette_away_from_the_protocol() {
+        let reg = registry();
+        let recency = Frecency::default();
+        let key = |altitude: Altitude| {
+            palette_filter(&reg, altitude, "open-sources-browser", &recency, 0, None)
+                .into_iter()
+                .find(|c| c.longname == "open-sources-browser")
+                .map(|c| c.primary_key)
+        };
+        assert_eq!(key(Altitude::Protocol), Some(Some("shift-a")));
+        assert_eq!(key(Altitude::View), Some(None));
+    }
 
     /// A fixed moment the tests rank at: 2025-11-26 00:00 UTC.
     const NOW: u64 = 1_764_115_200;
