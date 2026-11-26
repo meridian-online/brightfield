@@ -4650,8 +4650,8 @@ impl Item<ProtocolDoc> for OutlinePane {
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
                 // A fold control folds the spine's own list, the one list that
-                // draws it, picking or not: the pick dresses rows by their
-                // tables, which a fold leaves as they are.
+                // draws it. While the spine picks, a family's row is not a
+                // table, so it is muted and its control drawn disabled with it.
                 if style.folds {
                     fold_family = listed
                         .fold_clicked
@@ -4801,9 +4801,9 @@ pub struct SpineListStyle<'a> {
     /// a table for an operation, when each row that is not a table is.
     pub muted: &'a dyn Fn(&SpineRow) -> bool,
     /// Whether a family's row draws its fold control: only where a click on
-    /// it is answered, on the document's own spine. Elsewhere a family's row
-    /// draws no control and no member count, since the step row draws the
-    /// count only as part of the control.
+    /// it is answered, on the document's own spine, where a muted row draws it
+    /// disabled. Elsewhere a family's row draws no control and no member
+    /// count, since the step row draws the count only as part of the control.
     pub folds: bool,
 }
 
