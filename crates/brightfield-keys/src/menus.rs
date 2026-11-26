@@ -76,6 +76,7 @@ pub fn menu_bar() -> Vec<Menu> {
             items: vec![
                 asks("new-protocol"),
                 asks("open"),
+                asks("quick-open"),
                 acts("open-home"),
                 Separator,
                 acts("save-protocol"),

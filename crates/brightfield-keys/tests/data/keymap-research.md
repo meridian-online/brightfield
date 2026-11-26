@@ -63,6 +63,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `show-grid` | `cmd-alt-g` | 4 / 5 / 3 | ⌘⌥ and G for grid, since a bare g is the chart grammar's broadcast: shows the rows of the table or view in focus |
 | `show-chart` | `cmd-alt-c` | 4 / 5 / 3 | ⌘⌥ and C for chart, since a bare c is the chart grammar's and ⌥C the Connect tab: shows the chart that reads the table or view in focus |
 | `relate` | `cmd-alt-m` | 3 / 4 / 3 | ⌘⌥ and M for model, since ⌥M alone is the Model tab: shows the model that relates the Protocol's sources |
+| `quick-open` | `cmd-p` | 4 / 4 / 5 | ⌘P, the quick open of code editors and browsers' address bars: opens any table or view of the Protocol by its DuckDB name, from whatever holds the canvas |
 | `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
 
 ### Navigating the frame — pan, zoom, axis lock, reset
@@ -200,6 +201,7 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | `limit-rows` | `shift-l` | 2 / 4 / 2 | `L` = limit; bare `l` stays the grid's move right, and "Top rows by this column" on a header's menu does the same |
 | `dedupe-rows` | `shift-u` | 2 / 3 / 2 | `U` = unique; bare `u` is undo elsewhere, and "Remove duplicate rows" on a header's menu does the same |
 | `append-rows` | `shift-a` | 2 / 4 / 3 | `A` = append; the tables are picked in the spine next, and "Append rows of other tables" on a header's menu does the same |
+| `join-tables` | `&` | 2 / 4 / 5 | `&` is VisiData's join; it first picks the other table in the spine, and "Join on this column" on a header's menu does the same |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 

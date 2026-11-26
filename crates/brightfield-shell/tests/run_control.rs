@@ -212,14 +212,14 @@ impl Window {
         self.text_in(summary)
     }
 
-    /// The kind column of the spine's step row for [`STEP`].
-    fn step_row_kind(&mut self) -> String {
+    /// The state mark the spine's step row for [`STEP`] drew.
+    fn step_row_mark(&mut self) -> Option<meridian_egui::StepMark> {
         self.frame(Vec::new());
         self.app
             .spine_rows()
             .iter()
             .find(|row| row.role == SpineRole::Step && row.label == STEP)
-            .map(|row| row.kind.clone())
+            .map(|row| row.mark)
             .unwrap_or_else(|| panic!("the spine drew no step row for {STEP}"))
     }
 
@@ -420,8 +420,9 @@ fn taking_run_writes_the_record_where_arc_writes_it() {
         before.iter().any(|t| t.contains("not run")),
         "the strip reads {before:?} before any run"
     );
-    assert!(
-        win.step_row_kind().contains("not run"),
+    assert_eq!(
+        win.step_row_mark(),
+        Some(meridian_egui::StepMark::NotRun),
         "the step row reads a state before any run"
     );
 
@@ -457,10 +458,11 @@ fn taking_run_writes_the_record_where_arc_writes_it() {
         after.iter().all(|t| !t.contains("not run")),
         "after the run the strip still reads not run: {after:?}"
     );
-    let kind = win.step_row_kind();
-    assert!(
-        kind.contains("ok") && !kind.contains("not run"),
-        "after the run the step row reads {kind:?}"
+    let mark = win.step_row_mark();
+    assert_eq!(
+        mark,
+        Some(meridian_egui::StepMark::Ok),
+        "after the run the step row is marked {mark:?}"
     );
 
     for (index, pane) in [(0, "Log"), (1, "Quality")] {
@@ -612,10 +614,11 @@ fn a_second_launch_reads_the_record_the_first_run_wrote() {
             .any(|t| t.contains("last run") && t.contains("success")),
         "a second launch on the same file reads {summary:?}"
     );
-    let kind = second.step_row_kind();
-    assert!(
-        kind.contains("ok") && !kind.contains("not run"),
-        "a second launch's step row reads {kind:?}"
+    let mark = second.step_row_mark();
+    assert_eq!(
+        mark,
+        Some(meridian_egui::StepMark::Ok),
+        "a second launch's step row is marked {mark:?}"
     );
     assert_eq!(
         records(dir.path()).len(),
@@ -744,8 +747,9 @@ fn a_record_whose_steps_are_not_this_protocols_is_not_read_as_its_run() {
             && !summary.iter().any(|t| t.contains("success")),
         "a record of other steps was read as this Protocol's run: the strip reads {summary:?}"
     );
-    assert!(
-        win.step_row_kind().contains("not run"),
+    assert_eq!(
+        win.step_row_mark(),
+        Some(meridian_egui::StepMark::NotRun),
         "a record of other steps set the step row"
     );
 }

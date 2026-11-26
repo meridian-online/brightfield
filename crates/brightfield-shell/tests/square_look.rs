@@ -452,9 +452,8 @@ fn bar_of(row: &SpineRowDrawn) -> egui::Rect {
 /// token's hover fill under the pointer** — the spine's asset rows and the
 /// Outline's column rows, in both modes.
 ///
-/// A row that senses no click, a step, takes no hover fill: the spine draws
-/// it as a readout, and a fill under the pointer would say a click does
-/// something.
+/// The row the canvas holds is the exception at rest: the step row draws it
+/// focused, in the selection wash, which the next test pins.
 #[test]
 fn a_row_of_the_spine_and_the_outline_is_flat_at_rest_and_fills_under_the_pointer() {
     for mode in MODES {
@@ -475,7 +474,7 @@ fn a_row_of_the_spine_and_the_outline_is_flat_at_rest_and_fills_under_the_pointe
             .iter()
             .find(|r| r.role == SpineRole::Column)
             .unwrap_or_else(|| panic!("{mode:?}: the Outline drew no column row"));
-        for row in &rows {
+        for row in rows.iter().filter(|r| r.on_canvas.is_none()) {
             assert!(
                 fills_over(&rest, row.rect).is_empty(),
                 "{mode:?}: {:?} ({:?}) drew a fill at rest: {:?}",
@@ -499,7 +498,10 @@ fn a_row_of_the_spine_and_the_outline_is_flat_at_rest_and_fills_under_the_pointe
                 "{mode:?}: {:?} drew a bar for a pointer, which is not the cursor",
                 target.label
             );
-            for other in rows.iter().filter(|r| r.rect != target.rect) {
+            for other in rows
+                .iter()
+                .filter(|r| r.rect != target.rect && r.on_canvas.is_none())
+            {
                 assert!(
                     fills_over(&under, other.rect).is_empty(),
                     "{mode:?}: {:?} drew a fill with the pointer on {:?}",
@@ -509,16 +511,13 @@ fn a_row_of_the_spine_and_the_outline_is_flat_at_rest_and_fills_under_the_pointe
             }
         }
 
+        // A step row is not a control yet, so a click on it does nothing; the
+        // step row component draws its hover fill all the same.
         let step = rows
             .iter()
             .find(|r| r.role == SpineRole::Step)
             .unwrap_or_else(|| panic!("{mode:?}: the spine drew no step row"));
-        assert!(!step.control, "{mode:?}: the step row senses a click");
-        let under = rail.hover(step.rect.center());
-        assert!(
-            fills_over(&under, step.rect).is_empty(),
-            "{mode:?}: a step row, which no click acts on, drew a hover fill"
-        );
+        assert!(!step.control, "{mode:?}: the step row answers a click");
     }
 }
 
@@ -573,39 +572,37 @@ fn a_picked_row_draws_the_cursor_fill_and_a_three_wide_bar_in_the_focus_ink() {
     }
 }
 
-/// **The spine row the canvas holds carries a 3px bar in the secondary ink and
-/// no fill**, and so does the head row while the canvas holds the graph — the
-/// other place the bar is drawn.
+/// **The spine row the canvas holds is drawn focused**: the selection wash and
+/// its 1px inside rule over the whole row, and no bar in the focus ink, which
+/// is the cursor's. The head row, while the canvas holds the graph, carries a
+/// 3px bar in the secondary ink.
 #[test]
-fn the_row_the_canvas_holds_carries_a_three_wide_bar_in_the_secondary_ink_and_no_fill() {
+fn the_row_the_canvas_holds_is_washed_and_the_head_carries_a_bar_for_the_graph() {
     for mode in MODES {
         let mut rail = Rail::open(mode);
         let secondary = to_color32(rail.ink().text.secondary);
         let focus = to_color32(rail.ink().borders.focus);
+        let washed = to_color32(rail.ink().rows.selected_background);
+        let rule = to_color32(rail.ink().rows.selected_border);
         let rects = rail.at_rest();
         let dashboard = rail.row("dashboard");
-        let bar = dashboard.on_canvas.expect("the canvas holds the dashboard");
-        assert!(
-            same_rect(bar, bar_of(&dashboard)),
-            "{mode:?}: the bar is {bar:?}"
-        );
-        assert!(
-            (bar.width() - 3.0).abs() < 0.01,
-            "{mode:?}: the bar is {} wide",
-            bar.width()
-        );
         assert_eq!(
-            fills_over(&rects, bar),
-            vec![secondary],
-            "{mode:?}: the row the canvas holds draws its bar in the secondary ink"
+            dashboard.on_canvas,
+            Some(dashboard.rect),
+            "{mode:?}: the canvas holds the dashboard"
+        );
+        let wash: Vec<&RectShape> = rects
+            .iter()
+            .filter(|r| same_rect(r.rect, dashboard.rect))
+            .collect();
+        assert!(
+            wash.iter()
+                .any(|r| r.fill == washed && r.stroke.color == rule && r.stroke.width == 1.0),
+            "{mode:?}: the row the canvas holds is not in the selection wash: {wash:?}"
         );
         assert!(
-            fills_over(&rects, dashboard.rect).is_empty(),
-            "{mode:?}: the row the canvas holds draws a fill at rest"
-        );
-        assert!(
-            !fills_over(&rects, bar).contains(&focus),
-            "{mode:?}: the bar is the picked ink"
+            !fills_over(&rects, bar_of(&dashboard)).contains(&focus),
+            "{mode:?}: the row the canvas holds draws the cursor's bar"
         );
 
         let chip = rail

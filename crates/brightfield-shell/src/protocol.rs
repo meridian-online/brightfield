@@ -917,8 +917,10 @@ pub struct Spine {
 pub struct SpineRow {
     /// What the row is called — an asset's label, a step's name, a view's word.
     pub label: String,
-    /// The text at the row's trailing end: `file`, `table`, `dashboard`,
-    /// `sql · not run`, `view`.
+    /// What the row is, in words: `file`, `table`, `dashboard`,
+    /// `sql · not run`, `view`. The list draws [`Self::output`] at the row's
+    /// trailing end and the state as a mark, so this is the model's account
+    /// of the row rather than text the list draws.
     pub kind: String,
     /// How far the row is indented: `0` for an asset or a step, `1` for a view
     /// of the asset above it.
@@ -1000,7 +1002,7 @@ fn rows_output(n: u64) -> String {
 
 /// Fill in the gutter's lanes for `rows`, the spine of `graph`.
 ///
-/// Each asset row and each step row is a node. A step row stands above the
+/// Each asset row, step row and the model step's row is a node. A step row stands above the
 /// asset it makes, so an edge runs from each asset to the step row of an asset
 /// made from it, and from each step row down to its asset; an asset with no
 /// step row of its own is reached directly.
@@ -1029,7 +1031,13 @@ fn fill_lanes(graph: &AssetGraph, rows: &mut [SpineRow]) {
     let nodes: Vec<Option<usize>> = rows
         .iter()
         .enumerate()
-        .map(|(at, row)| matches!(row.role, SpineRole::Asset | SpineRole::Step).then_some(at))
+        .map(|(at, row)| {
+            matches!(
+                row.role,
+                SpineRole::Asset | SpineRole::Step | SpineRole::Model
+            )
+            .then_some(at)
+        })
         .collect();
     for (row, lanes) in rows
         .iter_mut()
@@ -1087,7 +1095,7 @@ struct SpineUnit {
 
 /// The model step's row: the joins the model makes, counted.
 pub(crate) fn model_step_row(joins: usize) -> SpineRow {
-    SpineRow::plain(
+    let mut row = SpineRow::plain(
         MODEL_STEP.to_string(),
         format!("model \u{b7} {}", counted(joins, "join")),
         0,
@@ -1099,7 +1107,9 @@ pub(crate) fn model_step_row(joins: usize) -> SpineRow {
         None,
         None,
         false,
-    )
+    );
+    row.output = Some(counted(joins, "join"));
+    row
 }
 
 /// The heading over the sources with no join: how many there are.
@@ -2492,8 +2502,13 @@ impl ProtocolModel {
                     struck,
                 );
                 step_row.state = Some(state);
-                step_row.output =
-                    (state == SpineState::Ok && made > 0).then(|| counted(made, "table"));
+                // A step made from typed SQL says so where a step that ran says
+                // what it made, since its mark alone reads as any step not run.
+                step_row.output = if typed.is_some() {
+                    Some(NOT_RECORDED.to_string())
+                } else {
+                    (state == SpineState::Ok && made > 0).then(|| counted(made, "table"))
+                };
                 step_row.timing = timings.get(step).cloned();
                 rows.push(step_row);
             }
@@ -2745,6 +2760,26 @@ impl ProtocolModel {
     #[must_use]
     pub fn is_viewable(&self, node: &AssetId) -> bool {
         self.table.is_some() && viewable_nodes(&self.graph_collapsed).any(|id| id == node)
+    }
+
+    /// **Every table and view of the Protocol**, for quick open: each node
+    /// whose content is rows, in the outline's order, with its DuckDB name
+    /// (the node's label) and the step that produces it.
+    ///
+    /// Read off the collapsed graph, the one the spine and the canvas draw, so
+    /// a node quick open finds is a node the selection can land on.
+    #[must_use]
+    pub fn tables(&self) -> Vec<(AssetId, String, Option<StepId>)> {
+        let graph = &self.graph_collapsed;
+        brightfield_protocol::panel::outline_order(graph)
+            .into_iter()
+            .filter_map(|id| {
+                let node = graph.nodes.get(&id)?;
+                node.kind
+                    .is_tabular()
+                    .then(|| (id.clone(), node.label.clone(), node.step.clone()))
+            })
+            .collect()
     }
 
     /// The label the collapsed graph gives `node`, when it has one.
@@ -3910,15 +3945,28 @@ pub struct CanvasChipDrawn {
 pub struct SpineRowDrawn {
     /// What the row said at its leading end.
     pub label: String,
-    /// What it said at its trailing end — empty on a caption row, which is one
-    /// string across the row, on a column row of the open list that drew a
+    /// What it said at its trailing end — on a spine row, what it produced
+    /// (its [`SpineRow::output`]), and empty where it drew no output; empty on
+    /// a caption row, which is one string across the row, on a column row of the open list that drew a
     /// rug there in its place ([`Self::rug`]), and on a column row that drew
     /// the column verbs there ([`ProtocolDoc::outline_chips`]).
     pub kind: String,
     /// How far it was indented.
     pub depth: u8,
-    /// The marker it drew.
+    /// The existence marker it drew: an Outline row's. A spine row drawn as a
+    /// step row draws [`Self::mark`] in its place and records
+    /// [`SpineMarker::None`] here.
     pub marker: SpineMarker,
+    /// The state mark a spine row drew on its lane of the gutter. `None` on a
+    /// caption, a view and a column, which draw no mark.
+    pub mark: Option<meridian_egui::StepMark>,
+    /// The duration a step row drew beside its timeline bar. `None` on a
+    /// table, on a step its record did not measure, and on a step whose row
+    /// gave up its timeline column.
+    pub duration: Option<String>,
+    /// Where the row's fold control was drawn, on the row of a parameterised
+    /// family. A click there folds or unfolds the family.
+    pub fold_rect: Option<egui::Rect>,
     /// Which band it belongs to.
     pub role: SpineRole,
     /// The whole row.
@@ -3927,34 +3975,38 @@ pub struct SpineRowDrawn {
     /// how wide the text was, which is how a caption too long for the rail is
     /// caught rather than cropped quietly by the clip rect.
     pub name_rect: egui::Rect,
-    /// The rect the trailing text occupied, `None` on a row with no trailing
-    /// text.
+    /// The rect the trailing text occupied: on a column row of the Outline,
+    /// its type. `None` on a row with no trailing text, and on a spine row,
+    /// whose output the step row places and does not report.
     pub kind_rect: Option<egui::Rect>,
     /// The rug the row drew at its trailing end in place of its type — a
     /// numeric column's row while the Outline lists a channel's columns. `None`
     /// on a column row that kept its type and on the rows that list no column,
     /// which state no spread.
     pub rug: Option<RugDrawn>,
-    /// The bar drawn at the leading edge of the one row whose content the
-    /// canvas holds, in the secondary ink — or, on a row that is also picked,
-    /// the picked bar in the focus ink. `None` on a row the canvas does not
-    /// hold, a picked one included: the bar a picked row draws is not this fact.
+    /// Where the row was marked as the one whose content the canvas holds: on
+    /// a spine row, the whole row, which the step row draws focused, in its
+    /// selection wash; on the head row, the bar at its leading edge in the
+    /// secondary ink. `None` on a row the canvas does not hold, one under the
+    /// cursor included: the cursor is not this fact.
     pub on_canvas: Option<egui::Rect>,
-    /// Whether this row was drawn picked — the cursor fill and its bar. Named
-    /// for the wash it once drew.
+    /// Whether this row was drawn under the cursor, where the keys act: the
+    /// cursor fill and its bar. Named for the wash it once drew.
     pub washed: bool,
     /// The **graph chip** at the trailing end, on the spine's head row and no
     /// other. `None` everywhere else, and on a head row drawn without one.
     pub chip: Option<GraphChipDrawn>,
-    /// Whether the row is a control — it senses a click, and [`Self::label`]
-    /// is its name — rather than a readout. Read off the same sense the row
-    /// was allocated with, so the record cannot call a readout a control.
+    /// Whether the row is a control — a click on it acts, and [`Self::label`]
+    /// is its name — rather than a readout. On a spine row it is the rule the
+    /// click was answered by; elsewhere, the sense the row was allocated with.
     pub control: bool,
-    /// Whether the row was drawn struck through, its name in the secondary
-    /// ink: a step removed and not yet saved, and what it makes.
+    /// Whether the row was drawn struck through: a step removed and not yet
+    /// saved, and what it makes. Only a spine row is struck. Its name keeps the
+    /// step row's own ink, primary for a step and secondary for a table, and
+    /// the rule alone marks it as going.
     pub struck: bool,
-    /// Whether the row's name was drawn in the muted ink: a row that is not a
-    /// table, while the spine picks a table for an operation.
+    /// Whether the row was drawn faded: while the spine picks a table for an
+    /// operation, a row that is not a table and a table the pick dims.
     pub muted: bool,
 }
 
@@ -4124,8 +4176,13 @@ pub struct SpinePickRows {
 /// What the row of the table in front trails while the spine picks.
 pub const IN_FRONT: &str = "in front";
 
-/// What the row of a table added to an operation's list trails, ahead of what
-/// it has in common with the table in front.
+/// What the row of a table added to an operation's list trails in place of
+/// what it has in common with the table in front.
+///
+/// The word alone, because it is what tells an added row from the row under
+/// the cursor, which is drawn selected too, and at the list's width a step row
+/// gives up an output longer than a word or two. What the table has in common
+/// with the one in front was on its row before it was added.
 pub const ADDED: &str = "added";
 
 impl SpinePickRows {
@@ -4139,7 +4196,7 @@ impl SpinePickRows {
     /// Dress `row`, which stands for `table`, for the pick.
     fn dress(&self, row: &mut SpineRow, table: &str) {
         if table.eq_ignore_ascii_case(&self.in_front) {
-            row.kind = IN_FRONT.to_string();
+            row.output = Some(IN_FRONT.to_string());
             row.selected = false;
             return;
         }
@@ -4148,11 +4205,10 @@ impl SpinePickRows {
         };
         let added = self.added.contains(name);
         row.selected = added || self.cursor.as_ref() == Some(name);
-        row.kind = match (added, trail) {
-            (true, Some(trail)) => format!("{ADDED} \u{b7} {trail}"),
-            (true, None) => ADDED.to_string(),
-            (false, Some(trail)) => trail.clone(),
-            (false, None) => String::new(),
+        row.output = if added {
+            Some(ADDED.to_string())
+        } else {
+            trail.clone()
         };
     }
 }
@@ -4561,6 +4617,7 @@ impl Item<ProtocolDoc> for OutlinePane {
             .cloned()
             .zip(doc.model.table().cloned());
         let mut graph_picked = false;
+        let mut fold_family: Option<AssetId> = None;
         // The list a shelf cell opens takes the columns' place while it is open.
         // It is taken out of the model for the frame, because drawing it moves
         // its cursor under a pointer moving over a row and on a click.
@@ -4617,9 +4674,20 @@ impl Item<ProtocolDoc> for OutlinePane {
                             })
                         })
                     },
+                    folds: overridden.is_none(),
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
+                // A fold control folds the spine's own list, the one list that
+                // draws it. While the spine picks, a family's row is not a
+                // table, so it is drawn disabled and its control with it.
+                if style.folds {
+                    fold_family = listed
+                        .fold_clicked
+                        .and_then(|i| spine.rows.get(i))
+                        .and_then(|row| row.fold.as_ref())
+                        .map(|fold| fold.family.clone());
+                }
                 drawn = listed.rows;
                 curves = listed.curves;
                 if let Some(pick) = &picking {
@@ -4724,6 +4792,10 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.graph_pick = true;
             cx.request_repaint();
         }
+        if let Some(family) = fold_family {
+            doc.model.toggle_spine_fold(&family);
+            cx.request_repaint();
+        }
     }
 }
 
@@ -4735,6 +4807,9 @@ pub struct SpineListDrawn {
     pub curves: Vec<SpineCurveDrawn>,
     /// The index, into the `Spine::rows` passed in, of the row clicked.
     pub clicked: Option<usize>,
+    /// The index, into the `Spine::rows` passed in, of the row whose fold
+    /// control was clicked.
+    pub fold_clicked: Option<usize>,
     /// The head row's chip was clicked.
     pub graph_picked: bool,
 }
@@ -4749,11 +4824,18 @@ pub struct SpineListStyle<'a> {
     pub chip_live: bool,
     /// The on-canvas bar, per row.
     pub shows: &'a dyn Fn(&SpineRow) -> bool,
-    /// Which rows are controls; a row that is not senses hover only.
+    /// Which rows are controls: a click on one is answered, and a click on
+    /// any other row is ignored.
     pub senses_click: &'a dyn Fn(&SpineRow) -> bool,
-    /// Which rows are named in the muted ink: none, but while the spine picks
-    /// a table for an operation, when each row that is not a table is.
+    /// Which rows are drawn faded: none, but while the spine picks a table for
+    /// an operation, each row that is not a table and each table the pick
+    /// dims. A faded row that is not a control is drawn disabled.
     pub muted: &'a dyn Fn(&SpineRow) -> bool,
+    /// Whether a family's row draws its fold control: only where a click on
+    /// it is answered, on the document's own spine, where a muted row draws it
+    /// disabled. Elsewhere a family's row draws no control and no member
+    /// count, since the step row draws the count only as part of the control.
+    pub folds: bool,
 }
 
 /// The rule the outline pane uses for which spine rows are controls: an asset
@@ -4794,6 +4876,22 @@ pub(crate) fn spine_list_ui(
     let mut curves: Vec<SpineCurveDrawn> = Vec::with_capacity(routes.len());
     let mut rows: Vec<SpineRowDrawn> = Vec::with_capacity(spine.rows.len() + 1);
     let mut clicked = None;
+    let mut fold_clicked = None;
+    // Every row's gutter is one width: as many lanes as the widest row uses.
+    let step_lanes = spine
+        .rows
+        .iter()
+        .flat_map(|row| {
+            let l = &row.lanes;
+            l.node
+                .iter()
+                .chain(&l.through)
+                .chain(&l.from_above)
+                .chain(&l.to_below)
+                .map(|lane| lane.saturating_add(1))
+        })
+        .max()
+        .unwrap_or(0);
     let (record, graph_picked) =
         spine_head_row(ui, style.caption, style.holds_graph, style.chip_live, mode);
     rows.push(record);
@@ -4805,17 +4903,30 @@ pub(crate) fn spine_list_ui(
             rows.push(record);
             continue;
         }
-        let (record, response) = spine_row(
+        let folded;
+        let row = if style.folds || row.fold.is_none() {
+            row
+        } else {
+            folded = SpineRow {
+                fold: None,
+                ..row.clone()
+            };
+            &folded
+        };
+        let (record, clicks) = spine_row(
             ui,
             row,
             (style.shows)(row),
             ((style.senses_click)(row), (style.muted)(row)),
-            gutter,
+            (gutter, step_lanes),
             mode,
         );
         rows.push(record);
-        if response.clicked() {
+        if clicks.row {
             clicked = Some(i);
+        }
+        if clicks.fold {
+            fold_clicked = Some(i);
         }
     }
     for &(from, to, lane) in &routes {
@@ -4823,7 +4934,6 @@ pub(crate) fn spine_list_ui(
             ui.painter(),
             (&rows[first + from], &rows[first + to]),
             (lane, lane_width),
-            gutter,
             mode,
         ));
     }
@@ -4831,6 +4941,7 @@ pub(crate) fn spine_list_ui(
         rows,
         curves,
         clicked,
+        fold_clicked,
         graph_picked,
     }
 }
@@ -4843,6 +4954,9 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
         kind: String::new(),
         depth: 0,
         marker: SpineMarker::None,
+        mark: None,
+        duration: None,
+        fold_rect: None,
         role: SpineRole::Caption,
         rect: shown.heading,
         name_rect: shown.heading_name,
@@ -4861,6 +4975,9 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
             kind: row.kind.clone().unwrap_or_default(),
             depth: 1,
             marker: SpineMarker::None,
+            mark: None,
+            duration: None,
+            fold_rect: None,
             role: SpineRole::Column,
             rect: row.rect,
             name_rect: row.name_rect,
@@ -4913,6 +5030,9 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         kind: String::new(),
         depth: 0,
         marker: SpineMarker::None,
+        mark: None,
+        duration: None,
+        fold_rect: None,
         role: SpineRole::Caption,
         rect,
         name_rect,
@@ -5028,6 +5148,9 @@ fn spine_head_row(
             kind: String::new(),
             depth: 0,
             marker: SpineMarker::None,
+            mark: None,
+            duration: None,
+            fold_rect: None,
             role: SpineRole::Caption,
             rect,
             name_rect,
@@ -5058,178 +5181,283 @@ const GRAPH_CHIP: &str = "graph";
 pub const GRAPH_CHIP_HINT: &str =
     "Switch the canvas between the Protocol's graph and the view it held";
 
-/// One **spine row**: the marker, the name, and the kind at the trailing end —
-/// plus, on the one row whose content the canvas holds, the bar at its leading
-/// edge.
+/// One **spine row**, drawn by the design system's step row
+/// ([`meridian_egui::step_row()`]): the graph's edges in its gutter with the
+/// row's state mark on its lane, an optional fold control, the name, what the
+/// row produced, and for a step its timeline bar and duration.
 ///
-/// # The two marks
+/// # The two marks of place
 ///
-/// `on_canvas` and [`SpineRow::selected`] are two different facts and are drawn
-/// by two different marks, deliberately. A picked row takes the cursor fill and
-/// a bar in [`semantic()`]'s focus ink, and says *this is what you picked*; the
-/// row the canvas holds keeps a bar of the same width in the secondary ink, with
-/// no fill, and says *this is what is on the canvas*. A reader who has picked a
-/// column while looking at the dashboard is being told two things at once, and
-/// one treatment could only tell them one. A row that is both draws as picked —
-/// see [`paint_row_marks`].
+/// The row the canvas holds is the step row's *focused* row, its selection
+/// wash; [`SpineRow::selected`] is its *cursor*, where the keys act. They are
+/// two facts drawn by two marks, so a reader who has picked a row while the
+/// canvas shows another is told both, and a row that is both carries both.
 ///
-/// # Why the marker is not the outline's status dot
+/// # What a row's mark says
 ///
-/// [`outline_row`] tints its dot by the producing step's status. Here the run
-/// state is spelled in words at the trailing end of the step's own row, so the
-/// marker answers the other question — whether the thing exists — and answers
-/// it in shape rather than in colour: filled for a thing that is there, hollow
-/// for one that is not, and the grid foot's own dot, in the primary ink, for
-/// one typed and in no file yet. See [`SpineMarker`].
+/// A step's mark is its [`SpineState`]. A table, a family tile and the model
+/// step have no run state of their own, so theirs reads their existence
+/// marker: a thing that is there is ok, and one that is not, or is in no file
+/// yet, is not run. A step made from typed SQL says `not recorded` where a step
+/// that ran says what it made, since its mark alone reads as any step not run.
+///
+/// # What Brightfield adds over the component
+///
+/// - A row that is not a control ignores its click, for the reason a step row
+///   was a readout before: no gesture acts on a step yet.
+/// - A row the spine mutes while it picks a table is drawn disabled, so the
+///   tables are what the eye lands on.
+/// - A step removed and not yet saved has a rule drawn through its name, in
+///   the name's ink. The step row has no secondary ink for a step's name, so
+///   the rule alone marks it as going.
+/// - The join curves stay Brightfield's, in `gutter` of room left of the row.
 fn spine_row(
     ui: &mut egui::Ui,
     row: &SpineRow,
     on_canvas: bool,
     (senses_click, muted): (bool, bool),
-    gutter: f32,
+    (gutter, lanes): (f32, u8),
     mode: Mode,
-) -> (SpineRowDrawn, egui::Response) {
-    let sem = semantic(mode.is_dark());
-    let b = control::binding(spacing::ROW_DENSE);
-    // A step row and a caption row are readouts rather than controls: no
-    // gesture acts on a step yet, and a row that senses a click it does not
-    // answer is a control that appears broken.
-    let sense = if senses_click {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
+) -> (SpineRowDrawn, SpineRowClicks) {
+    use meridian_egui::{Fold, Gutter, StepEntry, StepRow, Timeline};
+
+    let entry = match row.role {
+        SpineRole::Step | SpineRole::Model => StepEntry::Step,
+        _ => StepEntry::Table,
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
-    let painter = ui.painter();
-    // The hover fill is a row's answer to a pointer that could act on it, so
-    // only a row that senses a click draws one; a readout row stays flat under
-    // the pointer, for the reason its sense is `hover`.
-    let bar = paint_row_marks(
-        painter,
-        rect,
-        RowMarks {
-            picked: row.selected,
-            hovered: sense.senses_click() && response.hovered(),
-            on_canvas,
+    let mark = row
+        .state
+        .map_or_else(|| marker_mark(row.marker), spine_state_mark);
+    let node = row.lanes.node.filter(|_| row.role != SpineRole::View);
+    let fold = row.fold.as_ref().map(|f| {
+        if f.folded {
+            Fold::Folded { members: f.members }
+        } else {
+            Fold::Unfolded
+        }
+    });
+    let output = row.output.as_deref();
+    let duration = row.timing.as_ref().map(|t| t.duration.as_str());
+    let config = |gutter_lanes| {
+        let mut config = StepRow::new(
+            entry,
+            Gutter {
+                lanes: gutter_lanes,
+                node,
+                through: &row.lanes.through,
+                from_above: &row.lanes.from_above,
+                to_below: &row.lanes.to_below,
+            },
+            mark,
+            &row.label,
+        )
+        .focused(on_canvas)
+        .cursor(row.selected);
+        if let Some(output) = output {
+            config = config.output(output);
+        }
+        if let (Some(timing), Some(duration)) = (row.timing.as_ref(), duration) {
+            // A step whose record gives it no start draws its duration and no
+            // bar: the component draws no bar for a NaN span.
+            let (start, end) = timing.span.unwrap_or((f32::NAN, f32::NAN));
+            config = config.timeline(Timeline { start, end }, duration);
+        }
+        if let Some(fold) = fold {
+            config = config.fold(fold);
+        }
+        config
+    };
+
+    let drawn = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if gutter > 0.0 {
+                ui.add_space(gutter);
+            }
+            // A muted row that answers no click is disabled, its fold control
+            // with it. A muted row that does answer one (a candidate the pick
+            // dims, which a click still puts the cursor on to say why) is
+            // drawn as faded as a disabled one, and stays live.
+            ui.scope(|ui| {
+                if muted && !senses_click {
+                    ui.disable();
+                } else if muted {
+                    ui.multiply_opacity(ui.visuals().disabled_alpha());
+                }
+                meridian_egui::step_row(ui, config(lanes))
+            })
+            .inner
+        })
+        .inner;
+    let rect = drawn.response.rect;
+    let fold_rect = fold.and_then(|_| {
+        ui.ctx()
+            .read_response(drawn.response.id.with("fold"))
+            .map(|r| r.rect)
+    });
+    let (
+        name_rect,
+        Kept {
+            timeline_kept,
+            output_kept,
         },
-        mode,
-    );
-    // The bar the record carries is the on-canvas fact, so a picked row that
-    // is not on the canvas draws a bar and reports none.
-    let on_canvas = if on_canvas { bar } else { None };
+    ) = step_row_name_rect(ui, rect, row, lanes, fold_rect);
 
-    // The marker's leading edge sits `SPACE_4` in, past the gutter the join
-    // curves take when there are any, so its centre is one radius past that —
-    // and the name clears the whole marker whether one was drawn or not, so a
-    // view row and the node above it hang off one ladder.
-    let marker_left = spine_marker_left(rect, gutter);
-    let centre = egui::pos2(marker_left + SPINE_MARKER_RADIUS, rect.center().y);
-    match row.marker {
-        SpineMarker::Filled => {
-            painter.circle_filled(
-                centre,
-                SPINE_MARKER_RADIUS,
-                chrome::colour(sem.text.secondary),
-            );
-        }
-        SpineMarker::Hollow => {
-            painter.circle_stroke(
-                centre,
-                SPINE_MARKER_RADIUS,
-                egui::Stroke::new(1.0, chrome::colour(sem.text.muted)),
-            );
-        }
-        SpineMarker::Unrecorded => {
-            crate::grid_foot::paint_unrecorded_dot(painter, centre, mode.is_dark());
-        }
-        SpineMarker::None => {}
-    }
-    let name_left = marker_left
-        + 2.0 * SPINE_MARKER_RADIUS
-        + spacing::SPACE_5
-        + f32::from(row.depth) * spacing::SPACE_5;
-
-    // The kind is laid out first so the name knows what room is left: a long
-    // asset label clipped by the pane would otherwise run under it.
-    //
-    // The mono caption face, not `ui_font()` — the contract's own choice for
-    // this label, and the same face the two caption rows above it use, so a
-    // run state reads as a value rather than as prose. Held by
-    // `the_spines_measurements_hold_at_both_windows`, off the drawn galley's
-    // own font id rather than off this call site.
-    let kind = painter.layout_no_wrap(
-        row.kind.clone(),
-        caption_font(),
-        chrome::colour(sem.text.muted),
-    );
-    let kind_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            rect.right() - spacing::SPACE_4 - kind.size().x,
-            rect.center().y - kind.size().y / 2.0,
-        ),
-        kind.size(),
-    );
-    painter.galley(kind_rect.min, kind, chrome::colour(sem.text.muted));
-
-    // Clipped, not truncated: the room left of the kind is a fact about the
-    // rail's width, and a character budget is a guess at it that goes wrong the
-    // moment somebody drags the rail narrower.
-    //
-    // A step removed and not yet saved stays on the spine until the Save that
-    // takes it out of the folder, so it is drawn as going rather than gone: its
-    // name in the secondary ink with a rule through it, in the same ink.
-    //
-    // While the spine picks a table, a row that is not one is drawn in the
-    // muted ink, so the tables are what the eye lands on.
-    let ink = if muted {
-        chrome::colour(sem.text.muted)
-    } else if row.struck {
-        chrome::colour(sem.text.secondary)
-    } else {
-        chrome::colour(sem.text.primary)
-    };
-    let name = painter.layout_no_wrap(row.label.clone(), ui_font(), ink);
-    let name_rect = egui::Rect::from_min_size(
-        egui::pos2(name_left, rect.center().y - name.size().y / 2.0),
-        name.size(),
-    );
-    let room = egui::Rect::from_min_max(
-        egui::pos2(name_left, rect.top()),
-        egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
-    );
-    let clipped = painter.with_clip_rect(room);
-    clipped.galley(name_rect.min, name, ink);
-    if row.struck {
+    let ink = semantic(mode.is_dark());
+    if row.struck && name_rect.width() > 0.0 {
+        let name_ink = match entry {
+            StepEntry::Step => ink.text.primary,
+            StepEntry::Table => ink.text.secondary,
+        };
         let y = name_rect.center().y;
-        clipped.line_segment(
+        ui.painter().with_clip_rect(rect).line_segment(
             [
                 egui::pos2(name_rect.left(), y),
                 egui::pos2(name_rect.right(), y),
             ],
-            egui::Stroke::new(1.0, ink),
+            egui::Stroke::new(1.0, chrome::colour(name_ink)),
         );
     }
 
     (
         SpineRowDrawn {
             label: row.label.clone(),
-            kind: row.kind.clone(),
+            // A row too narrow for its output gives it up, so the record says
+            // what was drawn, as it does of the duration.
+            kind: output
+                .filter(|_| output_kept)
+                .unwrap_or_default()
+                .to_string(),
             depth: row.depth,
-            marker: row.marker,
+            marker: SpineMarker::None,
+            mark: node.map(|_| mark),
+            // A row too narrow for its timeline column gives up the bar and the
+            // duration together, so the record says what was drawn.
+            duration: duration
+                .filter(|_| entry == StepEntry::Step && timeline_kept)
+                .map(str::to_string),
+            fold_rect,
             role: row.role,
             rect,
             name_rect,
-            kind_rect: Some(kind_rect),
+            kind_rect: None,
             rug: None,
-            on_canvas,
+            on_canvas: on_canvas.then_some(rect),
             washed: row.selected,
             chip: None,
-            control: sense.senses_click(),
+            control: senses_click,
             struck: row.struck,
             muted,
         },
-        response,
+        SpineRowClicks {
+            row: senses_click && drawn.clicked,
+            fold: drawn.fold_clicked,
+        },
     )
+}
+
+/// What a click on one spine row asked for.
+#[derive(Clone, Copy, Debug, Default)]
+struct SpineRowClicks {
+    /// The row itself, on a row that is a control.
+    row: bool,
+    /// Its fold control.
+    fold: bool,
+}
+
+/// The step mark a step's [`SpineState`] draws, one to one.
+#[must_use]
+pub fn spine_state_mark(state: SpineState) -> meridian_egui::StepMark {
+    use meridian_egui::StepMark;
+    match state {
+        SpineState::NotRun => StepMark::NotRun,
+        SpineState::Running => StepMark::Running,
+        SpineState::Ok => StepMark::Ok,
+        SpineState::Failed => StepMark::Failed,
+        SpineState::Stale => StepMark::Stale,
+    }
+}
+
+/// The step mark a row with no run state draws, from its existence marker: a
+/// thing that is there is ok, and one that is not, or is in no file yet, is not
+/// run.
+fn marker_mark(marker: SpineMarker) -> meridian_egui::StepMark {
+    match marker {
+        SpineMarker::Filled => meridian_egui::StepMark::Ok,
+        SpineMarker::Hollow | SpineMarker::Unrecorded | SpineMarker::None => {
+            meridian_egui::StepMark::NotRun
+        }
+    }
+}
+
+/// Where a step row drawn in `rect` put its name, and which of its trailing
+/// columns it kept.
+///
+/// The component reports its own rect and its fold control's, not its name's
+/// or which columns it kept, so this places them as `step_row` does, from the
+/// same tokens: the name past the gutter (`2 × gutter_pad + lanes ×
+/// gutter_lane`) and `SPACE_3`, or `SPACE_3` past the fold control, and no
+/// wider than the name itself or the room the output and timeline columns
+/// leave it. A name the component cut with an ellipsis is given the whole of
+/// that room. The timeline column stays while the name's floor and the whole
+/// output fit before it, and the output while the name's floor fits beside it.
+fn step_row_name_rect(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    row: &SpineRow,
+    lanes: u8,
+    fold_rect: Option<egui::Rect>,
+) -> (egui::Rect, Kept) {
+    use meridian_egui::MeridianUi;
+    let t = ui.tokens();
+    let gap = t.space[3];
+    let gutter_right = rect.left() + 2.0 * t.gutter_pad + f32::from(lanes) * t.gutter_lane;
+    let left = fold_rect.map_or(gutter_right + gap, |fold| fold.right() + gap);
+    let width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::proportional(meridian_design::typography::UI_SIZE),
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+    };
+    let name = width(&row.label);
+    let floor = name.x.min(4.0 * meridian_design::typography::UI_SIZE);
+    let output = row.output.as_deref().map(|o| width(o).x);
+    let duration_right = rect.right() - t.space[4];
+    let needs = |output: Option<f32>| left + floor + output.map_or(0.0, |w| gap + w);
+    let timeline_left = duration_right - t.duration_width - gap - t.timeline_width;
+    let timeline_kept = needs(output) + gap <= timeline_left;
+    let mut right = if timeline_kept {
+        timeline_left - gap
+    } else {
+        duration_right
+    };
+    let output_kept = output.is_some_and(|w| needs(Some(w)) <= right);
+    if let Some(w) = output.filter(|_| output_kept) {
+        right -= w + gap;
+    }
+    let shown = name.x.min((right - left).max(0.0));
+    (
+        egui::Rect::from_min_size(
+            egui::pos2(left, rect.center().y - name.y / 2.0),
+            egui::vec2(shown, name.y),
+        ),
+        Kept {
+            timeline_kept,
+            output_kept,
+        },
+    )
+}
+
+/// Which of a step row's trailing columns it kept, for the width it was given.
+#[derive(Clone, Copy, Debug)]
+struct Kept {
+    /// The timeline bar and the duration.
+    timeline_kept: bool,
+    /// What the row produced.
+    output_kept: bool,
 }
 
 /// One outline row: status dot, label, kind — and, when it is the selection,
@@ -5353,6 +5581,9 @@ fn outline_row(
             } else {
                 SpineMarker::None
             },
+            mark: None,
+            duration: None,
+            fold_rect: None,
             role: SpineRole::Column,
             rect,
             name_rect,
@@ -5482,14 +5713,6 @@ fn paint_row_marks(
     })
 }
 
-/// The radius of a spine row's marker, in logical points.
-///
-/// Smaller than [`outline_row`]'s status dot, and that is the point: the dot
-/// there carries a status in colour and has to be big enough to read a tint
-/// off, while this carries existence in shape — filled or hollow — which reads
-/// at a size a tint would not.
-const SPINE_MARKER_RADIUS: f32 = 2.5;
-
 /// The width of one lane of the spine's gutter, in logical points: what each
 /// curve that would otherwise cross another is moved out by.
 pub const SPINE_LANE: f32 = spacing::SPACE_3;
@@ -5497,12 +5720,6 @@ pub const SPINE_LANE: f32 = spacing::SPACE_3;
 /// The widest the spine's gutter is drawn, in logical points: four lanes at
 /// [`SPINE_LANE`]. More lanes than that share it, each narrower.
 pub const SPINE_GUTTER_MAX: f32 = 4.0 * SPINE_LANE;
-
-/// Where a spine row drawn in `rect` puts its marker's leading edge, with
-/// `gutter` of room for the join curves to its left.
-fn spine_marker_left(rect: egui::Rect, gutter: f32) -> f32 {
-    rect.left() + spacing::SPACE_4 + gutter
-}
 
 /// One **join curve** in the spine's gutter as it was drawn: from the row of
 /// the table a join reads from to the row of the table it finds a row in.
@@ -5556,7 +5773,7 @@ fn curve_lanes(curves: &[(usize, usize)]) -> Vec<(usize, usize, usize)> {
 }
 
 /// Paint one join's curve in the spine's gutter, between the markers of the
-/// rows `rows` drew, out in lane `lane` of a gutter `gutter` wide whose lanes
+/// rows `rows` drew, out in lane `lane` of the gutter left of them, whose lanes
 /// are each `lane_width` wide.
 ///
 /// In the ink the sources browser draws an accepted join in, so a join reads
@@ -5565,13 +5782,14 @@ fn paint_join_curve(
     painter: &egui::Painter,
     rows: (&SpineRowDrawn, &SpineRowDrawn),
     (lane, lane_width): (usize, f32),
-    gutter: f32,
     mode: Mode,
 ) -> SpineCurveDrawn {
     let sem = semantic(mode.is_dark());
     let (from, to) = rows;
-    let marker_left = spine_marker_left(from.rect, gutter);
-    // Each end stops a hair short of the marker it reaches, and the curve
+    // The rows are drawn `gutter` in, so a row's leading edge is the gutter's
+    // trailing one.
+    let marker_left = from.rect.left();
+    // Each end stops a hair short of the row it reaches, and the curve
     // bows out to its lane: a cubic's controls at `control` take its leftmost
     // point three quarters of the way out to them.
     let start = marker_left - spacing::SPACE_1 / 2.0;
@@ -8167,110 +8385,5 @@ steps:
             RunState::Fresh,
             "data channel: the typed hash-clean skip is proof of freshness"
         );
-    }
-    /// One spine row painted alone, and the rects it painted.
-    fn painted_spine_row(
-        row: &SpineRow,
-        on_canvas: bool,
-        mode: Mode,
-    ) -> (SpineRowDrawn, Vec<egui::epaint::RectShape>) {
-        let ctx = egui::Context::default();
-        let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(300.0, 100.0),
-            )),
-            ..Default::default()
-        };
-        let mut drawn = None;
-        let out = ctx.run_ui(raw, |ui| {
-            drawn = Some(
-                spine_row(
-                    ui,
-                    row,
-                    on_canvas,
-                    (default_senses_click(row), false),
-                    0.0,
-                    mode,
-                )
-                .0,
-            );
-        });
-        let rects = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Rect(r) => Some(r.clone()),
-                _ => None,
-            })
-            .collect();
-        (drawn.expect("the row was drawn"), rects)
-    }
-
-    fn fills_at(rects: &[egui::epaint::RectShape], at: egui::Rect) -> Vec<egui::Color32> {
-        rects
-            .iter()
-            .filter(|r| {
-                r.fill != egui::Color32::TRANSPARENT
-                    && (r.rect.min - at.min).abs().max_elem() < 0.01
-                    && (r.rect.max - at.max).abs().max_elem() < 0.01
-            })
-            .map(|r| r.fill)
-            .collect()
-    }
-
-    /// **A row that is both picked and on the canvas draws as picked**: the
-    /// cursor fill and a bar in the focus ink, and no bar in the secondary ink
-    /// beside it. The record still says the canvas holds it, and a picked row
-    /// the canvas does not hold draws the same marks and says it does not.
-    #[test]
-    fn a_row_that_is_picked_and_on_the_canvas_draws_as_picked() {
-        for mode in [Mode::Light, Mode::Dark] {
-            let sem = semantic(mode.is_dark());
-            let row = SpineRow::plain(
-                "table".to_string(),
-                "table".to_string(),
-                0,
-                SpineMarker::Filled,
-                SpineRole::Asset,
-                true,
-                None,
-                None,
-                false,
-            );
-            let (both, rects) = painted_spine_row(&row, true, mode);
-            let bar = row_bar(both.rect);
-            assert_eq!(
-                both.on_canvas,
-                Some(bar),
-                "{mode:?}: the record lost the fact that the canvas holds the row"
-            );
-            assert_eq!(
-                fills_at(&rects, both.rect),
-                vec![chrome::colour(sem.rows.cursor_background)],
-                "{mode:?}: the picked row's fill"
-            );
-            assert_eq!(
-                fills_at(&rects, bar),
-                vec![chrome::colour(sem.borders.focus)],
-                "{mode:?}: the picked row draws one bar, in the focus ink"
-            );
-
-            let (picked, alone) = painted_spine_row(&row, false, mode);
-            assert_eq!(
-                picked.on_canvas, None,
-                "{mode:?}: a picked row off the canvas"
-            );
-            assert_eq!(
-                fills_at(&alone, picked.rect),
-                fills_at(&rects, both.rect),
-                "{mode:?}: the canvas changed how a picked row is filled"
-            );
-            assert_eq!(
-                fills_at(&alone, bar),
-                fills_at(&rects, bar),
-                "{mode:?}: the canvas changed a picked row's bar"
-            );
-        }
     }
 }

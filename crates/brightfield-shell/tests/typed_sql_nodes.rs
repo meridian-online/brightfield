@@ -128,6 +128,10 @@ fn a_typed_step_and_its_table_stand_at_the_spines_foot_marked_not_recorded() {
         (spine[step].kind.as_str(), spine[step].marker),
         ("sql \u{b7} not recorded", SpineMarker::Unrecorded)
     );
+    // The list draws a row's state as its mark, and a typed step's mark reads
+    // as any step not run, so the row says where a step that ran says what
+    // it made.
+    assert_eq!(spine[step].output.as_deref(), Some("not recorded"));
     let table = &spine[step + 1];
     assert_eq!(
         (table.role, table.marker, table.kind.as_str()),
