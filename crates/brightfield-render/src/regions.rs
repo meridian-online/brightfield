@@ -10,7 +10,8 @@
 //!    highest density on their shared boundary, the saddle between them.
 //! 3. Clusters are merged greedily, closest first, while a cluster's peak
 //!    stands barely above the saddle it shares with a neighbour.
-//! 4. Each cluster is truncated to the cells at or above a tenth of its peak.
+//! 4. Each cluster is truncated to the cells at or above a tenth of its peak,
+//!    and keeps only the connected piece that holds the peak.
 //!
 //! Clusters left with fewer than [`MIN_REGION_CELLS`] cells are then dropped.
 //!
@@ -19,7 +20,7 @@
 //! row-major cell index, and nothing iterates a hash map.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 /// A density grid over a plot's view.
 ///
@@ -64,16 +65,18 @@ const TRUNCATE_FRACTION: f64 = 0.1;
 /// Two neighbouring clusters merge when the saddle between them is at least
 /// this fraction of the lower of their two peaks.
 ///
-/// The paper (Section 2, "Union Clusters") merges a cluster into its
-/// neighbour when its local maximum lies close to their shared boundary,
-/// because such a maximum "is merely slightly higher than the boundary and
-/// thus may not stand out much on its own", and it merges the pairs that meet
-/// the criterion best first. It states the criterion in words and gives no
-/// constant for it. This module measures that closeness in density, which is
-/// the paper's stated reason, as saddle / lower peak, and sets the constant
-/// itself: a peak less than a fifth above its saddle does not stand out. Two
-/// equal Gaussians three standard deviations apart, which read as two lobes,
-/// have a ratio near 0.64 and stay apart.
+/// The paper (Section 2, "Union Clusters") unions a cluster with its
+/// neighbour "if the location of the local maximum within a cluster is close
+/// to its boundary", because such a maximum "is merely slightly higher than
+/// the boundary and thus may not stand out much on its own", and it unions the
+/// pairs that fit the criterion best first. It states the criterion in words
+/// and gives no constant for it. This module measures the closeness in
+/// density rather than distance, on purpose: the paper's stated reason is the
+/// height of the peak over the boundary, and a distance in cells would change
+/// with the grid's resolution. The ratio is saddle / lower peak, and the
+/// constant is this module's own: a peak at most a quarter above its saddle
+/// does not stand out. Two equal Gaussians three standard deviations apart,
+/// which read as two lobes, have a ratio near 0.64 and stay apart.
 const MERGE_SADDLE_RATIO: f64 = 0.8;
 
 /// The regions of `grid`, highest peak first, ties by the lower peak cell.
@@ -153,26 +156,31 @@ pub fn find_regions(grid: &DensityGrid) -> Vec<Region> {
         }
     }
 
-    // Step 4: truncate each cluster at a tenth of its peak, then drop specks.
-    // A merged cluster's peak is its winner, the highest cell it holds.
-    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for cell in 0..n {
-        let peak = find(&mut merged_into, peak_of[cell]);
-        if d[cell] >= TRUNCATE_FRACTION * d[peak] {
-            clusters.entry(peak).or_default().push(cell);
-        }
-    }
-    let mut regions: Vec<Region> = clusters
-        .into_iter()
-        .filter(|(peak, cells)| d[*peak] > 0.0 && cells.len() >= MIN_REGION_CELLS)
-        .map(|(peak, cells)| {
-            let mass: f64 = cells.iter().map(|&c| d[c]).sum();
-            Region {
-                peak,
-                peak_density: d[peak],
-                cells,
-                share: mass / total,
-            }
+    // Step 4: truncate each cluster at a tenth of its peak, keep the piece
+    // that holds the peak, then drop specks. A merged cluster's peak is its
+    // winner, the highest cell it holds. A single basin stays connected when
+    // truncated, since each kept cell climbs to its peak through cells at
+    // least as dense, but a merged cluster joined over a saddle below the cut
+    // falls apart; its cut-off pieces belong to no region.
+    let owner: Vec<Option<usize>> = (0..n)
+        .map(|cell| {
+            let peak = find(&mut merged_into, peak_of[cell]);
+            (d[cell] >= TRUNCATE_FRACTION * d[peak]).then_some(peak)
+        })
+        .collect();
+    let mut regions: Vec<Region> = (0..n)
+        .filter(|&peak| owner[peak] == Some(peak) && d[peak] > 0.0)
+        .filter_map(|peak| {
+            let cells = connected_piece(grid, &owner, peak);
+            (cells.len() >= MIN_REGION_CELLS).then(|| {
+                let mass: f64 = cells.iter().map(|&c| d[c]).sum();
+                Region {
+                    peak,
+                    peak_density: d[peak],
+                    cells,
+                    share: mass / total,
+                }
+            })
         })
         .collect();
     regions.sort_by(|a, b| {
@@ -181,6 +189,21 @@ pub fn find_regions(grid: &DensityGrid) -> Vec<Region> {
             .then(a.peak.cmp(&b.peak))
     });
     regions
+}
+
+/// The cells owned by `peak` that connect to it through the 8-neighbourhood,
+/// in ascending index order.
+fn connected_piece(grid: &DensityGrid, owner: &[Option<usize>], peak: usize) -> Vec<usize> {
+    let mut seen = BTreeSet::from([peak]);
+    let mut stack = vec![peak];
+    while let Some(cell) = stack.pop() {
+        for other in neighbours(grid, cell) {
+            if owner[other] == Some(peak) && seen.insert(other) {
+                stack.push(other);
+            }
+        }
+    }
+    seen.into_iter().collect()
 }
 
 /// The cell holding the point `(x, y)`, or `None` outside the grid's edges.
@@ -387,6 +410,90 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].peak, index(50, 50));
         assert!(regions[0].cells.contains(&bump));
+    }
+
+    /// Whether `cells` form one piece under the 8-neighbourhood.
+    fn is_connected(cells: &[usize]) -> bool {
+        let Some(&first) = cells.first() else {
+            return true;
+        };
+        let mut seen = vec![first];
+        let mut stack = vec![first];
+        while let Some(cell) = stack.pop() {
+            let (col, row) = (cell % SIDE, cell / SIDE);
+            for &other in cells {
+                let near = (other % SIDE).abs_diff(col) <= 1 && (other / SIDE).abs_diff(row) <= 1;
+                if near && !seen.contains(&other) {
+                    seen.push(other);
+                    stack.push(other);
+                }
+            }
+        }
+        seen.len() == cells.len()
+    }
+
+    #[test]
+    fn a_bump_cut_off_by_truncation_leaves_the_region_in_one_piece() {
+        // A bump far down a mountain's flank: it merges, since its peak
+        // (about 0.109) stands barely above its saddle (about 0.099), but
+        // that saddle lies below a tenth of the mountain's peak, so truncation
+        // cuts the bump's top off from the mountain.
+        let grid = gaussians(&[(30.0, 50.0, 1.0, 12.0), (61.0, 50.0, 0.07, 2.5)]);
+        let d = &grid.density;
+        let bump = index(60, 50);
+        let is_local_max = (59..=61)
+            .flat_map(|col| (49..=51).map(move |row| index(col, row)))
+            .all(|c| c == bump || d[c] < d[bump]);
+        assert!(is_local_max, "the bump must be a local maximum of its own");
+        assert!(d[bump] >= 0.1 * d[index(30, 50)]);
+
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 1);
+        let region = &regions[0];
+        assert_eq!(region.peak, index(30, 50));
+        assert!(is_connected(&region.cells));
+        assert!(!region.cells.contains(&bump));
+        let mass: f64 = region.cells.iter().map(|&c| d[c]).sum();
+        let total: f64 = d.iter().sum();
+        assert_eq!(region.share, mass / total);
+    }
+
+    #[test]
+    fn a_chain_merges_through_the_cluster_between() {
+        // Three peaks in a row, A > B > C. B merges into A first (saddle over
+        // B's peak about 0.91). A and C share almost no boundary of their own,
+        // so C then merges only over the saddle it shared with B, which B's
+        // merge hands to A (about 0.83 of C's peak).
+        let grid = gaussians(&[
+            (20.0, 50.0, 1.0, 5.0),
+            (31.0, 50.0, 0.85, 4.0),
+            (42.0, 50.0, 0.7, 4.0),
+        ]);
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].peak, index(20, 50));
+        assert!(regions[0].cells.contains(&index(30, 50)));
+        assert!(regions[0].cells.contains(&index(42, 50)));
+    }
+
+    #[test]
+    fn the_closest_pair_merges_first() {
+        // A > C > B, with B low between them, and both of B's saddles meet the
+        // criterion: about 0.92 of B's peak towards A, 0.83 towards C. Taking
+        // the closer pair first merges B into A, after which C stands well
+        // above its saddle and stays apart. The other order would have put B
+        // with C.
+        let grid = gaussians(&[
+            (20.0, 50.0, 1.0, 5.0),
+            (31.0, 50.0, 0.5, 3.0),
+            (41.0, 50.0, 0.95, 4.0),
+        ]);
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].peak, index(20, 50));
+        assert_eq!(regions[1].peak, index(41, 50));
+        assert!(regions[0].cells.contains(&index(31, 50)));
+        assert!(!regions[1].cells.contains(&index(31, 50)));
     }
 
     #[test]
