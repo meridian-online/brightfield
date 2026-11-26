@@ -53,6 +53,12 @@ jobs:
       - name: cmake and ninja
         run: brew install cmake ninja
 
+      # The build holds FineType's crates to deny.toml's licence policy before
+      # it writes their notices; the version is license.yml's.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/vcpkg/archives

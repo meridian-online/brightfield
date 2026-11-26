@@ -27,7 +27,11 @@
 #   6. the library's install name is @rpath/libduckdb.dylib;
 #   7. GEOS, which is LGPL-2.1, is a library of its own beside DuckDB's, which
 #      links it by @rpath and carries none of GEOS's code itself, and from an app
-#      bundle the shell loads it from Contents/Frameworks/.
+#      bundle the shell loads it from Contents/Frameworks/;
+#   8. licenses/ holds the notices the Store bundle carries: GEOS's LGPL-2.1
+#      text and a SOURCE.txt naming each GEOS library in lib/ and the commit
+#      its source is at, the C libraries' licences, DuckDB's, FineType's, and
+#      FineType's Rust crates.
 #
 # It ends by printing the library's and the shell's sizes.
 set -euo pipefail
@@ -227,6 +231,28 @@ if [ -n "$geos_loaded" ] && ! printf '%s\n' "$geos_loaded" | grep -qv "^${framew
   pass "in an app bundle, GEOS loads from Contents/Frameworks"
 else
   fail "in an app bundle, GEOS loads from: ${geos_loaded:-nowhere}"
+fi
+
+# 8. The licence notices.
+NOTICES="${DIR}/licenses"
+geos_named=1
+for lib in "${DIR}"/lib/libgeos*.dylib; do
+  grep -qF "Contents/Frameworks/$(basename "$lib")" "${NOTICES}/GEOS/SOURCE.txt" 2>/dev/null || geos_named=0
+done
+if [ "$geos_named" = 1 ] && grep -q 'Version 2.1' "${NOTICES}/GEOS/COPYING" 2>/dev/null \
+   && grep -Eq 'libgeos/geos/tree/[0-9a-f]{40}' "${NOTICES}/GEOS/SOURCE.txt"; then
+  pass "licenses/GEOS holds the LGPL-2.1 and a source notice naming each GEOS library and its commit"
+else
+  fail "licenses/GEOS does not hold the LGPL-2.1 and a source notice naming each GEOS library in lib/"
+fi
+missing_notices=""
+for path in duckdb/LICENSE finetype/LICENSE c-libraries/gdal.txt rust-crates/finetype-in-libduckdb.txt rust-crates/finetype-command-line.txt; do
+  [ -s "${NOTICES}/${path}" ] || missing_notices="${missing_notices} ${path}"
+done
+if [ -z "$missing_notices" ]; then
+  pass "licenses/ holds DuckDB's, FineType's, the C libraries' and FineType's crates' notices"
+else
+  fail "licenses/ has no${missing_notices}"
 fi
 
 for lib in "${DIR}"/lib/*.dylib; do

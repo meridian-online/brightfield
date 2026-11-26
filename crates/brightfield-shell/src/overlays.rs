@@ -15,7 +15,7 @@
 //! - [`CommandPalette`] — query + ranked corpus:
 //!   `brightfield_keys::palette_filter` over the registry at one altitude,
 //!   read on an empty query under the ribbon's stage headings, in the
-//!   ribbon's order, and by frequency then recency within each; a typed
+//!   ribbon's order, and by frequency then frecency within each; a typed
 //!   query ranks by match with no headings. A reserved verb the palette
 //!   lists is flagged and refuses to run, as the corpus says; the chart's
 //!   palette is an allow-list of built verbs and lists none.
@@ -43,8 +43,8 @@
 use brightfield_keys::fuzzy::fuzzy_score;
 use brightfield_keys::ribbon::Stage;
 use brightfield_keys::{
-    keys_label, palette_filter, registry, Altitude, HelpRow, KeyPlatform, PaletteCandidate,
-    RecencyCounter, Situation, VerbEntry,
+    keys_label, palette_filter, registry, unix_now_secs, Altitude, Frecency, HelpRow, KeyPlatform,
+    PaletteCandidate, Situation, VerbEntry,
 };
 use brightfield_model::arg_collector::{ArgCollector, ArgOutcome};
 use brightfield_spec::edit::ChartEdit;
@@ -184,13 +184,16 @@ fn stage_rank(longname: &str) -> usize {
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query), or on an empty
 /// query read under the stage headings in the ribbon's order, by frequency
-/// then per-session recency within each. Reserved verbs are included, flagged,
+/// then the palette's frecency within each. Reserved verbs are included, flagged,
 /// and refuse to run — never hidden. So is a verb missing an input in the
 /// situation the palette was given, with the sentence it declares.
 pub struct CommandPalette {
     reg: Vec<VerbEntry>,
     altitude: Altitude,
-    recency: RecencyCounter,
+    frecency: Frecency,
+    /// The Unix time in seconds the palette ranks its rows at, read when it
+    /// opens.
+    now_secs: u64,
     situation: Option<Situation>,
     matches: Vec<PaletteCandidate>,
     /// Whether the rows read under stage headings: an empty query, with at
@@ -202,15 +205,16 @@ pub struct CommandPalette {
 }
 
 impl CommandPalette {
-    /// A palette over the keyboard registry at `altitude`. `recency` is the
-    /// host's per-session counter, snapshotted at open — the host records
-    /// the pick into its own copy so the *next* open ranks it.
+    /// A palette over the keyboard registry at `altitude`. `frecency` is the
+    /// host's history of picks, snapshotted at open — the host records the
+    /// pick into its own copy so the *next* open ranks it.
     #[must_use]
-    pub fn new(altitude: Altitude, recency: RecencyCounter) -> Self {
+    pub fn new(altitude: Altitude, frecency: Frecency) -> Self {
         Self {
             reg: registry(),
             altitude,
-            recency,
+            frecency,
+            now_secs: unix_now_secs(),
             situation: None,
             matches: Vec::new(),
             grouped: false,
@@ -226,14 +230,15 @@ impl CommandPalette {
     /// [`CHART_PALETTE_VERBS`] for why the chart view needs this and
     /// [`CommandPalette::new`] does not.
     #[must_use]
-    pub fn new_restricted(altitude: Altitude, recency: RecencyCounter, allow: &[&str]) -> Self {
+    pub fn new_restricted(altitude: Altitude, frecency: Frecency, allow: &[&str]) -> Self {
         Self {
             reg: registry()
                 .into_iter()
                 .filter(|v| allow.contains(&v.longname))
                 .collect(),
             altitude,
-            recency,
+            frecency,
+            now_secs: unix_now_secs(),
             situation: None,
             matches: Vec::new(),
             grouped: false,
@@ -252,7 +257,7 @@ impl CommandPalette {
     }
 
     /// The verb the user confirmed, surrendered once. The host dispatches it
-    /// and records it into its recency counter.
+    /// and records it into its frecency.
     pub fn take_picked(&mut self) -> Option<&'static str> {
         self.picked.take()
     }
@@ -289,7 +294,7 @@ pub fn chart_palette_candidates() -> Vec<&'static str> {
 /// when one is given.
 fn chart_palette_rows(situation: Option<Situation>) -> Vec<PaletteCandidate> {
     let allow = chart_palette_verbs();
-    let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+    let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow);
     if let Some(situation) = situation {
         p = p.with_situation(situation);
     }
@@ -305,10 +310,11 @@ impl PickerDelegate for CommandPalette {
             &self.reg,
             self.altitude,
             query,
-            &self.recency,
+            &self.frecency,
+            self.now_secs,
             self.situation.as_ref(),
         );
-        // The filter has ordered an empty query by frequency then recency, and
+        // The filter has ordered an empty query by frequency then frecency, and
         // a stable sort keeps that order within each stage. A greyed row keeps
         // its place among its stage's rows.
         self.grouped = query.is_empty()
@@ -1265,14 +1271,14 @@ mod tests {
     // -- CommandPalette -----------------------------------------------------
 
     fn palette_at(altitude: Altitude) -> CommandPalette {
-        let mut p = CommandPalette::new(altitude, RecencyCounter::new());
+        let mut p = CommandPalette::new(altitude, Frecency::new());
         p.update_query("");
         p
     }
 
     fn chart_palette() -> CommandPalette {
         let allow = chart_palette_verbs();
-        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+        let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow);
         p.update_query("");
         p
     }
@@ -1299,10 +1305,10 @@ mod tests {
         drawn
     }
 
-    /// A palette lists the stages its rows have, so neither the window's
-    /// palette nor the chart's draws all four: each draws its own, in the
-    /// ribbon's order, once each, and the rows of no stage last. The chart's
-    /// has Connect for Add sources, which is how a file is read in.
+    /// A palette lists the stages its rows have: each draws its own, in the
+    /// ribbon's order, once each, and the rows of no stage last. The window's
+    /// draws no Shape or Publish; the chart's draws all four, with Connect for
+    /// Add sources, which is how a file is read in.
     #[test]
     fn the_empty_palette_reads_in_stage_order_under_each_stages_name() {
         let order: Vec<&str> = Stage::ALL
@@ -1315,9 +1321,11 @@ mod tests {
                 palette_at(Altitude::Protocol),
                 vec!["Connect", "Model", "Other"],
             ),
+            // Add sources reads a file in, under Connect; Append rows, a Model
+            // operation, starts from the grid's cursor.
             (
                 chart_palette(),
-                vec!["Connect", "Shape", "Publish", "Other"],
+                vec!["Connect", "Shape", "Model", "Publish", "Other"],
             ),
         ] {
             let drawn = headings(&p);
@@ -1534,7 +1542,7 @@ mod tests {
     #[test]
     fn a_row_missing_an_input_says_its_sentence_and_refuses_to_run() {
         let allow = chart_palette_verbs();
-        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow)
+        let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow)
             .with_situation(Situation::default());
         p.update_query("zoom-in");
         let i = (0..p.match_count())
@@ -1556,11 +1564,8 @@ mod tests {
 
     #[test]
     fn new_restricted_excludes_a_view_scoped_verb_outside_the_allow_list() {
-        let mut p = CommandPalette::new_restricted(
-            Altitude::View,
-            RecencyCounter::new(),
-            &["clear-selection"],
-        );
+        let mut p =
+            CommandPalette::new_restricted(Altitude::View, Frecency::new(), &["clear-selection"]);
         p.update_query("");
         let names: Vec<&str> = (0..p.match_count())
             .map(|i| p.candidate(i).unwrap().longname)
@@ -1573,10 +1578,10 @@ mod tests {
     }
 
     #[test]
-    fn recency_lifts_a_recorded_verb_under_an_empty_query() {
-        let mut recency = RecencyCounter::new();
-        recency.record("protocol-sibling-prev");
-        let mut p = CommandPalette::new(Altitude::Protocol, recency);
+    fn frecency_lifts_a_recorded_verb_under_an_empty_query() {
+        let mut frecency = Frecency::new();
+        frecency.record("protocol-sibling-prev", unix_now_secs());
+        let mut p = CommandPalette::new(Altitude::Protocol, frecency);
         p.update_query("");
         let pos = |p: &CommandPalette, name: &str| {
             (0..p.match_count())
