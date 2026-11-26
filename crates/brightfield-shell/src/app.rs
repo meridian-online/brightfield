@@ -5021,6 +5021,11 @@ pub const CONTROLS: ItemId = ItemId::new("chart-controls");
 /// uninstantiated item merely draws the orphan-pane treatment.
 pub fn publish_item_ids() {
     chart_registry_with(true).publish_ids();
+    // The one inspector is the right rail's pane and no document's item: the
+    // window draws it from this document's panes and the protocol's. It is
+    // published with this view's ids because the rail holds this view's
+    // inspector.
+    ItemId::publish(&[brightfield_workbench::arrangement::INSPECTOR]);
 }
 
 /// The chart pane's address — the key its Vello texture slot is filed under.
@@ -5076,7 +5081,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
                 side: DockSide::Right,
                 share: CONTROLS_SHARE,
             },
-            toggle: Some(Verb::new("toggle-controls-rail")),
+            toggle: Some(Verb::new("toggle-inspector-rail")),
             make: || Box::new(ControlsPane),
         },
         crate::editor::editor_spec(),

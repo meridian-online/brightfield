@@ -1089,19 +1089,10 @@ impl MeridianApp {
         self.start_operation(ctx, spec, start, hit.column.clone());
     }
 
-    /// Open the Inspector rail on the operation panel for a form, remembering how the rail
+    /// Open the Inspector rail on its Operation section for a form, remembering how the rail
     /// stood so that keeping or dropping the operation puts it back.
     fn open_rail_on_form(&mut self) {
-        let Some(at) = Self::operation_pane_index() else {
-            return;
-        };
-        self.rail_before_ask = Some(super::RailBeforeAsk {
-            collapsed: self
-                .collapsed
-                .remove(&brightfield_workbench::arrangement::INSPECTOR_RAIL),
-            panel: self.inspector_panel,
-        });
-        self.inspector_panel = at;
+        self.open_operation_section();
     }
 
     /// The step the grid shows a draft's page under, while it shows one.

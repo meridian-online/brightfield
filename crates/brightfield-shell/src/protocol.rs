@@ -6017,10 +6017,10 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn describe(&self, _doc: &ProtocolDoc) -> Subject {
-        // "Operator", not "Inspector": this pane and the chart document's
-        // inspector share the window's inspector rail, and a selector strip
-        // offering "Inspector" twice names neither. What this one shows is the
-        // selected operator — its address, what produced it, its status.
+        // "Operator", not "Inspector": this pane is the body of the one
+        // inspector's Step section, and the rail itself is "Inspector". What
+        // this one shows is the selected operator — its address, what
+        // produced it, its status.
         Subject::new("Operator", ICON_INSPECTOR, BindingContext::Protocol)
     }
 
@@ -6040,8 +6040,10 @@ impl Item<ProtocolDoc> for InspectorPane {
         // pins the latch against the derived answer on a manifest window and on
         // a data-file window.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
+        // Shrunk to its content's height, since this is one section of the
+        // inspector and the sections below it follow where it ends.
         egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| inspector_body(ui, &facts, mode, key_grammar_fed));
     }
 }

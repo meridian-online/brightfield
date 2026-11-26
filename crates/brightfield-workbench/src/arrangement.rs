@@ -553,14 +553,16 @@ impl Arrangement {
 /// The navigator rail's panes.
 static NAVIGATOR_PANES: &[ItemId] = &[ItemId::new("protocol-outline")];
 
-/// The inspector rail's panes — the protocol's operator inspector, the
-/// chart's, and the panel that explains the operation the grid's foot row is
-/// asking — behind the rail's own selector.
-static INSPECTOR_PANES: &[ItemId] = &[
-    ItemId::new("protocol-inspector"),
-    ItemId::new("chart-controls"),
-    ItemId::new("operation-inspector"),
-];
+/// The one inspector: the right rail's only pane.
+///
+/// It is no document's item. The window draws it as sections, each holding
+/// the body of a pane of one of the two documents: the operator's facts, the
+/// chart's inspector and the operation panel, whose ids stay in their
+/// registries so a layout that names them still loads.
+pub const INSPECTOR: ItemId = ItemId::new("inspector");
+
+/// The inspector rail's panes: the one inspector.
+static INSPECTOR_PANES: &[ItemId] = &[INSPECTOR];
 
 /// The ledger rail's panes — the run record, the document that declares the
 /// Protocol the run came off, and the versions kept of the chart.

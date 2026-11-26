@@ -1730,32 +1730,15 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "toggle-inspector-rail",
             label: "Inspector rail",
-            needs: &[],
+            needs: &[A_PROTOCOL],
             tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: vec![Protocol],
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the protocol inspector rail",
-            scores: None,
-        },
-        // The chart view's rail, on the same terms. It sits at Dashboard and
-        // View rather than Protocol: the controls rail belongs to the chart
-        // grammar, and a rail toggle that fired inside the protocol panel would
-        // be a verb reaching into a view that does not have the pane.
-        VerbEntry {
-            longname: "toggle-controls-rail",
-            label: "Controls rail",
-            needs: &[],
-            tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the chart controls rail",
-            scores: None,
+            binding_specs: vec![global("cmd-alt-b")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Hide the inspector, or bring it back",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 4, motor_note: "cmd-b is the left rail, so cmd-alt-b is the right one, as VS Code's secondary side bar is" }),
         },
         // The ledger rail's Versions panel: a centre tab in the chart view's item
         // registry, so it carries a show verb the item audit requires, reserved
@@ -2472,10 +2455,8 @@ mod tests {
                 "open-run-log",
                 "open-run-quality",
                 "reload-spec",
-                "toggle-controls-rail",
                 "toggle-focus",
                 "toggle-gallery",
-                "toggle-inspector-rail",
                 "toggle-presentation"
             ]
         );
@@ -2652,7 +2633,6 @@ mod tests {
             "relate",
             "quick-open",
             "toggle-inspector-rail",
-            "toggle-controls-rail",
             "open-chart-versions",
             "open-run-log",
             "open-run-quality",
