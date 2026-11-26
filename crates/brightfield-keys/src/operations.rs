@@ -190,7 +190,7 @@ fn join_tables() -> VerbEntry {
 }
 
 // ---- append-rows ----
-const APPEND_ROWS_BUILT: bool = false;
+const APPEND_ROWS_BUILT: bool = true;
 fn append_rows() -> VerbEntry {
     entry(
         "append-rows",

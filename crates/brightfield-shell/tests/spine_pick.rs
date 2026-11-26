@@ -4,8 +4,8 @@
 //! table taken, or the list of them, to the operation's draft.
 //!
 //! The two operations here are specs local to this file, started through the
-//! window's own entry point, so the pick is tested apart from any operation's
-//! own defaults.
+//! window's own entry point, so the pick is tested apart from any one
+//! operation's form.
 //! They ask arc for `join-tables` and `append-rows`, so the roles, the preview
 //! and the draft are arc's. The folder is a copy of the housing sample with two
 //! steps recorded through arc: `by_age`, which counts the rows by `house_age`,

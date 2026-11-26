@@ -23,6 +23,8 @@
 //!   reload-feedback router below).
 //! - [`menu_resolve`] — resolving `input: menu` specs into launch-fixed
 //!   widget placements.
+//! - [`palette_history_file`] — the palette's frecency kept between
+//!   sessions: its file, and loading a bad one as no history.
 //! - [`profile_model`] — source-profile presentation strings for the
 //!   sidebar.
 //! - [`reload_feedback`] — the hot-reload outcome → notification decision:
@@ -40,6 +42,7 @@ pub mod boot;
 pub mod dock_state_file;
 pub mod log_model;
 pub mod menu_resolve;
+pub mod palette_history_file;
 pub mod panel_capture;
 pub mod profile_model;
 pub mod reload_feedback;
