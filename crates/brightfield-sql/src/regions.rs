@@ -174,14 +174,23 @@ pub mod label_kind {
     ///
     /// [`NUMBER_BINS`]: super::NUMBER_BINS
     pub const BIN: &str = "bin";
+    /// The least number the region's rows hold in one bin; `key` as for
+    /// [`BIN`].
+    pub const BIN_MIN: &str = "bin_min";
+    /// The greatest number the region's rows hold in one bin; `key` as for
+    /// [`BIN`].
+    pub const BIN_MAX: &str = "bin_max";
 }
 
 /// How many equal-width bins span a number column's range in the view, for the
-/// histogram the rest of the view's quartiles are read from. A quartile read
-/// off it is within about a bin of the exact one, 1/1024 of the view's range,
-/// which is finer than the two figures a range name prints; and the summary
-/// stays at most this many rows per region per number column, however many
-/// rows the view holds.
+/// histogram the rest of the view's quartiles are read from. Each bin carries
+/// its count and the least and greatest value in it, so a quartile read off
+/// the histogram always lies between two values of its bin that the rows
+/// hold, and is exact when that bin holds at most two values. A bin's width
+/// only decides which values share it: one outlier widens every bin, but the
+/// interpolation stays inside the values each bin holds. The summary stays at
+/// most this many bins per region per number column, however many rows the
+/// view holds.
 pub const NUMBER_BINS: u32 = 1024;
 
 /// Words a text column's terms leave out, besides any word of fewer than three
@@ -293,11 +302,14 @@ pub const STOP_WORDS: &[&str] = &[
 /// value, and a category value is trimmed, so `Gentoo ` is `Gentoo`; empty
 /// values count against a share without ever being named.
 ///
-/// A number column's quartiles in each region are DuckDB's `quantile_cont`
-/// over its non-null numbers, exact because they are what a name prints. The
+/// A number column reads NaN and infinities as missing, like a null: they have
+/// no place on a range and no bin. Its quartiles in each region are DuckDB's
+/// `quantile_cont` over its finite numbers, exact because they are what a name
+/// prints. The
 /// rest of the view's are left to the reader: the query counts each region's
 /// numbers in [`NUMBER_BINS`] equal-width bins between the column's [`LO`] and
-/// [`HI`] in the view, so the rest of a region is the view's histogram less the
+/// [`HI`] in the view, with each bin's count, least and greatest value, so the
+/// rest of a region is the view's histogram less the
 /// region's, and the summary grows with regions times bins rather than with
 /// regions times rows. The rows are materialised once first, so the source is
 /// read once.
@@ -330,7 +342,10 @@ pub fn region_label_sql(
         .map(|(i, c)| {
             let name = quoted_name(&c.name);
             match c.role {
-                LabelRole::Number => format!(", TRY_CAST({name} AS DOUBLE) AS __bf_c{i}"),
+                LabelRole::Number => format!(
+                    ", CASE WHEN isfinite(TRY_CAST({name} AS DOUBLE)) \
+                     THEN TRY_CAST({name} AS DOUBLE) END AS __bf_c{i}"
+                ),
                 LabelRole::Text => format!(", CAST({name} AS VARCHAR) AS __bf_c{i}"),
                 LabelRole::Category => format!(", trim(CAST({name} AS VARCHAR)) AS __bf_c{i}"),
             }
@@ -405,12 +420,18 @@ pub fn region_label_sql(
                     hi = label_kind::HI,
                 ));
                 branches.push(format!(
-                    "SELECT {i}, v.__bf_region, '{}', \
-                     CAST(CAST({bin} AS INTEGER) AS VARCHAR), CAST(count(*) AS DOUBLE) \
+                    "SELECT {i}, region, kind, __bf_bin, value FROM (\
+                     SELECT v.__bf_region AS region, \
+                     CAST(CAST({bin} AS INTEGER) AS VARCHAR) AS __bf_bin, \
+                     CAST(count(*) AS DOUBLE) AS {count}, \
+                     min(v.{v}) AS {least}, max(v.{v}) AS {greatest} \
                      FROM __bf_view AS v, \
                      (SELECT min({v}) AS lo, max({v}) AS hi FROM __bf_view) AS b \
-                     WHERE v.{v} IS NOT NULL GROUP BY ALL",
-                    label_kind::BIN
+                     WHERE v.{v} IS NOT NULL GROUP BY v.__bf_region, __bf_bin) \
+                     UNPIVOT (value FOR kind IN ({count}, {least}, {greatest}))",
+                    count = label_kind::BIN,
+                    least = label_kind::BIN_MIN,
+                    greatest = label_kind::BIN_MAX,
                 ));
             }
         }

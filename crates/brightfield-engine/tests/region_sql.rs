@@ -280,6 +280,19 @@ fn the_label_query_runs_and_counts_rows_per_region() {
             (1, "768", 1.0)
         ]
     );
+    // Each bin also carries the least and greatest number in it.
+    assert_eq!(
+        fact(&rows, value, 0, label_kind::BIN_MIN, Some("256")),
+        20.0
+    );
+    assert_eq!(
+        fact(&rows, value, 0, label_kind::BIN_MAX, Some("256")),
+        20.0
+    );
+    assert_eq!(
+        fact(&rows, value, -1, label_kind::BIN_MAX, Some("1023")),
+        50.0
+    );
 
     // The rows are read once, however many columns are summarised.
     let plan: String = c

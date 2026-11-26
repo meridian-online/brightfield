@@ -24,7 +24,7 @@ use brightfield_engine::profile::VALUE_BAR_LIMIT;
 use brightfield_engine::{ColumnProfile, RecordBatch};
 use brightfield_render::axis::format_number;
 use brightfield_spec::number_format::NumberFormat;
-use brightfield_sql::regions::{label_kind, NUMBER_BINS};
+use brightfield_sql::regions::label_kind;
 pub use brightfield_sql::regions::{LabelColumn, LabelRole};
 use duckdb::arrow::array::{Array, Float64Array, Int32Array, StringArray};
 
@@ -246,7 +246,7 @@ struct Facts {
     /// region `-1`, by region and kind.
     numbers: BTreeMap<(i32, String), f64>,
     /// A number's histogram: rows per bin, per region.
-    bins: BTreeMap<i32, BTreeMap<u32, f64>>,
+    bins: BTreeMap<i32, BTreeMap<u32, Bin>>,
 }
 
 impl Summary {
@@ -292,12 +292,27 @@ impl Summary {
                         let terms = facts.counts.entry(r).or_default();
                         terms.insert(key.to_owned(), n);
                     }
-                    (label_kind::BIN, Some(key)) => {
-                        if let Ok(bin) = key.parse::<u32>() {
-                            facts.bins.entry(r).or_default().insert(bin, n);
+                    (
+                        kind @ (label_kind::BIN | label_kind::BIN_MIN | label_kind::BIN_MAX),
+                        Some(key),
+                    ) => {
+                        if let Ok(index) = key.parse::<u32>() {
+                            let bin = facts.bins.entry(r).or_default().entry(index).or_default();
+                            match kind {
+                                label_kind::BIN => bin.count = n,
+                                label_kind::BIN_MIN => bin.min = n,
+                                _ => bin.max = n,
+                            }
                         }
                     }
-                    (label_kind::TERM | label_kind::VALUE | label_kind::BIN, None) => {}
+                    (
+                        label_kind::TERM
+                        | label_kind::VALUE
+                        | label_kind::BIN
+                        | label_kind::BIN_MIN
+                        | label_kind::BIN_MAX,
+                        None,
+                    ) => {}
                     (kind, _) => {
                         facts.numbers.insert((r, kind.to_owned()), n);
                     }
@@ -313,6 +328,34 @@ impl Summary {
     }
 }
 
+/// One bin of a number column's histogram: how many rows have a number in it, and the least
+/// and greatest of those numbers.
+#[derive(Clone, Copy, Debug)]
+struct Bin {
+    count: f64,
+    min: f64,
+    max: f64,
+}
+
+impl Default for Bin {
+    fn default() -> Self {
+        Self {
+            count: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
+    }
+}
+
+impl Bin {
+    /// Takes `other`'s rows into this bin.
+    fn add(&mut self, other: &Bin) {
+        self.count += other.count;
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+}
+
 impl Facts {
     /// How many rows of the whole view hold `key`.
     fn in_view(&self, key: &str) -> f64 {
@@ -320,41 +363,52 @@ impl Facts {
     }
 
     /// The lower and upper quartiles of the numbers in view outside `region`, read off the
-    /// histogram: the view's bins less the region's, with the rows of a bin taken as spread
-    /// evenly across it. The quartile's place among the sorted values is `quantile_cont`'s,
-    /// `p × (n − 1)`, and the `k`-th value (from 0) sits at the middle of its share of a bin, so
-    /// the answer is within about a bin of the exact quartile where the bins are well filled.
-    /// `None` when no number is outside the region.
+    /// histogram: the view's bins less the region's (every other region's, the rest of the view's
+    /// among them). The quartile's place among the sorted values is `quantile_cont`'s,
+    /// `p × (n − 1)`. Within a bin the values are taken as spread evenly from its least to its
+    /// greatest, and a place between two bins falls between one's greatest and the next one's
+    /// least, so the answer always lies between values the rows hold and is exact where the bins
+    /// it falls in hold at most two values. `None` when no number is outside the region, or when
+    /// the column's range in the view is not finite, which the label query never writes but a
+    /// summary from elsewhere could.
     fn rest_quartiles(&self, region: i32) -> Option<(f64, f64)> {
-        let lo = *self.numbers.get(&(-1, label_kind::LO.to_owned()))?;
-        let hi = *self.numbers.get(&(-1, label_kind::HI.to_owned()))?;
-        let mut rest: BTreeMap<u32, f64> = BTreeMap::new();
+        let edge = |kind: &str| self.numbers.get(&(-1, kind.to_owned())).copied();
+        if !(edge(label_kind::LO)?.is_finite() && edge(label_kind::HI)?.is_finite()) {
+            return None;
+        }
+        let mut rest: BTreeMap<u32, Bin> = BTreeMap::new();
         for (&r, bins) in &self.bins {
             if r != region {
-                for (&bin, &n) in bins {
-                    *rest.entry(bin).or_default() += n;
+                for (&index, bin) in bins {
+                    rest.entry(index).or_default().add(bin);
                 }
             }
         }
-        let total: f64 = rest.values().sum();
+        let bins: Vec<Bin> = rest
+            .into_values()
+            .filter(|b| b.count > 0.0 && b.min.is_finite() && b.max.is_finite())
+            .collect();
+        let total: f64 = bins.iter().map(|b| b.count).sum();
         if total <= 0.0 {
             return None;
         }
-        if hi <= lo {
-            return Some((lo, lo));
-        }
-        let width = (hi - lo) / f64::from(NUMBER_BINS);
         let quantile = |p: f64| {
-            let place = p * (total - 1.0) + 0.5;
+            let place = p * (total - 1.0);
             let mut before = 0.0;
-            for (&bin, &n) in &rest {
-                if n > 0.0 && before + n >= place {
-                    let within = (place - before) / n;
-                    return (lo + width * (f64::from(bin) + within)).clamp(lo, hi);
+            for (i, bin) in bins.iter().enumerate() {
+                if before + bin.count > place {
+                    let k = place - before;
+                    let last = bin.count - 1.0;
+                    if k <= last {
+                        let along = if last > 0.0 { k / last } else { 0.0 };
+                        return bin.min + (bin.max - bin.min) * along;
+                    }
+                    let next = bins.get(i + 1).map_or(bin.max, |b| b.min);
+                    return bin.max + (next - bin.max) * (k - last);
                 }
-                before += n;
+                before += bin.count;
             }
-            hi
+            bins.last().map_or(0.0, |b| b.max)
         };
         Some((quantile(0.25), quantile(0.75)))
     }
@@ -465,7 +519,7 @@ fn range_text(rep: &Representation, lo: f64, hi: f64) -> Option<String> {
 mod tests {
     use brightfield_engine::{SemanticType, ValueCheck};
     use brightfield_protocol::display::FinetypeDisplays;
-    use brightfield_sql::regions::{region_label_sql, GridExtent};
+    use brightfield_sql::regions::{region_label_sql, GridExtent, NUMBER_BINS};
     use duckdb::Connection;
 
     use super::*;
@@ -924,6 +978,15 @@ mod tests {
             range_name(&[0.02, 0.12, 0.2, 0.34, 0.5], &high).as_deref(),
             Some("c 0.12\u{2013}0.34")
         );
+        // A negative range prints d3-format's minus, as an axis does.
+        assert_eq!(
+            range_name(
+                &[-500.0, -400.0, -350.0, -300.0, -200.0],
+                &[100.0, 200.0, 300.0]
+            )
+            .as_deref(),
+            Some("c \u{2212}400\u{2013}\u{2212}300")
+        );
         // A range whose ends print the same is no range.
         assert_eq!(range_name(&[5.0; 5], &[10.0, 20.0, 30.0]), None);
     }
@@ -956,5 +1019,59 @@ mod tests {
         let bin = (hi - lo) / f64::from(NUMBER_BINS);
         assert!((q1 - exact_q1).abs() <= bin, "{q1} against {exact_q1}");
         assert!((q3 - exact_q3).abs() <= bin, "{q3} against {exact_q3}");
+    }
+
+    /// The name region 0 gets from a number column `c` written by hand as SQL literals: `left`
+    /// in region 0 and `others` in region 1 and between the regions.
+    fn literal_range_name(left: &[&str], others: &[&str]) -> Option<String> {
+        let rows: Vec<String> = left
+            .iter()
+            .map(|v| (LEFT, v))
+            .chain(others.iter().map(|v| (RIGHT, v)))
+            .chain(others.iter().map(|v| (BETWEEN, v)))
+            .enumerate()
+            .map(|(i, (x, v))| format!("({x}, {}, {v})", 0.5 + (i % 9) as f64))
+            .collect();
+        let table = format!(
+            "CREATE TABLE t (x DOUBLE, y DOUBLE, c DOUBLE); INSERT INTO t VALUES {};",
+            rows.join(", ")
+        );
+        names(&table, &[column("c", LabelRole::Number)]).swap_remove(0)
+    }
+
+    #[test]
+    fn nan_and_infinities_are_read_as_missing() {
+        let left = ["200", "300", "375", "450", "550", "'NaN'::DOUBLE"];
+        let others = [
+            "100",
+            "150",
+            "200",
+            "250",
+            "'inf'::DOUBLE",
+            "'-inf'::DOUBLE",
+            "'NaN'::DOUBLE",
+        ];
+        assert_eq!(
+            literal_range_name(&left, &others).as_deref(),
+            Some("c 300\u{2013}450")
+        );
+    }
+
+    #[test]
+    fn one_outlier_does_not_move_the_rest_of_the_views_quartiles() {
+        // The rest of the view runs 0..=100 with one row at a million, so nearly all of it is in
+        // the first of the histogram's bins. Its quartiles are still near 25 and 75.
+        let mut others: Vec<String> = (0..=100).map(|v| v.to_string()).collect();
+        others.push("1000000".to_owned());
+        let others: Vec<&str> = others.iter().map(String::as_str).collect();
+        assert_eq!(
+            literal_range_name(&["10", "20", "30", "40", "50"], &others),
+            None,
+            "20–40 overlaps the rest of the view's 25–75"
+        );
+        assert_eq!(
+            literal_range_name(&["120", "150", "175", "200", "230"], &others).as_deref(),
+            Some("c 150\u{2013}200")
+        );
     }
 }
