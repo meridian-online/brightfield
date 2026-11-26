@@ -420,8 +420,9 @@ fn taking_run_writes_the_record_where_arc_writes_it() {
         before.iter().any(|t| t.contains("not run")),
         "the strip reads {before:?} before any run"
     );
-    assert!(
-        (win.step_row_mark() == Some(meridian_egui::StepMark::NotRun)),
+    assert_eq!(
+        win.step_row_mark(),
+        Some(meridian_egui::StepMark::NotRun),
         "the step row reads a state before any run"
     );
 
@@ -746,8 +747,9 @@ fn a_record_whose_steps_are_not_this_protocols_is_not_read_as_its_run() {
             && !summary.iter().any(|t| t.contains("success")),
         "a record of other steps was read as this Protocol's run: the strip reads {summary:?}"
     );
-    assert!(
-        (win.step_row_mark() == Some(meridian_egui::StepMark::NotRun)),
+    assert_eq!(
+        win.step_row_mark(),
+        Some(meridian_egui::StepMark::NotRun),
         "a record of other steps set the step row"
     );
 }

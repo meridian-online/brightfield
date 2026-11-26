@@ -2153,7 +2153,7 @@ fn clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state() {
 
 /// **The strip reads the run and the spine reads the step, on one screen.**
 ///
-/// AC5 and the one-place clause. Hugh ruled on 2026-09-11, from the running
+/// The run's state is drawn in one place. Hugh ruled on 2026-09-11, from the running
 /// app, that both stay: the navigator spine's step row keeps the STEP's
 /// status, and the ledger strip reads `last run \u{b7} not run` as the RUN's
 /// state. The step row now carries that status as its mark, the not-run glyph
@@ -2206,8 +2206,7 @@ fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
         step.mark,
         Some(meridian_egui::StepMark::NotRun),
         "the navigator spine's step row is marked {:?}, which does not carry \
-         the step's own status — the sibling card's AC1 pinned it there and \
-         this card leaves it",
+         the step's own status, which the spine keeps",
         step.mark
     );
     assert!(

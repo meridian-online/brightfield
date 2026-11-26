@@ -3985,8 +3985,8 @@ pub struct SpineRowDrawn {
     /// step row's own ink, primary for a step and secondary for a table, and
     /// the rule alone marks it as going.
     pub struck: bool,
-    /// Whether the row's name was drawn in the muted ink: a row that is not a
-    /// table, while the spine picks a table for an operation.
+    /// Whether the row was drawn faded: while the spine picks a table for an
+    /// operation, a row that is not a table and a table the pick dims.
     pub muted: bool,
 }
 
@@ -4660,7 +4660,7 @@ impl Item<ProtocolDoc> for OutlinePane {
                 graph_picked = listed.graph_picked;
                 // A fold control folds the spine's own list, the one list that
                 // draws it. While the spine picks, a family's row is not a
-                // table, so it is muted and its control drawn disabled with it.
+                // table, so it is drawn disabled and its control with it.
                 if style.folds {
                     fold_family = listed
                         .fold_clicked
@@ -4804,10 +4804,12 @@ pub struct SpineListStyle<'a> {
     pub chip_live: bool,
     /// The on-canvas bar, per row.
     pub shows: &'a dyn Fn(&SpineRow) -> bool,
-    /// Which rows are controls; a row that is not senses hover only.
+    /// Which rows are controls: a click on one is answered, and a click on
+    /// any other row is ignored.
     pub senses_click: &'a dyn Fn(&SpineRow) -> bool,
-    /// Which rows are named in the muted ink: none, but while the spine picks
-    /// a table for an operation, when each row that is not a table is.
+    /// Which rows are drawn faded: none, but while the spine picks a table for
+    /// an operation, each row that is not a table and each table the pick
+    /// dims. A faded row that is not a control is drawn disabled.
     pub muted: &'a dyn Fn(&SpineRow) -> bool,
     /// Whether a family's row draws its fold control: only where a click on
     /// it is answered, on the document's own spine, where a muted row draws it
@@ -5252,8 +5254,19 @@ fn spine_row(
             if gutter > 0.0 {
                 ui.add_space(gutter);
             }
-            ui.add_enabled_ui(!muted, |ui| meridian_egui::step_row(ui, config(lanes)))
-                .inner
+            // A muted row that answers no click is disabled, its fold control
+            // with it. A muted row that does answer one (a candidate the pick
+            // dims, which a click still puts the cursor on to say why) is
+            // drawn as faded as a disabled one, and stays live.
+            ui.scope(|ui| {
+                if muted && !senses_click {
+                    ui.disable();
+                } else if muted {
+                    ui.multiply_opacity(ui.visuals().disabled_alpha());
+                }
+                meridian_egui::step_row(ui, config(lanes))
+            })
+            .inner
         })
         .inner;
     let rect = drawn.response.rect;
