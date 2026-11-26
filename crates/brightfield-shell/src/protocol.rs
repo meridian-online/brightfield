@@ -3938,10 +3938,11 @@ pub struct SpineRowDrawn {
     /// [`SpineMarker::None`] here.
     pub marker: SpineMarker,
     /// The state mark a spine row drew on its lane of the gutter. `None` on a
-    /// row that drew none: a caption, a view, a column.
+    /// caption, a view and a column, which draw no mark.
     pub mark: Option<meridian_egui::StepMark>,
-    /// The duration a step row drew beside its timeline bar. `None` on a row
-    /// that drew none: a table, or a step its record did not measure.
+    /// The duration a step row drew beside its timeline bar. `None` on a
+    /// table, on a step its record did not measure, and on a step whose row
+    /// gave up its timeline column.
     pub duration: Option<String>,
     /// Where the row's fold control was drawn, on the row of a parameterised
     /// family. A click there folds or unfolds the family.
