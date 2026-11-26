@@ -318,6 +318,9 @@ fn render_predicate(predicate: &Predicate, bindings: &mut Vec<Binding>) -> Strin
                 format!("({})", parts.join(" OR "))
             }
         },
+        // No binding to record: the cell list and extent are literals, so it
+        // renders the way `Display` does.
+        Predicate::Cells { .. } => predicate.to_string(),
     }
 }
 

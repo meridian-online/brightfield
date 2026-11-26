@@ -472,11 +472,21 @@ impl MarkLower for DensityLowerer {
 fn equiwidth_bin_centre(table: &str, col: &str, bins: i64) -> String {
     let lo = format!("(SELECT min(\"{col}\") FROM \"{table}\")");
     let hi = format!("(SELECT max(\"{col}\") FROM \"{table}\")");
+    let index = equiwidth_bin_index(&format!("\"{col}\""), &lo, &hi, bins);
+    format!("CAST({lo} + ({index} + 0.5) * ({hi} - {lo}) / {bins} AS DOUBLE)")
+}
+
+/// The 0-based equiwidth bucket of `value` over `[lo, hi]` split into `bins`
+/// buckets, as a SQL expression (DOUBLE, not yet cast to an integer).
+///
+/// `value`, `lo` and `hi` are SQL expressions. The density lowerers pass
+/// whole-table min/max subqueries as the edges; the region grid passes the
+/// plot's view extent as literals, and both bin by this one expression so a
+/// grid cell and a density cell agree. `least(.., bins - 1)` folds the top edge
+/// into the last bucket, and `nullif` guards a zero-width range.
+pub(crate) fn equiwidth_bin_index(value: &str, lo: &str, hi: &str, bins: i64) -> String {
     let top = bins - 1;
-    format!(
-        "CAST({lo} + (least(floor((\"{col}\" - {lo}) / nullif({hi} - {lo}, 0) * {bins}), {top}) + 0.5) \
-         * ({hi} - {lo}) / {bins} AS DOUBLE)"
-    )
+    format!("least(floor(({value} - {lo}) / nullif({hi} - {lo}, 0) * {bins}), {top})")
 }
 
 /// The per-bucket occupancy count as a typed aggregate call — renders
@@ -1068,7 +1078,7 @@ fn positional_bin(
 }
 
 /// `name` as a quoted SQL identifier, with any `"` inside it doubled.
-fn quoted_name(name: &str) -> String {
+pub(crate) fn quoted_name(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 

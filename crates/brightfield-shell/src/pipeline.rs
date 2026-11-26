@@ -2116,6 +2116,9 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
         | Predicate::Or(_)
         | Predicate::True
         | Predicate::False => {}
+        // A set of grid cells is not a band on either axis, so nothing is drawn
+        // for it, as for an `Or`.
+        Predicate::Cells { .. } => {}
     }
 }
 

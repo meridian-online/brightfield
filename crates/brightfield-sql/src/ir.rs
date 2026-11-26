@@ -8,6 +8,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::regions::GridExtent;
+
 /// Resolution strategy for multi-view selections.
 ///
 /// Independent from `brightfield_spec::ast::SelectionResolution` so the IR is
@@ -224,6 +226,32 @@ pub enum Predicate {
         /// Scale/pixel context, when the producer has it (optional end to end).
         meta: Option<ClauseMeta>,
     },
+    /// Rows whose point falls in one of a set of cells of a grid laid over the
+    /// plot's view: `x` and `y` are column names (quoted when rendered) and
+    /// `cells` are indices as [`crate::regions::cell_index_sql`] defines them.
+    /// Build it with [`Predicate::cells`], which sorts and deduplicates `cells`
+    /// so the same set of cells is always the same predicate.
+    Cells {
+        x: String,
+        y: String,
+        extent: GridExtent,
+        cells: Vec<u32>,
+    },
+}
+
+impl Predicate {
+    /// A [`Predicate::Cells`] with `cells` sorted and deduplicated.
+    #[must_use]
+    pub fn cells(x: &str, y: &str, extent: GridExtent, mut cells: Vec<u32>) -> Self {
+        cells.sort_unstable();
+        cells.dedup();
+        Self::Cells {
+            x: x.to_string(),
+            y: y.to_string(),
+            extent,
+            cells,
+        }
+    }
 }
 
 impl fmt::Display for Predicate {
@@ -264,6 +292,29 @@ impl fmt::Display for Predicate {
                     write!(f, "({})", parts.join(" OR "))
                 }
             },
+            Self::Cells {
+                x,
+                y,
+                extent,
+                cells,
+            } => {
+                if cells.is_empty() {
+                    return f.write_str("FALSE");
+                }
+                // The range tests bound the scan to the view; the membership
+                // test then picks the cells.
+                let list: Vec<String> = cells.iter().map(u32::to_string).collect();
+                write!(
+                    f,
+                    "({} AND {})",
+                    crate::regions::in_extent_sql(x, y, extent),
+                    format_args!(
+                        "{} IN ({})",
+                        crate::regions::cell_index_sql(x, y, extent),
+                        list.join(", ")
+                    )
+                )
+            }
         }
     }
 }
