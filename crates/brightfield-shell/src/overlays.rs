@@ -923,7 +923,7 @@ pub struct CloseQuestion {
     /// How many of [`Self::edits`], from the first, are edits to the chart; the rest change the
     /// Protocol: a SQL step, a grid view, a removed step or the model.
     pub chart_edits: usize,
-    /// The Protocol's name, as the locator band names it, which the headline names when the
+    /// The Protocol's name, as the title band names it, which the headline names when the
     /// Protocol holds an edit.
     pub protocol: String,
     /// Why a close without saving could not keep the chart, once one has been

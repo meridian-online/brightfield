@@ -2585,7 +2585,7 @@ impl ProtocolModel {
     }
 
     /// How many distinct steps the spine lists — the count
-    /// [`ProtocolModel::spine_caption`] and the locator band's
+    /// [`ProtocolModel::spine_caption`] and the graph canvas head's
     /// [`ProtocolModel::graph_counts`] both draw from, so a step named once in
     /// two places is counted the same way twice.
     ///
@@ -2603,8 +2603,8 @@ impl ProtocolModel {
         steps.len()
     }
 
-    /// How many nodes the collapsed graph draws — the locator band's other
-    /// count.
+    /// How many nodes the collapsed graph draws — the graph canvas head's
+    /// other count.
     ///
     /// `graph_collapsed`, not [`ProtocolModel::displayed_graph`]:
     /// [`ProtocolModel::spine`] reads `graph_collapsed` too, so this agrees
@@ -2618,7 +2618,7 @@ impl ProtocolModel {
         self.graph_collapsed.nodes.len()
     }
 
-    /// The locator band's trailing counts when the graph holds the canvas:
+    /// The graph canvas head's trailing counts when the graph holds the canvas:
     /// `<n> nodes \u{b7} <m> step(s)`, singular or plural read off the graph
     /// rather than typed at the call site.
     #[must_use]
@@ -3231,7 +3231,8 @@ impl ProtocolModel {
         )
     }
 
-    /// The locator band's four crumbs for a view of `node`: the file `node`'s
+    /// The four crumbs that place a view of `node`, which the window's title
+    /// reads: the file `node`'s
     /// step read, the step's own name, `node`'s name and `view`.
     ///
     /// `None` where `lineage_crumbs` is — a caller with the window's
@@ -3244,7 +3245,7 @@ impl ProtocolModel {
         Some(crumbs)
     }
 
-    /// The locator band's crumbs for a dashboard node on the canvas: the
+    /// The crumbs that place a dashboard node on the canvas: the
     /// lineage of the table it reads, then **the dashboard's own label as the
     /// node** — where a view of the table would have put a view's word.
     ///
@@ -3291,6 +3292,55 @@ impl ProtocolModel {
                     .map_or_else(|| from.label.clone(), |f| f.to_string_lossy().into_owned())
             })?;
         Some(vec![file, step, asset.label.clone()])
+    }
+
+    /// The pane header's crumbs for `node`: the step that made it, then the
+    /// node itself (`rank › ranking`).
+    ///
+    /// A dashboard is made by no step, so its header names the table it
+    /// reads, then itself.
+    ///
+    /// `None` when `node` is absent from the collapsed graph, or when it has
+    /// neither a producing step nor a table feeding it.
+    #[must_use]
+    pub fn header_crumbs(&self, node: &AssetId) -> Option<Vec<String>> {
+        let asset = self.graph_collapsed.nodes.get(node)?;
+        let made_by = match asset.step.clone() {
+            Some(step) => step,
+            None => {
+                let reads = self
+                    .graph_collapsed
+                    .edges
+                    .iter()
+                    .find(|edge| &edge.to == node)?;
+                self.graph_collapsed.nodes.get(&reads.from)?.label.clone()
+            }
+        };
+        Some(vec![made_by, asset.label.clone()])
+    }
+
+    /// The pane header's right end for `node`: its kind, then its rows when a
+    /// run measured them or the session holds them (`held_rows`), such as
+    /// "table · 19,028 rows".
+    ///
+    /// `None` when `node` is absent from the collapsed graph.
+    #[must_use]
+    pub fn size_note(&self, node: &AssetId, held_rows: Option<u64>) -> Option<String> {
+        let asset = self.graph_collapsed.nodes.get(node)?;
+        let kind = brightfield_protocol::panel::kind_label(asset.kind);
+        let rows = self
+            .assets
+            .get(node)
+            .and_then(|meta| meta.row_count)
+            .or_else(|| {
+                (self.table.as_ref() == Some(node))
+                    .then_some(held_rows)
+                    .flatten()
+            });
+        Some(match rows {
+            Some(rows) => format!("{kind} \u{b7} {}", rows_output(rows)),
+            None => kind.to_string(),
+        })
     }
 
     /// The drill breadcrumb labels, root → deepest.

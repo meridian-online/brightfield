@@ -133,6 +133,11 @@ pub struct Crumb {
     pub label: String,
     /// An optional leading icon.
     pub icon: Option<Icon>,
+    /// The words a linked crumb offers on hover, when the crumb is a way back:
+    /// the header draws it as a link and reports its click
+    /// ([`crate::chrome::HeaderDrawn::crumb_link`]). `None` for a crumb that
+    /// only says where the pane sits.
+    pub link: Option<String>,
 }
 
 impl Crumb {
@@ -142,7 +147,15 @@ impl Crumb {
         Self {
             label: label.into(),
             icon: None,
+            link: None,
         }
+    }
+
+    /// Make this crumb a way back, offering `about` on hover.
+    #[must_use]
+    pub fn linked(mut self, about: impl Into<String>) -> Self {
+        self.link = Some(about.into());
+        self
     }
 
     /// Give this crumb a leading icon.
@@ -151,6 +164,27 @@ impl Crumb {
         self.icon = Some(icon);
         self
     }
+}
+
+/// One activity a pane's node can be looked at as, offered in its header's
+/// activity switcher.
+///
+/// Plain data: the header draws the switcher from it and reports the choice's
+/// verb when it is clicked, so the switcher performs the same command the
+/// activity's key and menu item do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityChoice {
+    /// The activity's name, such as "Grid".
+    pub label: &'static str,
+    /// The command that switches to it.
+    pub verb: Verb,
+    /// The key the switcher draws on it, rendered for the platform, when the
+    /// key acts in the window's current context. The shell decides, because
+    /// a keycap is drawn only for a key that acts.
+    pub keystroke: Option<String>,
+    /// Why the node cannot take it now, when it cannot: the switcher greys it
+    /// and offers this sentence.
+    pub unavailable: Option<String>,
 }
 
 /// Semantic tone.
@@ -628,8 +662,16 @@ pub struct Subject {
     /// The pane's icon.
     pub icon: Icon,
     /// Where the pane's content sits, most general first. Empty for a pane
-    /// with no drill state.
+    /// with no drill state. When it holds crumbs the header draws them in
+    /// place of the title.
     pub breadcrumb: Vec<Crumb>,
+    /// The activities the pane's node offers, and which of them the pane
+    /// shows, drawn as the header's activity switcher after the breadcrumb.
+    /// `None` for a pane with no node.
+    pub activities: Option<(Vec<ActivityChoice>, usize)>,
+    /// What the pane's node is and how big, at the header's right end, such as
+    /// "table · 19,028 rows".
+    pub size_note: Option<String>,
     /// Whether the pane has unsaved edits.
     pub dirty: Dirty,
     /// Which keyboard context this pane resolves bindings in. The keyboard
@@ -662,6 +704,8 @@ impl Subject {
             title: title.into(),
             icon,
             breadcrumb: Vec::new(),
+            activities: None,
+            size_note: None,
             dirty: Dirty::Clean,
             key_context,
             toolbar: Vec::new(),
@@ -691,6 +735,21 @@ impl Subject {
         self
     }
 
+    /// Offer `choices` in the header's activity switcher, with `selected` the
+    /// one the pane shows.
+    #[must_use]
+    pub fn with_activities(mut self, choices: Vec<ActivityChoice>, selected: usize) -> Self {
+        self.activities = Some((choices, selected));
+        self
+    }
+
+    /// Say the node's kind and size at the header's right end.
+    #[must_use]
+    pub fn with_size_note(mut self, note: impl Into<String>) -> Self {
+        self.size_note = Some(note.into());
+        self
+    }
+
     /// Mark the pane as having unsaved edits.
     #[must_use]
     pub fn dirty(mut self, dirty: Dirty) -> Self {
@@ -706,6 +765,9 @@ impl Subject {
     #[must_use]
     pub fn declared_verbs(&self) -> Vec<Verb> {
         let mut verbs: Vec<Verb> = self.toolbar.iter().map(|t| t.verb).collect();
+        if let Some((choices, _)) = &self.activities {
+            verbs.extend(choices.iter().map(|choice| choice.verb));
+        }
         if let Some(empty) = &self.empty_state {
             // An `Action::Open` declares no verb — there is nothing here to
             // check against the registry, which is the point of it.

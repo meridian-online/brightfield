@@ -318,9 +318,8 @@ fn the_canvas_draws_no_band_of_its_own_above_the_panes() {
         );
     }
 
-    // …and the ink. The title band and the locator band above the canvas both
-    // carry the document's name — that pair is theirs and is not this card's.
-    // What went is the third one, inside the canvas.
+    // …and the ink. The title band above the canvas carries the document's
+    // name. What went is a second one, inside the canvas.
     let (mut app, ctx, raw) = settled_window();
     let name = fixture()
         .file_name()
@@ -333,9 +332,9 @@ fn the_canvas_draws_no_band_of_its_own_above_the_panes() {
     let inside = drawn_text_in(&mut app, &ctx, &raw, canvas);
     assert!(
         !inside.contains(&name),
-        "the canvas drew {name:?} inside its own rect {canvas:?} — the locator \
+        "the canvas drew {name:?} inside its own rect {canvas:?} — the title \
          band above it already carries that string, and the panes below each \
-         name themselves. Drawn there: {inside:?}"
+         name their node. Drawn there: {inside:?}"
     );
     let above = drawn_text_in(
         &mut app,

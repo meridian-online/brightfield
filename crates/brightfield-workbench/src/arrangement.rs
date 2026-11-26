@@ -126,18 +126,6 @@ pub const WINDOW_CONTROLS_INSET: f32 = meridian_design::spacing::SPACE_9
     + meridian_design::spacing::SPACE_7
     + meridian_design::spacing::CONTROL_GAP;
 
-/// The locator band's height in logical points: the breadcrumb, and what the
-/// document on disk is doing.
-///
-/// The dense rung with the same padding, not the grid rung: this band carries
-/// a line of text and no pointer target, so the rung that exists to clear the
-/// pointer-target floor buys nothing here. The frame this arrangement was
-/// drawn from asked for 30. The design system's ladder does not carry 30;
-/// 28 is the nearest rung below it, and picking a rung is the rule the ladder
-/// exists to impose.
-pub const LOCATOR_BAND_HEIGHT: f32 =
-    meridian_design::spacing::ROW_DENSE + 2.0 * meridian_design::spacing::SPACE_2;
-
 /// The hint band's height in logical points: the key grammar of the surface
 /// that has one.
 ///
@@ -220,8 +208,6 @@ impl std::fmt::Display for RegionId {
 
 /// The title band — app identity, the way home, and the subject.
 pub const TITLE_BAND: RegionId = RegionId::new("title-band");
-/// The locator band — the breadcrumb.
-pub const LOCATOR_BAND: RegionId = RegionId::new("locator-band");
 /// The hint band — the key grammar, on a surface that has one.
 pub const HINT_BAND: RegionId = RegionId::new("hint-band");
 /// The status band — what the window is doing.
@@ -610,14 +596,6 @@ static SPINE_LEFT: Arrangement = Arrangement {
             edge: Edge::Top,
             extent: Extent::Band(TITLE_BAND_HEIGHT),
             occupant: Occupant::Chrome("app identity, the way home, and the subject"),
-            collapse: Collapse::Fixed,
-            frame: RegionFrame::Band,
-        },
-        Region {
-            id: LOCATOR_BAND,
-            edge: Edge::Top,
-            extent: Extent::Band(LOCATOR_BAND_HEIGHT),
-            occupant: Occupant::Chrome("the breadcrumb"),
             collapse: Collapse::Fixed,
             frame: RegionFrame::Band,
         },

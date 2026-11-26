@@ -407,7 +407,7 @@ fn ink(token: meridian_design::colour::Rgba) -> egui::Color32 {
 }
 
 /// [`texts`] with each galley's own colour — the fourth field neither `texts`
-/// nor [`clipped_texts`] returns, for the locator band's ink assertion: a rect
+/// nor [`clipped_texts`] returns, for the pane header's ink assertion: a rect
 /// and a font do not show that the last crumb painted in a different colour
 /// from the rest.
 fn inks(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui::Color32)> {
@@ -1104,14 +1104,14 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     let header = grid.header;
     let body = grid.body;
     let shapes = win.shapes();
-    let title = texts(&shapes)
+    let named: Vec<String> = texts(&shapes)
         .into_iter()
-        .find(|(_, rect, _)| header.contains_rect(*rect))
-        .map(|(text, _, _)| text);
-    assert_eq!(
-        title.as_deref(),
-        Some("Grid \u{b7} california_housing_sample"),
-        "the pane's header band names the table the grid is of"
+        .filter(|(_, rect, _)| header.contains_rect(*rect))
+        .map(|(text, _, _)| text)
+        .collect();
+    assert!(
+        named.iter().any(|t| t == "california_housing_sample"),
+        "the pane's header band does not name the table the grid is of: {named:?}"
     );
 
     // **The grid actually drew the table, not just a correctly headed empty
@@ -2369,88 +2369,43 @@ fn the_caret_reopens_the_inspector_on_the_clicked_column() {
 }
 
 // ---------------------------------------------------------------------------
-// The locator band: the file, the step, the node and the view — or the
-// graph and its own counts
+// The pane header: the step and the node — or, on the graph, its head and
+// the graph's own counts
 // ---------------------------------------------------------------------------
 
-/// **AC1.** On the housing fixture the locator band's crumbs read the file,
-/// the step that read it, the table it made and the view on the canvas, each
-/// in the ink the layout contract gives it — and a click on the spine's
-/// `grid` row moves the last crumb.
+/// On the housing fixture the pane header's crumbs name the node on the
+/// canvas and what made it, each in the ink the layout contract gives it: the
+/// dashboard first, after the table it reads, and then the table's grid, after
+/// the step that made it.
 ///
-/// The crumbs come off [`MeridianApp::locator_crumbs`], the window's own hook,
-/// and the ink comes off the galleys the frame actually painted — reading the
-/// hook twice would prove the derivation agrees with itself, not that the
-/// band drew it.
+/// The crumbs come off [`MeridianApp::header_crumbs`], the window's own hook,
+/// and the ink comes off the galleys the frame actually painted, at the rects
+/// the header reports for them — reading the hook twice would prove the
+/// derivation agrees with itself, not that the header drew it.
 #[test]
-fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
+fn the_pane_header_reads_the_step_and_the_node() {
     let mut win = Live::open(housing_boot());
     win.settle();
 
-    let crumbs = win.app.locator_crumbs();
+    let crumbs = win.app.header_crumbs();
     assert_eq!(
         crumbs,
         vec![
-            "california_housing_sample.csv".to_string(),
-            "load".to_string(),
             "california_housing_sample".to_string(),
             "dashboard".to_string(),
         ],
-        "the band's crumbs are not the file, the step, the table and the view"
+        "the dashboard's header does not read the table it reads, then itself"
     );
-
-    // Restricted to the locator band's own rect: the title band above draws
-    // the window's title in its own ink, and for a data-file window that
-    // title is the same file name as the crumb — the very repetition this
-    // card exists to end. A search over the whole frame would find that
-    // occurrence first and pass no matter what ink this band used.
-    let band = win
-        .app
-        .region_rect(brightfield_workbench::arrangement::LOCATOR_BAND)
-        .expect("the locator band drew");
-    let shapes = win.shapes();
-    let painted: Vec<(String, egui::Rect, egui::Color32)> = inks(&shapes)
-        .into_iter()
-        .filter(|(_, rect, _)| band.contains_rect(rect.expand(0.5)))
-        .collect();
-    let sem = semantic(Mode::Light.is_dark());
-    for (i, crumb) in crumbs.iter().enumerate() {
-        let want = if i + 1 == crumbs.len() {
-            ink(sem.text.primary)
-        } else {
-            ink(sem.text.secondary)
-        };
-        let (_, _, got) = painted
-            .iter()
-            .find(|(text, _, _)| text == crumb)
-            .unwrap_or_else(|| {
-                panic!(
-                    "no galley reading {crumb:?} landed in the locator band {band:?}; it \
-                     painted {:?}",
-                    painted
-                        .iter()
-                        .map(|(t, _, _)| t.as_str())
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");
-    }
-    let (_, _, sep_ink) = painted
-        .iter()
-        .find(|(text, _, _)| text == "\u{203a}")
-        .unwrap_or_else(|| panic!("no separator glyph landed in the locator band"));
-    assert_eq!(
-        *sep_ink,
-        ink(sem.text.muted),
-        "the crumb separator is not painted text.muted"
-    );
+    assert_painted_as_crumbs(&mut win, &crumbs);
 
     win.click_row("grid");
     assert_eq!(
-        win.app.locator_crumbs().last(),
-        Some(&"grid".to_string()),
-        "a click on the grid row did not move the band's last crumb"
+        win.app.header_crumbs(),
+        vec!["load".to_string(), "california_housing_sample".to_string()],
+        "the grid's header does not read the step, then the table"
     );
+    let grid_crumbs = win.app.header_crumbs();
+    assert_painted_as_crumbs(&mut win, &grid_crumbs);
 
     // …and the dashboard's own row brings the page back, named as the node.
     win.click_row("dashboard");
@@ -2460,26 +2415,62 @@ fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
         "a click on the dashboard row did not put the dashboard node on the canvas"
     );
     assert_eq!(
-        win.app.locator_crumbs(),
+        win.app.header_crumbs(),
         crumbs,
-        "the band reads the dashboard differently once the grid has been visited"
+        "the header reads the dashboard differently once the grid has been visited"
     );
 }
 
-/// **The band names the dashboard as the node, not as a view of the table.**
+/// Each of `crumbs` was painted where the pane header says it drew it, the
+/// last in the primary ink and the rest in the secondary, with a muted `›`
+/// inside the header between them.
+fn assert_painted_as_crumbs(win: &mut Live, crumbs: &[String]) {
+    let header = win
+        .app
+        .pane_header()
+        .cloned()
+        .expect("the canvas drew a pane header");
+    // A pane that draws a part of the node, such as the dashboard's hero
+    // chart, follows the node's crumbs with its own title.
+    let drawn: Vec<String> = header.crumbs.iter().map(|(c, _)| c.clone()).collect();
+    assert!(
+        drawn.starts_with(crumbs) && drawn.len() <= crumbs.len() + 1,
+        "the header drew {drawn:?}, not the crumbs the hook names, {crumbs:?}"
+    );
+    let shapes = win.shapes();
+    let painted = inks(&shapes);
+    let sem = semantic(Mode::Light.is_dark());
+    for (i, (crumb, at)) in header.crumbs.iter().enumerate() {
+        let want = if i + 1 == drawn.len() {
+            ink(sem.text.primary)
+        } else {
+            ink(sem.text.secondary)
+        };
+        let (_, _, got) = painted
+            .iter()
+            .find(|(text, rect, _)| text == crumb && rect.expand(0.5).contains_rect(*at))
+            .unwrap_or_else(|| panic!("no galley reading {crumb:?} landed at {at:?}"));
+        assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");
+    }
+    let row = header.crumbs[0].1.y_range();
+    let (_, _, sep_ink) = painted
+        .iter()
+        .find(|(text, rect, _)| text == "\u{203a}" && row.contains(rect.center().y))
+        .unwrap_or_else(|| panic!("no separator glyph landed in the pane header"));
+    assert_eq!(
+        *sep_ink,
+        ink(sem.text.muted),
+        "the crumb separator is not painted text.muted"
+    );
+}
+
+/// **The header names the dashboard as the node, not as a view of the table.**
 ///
-/// On the housing file the dashboard node is labelled `dashboard`, which is
-/// also the word the view it replaced drew, so a band still reading the
-/// canvas as *the table's dashboard view* would print the same four crumbs.
-/// This relabels the node before the window opens: the band has to read the
-/// node's own label where the view's word used to stand, and the spine's
-/// row under that label carries the bar.
-///
-/// Watched redden, one mutation: routing `CanvasHolds::Dashboard` through
-/// `view_crumbs` with the word `dashboard` in `crumb_line` — the band's last
-/// crumb reads `dashboard` over a node called `overview`.
+/// This relabels the dashboard node before the window opens: the header has
+/// to read the node's own label, and the spine's row under that label carries
+/// the bar.
 #[test]
-fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
+fn the_pane_header_names_the_dashboard_as_the_node_it_is() {
     let mut boot = housing_boot();
     let table = boot
         .protocol
@@ -2504,14 +2495,12 @@ fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
 
     assert_eq!(win.app.canvas_holds(), &the_dashboard(&win.app));
     assert_eq!(
-        win.app.locator_crumbs(),
+        win.app.header_crumbs(),
         vec![
-            "california_housing_sample.csv".to_string(),
-            "load".to_string(),
             "california_housing_sample".to_string(),
             "overview".to_string(),
         ],
-        "the band's last crumb is not the dashboard node's own label"
+        "the header's last crumb is not the dashboard node's own label"
     );
     let row = win.row("overview");
     assert_eq!(
@@ -2525,11 +2514,11 @@ fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
     );
 }
 
-/// **AC2.** With the graph on the canvas the band reads one crumb, `Protocol`,
-/// and its trailing counts are the graph's own — not a literal, and not the
-/// same two numbers on two different graphs.
+/// With the graph on the canvas there is no pane header: the graph's head
+/// names it, and its trailing counts are the graph's own — not a literal, and
+/// not the same two numbers on two different graphs.
 #[test]
-fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
+fn the_graph_head_reads_the_graphs_own_counts() {
     let mut housing = Live::open(housing_boot());
     housing.settle();
     housing.click_chip();
@@ -2538,15 +2527,14 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
         &CanvasHolds::Graph,
         "the chip did not put the graph on the canvas"
     );
-    assert_eq!(
-        housing.app.locator_crumbs(),
-        vec!["Protocol".to_string()],
-        "the graph's crumb line is not the one entry Protocol"
+    assert!(
+        housing.app.header_crumbs().is_empty(),
+        "the graph has no pane header to name it"
     );
     let housing_counts = housing
         .app
-        .locator_counts()
-        .expect("the graph holds the canvas, so the band has counts to say");
+        .header_counts()
+        .expect("the graph holds the canvas, so its head has counts to say");
     assert_eq!(
         housing_counts,
         counted_pair(
@@ -2554,6 +2542,13 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
             housing.app.protocol_model().step_count(),
         ),
         "the housing graph's counts are not the graph's own node and step counts"
+    );
+    let shapes = housing.shapes();
+    assert!(
+        inks(&shapes)
+            .iter()
+            .any(|(text, _, _)| *text == housing_counts),
+        "the graph's head did not draw its counts"
     );
 
     let mut cross = crosswalk();
@@ -2565,8 +2560,8 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
     );
     let cross_counts = cross
         .app
-        .locator_counts()
-        .expect("the graph holds the canvas, so the band has counts to say");
+        .header_counts()
+        .expect("the graph holds the canvas, so its head has counts to say");
     assert_eq!(
         cross_counts,
         counted_pair(
@@ -2579,7 +2574,7 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
     assert_ne!(
         housing_counts, cross_counts,
         "the housing graph and the crosswalk manifest have different node and \
-         step counts, and the band drew the same text for both"
+         step counts, and the head drew the same text for both"
     );
 }
 
@@ -2816,14 +2811,9 @@ fn each_table_carries_a_grid_row_and_its_click_lands_on_that_nodes_grid() {
         "the grid of the second table drew the first table's rows"
     );
     assert_eq!(
-        win.app.locator_crumbs(),
-        vec![
-            "california_housing_sample".to_string(),
-            "by_age".to_string(),
-            "rooms_by_age".to_string(),
-            "grid".to_string(),
-        ],
-        "the band does not name the second table's grid"
+        win.app.header_crumbs(),
+        vec!["by_age".to_string(), "rooms_by_age".to_string()],
+        "the header does not name the second table and the step that made it"
     );
 
     win.click_grid_under("california_housing_sample");

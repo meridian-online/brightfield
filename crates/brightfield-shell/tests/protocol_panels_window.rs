@@ -1035,19 +1035,27 @@ fn the_protocols_crumb_goes_back_to_the_tiles() {
     let mut win = Window::over(open(&ran.dir));
     win.open_bar_tile();
     assert_eq!(
-        win.app.locator_crumbs(),
+        win.app.header_crumbs(),
         [
             "Protocol \u{b7} co2-per-capita",
             "co2_per_capita_change_pct"
         ]
     );
+    // The link is the pane header's first crumb, as the frame drew it.
+    let header = win.app.pane_header().expect("the open panel's pane header");
     let crumb = win
         .app
         .crumb_link_rect()
         .expect("the Protocol's crumb is a link");
+    assert_eq!(
+        header.crumbs.first().map(|(_, rect)| *rect),
+        Some(crumb),
+        "the link is not the header's first crumb"
+    );
     win.click(crumb.center());
     assert_eq!(win.selected(), None);
-    assert_eq!(win.app.locator_crumbs(), ["Protocol \u{b7} co2-per-capita"]);
+    // Every tile again, which draws no pane header of its own.
+    assert!(win.app.header_crumbs().is_empty());
 }
 
 #[test]
