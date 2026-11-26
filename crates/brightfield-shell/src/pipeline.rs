@@ -94,6 +94,7 @@ use brightfield_workbench::subject::RunState;
 use vello::Scene;
 
 use crate::design::Mode;
+use crate::regions::{ink_regions, KnownColumn, RegionJob, RegionsWorker};
 
 /// **The most times composing a dashboard's first screen reads the data
 /// file** — whatever the file, and whatever the tile count.
@@ -1219,6 +1220,16 @@ pub struct LiveDashboard {
     /// has to carry it too, and a parameter the gesture path could forget is a
     /// dashboard that reverts to light on the first brush.
     mode: Mode,
+    /// The region runs of this dashboard's plots, and their answers, which
+    /// [`LiveDashboard::present`] draws. Here rather than on the document so
+    /// that every re-present draws them, and a dashboard rebuilt from a new
+    /// spec starts with none.
+    regions: RegionsWorker,
+    /// The table's columns as the open profiled them, with how each one's
+    /// axis prints it, which the region names are read through. Empty for a
+    /// dashboard no data file was opened into; a region run then profiles the
+    /// rows it reads.
+    region_columns: Vec<KnownColumn>,
 }
 
 /// What each plot's axes are drawn at, keyed by plot node path.
@@ -1268,6 +1279,8 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
+            regions: RegionsWorker::default(),
+            region_columns: Vec::new(),
         })))
     }
 
@@ -1328,6 +1341,8 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
+            regions: RegionsWorker::default(),
+            region_columns: Vec::new(),
         })))
     }
 
@@ -1534,6 +1549,7 @@ impl LiveDashboard {
         )?
         .with_diagnostics(self.diagnostics.clone())
         .with_row_count(rows);
+        ink_regions(&mut composed, &self.regions);
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
     }
@@ -1550,6 +1566,9 @@ impl LiveDashboard {
     /// is the budget doing its job: a table that does not fit `budget_bytes`.
     /// The source is left as it was, serving the file.
     pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), String> {
+        // The copy narrows the database's memory settings while it runs, so
+        // no region read may run beside it.
+        self.regions.stop_all();
         self.coordinator
             .session_mut()
             .materialise_source(name, budget_bytes)
@@ -1772,6 +1791,45 @@ impl LiveDashboard {
     /// at a step, distinct-value option lists) or hold the interrupt handle.
     pub fn coordinator(&mut self) -> &mut Coordinator {
         &mut self.coordinator
+    }
+
+    /// This dashboard's region runs and their answers.
+    #[must_use]
+    pub fn regions(&self) -> &RegionsWorker {
+        &self.regions
+    }
+
+    /// [`Self::regions`], to set its wake or take its answers.
+    pub fn regions_mut(&mut self) -> &mut RegionsWorker {
+        &mut self.regions
+    }
+
+    /// Start a region run for each of `plots` that qualifies and is not
+    /// already answered at the extent it is drawn at.
+    pub fn request_regions(&mut self, plots: &[PlotHandle]) {
+        self.regions.request_for(
+            self.coordinator.session(),
+            &self.spec,
+            plots,
+            &self.region_columns,
+        );
+    }
+
+    /// The table's columns as the open profiled them, for the region names.
+    pub fn set_region_columns(&mut self, columns: Vec<KnownColumn>) {
+        self.region_columns = columns;
+    }
+
+    /// The region job for `plot` at the extent it is drawn at, for a caller
+    /// that runs it itself.
+    #[must_use]
+    pub fn region_job(&self, plot: &PlotHandle) -> Option<RegionJob> {
+        RegionJob::for_plot(
+            self.coordinator.session(),
+            &self.spec,
+            plot,
+            &self.region_columns,
+        )
     }
 
     /// **The nearest drawn row to a point on one of this dashboard's marks.**

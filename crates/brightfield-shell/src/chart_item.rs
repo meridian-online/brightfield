@@ -702,6 +702,11 @@ impl ChartItem {
         if doc.pump_navigation() {
             repaint = true;
         }
+        // The regions are found off this thread; a frame starts the runs the
+        // page is owed and draws the answers that have landed.
+        if doc.tend_regions(Some(ctx)) {
+            repaint = true;
+        }
 
         if released {
             if let Some(drag) = self.drag.take() {

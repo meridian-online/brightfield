@@ -4486,6 +4486,8 @@ impl ChartDoc {
             plot: ComponentPath(path),
             extent: engine_extent,
         });
+        // The extent has settled, so the regions are found again over it.
+        self.request_regions();
         if !applied {
             // The settled frame composed nothing — a gesture that landed off
             // the data. The dashboard has rolled its query store back, so the
@@ -4515,6 +4517,67 @@ impl ChartDoc {
             });
         }
         applied
+    }
+
+    /// Start a region run for each plot not yet answered at the extent it is
+    /// drawn at, unless a gesture is still moving the frame: a run per
+    /// pointer step would be work thrown away.
+    fn request_regions(&mut self) {
+        if self.nav.is_moving() {
+            return;
+        }
+        if let Some(live) = self.live.as_mut() {
+            live.request_regions(&self.composed.plots);
+        }
+    }
+
+    /// The frame's turn for the regions: start the runs the page is owed and
+    /// take the answers that have landed, redrawing the page when one has.
+    /// True when the page changed. `wake`, when given, is asked for a frame
+    /// whenever a run finishes.
+    pub fn tend_regions(&mut self, wake: Option<&egui::Context>) -> bool {
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if let Some(ctx) = wake.filter(|_| !live.regions().has_wake()) {
+            let ctx = ctx.clone();
+            live.regions_mut().set_wake(move || ctx.request_repaint());
+        }
+        self.request_regions();
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.regions_mut().poll() {
+            return false;
+        }
+        // Served from the batches already held: only the overlay is new.
+        match live.present() {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: the regions' re-composite failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Whether a region run is under way.
+    #[must_use]
+    pub fn regions_pending(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|live| live.regions().pending())
+    }
+
+    /// The region job for the plot at `plot` at the extent it is drawn at, for
+    /// a caller that runs it itself.
+    #[must_use]
+    pub fn region_job(&self, plot: usize) -> Option<crate::regions::RegionJob> {
+        let live = self.live.as_ref()?;
+        live.region_job(self.composed.plots.get(plot)?)
     }
 
     /// Return every plot to full extent — the **explicit reset**, and the only

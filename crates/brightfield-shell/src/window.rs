@@ -1799,7 +1799,7 @@ impl Boot {
     /// `tests/scripted_open.rs` holds by comparing what each leaves behind.
     fn of_opened_file(opened: crate::data_file::OpenedFile) -> Self {
         let crate::data_file::OpenedFile {
-            live,
+            mut live,
             composed,
             dashboard,
             spec_file,
@@ -1816,6 +1816,18 @@ impl Boot {
             eprintln!("the Protocol for this file could not be built: {e}");
             ProtocolInputs::empty()
         });
+        // The open profiled the table and knows how each column's axis prints
+        // it, which the names of a plot's dense regions are read through.
+        live.set_region_columns(
+            protocol
+                .profiles
+                .iter()
+                .map(|profile| crate::regions::KnownColumn {
+                    profile: profile.clone(),
+                    representation: dashboard.representation(&profile.name),
+                })
+                .collect(),
+        );
         // Only for a dashboard of ONE tile: that is the case where a tile's
         // picture is the document's picture, so the chart pane can host it
         // through that kind's module. A dashboard of several tiles is one
