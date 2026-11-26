@@ -124,7 +124,9 @@ fn over_a_chart_the_chart_stays_and_a_table_no_chart_reads_opens_as_its_grid() {
         .cloned()
         .expect("the chart's table is listed");
     find(&mut win, &held_name);
+    assert_eq!(first_row(&win).as_deref(), Some(held_name.as_str()));
     win.key(egui::Key::Enter);
+    assert_eq!(win.app.open_overlay(), None, "Enter chose the row");
     assert_eq!(
         win.app.canvas_holds(),
         &CanvasHolds::Dashboard {
@@ -132,6 +134,7 @@ fn over_a_chart_the_chart_stays_and_a_table_no_chart_reads_opens_as_its_grid() {
             table: held.clone(),
         }
     );
+    assert_eq!(win.app.protocol_model().selected(), Some(&held));
 
     // A table no chart reads: its grid takes the canvas.
     let (other, name) = listed
