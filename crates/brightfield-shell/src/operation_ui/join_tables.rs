@@ -4,7 +4,7 @@
 //!
 //! It starts from `&` on a cell, from "Join on this column" on a column
 //! header's menu, or from the palette, and each of them opens the spine's pick
-//! first, with the related tables marked. Once a table is taken, [`begin`]
+//! first, with the related tables marked. Once a table is taken, `begin`
 //! proposes the keys, in this order:
 //!
 //! 1. a relationship the Protocol's model holds between the two tables: the
