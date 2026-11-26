@@ -330,6 +330,8 @@ const NEEDS_GRID_CELL: &[Requirement] = &[Requirement::of(Need::Selected(Selecte
 const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Model))];
 // The ribbon is drawn only over an open Protocol: the front door has none.
 const NEEDS_RIBBON: &[Requirement] = &[A_PROTOCOL];
+// Quick open lists the Protocol's tables: the front door has none.
+const NEEDS_QUICK_OPEN: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_MODEL_TABLE: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelTable))];
 const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelJoin))];
 // The node's activities. Grid and Chart look at a table or view; Relate is the
@@ -1710,6 +1712,21 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show the model that relates the Protocol's sources",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "⌘⌥ and M for model; ⌥M alone is the Model tab" }),
         },
+        // Quick open finds a table or view by its DuckDB name from wherever the
+        // canvas is, where the node jump's `/` is the graph's alone.
+        VerbEntry {
+            longname: "quick-open",
+            label: "Quick open",
+            needs: NEEDS_QUICK_OPEN,
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-p")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open any table or view of the Protocol by its name",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "⌘P, the editors' quick open" }),
+        },
         VerbEntry {
             longname: "toggle-inspector-rail",
             label: "Inspector rail",
@@ -2633,6 +2650,7 @@ mod tests {
             "show-grid",
             "show-chart",
             "relate",
+            "quick-open",
             "toggle-inspector-rail",
             "toggle-controls-rail",
             "open-chart-versions",
@@ -3191,11 +3209,13 @@ mod tests {
             .collect();
         assert_eq!(in_workspace, ["cycle-model-view"]);
         // The model's verbs stay at the model altitude, and h j k l are not theirs.
-        // The ribbon's verbs and the node's activities are the window's, at
-        // every altitude the ribbon is drawn over, the model's among them.
+        // The ribbon's verbs, the node's activities and quick open are the
+        // window's, at every altitude the ribbon is drawn over, the model's
+        // among them.
         for v in at_model.iter().filter(|v| {
             !crate::ribbon::RIBBON_VERBS.contains(&v.longname)
                 && !crate::activity::ACTIVITY_VERBS.contains(&v.longname)
+                && v.longname != "quick-open"
         }) {
             assert_eq!(
                 v.scope_applicability,

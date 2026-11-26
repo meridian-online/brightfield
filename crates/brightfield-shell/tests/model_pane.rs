@@ -354,13 +354,15 @@ fn palette_lists_three_views() {
     }
     assert!(rows.iter().any(|r| r == "cycle-model-view"), "{rows:?}");
     // Every row the palette offers is one of the pane's own verbs, the
-    // ribbon's, which the window offers wherever the ribbon is drawn, or an
-    // activity of the node in focus, which the model step offers too.
+    // ribbon's, which the window offers wherever the ribbon is drawn, an
+    // activity of the node in focus, which the model step offers too, or quick
+    // open, which the window offers over any open Protocol.
     assert!(
         rows.iter()
             .all(|r| brightfield_shell::model_pane::is_model_verb(r)
                 || brightfield_keys::ribbon::RIBBON_VERBS.contains(&r.as_str())
-                || brightfield_keys::activity::ACTIVITY_VERBS.contains(&r.as_str())),
+                || brightfield_keys::activity::ACTIVITY_VERBS.contains(&r.as_str())
+                || r == brightfield_shell::window::QUICK_OPEN),
         "{rows:?}"
     );
 }

@@ -228,10 +228,14 @@ pub fn palette_filter(
                 .then_with(|| a.longname.cmp(b.longname))
         });
     } else {
-        // Fuzzy score, then frequency, then name.
+        // A command named exactly by the query first, so typing `open` gives
+        // Open ahead of the commands whose names or help merely contain it.
+        // Then fuzzy score, then frequency, then name.
+        let exact = |c: &PaletteCandidate| c.longname.eq_ignore_ascii_case(query);
         candidates.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
+            exact(b)
+                .cmp(&exact(a))
+                .then_with(|| b.score.cmp(&a.score))
                 .then_with(|| frequency_of(reg, b.longname).cmp(&frequency_of(reg, a.longname)))
                 .then_with(|| a.longname.cmp(b.longname))
         });
@@ -357,6 +361,24 @@ mod tests {
         ] {
             assert_eq!(Frecency::from_json(text), None, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_query_that_is_a_commands_whole_name_lists_that_command_first() {
+        let reg = registry();
+        let got = palette_filter(
+            &reg,
+            Altitude::Protocol,
+            "open",
+            &Frecency::new(),
+            NOW,
+            None,
+        );
+        assert_eq!(got.first().map(|c| c.longname), Some("open"));
+        assert!(
+            got.iter().any(|c| c.longname == "quick-open"),
+            "quick open still matches `open`"
+        );
     }
 
     #[test]

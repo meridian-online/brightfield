@@ -94,7 +94,7 @@ use crate::editor::EDITOR;
 use crate::inspector::{InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
-    HelpSheet, JumpTarget, JumpToNode,
+    HelpSheet, JumpTarget, JumpToNode, QuickOpen,
 };
 use crate::panel_tiles::{PanelTiles, TilesAction};
 use crate::pipeline::Composed;
@@ -2291,6 +2291,9 @@ enum Overlay {
     Help(Picker<HelpSheet>),
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
+    /// Quick open (`⌘P`): every table and view of the Protocol by its DuckDB
+    /// name, from whatever holds the canvas.
+    QuickOpen(Picker<QuickOpen>),
     /// The question a close request raises over a window that carries the
     /// unsaved mark: save and close, close without saving, or keep editing. It
     /// holds what it says — the chart file, the unsaved edits in the shelf's
@@ -2523,6 +2526,7 @@ struct OverlayKeys {
     palette: Vec<&'static str>,
     help: Option<&'static str>,
     jump: Option<&'static str>,
+    quick_open: Option<&'static str>,
 }
 
 impl OverlayKeys {
@@ -2541,6 +2545,7 @@ impl OverlayKeys {
                 .unwrap_or_default(),
             help: primary("open-help"),
             jump: primary("focus-jump"),
+            quick_open: primary(QUICK_OPEN),
         }
     }
 }
@@ -2777,6 +2782,9 @@ pub const QUIT: &str = "quit";
 /// the palette.
 pub const NEW_PROTOCOL: &str = "new-protocol";
 
+/// The registry verb that opens quick open, ⌘P.
+pub const QUICK_OPEN: &str = "quick-open";
+
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
 
@@ -2964,6 +2972,12 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::C)
         }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        // Quick open. egui's key match ignores a Shift or an ⌥ the pattern
+        // leaves out, so without the guard ⌘P would also take the palette's
+        // ⇧⌘P.
+        "cmd-p" => ctx.input_mut(|i| {
+            !i.modifiers.shift && !i.modifiers.alt && i.consume_key(Modifiers::COMMAND, Key::P)
+        }),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
@@ -8825,9 +8839,23 @@ impl MeridianApp {
                 palette |= consume_token(ctx, token);
             }
         }
+        // Quick open's chord is no field's either, so it opens from a field as
+        // the palette's does.
+        let quick_open = self
+            .overlay_keys
+            .quick_open
+            .is_some_and(|t| (!typing || t.starts_with("cmd-")) && consume_token(ctx, t));
         if palette {
             self.open_palette_for_canvas(graph_on_canvas);
             self.answered("open-palette");
+        } else if quick_open {
+            self.answered(QUICK_OPEN);
+            match self.availability_of(QUICK_OPEN) {
+                Some(brightfield_keys::Availability::Missing(sentence)) => {
+                    self.say_activity_refused(ctx, sentence);
+                }
+                _ => self.open_quick_open(),
+            }
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
             self.answered("focus-jump");
@@ -8842,7 +8870,7 @@ impl MeridianApp {
     ///
     /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
     /// a case inside it: `open-home` is a runtime dispatch, not an overlay
-    /// opener, and [`OverlayKeys`] is pinned to exactly the three that are. It
+    /// opener, and [`OverlayKeys`] holds the overlay openers. It
     /// still invents no binding — the token comes off the registry
     /// ([`Self::home_binding`]) and runs through the same
     /// [`consume_token`]. `open_home` is a no-op on the front door, so an
@@ -8871,14 +8899,17 @@ impl MeridianApp {
     }
 
     /// **What stands over the window, as the menus read it**: a sheet that
-    /// waits on an answer is an overlay that is not one of the three pickers
-    /// (the palette, the help sheet, the node jump). While one is up the
+    /// waits on an answer is an overlay that is not one of the four pickers
+    /// (the palette, the help sheet, the node jump, quick open). While one is up the
     /// menus are greyed and a command chosen from one is dropped, but for the
     /// commands [`crate::menu_bar::Sheet::stops`] leaves live.
     fn sheet(&self) -> crate::menu_bar::Sheet {
         use crate::menu_bar::Sheet;
         match self.overlay {
-            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_)) => Sheet::None,
+            None
+            | Some(
+                Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_) | Overlay::QuickOpen(_),
+            ) => Sheet::None,
             Some(Overlay::CloseQuestion(_)) => Sheet::CloseQuestion,
             Some(_) => Sheet::Up,
         }
@@ -10543,6 +10574,79 @@ impl MeridianApp {
         self.overlay = Some(Overlay::Jump(Picker::new(JumpToNode::new(targets))));
     }
 
+    /// Open quick open over every table and view of the Protocol, in the
+    /// outline's order: each by its DuckDB name, with the step that makes it.
+    fn open_quick_open(&mut self) {
+        let targets = self
+            .protocol
+            .doc
+            .model
+            .tables()
+            .into_iter()
+            .map(|(id, label, step)| JumpTarget {
+                id,
+                label,
+                detail: step,
+            })
+            .collect();
+        self.overlay = Some(Overlay::QuickOpen(Picker::new(QuickOpen::new(targets))));
+    }
+
+    /// **Put `node`, chosen in quick open, in focus in the activity the canvas
+    /// is showing.** The selection moves to it whatever holds the canvas, so
+    /// the spine and the graph follow. A grid stays a grid, of the chosen
+    /// table. A chart stays a chart when one the window can draw reads the
+    /// table, and gives way to the table's grid when none does, since the
+    /// window draws one chart. The graph stays the graph, and the model pane
+    /// stays up, each with the table selected behind it.
+    fn quick_open_to(&mut self, node: AssetId) {
+        self.protocol.doc.model.select_id(node.clone());
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return;
+        }
+        let viewable = self.protocol.doc.model.is_viewable(&node);
+        let holds = match &self.canvas_holds {
+            CanvasHolds::View { view, .. } if viewable => Some(CanvasHolds::View {
+                node: node.clone(),
+                view: *view,
+            }),
+            CanvasHolds::Dashboard { .. } => match self.chart_reading(&node) {
+                Some(chart) => Some(CanvasHolds::Dashboard {
+                    node: chart,
+                    table: node.clone(),
+                }),
+                None if viewable => Some(CanvasHolds::View {
+                    node: node.clone(),
+                    view: NodeView::Grid,
+                }),
+                None => None,
+            },
+            _ => None,
+        };
+        if let Some(holds) = holds {
+            // The held table's grid is the one grid, so it leaves the ledger,
+            // as Grid does.
+            if matches!(holds, CanvasHolds::View { .. })
+                && self.protocol.doc.model.table() == Some(&node)
+            {
+                self.grid_spot = crate::app::GridSpot::Canvas;
+            }
+            self.graph_reached_from = None;
+            self.canvas_holds = holds;
+        }
+    }
+
+    /// The rows the open quick open lists, in the order it draws them: each
+    /// table's name with the step that makes it. Empty when quick open is not
+    /// open. A test hook, like [`Self::open_overlay`].
+    #[must_use]
+    pub fn quick_open_rows(&self) -> Vec<(String, Option<String>)> {
+        match self.overlay.as_ref() {
+            Some(Overlay::QuickOpen(picker)) => picker.delegate.listed(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Draw the open overlay, if any, and act on what it reports.
     ///
     /// Dismissal arrives two ways and both mean close: a [`Picker`] inside a
@@ -10678,6 +10782,22 @@ impl MeridianApp {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(id) = picker.delegate.take_picked() {
                             self.protocol.doc.model.select_id(id);
+                        }
+                        close = true;
+                    }
+                    Some(PickerEvent::Dismissed) => close = true,
+                    None => close = shown.dismissed,
+                }
+            }
+            Overlay::QuickOpen(picker) => {
+                let chrome = ModalChrome::new().title("Quick open").enter_hint("open");
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-quick-open", &chrome, |ui| picker.show(ui));
+                match shown.inner.event {
+                    Some(PickerEvent::Confirmed) => {
+                        if let Some(id) = picker.delegate.take_picked() {
+                            self.quick_open_to(id);
+                            ctx.request_repaint();
                         }
                         close = true;
                     }
@@ -12261,6 +12381,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
+            Overlay::QuickOpen(_) => "quick-open",
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
             Overlay::NewProtocol(_) => "new-protocol",
@@ -12857,6 +12978,15 @@ impl MeridianApp {
                     taken = graph_on_canvas;
                     if graph_on_canvas {
                         self.open_jump();
+                    }
+                }
+                Request::Verb(verb) if verb.as_str() == QUICK_OPEN => {
+                    taken = matches!(
+                        self.availability_of(QUICK_OPEN),
+                        Some(brightfield_keys::Availability::Available)
+                    );
+                    if taken {
+                        self.open_quick_open();
                     }
                 }
                 // set-channel hands the hero pane's keys to the shelf band, as
@@ -22815,16 +22945,17 @@ mod tests {
         assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
+        assert_eq!(keys.quick_open, primary("quick-open"));
         // …and every token an opener binds today is one `consume_token` can
         // map to a key, so none of them is silently unwired.
-        let tokens = keys
-            .palette
-            .iter()
-            .copied()
-            .chain([keys.help, keys.jump].into_iter().flatten());
+        let tokens = keys.palette.iter().copied().chain(
+            [keys.help, keys.jump, keys.quick_open]
+                .into_iter()
+                .flatten(),
+        );
         for token in tokens {
             assert!(
-                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?" | "cmd-p"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );
