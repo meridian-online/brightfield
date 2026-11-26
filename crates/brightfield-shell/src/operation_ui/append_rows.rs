@@ -9,7 +9,7 @@
 //! `UNION ALL BY NAME` would append its rows with every column of the table
 //! in front null.
 //!
-//! The operation asks nothing more ([`Keeps::OnEnter`]). Its form in the
+//! Once the tables are taken, Enter keeps the step ([`Keeps::OnEnter`]). Its form in the
 //! Operation section shows how the columns match: the tables numbered in the
 //! order their rows come, then a row per column name, in the order the result
 //! takes them (the table in front's first, then each name a later table
