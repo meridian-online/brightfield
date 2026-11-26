@@ -4255,7 +4255,7 @@ impl ChartDoc {
     /// readout is a second opinion about the filter rather than a view of it.
     ///
     /// The one exception is a region's cells ([`readable_clause`]): the SQL
-    /// lists every cell, hundreds for a large region, so the readout names its
+    /// lists the cells one by one, hundreds for a large region, so the readout names its
     /// two columns, how many cells it holds and the grid they are on.
     ///
     /// # Why `$name = clause` and not "Filter:"
