@@ -2365,7 +2365,7 @@ impl Walker {
     }
 
     /// Raise [`ParseWarning::InvalidRegionsSwitch`] when a plot's `regions`
-    /// value is anything but `off`.
+    /// value is not `off` (`an_unknown_regions_value_warns`).
     fn warn_regions_switch(&mut self, value: &SpecValue) {
         if !is_regions_off(value) {
             self.warnings.push(ParseWarning::InvalidRegionsSwitch {
@@ -3030,9 +3030,10 @@ pub const REGIONS_KEY: &str = "regions";
 /// The one value [`REGIONS_KEY`] takes.
 pub const REGIONS_OFF: &str = "off";
 
-/// Whether `value` is the `off` that turns a plot's regions off. Every other
-/// value, `on` among them, is one nothing reads, and
-/// [`ParseWarning::InvalidRegionsSwitch`] names it.
+/// Whether `value` is the `off` that turns a plot's regions off. A value
+/// that is not, `on` among them, is one nothing reads, and
+/// [`ParseWarning::InvalidRegionsSwitch`] names it
+/// (`an_unknown_regions_value_warns`).
 #[must_use]
 pub fn is_regions_off(value: &SpecValue) -> bool {
     matches!(value, SpecValue::String(v) if v == REGIONS_OFF)
