@@ -1040,7 +1040,7 @@ fn cast_open_reads_the_file_once() {
     let statements = &trace.cast.statements;
     let copies: Vec<_> = statements
         .iter()
-        .filter(|s| s.sql.starts_with("CREATE TEMP TABLE"))
+        .filter(|s| s.sql.starts_with("CREATE TABLE"))
         .collect();
     assert_eq!(copies.len(), 1, "{statements:#?}");
     assert_eq!(copies[0].file_reads, Some(1), "{:?}", copies[0]);
@@ -1049,7 +1049,11 @@ fn cast_open_reads_the_file_once() {
     // describes (see `plan_file_reads` in the engine's profile module).
     let after: Vec<_> = statements
         .iter()
-        .filter(|s| !s.sql.starts_with("CREATE TEMP TABLE") && !s.sql.starts_with("DESCRIBE"))
+        .filter(|s| {
+            !s.sql.starts_with("CREATE TABLE")
+                && !s.sql.starts_with("CREATE TEMP TABLE")
+                && !s.sql.starts_with("DESCRIBE")
+        })
         .collect();
     assert!(
         after.iter().any(|s| s.sql.contains("__raw__revenue")),

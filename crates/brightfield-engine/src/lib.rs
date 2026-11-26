@@ -425,6 +425,46 @@ impl LoadOptions {
     }
 }
 
+/// A read-only view of a session's database on its own connection, `Send` so a
+/// worker thread can run a query while the UI thread keeps drawing.
+///
+/// It reads what the database holds: the tables and views the session made.
+/// DuckDB TEMP tables belong to the connection that made them, so a cube the
+/// session built is invisible here. A source copied in with
+/// [`Session::materialise_source`] is a plain table and is visible.
+pub struct RegionReader {
+    conn: Connection,
+    interrupt: std::sync::Arc<duckdb::InterruptHandle>,
+}
+
+impl RegionReader {
+    /// Run `sql` and return its Arrow batches. Touches neither of the
+    /// session's caches.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's, including the error an [`Self::interrupt`] causes.
+    pub fn query(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let arrow = stmt.query_arrow(duckdb::params![])?;
+        Ok(arrow.collect())
+    }
+
+    /// Stop the query this reader is running, from any thread. The running
+    /// [`Self::query`] returns an error.
+    pub fn interrupt(&self) {
+        self.interrupt.interrupt();
+    }
+
+    /// The handle [`Self::interrupt`] uses, to hand to a thread other than the
+    /// one that owns the reader: the connection is `Send` but not `Sync`, so
+    /// the thread running a query holds the reader and cannot share it.
+    #[must_use]
+    pub fn interrupt_handle(&self) -> std::sync::Arc<duckdb::InterruptHandle> {
+        std::sync::Arc::clone(&self.interrupt)
+    }
+}
+
 /// Factory for creating [`Session`] objects. Stateless.
 pub struct Engine;
 
@@ -1800,6 +1840,45 @@ impl Session {
         emit_rows_query(&self.spec, index, params, selections_ref, audience)
             .map(|emitted| emitted.sql)
             .map_err(|e| EngineError::EmitFailed { cause: e })
+    }
+
+    /// A mark's rows as the plot draws them, with the spec's parameters and
+    /// **no selection at all**: what a region of dense points describes is the
+    /// plot's own view, so a brush on another plot must not redraw it.
+    ///
+    /// The same emitter as [`Self::step_rows_sql`], called with no selections
+    /// where that one passes the held ones.
+    ///
+    /// # Errors
+    ///
+    /// Emit failure for an inline or data-less mark.
+    pub fn region_rows_sql(&self, index: usize) -> Result<String, EngineError> {
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        emit_rows_query(&self.spec, index, params, None, RowsAudience::Plot)
+            .map(|emitted| emitted.sql)
+            .map_err(|e| EngineError::EmitFailed { cause: e })
+    }
+
+    /// A reader on a second connection to this session's database, for a
+    /// worker thread. Tables and views the session made are visible to it;
+    /// connection-local TEMP tables are not (see [`RegionReader`]).
+    ///
+    /// # Errors
+    ///
+    /// DuckDB would not open the second connection.
+    pub fn region_reader(&self) -> Result<RegionReader, EngineError> {
+        let conn = self
+            .conn
+            .try_clone()
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        Ok(RegionReader {
+            interrupt: conn.interrupt_handle(),
+            conn,
+        })
     }
 
     /// The row COUNT of a mark's step materialisation under the current
@@ -3424,6 +3503,10 @@ impl Session {
     /// prevent. Both settings are put back before this returns, down the
     /// refusing branch as well as the copying one.
     ///
+    /// The copy is a plain table, not a TEMP one, so a reader on a cloned
+    /// connection ([`Session::region_reader`]) can see it; the session's
+    /// database is in memory, so it never reaches disk either way.
+    ///
     /// The view is replaced rather than dropped, so `name` still resolves and
     /// an emitted query is byte-identical to what it was. What changes is what
     /// the plan reads: a `Table` leaf rather than a file one, which is the
@@ -3444,7 +3527,7 @@ impl Session {
     pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), EngineError> {
         let quoted = name.replace('"', "\"\"");
         let table = format!("{name}{MATERIALISED_SUFFIX}").replace('"', "\"\"");
-        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
+        let copy = format!("CREATE TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
         self.record_scan(&copy);
 
         // No baseline, no copy. Narrowing a limit this session cannot put back

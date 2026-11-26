@@ -101,10 +101,10 @@ fn the_mark_execute_funnel_counts() {
     live.execute_mark(0).expect("the mark executes");
     let tally = live.take_scan_tally();
     // The mark's own SQL, and NOT the copy's — `materialise_source` wraps the
-    // same text in a `CREATE TEMP TABLE`, so a needle without this second half
+    // same text in a `CREATE TABLE`, so a needle without this second half
     // would be satisfied by the wrong funnel.
     counted(&tally, "mark execute", |sql| {
-        sql.contains("SELECT * FROM \"t\"") && !sql.contains("CREATE TEMP TABLE")
+        sql.contains("SELECT * FROM \"t\"") && !sql.contains("CREATE TABLE")
     });
 }
 
@@ -196,6 +196,6 @@ fn the_cube_build_and_cube_serve_funnels_count() {
         sql.contains("CREATE TEMP TABLE \"__bf_preagg_")
     });
     counted(&tally, "cube serve", |sql| {
-        sql.contains("__bf_preagg_") && !sql.contains("CREATE TEMP TABLE")
+        sql.contains("__bf_preagg_") && !sql.contains("CREATE TABLE")
     });
 }
