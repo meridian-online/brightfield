@@ -109,6 +109,48 @@ fn choosing_a_table_focuses_it_in_the_current_activity() {
 }
 
 #[test]
+fn over_a_chart_the_chart_stays_and_a_table_no_chart_reads_opens_as_its_grid() {
+    let mut win = scenes::data_file();
+    let (chart, held) = match win.app.canvas_holds() {
+        CanvasHolds::Dashboard { node, table } => (node.clone(), table.clone()),
+        other => panic!("a data file opens on its chart: {other:?}"),
+    };
+    let listed = tables(&win);
+
+    // The table the chart reads: the chart stays.
+    let (_, held_name) = listed
+        .iter()
+        .find(|(id, _)| *id == held)
+        .cloned()
+        .expect("the chart's table is listed");
+    find(&mut win, &held_name);
+    win.key(egui::Key::Enter);
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Dashboard {
+            node: chart,
+            table: held.clone(),
+        }
+    );
+
+    // A table no chart reads: its grid takes the canvas.
+    let (other, name) = listed
+        .into_iter()
+        .find(|(id, _)| *id != held)
+        .expect("a table beside the chart's");
+    find(&mut win, &name);
+    win.key(egui::Key::Enter);
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: other.clone(),
+            view: NodeView::Grid,
+        }
+    );
+    assert_eq!(win.app.protocol_model().selected(), Some(&other));
+}
+
+#[test]
 fn quick_open_is_offered_off_the_graph_too() {
     let mut win = scenes::data_file();
     assert!(!win.app.graph_on_canvas(), "a data file opens on its chart");
