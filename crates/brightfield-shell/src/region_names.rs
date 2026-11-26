@@ -369,8 +369,9 @@ impl Facts {
     /// greatest, and a place between two bins falls between one's greatest and the next one's
     /// least, so the answer always lies between values the rows hold and is exact where the bins
     /// it falls in hold at most two values. `None` when no number is outside the region, or when
-    /// the column's range in the view is not finite, which the label query never writes but a
-    /// summary from elsewhere could.
+    /// the column's range in the view is not finite: the label query reads NaN and infinities
+    /// as missing (`nan_and_infinities_are_read_as_missing`), and this guard keeps a summary
+    /// read from elsewhere from reaching the arithmetic with one.
     fn rest_quartiles(&self, region: i32) -> Option<(f64, f64)> {
         let edge = |kind: &str| self.numbers.get(&(-1, kind.to_owned())).copied();
         if !(edge(label_kind::LO)?.is_finite() && edge(label_kind::HI)?.is_finite()) {
