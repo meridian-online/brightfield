@@ -1378,6 +1378,7 @@ mod tests {
             moments: Some(ColumnMoments {
                 mean: 0.0,
                 median: 0.0,
+                upper_quartile: None,
                 sd: None,
                 distinct,
                 min: 0.0,
