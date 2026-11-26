@@ -165,6 +165,7 @@ pub mod organise_joins;
 pub mod organise_joins_view;
 pub mod overlays;
 pub mod own_files;
+pub mod palette_history;
 pub mod panel_tiles;
 pub mod pipeline;
 pub mod preferences;

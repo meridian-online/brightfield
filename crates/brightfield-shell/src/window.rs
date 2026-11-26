@@ -64,7 +64,7 @@ use std::path::{Component, Path, PathBuf};
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
-use brightfield_keys::{Altitude, RecencyCounter};
+use brightfield_keys::{Altitude, Frecency};
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
@@ -4068,10 +4068,11 @@ pub struct MeridianApp {
     /// Whether the ledger's Versions panel holds the keys: a press in it gave
     /// them to it, and no press elsewhere has taken them since.
     versions_hold: bool,
-    /// The per-session palette recency: verbs run from the palette rank
-    /// higher on its next empty-query open. Session-scoped by design (the
-    /// sanctioned v1 simplification); it resets each launch.
-    recency: RecencyCounter,
+    /// The palette's frecency: verbs run from the palette rank higher on its
+    /// next empty-query open, by how often and how lately each was run. It is
+    /// read from the config folder when the window is made and written back
+    /// after each pick, so it carries from one session to the next.
+    frecency: Frecency,
     /// Persistent, id-deduplicated banners. A source that re-fails raises
     /// under the same composite id and *replaces* its banner — never stacks.
     notifications: NotificationLayer,
@@ -4593,7 +4594,7 @@ impl MeridianApp {
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
             versions_hold: false,
-            recency: RecencyCounter::new(),
+            frecency: crate::palette_history::load(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
             diagnostic_banners: Vec::new(),
@@ -10304,7 +10305,7 @@ impl MeridianApp {
     fn open_model_palette(&mut self) {
         let allow = crate::model_pane::model_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::Model, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -10352,7 +10353,7 @@ impl MeridianApp {
     }
 
     /// Open the command palette at the Protocol altitude, over a snapshot of
-    /// the session's recency, over the Protocol altitude's verbs —
+    /// the session's frecency, over the Protocol altitude's verbs —
     /// [`crate::overlays::protocol_palette_verbs`] — each read against what
     /// the window holds ([`Self::situation`]).
     ///
@@ -10363,7 +10364,7 @@ impl MeridianApp {
     fn open_protocol_palette(&mut self) {
         let allow = crate::overlays::protocol_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::Protocol, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -10430,7 +10431,7 @@ impl MeridianApp {
     fn open_chart_search(&mut self) {
         let allow = crate::overlays::chart_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::View, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -10643,7 +10644,9 @@ impl MeridianApp {
                 match shown.inner.event {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(name) = picker.delegate.take_picked() {
-                            self.recency.record(name);
+                            self.frecency
+                                .record(name, brightfield_keys::unix_now_secs());
+                            crate::palette_history::save(&self.frecency);
                             self.apply(ctx, graph_on_canvas, vec![Request::Verb(Verb::new(name))]);
                         }
                         close = true;
@@ -12970,7 +12973,9 @@ impl MeridianApp {
                     self.pick_requested = true;
                 }
                 // An operation's verb is the window's: chosen from a palette or a menu, it starts
-                // the operation as its key does, or says what it needs.
+                // the operation as its key does, or says what it needs. `open-sources-browser` is
+                // `read-file`'s, so it comes here too and opens the browser over the Protocol the
+                // window holds, whichever document is on the canvas.
                 Request::Verb(verb) if crate::operation_ui::by_verb(verb.as_str()).is_some() => {
                     taken = self.start_operation_verb(ctx, verb.as_str());
                 }
@@ -13053,11 +13058,6 @@ impl MeridianApp {
                 // store and the reopen are the window's, not either document's.
                 Request::Verb(verb) if verb.as_str() == UNTRUST_PROTOCOL => {
                     self.untrust_open_protocol(ctx);
-                }
-                // open-sources-browser is the window's as A is: the browser adds to the Protocol
-                // the window holds, whichever document is on the canvas.
-                Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
-                    self.open_sources_browser(ctx);
                 }
                 // organise-joins is the window's too: the sheet is over the model it holds.
                 Request::Verb(verb) if verb.as_str() == crate::protocol::ORGANISE_JOINS => {
