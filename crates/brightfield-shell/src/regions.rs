@@ -46,6 +46,7 @@ use brightfield_render::scale::Scale;
 use brightfield_render::text::{draw_text, measure_width, TextAnchor, LABEL_SIZE};
 use brightfield_spec::ast::{Mark, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::collect_plot_nodes;
+use brightfield_spec::parse::REGIONS_KEY;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::Spec;
 use brightfield_sql::emit::{collect_marks, collect_plot_groups};
@@ -108,10 +109,39 @@ pub struct KnownColumn {
 /// linear scales.
 #[must_use]
 pub fn qualifying_layer(spec: &Spec, plot_path: &str) -> Option<(usize, String, String)> {
+    if regions_switched_off(spec, plot_path) {
+        return None;
+    }
+    drawable_layer(spec, plot_path)
+}
+
+/// Whether the plot at `plot_path` asks for `regions: off`.
+#[must_use]
+pub fn regions_switched_off(spec: &Spec, plot_path: &str) -> bool {
+    collect_plot_nodes(spec)
+        .into_iter()
+        .find(|(path, _)| path == plot_path)
+        .is_some_and(|(_, plot)| regions_off(plot))
+}
+
+/// Whether `plot` offers the switch that turns its regions off and on: its
+/// regions could be drawn at the extent it is drawn at, were they on.
+///
+/// [`qualifying_layer`] without the `regions: off` it reads, so a plot
+/// switched off keeps the switch that turns it back on, and the drawn-scale
+/// check [`RegionJob::for_plot`] makes, so a plot over a text column, or one
+/// drawn through a projection that bends its axes, offers none.
+#[must_use]
+pub fn offers_regions_switch(spec: &Spec, plot: &PlotHandle) -> bool {
+    drawable_layer(spec, &plot.path).is_some() && displayed_extent(plot).is_some()
+}
+
+/// [`qualifying_layer`], whatever the plot's `regions` key says.
+fn drawable_layer(spec: &Spec, plot_path: &str) -> Option<(usize, String, String)> {
     let (_, plot) = collect_plot_nodes(spec)
         .into_iter()
         .find(|(path, _)| path == plot_path)?;
-    if regions_off(plot) || ["xScale", "yScale"].iter().any(|k| not_linear(plot, k)) {
+    if ["xScale", "yScale"].iter().any(|k| not_linear(plot, k)) {
         return None;
     }
     let marks = collect_marks(spec);
@@ -128,7 +158,9 @@ pub fn qualifying_layer(spec: &Spec, plot_path: &str) -> Option<(usize, String, 
 }
 
 fn regions_off(plot: &PlotNode) -> bool {
-    matches!(plot.attributes.get("regions"), Some(SpecValue::String(v)) if v == "off")
+    plot.attributes
+        .get(REGIONS_KEY)
+        .is_some_and(brightfield_spec::parse::is_regions_off)
 }
 
 fn not_linear(plot: &PlotNode, key: &str) -> bool {

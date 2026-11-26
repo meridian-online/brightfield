@@ -624,6 +624,41 @@ impl NormaliseSwitchDrawn {
     }
 }
 
+/// **One plot's regions switch, as the last frame drew it.**
+///
+/// The sibling of [`NormaliseSwitchDrawn`], recorded the same way: the rects
+/// here are the ones the painter and the hit test were handed, in
+/// **window-space logical points**. A state is `true` for regions on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionsSwitchDrawn {
+    /// Which plot on the page this switch acts on — an index into
+    /// [`Composed::plots`].
+    pub plot: usize,
+    /// The control's outer rect — the box the hover text is offered over.
+    pub rect: egui::Rect,
+    /// One entry per offered state, on and then off, each with the rect it was
+    /// painted in.
+    pub states: Vec<(bool, egui::Rect)>,
+    /// The box the pane clips this control to; see
+    /// [`NormaliseSwitchDrawn::clip`].
+    pub clip: egui::Rect,
+    /// Whether the plot's regions are on: the spec carries no `regions: off`.
+    pub active: bool,
+    /// The words the control offers on hover, verbatim.
+    pub hover: String,
+}
+
+impl RegionsSwitchDrawn {
+    /// Each state with the part of its rect a pointer can land in, as
+    /// [`NormaliseSwitchDrawn::hits`] gives them.
+    pub fn hits(&self) -> impl Iterator<Item = (bool, egui::Rect)> + '_ {
+        self.states.iter().filter_map(|(state, rect)| {
+            let hit = rect.intersect(self.clip);
+            hit.is_positive().then_some((*state, hit))
+        })
+    }
+}
+
 /// **A column the shelf's list is drawing on a channel and has not kept.**
 ///
 /// The page is drawn from the previewed spec while the cursor is on the
@@ -1150,6 +1185,9 @@ pub struct ChartDoc {
     /// it** — the sibling list to [`Self::scale_switches`], written by the
     /// chart pane as it draws and read by a GPU-free test.
     pub normalise_switches: Vec<NormaliseSwitchDrawn>,
+    /// **Each regions switch, as the last frame drew it**: one on every plot
+    /// whose regions can be drawn, written by the chart pane as it draws.
+    pub regions_switches: Vec<RegionsSwitchDrawn>,
     /// **The controls the chart pane drew this frame, each with its name** —
     /// the toolbar's buttons by their labels, and each tile's scale and
     /// normalise states by their words, at what the pane's clip leaves of
@@ -1609,6 +1647,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            regions_switches: Vec::new(),
             controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
@@ -1694,6 +1733,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            regions_switches: Vec::new(),
             controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
@@ -2901,6 +2941,48 @@ impl ChartDoc {
     /// standing, and a page rebuilt over the spec it already had is not an
     /// edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
+        let edit = |plot| ChartEdit::SetPlotAttribute {
+            plot,
+            key: key.to_string(),
+            value: SpecValue::String(value.to_string()),
+        };
+        self.edit_plot(plot, edit, refused)
+    }
+
+    /// **Turn one plot's regions off or on, and rebuild the page.** Off writes
+    /// `regions: off` on the plot through the edit the scale switch makes, so
+    /// Save keeps it; on takes the key out, so a spec turned off and on again
+    /// saves as it was, with no key that is not plain Mosaic.
+    ///
+    /// Returns whether the picture changed, refusing on the conditions
+    /// [`Self::set_plot_scale`] does.
+    pub fn set_plot_regions(&mut self, plot: usize, on: bool) -> bool {
+        let refused = "the regions switch was refused";
+        if on {
+            let edit = |plot| ChartEdit::RemovePlotAttribute {
+                plot,
+                key: brightfield_spec::parse::REGIONS_KEY.to_string(),
+            };
+            self.edit_plot(plot, edit, refused)
+        } else {
+            self.set_plot_attribute(
+                plot,
+                brightfield_spec::parse::REGIONS_KEY,
+                brightfield_spec::parse::REGIONS_OFF,
+                refused,
+            )
+        }
+    }
+
+    /// Apply `edit`, made for one plot's node, to the LIVE spec and rebuild the
+    /// page from it: what [`Self::set_plot_attribute`] and
+    /// [`Self::set_plot_regions`] share.
+    fn edit_plot(
+        &mut self,
+        plot: usize,
+        edit: impl FnOnce(ComponentPath) -> ChartEdit,
+        refused: &str,
+    ) -> bool {
         // A switch thrown while the shelf's list draws a column it has not
         // kept is made to the kept page: the preview is put back first, so the
         // switch's edit is not made on a spec whose other edit is never saved.
@@ -2916,11 +2998,7 @@ impl ChartDoc {
             return false;
         };
         let mut spec = live.spec().clone();
-        let edit = ChartEdit::SetPlotAttribute {
-            plot: path,
-            key: key.to_string(),
-            value: SpecValue::String(value.to_string()),
-        };
+        let edit = edit(path);
         if let Err(reason) = edit::apply(&mut spec, &edit) {
             self.interaction_fault = Some(ChartFault {
                 title: refused.to_string(),

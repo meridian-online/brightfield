@@ -70,7 +70,9 @@ use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, 
 use meridian_design::semantic::{semantic, Role};
 use meridian_design::{control, radius, spacing, typography, Elevation};
 
-use crate::app::{ChartDoc, HoverReadout, NormaliseSwitchDrawn, ScaleSwitchDrawn, CHART};
+use crate::app::{
+    ChartDoc, HoverReadout, NormaliseSwitchDrawn, RegionsSwitchDrawn, ScaleSwitchDrawn, CHART,
+};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
@@ -502,7 +504,10 @@ impl ChartItem {
         // Without it, throwing one tile's switch also moved the window's
         // selected tile to that tile and renamed what the inspector was
         // describing — `a_press_on_the_switch_is_not_a_press_on_the_canvas`.
-        let on_chrome = at.is_some_and(|at| doc.scale_switches.iter().any(|s| s.rect.contains(at)));
+        let on_chrome = at.is_some_and(|at| {
+            doc.scale_switches.iter().any(|s| s.rect.contains(at))
+                || doc.regions_switches.iter().any(|s| s.rect.contains(at))
+        });
 
         // The drag state machine: press starts a brush in the plot under
         // the pointer, release commits it. Edge-triggered on the button.
@@ -1389,8 +1394,19 @@ impl Item<ChartDoc> for ChartItem {
                     chrome::NamedControl::labelled(rect, normalise_state_label(state))
                 })
             }));
+            // The regions switch, beside whichever of the two above the plot
+            // carries, for the same reason the normalise control reads the
+            // scale switch's record.
+            let (regions, regions_picked) =
+                draw_regions_switches(doc, ui, rect, mode, &switches, &normalise);
+            doc.controls.extend(regions.iter().flat_map(|switch| {
+                switch.hits().map(|(state, rect)| {
+                    chrome::NamedControl::labelled(rect, regions_state_label(state))
+                })
+            }));
             doc.scale_switches = switches;
             doc.normalise_switches = normalise;
+            doc.regions_switches = regions;
 
             // Same gestures with a device and without one. The overlay is the
             // only thing a headless document loses: it has nowhere to paint.
@@ -1418,6 +1434,13 @@ impl Item<ChartDoc> for ChartItem {
             // rebuild — see [`ChartDoc::set_plot_stack_offset`].
             if let Some((plot, state)) = normalise_picked {
                 if doc.set_plot_stack_offset(plot, state) {
+                    cx.request_repaint();
+                }
+            }
+            // The regions pick, on the same footing — see
+            // [`ChartDoc::set_plot_regions`].
+            if let Some((plot, on)) = regions_picked {
+                if doc.set_plot_regions(plot, on) {
                     cx.request_repaint();
                 }
             }
@@ -1948,6 +1971,201 @@ fn draw_normalise_switches(
             });
         let Some((record, picked)) =
             draw_normalise_switch(ui, tile, clip, right, (i, group, plot.stack_offset), mode)
+        else {
+            continue;
+        };
+        if let Some(state) = picked {
+            pick = Some((i, state));
+        }
+        drawn.push(record);
+    }
+    (drawn, pick)
+}
+
+/// The states the regions switch offers, on and then off, in the order it
+/// draws them.
+const REGIONS_STATES: [bool; 2] = [true, false];
+
+/// The word the regions switch puts on a state: the feature's own name for
+/// on, so the switch says what it is without a hover, and `off`, the word the
+/// spec carries, for off.
+fn regions_state_label(on: bool) -> &'static str {
+    if on {
+        "regions"
+    } else {
+        "off"
+    }
+}
+
+/// The words the regions switch offers on hover, naming the plot's two columns
+/// so two plots' switches on one page read differently.
+fn regions_hover(plot: &PlotHandle) -> String {
+    match (plot.x_column.as_deref(), plot.y_column.as_deref()) {
+        (Some(x), Some(y)) => format!("regions: {x} by {y}"),
+        _ => "regions".to_string(),
+    }
+}
+
+/// **Draw one plot's regions switch and return what it drew**, plus the state
+/// the pointer picked on this frame.
+///
+/// The chrome is the scale switch's, as the normalise control's is: one kind
+/// of tile control wearing its own pair of words. `right` is the edge it ends
+/// at. `None` when the plot has no room for it.
+fn draw_regions_switch(
+    ui: &mut egui::Ui,
+    tile: egui::Rect,
+    clip: egui::Rect,
+    right: f32,
+    subject: (usize, String, bool),
+    mode: Mode,
+) -> Option<(RegionsSwitchDrawn, Option<bool>)> {
+    let (plot, hover, active) = subject;
+    let sem = semantic(mode.is_dark());
+    let font = egui::FontId::proportional(typography::CHART_LABEL_SIZE);
+    let gap = spacing::SPACE_2;
+    let painter = ui.painter().with_clip_rect(clip);
+
+    let width_of = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let labels: Vec<&str> = REGIONS_STATES
+        .iter()
+        .map(|s| regions_state_label(*s))
+        .collect();
+    let separator = width_of(SCALE_STATE_SEPARATOR);
+    let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
+    let total: f32 = widths.iter().sum::<f32>()
+        + separator * (labels.len() as f32 - 1.0)
+        + gap * (labels.len() as f32 - 1.0) * 2.0;
+    let height = control::HEIGHT_XS;
+
+    let inset = spacing::SPACE_2;
+    if right - total < tile.left() + inset || height + inset * 2.0 > tile.height() {
+        return None;
+    }
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(right - total, tile.top() + inset),
+        egui::vec2(total, height),
+    );
+
+    let mut states = Vec::with_capacity(labels.len());
+    let mut picked = None;
+    let mut x = outer.left();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            painter.text(
+                egui::pos2(x + gap + separator / 2.0, outer.center().y),
+                egui::Align2::CENTER_CENTER,
+                SCALE_STATE_SEPARATOR,
+                font.clone(),
+                chrome::colour(sem.text.placeholder),
+            );
+            x += gap * 2.0 + separator;
+        }
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let state = REGIONS_STATES[i];
+        let hit = seg.intersect(clip);
+        let response = ui
+            .interact(
+                hit,
+                egui::Id::new(("tile-regions-switch", plot, i)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(hover.clone());
+        if response.clicked() {
+            picked = Some(state);
+        }
+        let ink = if state == active {
+            sem.text.primary
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.text.muted
+        };
+        painter.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            chrome::colour(ink),
+        );
+        states.push((state, seg));
+    }
+
+    Some((
+        RegionsSwitchDrawn {
+            plot,
+            rect: outer,
+            states,
+            clip,
+            active,
+            hover,
+        },
+        picked,
+    ))
+}
+
+/// **Every regions switch on this page**, drawn and recorded, with the pick
+/// the pointer made on this frame.
+///
+/// Offered on each plot [`crate::regions::offers_regions_switch`] names: one
+/// whose regions could be drawn at the extent it is drawn at, whether they are
+/// on or off now. A document with no live session behind it draws none, as it
+/// has no spec to write the choice into. The switch ends left of the scale
+/// switch and the normalise control where the plot carries either.
+fn draw_regions_switches(
+    doc: &ChartDoc,
+    ui: &mut egui::Ui,
+    page: egui::Rect,
+    mode: Mode,
+    scale: &[ScaleSwitchDrawn],
+    normalise: &[NormaliseSwitchDrawn],
+) -> (Vec<RegionsSwitchDrawn>, Option<(usize, bool)>) {
+    let Some(spec) = doc
+        .live_dashboard()
+        .map(crate::pipeline::LiveDashboard::spec)
+    else {
+        return (Vec::new(), None);
+    };
+    let views = doc.pane_views;
+    let laid = ui.clip_rect();
+    let mut drawn = Vec::new();
+    let mut pick = None;
+    for (i, plot) in doc.composed.plots.iter().enumerate() {
+        if !crate::regions::offers_regions_switch(spec, plot) {
+            continue;
+        }
+        let tile = crate::app::plot_window_rect(page, views, plot);
+        #[allow(clippy::cast_possible_truncation)]
+        let centre = (plot.rect.x + plot.rect.width / 2.0) as f32;
+        let clip = match views {
+            Some(view) if view.second_draws(centre) => view.second,
+            Some(view) => view.first,
+            None => laid,
+        };
+        let right = scale
+            .iter()
+            .filter(|s| s.plot == i)
+            .map(|s| s.rect.left())
+            .chain(
+                normalise
+                    .iter()
+                    .filter(|s| s.plot == i)
+                    .map(|s| s.rect.left()),
+            )
+            .reduce(f32::min)
+            .map_or(tile.right() - spacing::SPACE_2, |left| {
+                left - spacing::SPACE_2 * 2.0
+            });
+        let active = !crate::regions::regions_switched_off(spec, &plot.path);
+        let subject = (i, regions_hover(plot), active);
+        let Some((record, picked)) = draw_regions_switch(ui, tile, clip, right, subject, mode)
         else {
             continue;
         };

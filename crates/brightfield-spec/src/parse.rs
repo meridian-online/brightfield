@@ -484,6 +484,17 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot, or `plotDefaults:`, set `regions` to something other than
+    /// `off`. `regions: off` is the Brightfield extension that turns a plot's
+    /// region outlines and names off, and it is the only value written, since
+    /// the regions are on wherever the key is absent: `on`, a `$param` or any
+    /// other word is read by nothing, and the regions draw as they do without
+    /// it. This names the value so an author sees the typo.
+    InvalidRegionsSwitch {
+        /// What the author wrote, on one line.
+        value: String,
+    },
+
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
     /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
@@ -1039,6 +1050,10 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `{attribute}` is not `true` or `false` — the key is ignored and the axis runs the way it does without it"
             ),
+            Self::InvalidRegionsSwitch { value } => write!(
+                f,
+                "plot attribute `regions: {value}` is not `regions: off` — the key is ignored and the plot's regions draw as they do without it"
+            ),
             Self::UnreadAxisAttribute { attribute, plot } => match plot {
                 Some(plot) => write!(
                     f,
@@ -1421,6 +1436,9 @@ impl Walker {
                                 attribute: key.to_string(),
                             });
                         }
+                    }
+                    if let Some(v) = defaults.get(REGIONS_KEY) {
+                        self.warn_regions_switch(v);
                     }
                     // An axis attribute no resolver reads is named here, once,
                     // for the same reason: each plot that inherits it would
@@ -1900,6 +1918,9 @@ impl Walker {
             if key == "projectionType" {
                 self.warn_unknown_projection(&value);
             }
+            if key == REGIONS_KEY {
+                self.warn_regions_switch(&value);
+            }
             attributes.insert(key, value);
         }
         // The axis attributes this plot sets itself and no resolver reads,
@@ -2338,6 +2359,16 @@ impl Walker {
         if unread {
             self.warnings.push(ParseWarning::UnreadColourKey {
                 attribute: key.to_string(),
+                value: written_value_text(value),
+            });
+        }
+    }
+
+    /// Raise [`ParseWarning::InvalidRegionsSwitch`] when a plot's `regions`
+    /// value is anything but `off`.
+    fn warn_regions_switch(&mut self, value: &SpecValue) {
+        if !is_regions_off(value) {
+            self.warnings.push(ParseWarning::InvalidRegionsSwitch {
                 value: written_value_text(value),
             });
         }
@@ -2991,6 +3022,21 @@ const PLOT_AXIS_END_KEYS: [&str; 4] = ["xZero", "xNice", "yZero", "yNice"];
 /// The plot attributes that run an axis from high to low: each axis's own
 /// `Reverse` key.
 const PLOT_AXIS_REVERSE_KEYS: [&str; 2] = ["xReverse", "yReverse"];
+
+/// The plot attribute that turns a plot's regions off: a Brightfield
+/// extension to Mosaic, written only as `regions: off`.
+pub const REGIONS_KEY: &str = "regions";
+
+/// The one value [`REGIONS_KEY`] takes.
+pub const REGIONS_OFF: &str = "off";
+
+/// Whether `value` is the `off` that turns a plot's regions off. Every other
+/// value, `on` among them, is one nothing reads, and
+/// [`ParseWarning::InvalidRegionsSwitch`] names it.
+#[must_use]
+pub fn is_regions_off(value: &SpecValue) -> bool {
+    matches!(value, SpecValue::String(v) if v == REGIONS_OFF)
+}
 
 /// An attribute value as [`ParseWarning::InvalidTickFormat`] and
 /// [`ParseWarning::UnreadColourKey`] show it: what the author wrote, where it
