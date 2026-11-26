@@ -5,7 +5,7 @@
 //! `arc run` writes `build/.arcform/runs/<run_id>.json` (this document) plus a
 //! live `<run_id>.jsonl` stream ([`crate::stream`]). The emitter fills some
 //! fields eagerly and leaves the *measured*/*resolved* ones (`bytes`,
-//! `content_hash`, `path`, `duration_sec`, `skip_reason`, `resolved_with`,
+//! `content_hash`, `path`, `start_sec`, `skip_reason`, `resolved_with`,
 //! `ingress_meta`, `io.*`, `narrative.*`) `null`/absent in early phases, so
 //! every such field is an `Option<T>` or a `#[serde(default)]` collection.
 //! Deserialization must never fail merely because a not-yet-populated field is
@@ -259,7 +259,13 @@ pub struct Step {
     /// Number of attempts made.
     #[serde(default)]
     pub attempts: Option<u32>,
-    /// Wall-clock duration in seconds — deferred (`null`); do not rely on it.
+    /// Seconds from the run's start to this step's start, on the same clock as
+    /// [`Self::duration_sec`]. `null` for a skipped step, and absent from
+    /// records written before arc measured it.
+    #[serde(default)]
+    pub start_sec: Option<f64>,
+    /// Wall-clock seconds the step took to execute. Filled for each step that
+    /// ran; `null` for a skipped one.
     #[serde(default)]
     pub duration_sec: Option<f64>,
     /// Retry policy that was in force.

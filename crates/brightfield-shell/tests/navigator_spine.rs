@@ -22,8 +22,9 @@ use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
 use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{
-    GraphChipDrawn, ModelJoins, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
+    GraphChipDrawn, ModelJoins, NodeView, SpineMarker, SpineRole, SpineRow, SpineRowDrawn,
 };
+use brightfield_shell::spine::SpineState;
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
 
@@ -565,6 +566,7 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
     let mut fresh = Live::open(housing_boot());
     fresh.settle();
     assert_eq!(fresh.row("load").kind, "sql \u{b7} not run");
+    assert_eq!(spine_row(&fresh, "load").state, Some(SpineState::NotRun));
 
     // The same file, opened as though a run had happened: the step succeeded
     // and the table it produces is still not materialised. Two facts on two
@@ -586,6 +588,11 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
     assert_eq!(
         step.kind, "sql \u{b7} ok",
         "the step row is spelling a run state the model does not hold"
+    );
+    assert_eq!(
+        spine_row(&win, "load").state,
+        Some(SpineState::Ok),
+        "the state the spine's mark will draw is the model's, as the words are"
     );
     assert_eq!(
         step.marker,
@@ -623,6 +630,178 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
         win.row("load").marker,
         SpineMarker::Hollow,
         "…and the step's own marker did not move with it"
+    );
+}
+
+/// The model's spine row labelled `label`, with the facts the rail does not
+/// draw yet: the state, the output, the timing, the fold and the lanes.
+///
+/// Read off the model rather than off the frame, because nothing draws these
+/// yet; the drawn rows above stay the evidence for what the rail shows.
+fn spine_row(win: &Live, label: &str) -> SpineRow {
+    let rows = win.app.protocol_model().spine();
+    rows.iter()
+        .find(|row| row.label == label)
+        .cloned()
+        .unwrap_or_else(|| panic!("the spine has no row labelled {label:?}"))
+}
+
+/// **A table row carries its row count, and a step row the tables it made**,
+/// once a run measured them, and the step row its place in the gutter above
+/// the table it made.
+#[test]
+fn a_table_row_carries_its_row_count_and_a_step_row_what_it_made() {
+    let mut boot = housing_boot();
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the fixture has a table");
+    boot.protocol
+        .statuses
+        .insert("load".to_string(), SeamStatus::Ok);
+    boot.protocol.assets.insert(
+        table,
+        AssetMeta {
+            row_count: Some(19_028),
+            materialized: true,
+            bytes: None,
+            content_hash: None,
+        },
+    );
+    let mut win = Live::open(boot);
+    win.settle();
+    assert_eq!(
+        spine_row(&win, "california_housing_sample")
+            .output
+            .as_deref(),
+        Some("19,028 rows")
+    );
+    assert_eq!(spine_row(&win, "load").output.as_deref(), Some("1 table"));
+
+    let rows = win.app.protocol_model().spine();
+    let at = |label: &str| rows.iter().position(|r| r.label == label).expect(label);
+    let (file, step, table) = (
+        at("./california_housing_sample.csv"),
+        at("load"),
+        at("california_housing_sample"),
+    );
+    assert!(
+        file < step && step < table,
+        "the file, its load, then the table"
+    );
+    assert_eq!(rows[file].lanes.to_below, [0], "the file feeds its load");
+    assert_eq!(rows[step].lanes.from_above, [0]);
+    assert_eq!(rows[step].lanes.to_below, [0], "the load makes the table");
+    assert_eq!(rows[table].lanes.from_above, [0]);
+    assert!(
+        rows.iter()
+            .filter(|r| r.role == SpineRole::View)
+            .all(|r| r.lanes.node.is_none()),
+        "a view is a way to look at a table, not a node of the graph"
+    );
+}
+
+/// A Protocol whose two quarters are fetched and extracted alike: a
+/// parameterised family, which the spine lists as one row until it is unfolded.
+fn family_inputs() -> (
+    tempfile::TempDir,
+    brightfield_shell::protocol::ProtocolInputs,
+) {
+    let dir = tempfile::tempdir().expect("a scratch folder");
+    std::fs::create_dir_all(dir.path().join("models")).expect("models folder");
+    std::fs::write(
+        dir.path().join("models/load.sql"),
+        "CREATE TABLE loaded AS SELECT * FROM read_csv('build/x/*/p.tsv');",
+    )
+    .expect("write the model");
+    let spec = dir.path().join("arcform.yaml");
+    std::fs::write(
+        &spec,
+        r"name: fam
+steps:
+  - name: fetch_x_q1
+    op: http_fetch@1
+    with: { url: 'https://h.example/q1.zip', out: build/z/q1.zip }
+  - name: extract_x_q1
+    op: archive_extract@1
+    with: { archive: build/z/q1.zip, dest: build/x/q1, members: [p.tsv] }
+  - name: fetch_x_q2
+    op: http_fetch@1
+    with: { url: 'https://h.example/q2.zip', out: build/z/q2.zip }
+  - name: extract_x_q2
+    op: archive_extract@1
+    with: { archive: build/z/q2.zip, dest: build/x/q2, members: [p.tsv] }
+  - name: load
+    sql: models/load.sql
+    depends_on: [build/x/q1/p.tsv, build/x/q2/p.tsv]
+",
+    )
+    .expect("write the manifest");
+    let inputs = brightfield_shell::protocol::load_protocol_offline(
+        spec.to_str().expect("utf-8 scratch path"),
+    )
+    .expect("the family manifest loads");
+    (dir, inputs)
+}
+
+/// **A family folds to one row and unfolds to its members**, each way by the
+/// fold control's family, and the canvas's own fold is left as it was.
+#[test]
+fn a_family_folds_to_one_row_and_unfolds_to_its_members() {
+    let (_dir, inputs) = family_inputs();
+    let mut model = brightfield_shell::protocol::ProtocolModel::new(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+    );
+    let folded = model.spine();
+    let family = folded
+        .iter()
+        .find(|row| row.fold.is_some())
+        .expect("the family's row carries a fold control");
+    let fold = family.fold.clone().expect("checked");
+    assert!(fold.folded);
+    assert_eq!(fold.members, 2, "two quarters");
+    assert!(
+        !folded.iter().any(|row| row.label.starts_with("fetch_x_q")),
+        "folded, the members are not listed"
+    );
+    let canvas_before = model.displayed_graph().nodes.len();
+
+    model.toggle_spine_fold(&fold.family);
+    let open = model.spine();
+    let steps: Vec<&str> = open
+        .iter()
+        .filter(|row| row.role == SpineRole::Step)
+        .map(|row| row.label.as_str())
+        .collect();
+    for member in ["fetch_x_q1", "extract_x_q1", "fetch_x_q2", "extract_x_q2"] {
+        assert!(
+            steps.contains(&member),
+            "{member} is listed unfolded: {steps:?}"
+        );
+    }
+    let controls: Vec<&SpineRow> = open.iter().filter(|row| row.fold.is_some()).collect();
+    assert_eq!(controls.len(), 1, "one control, to fold the family again");
+    let control = controls[0].fold.clone().expect("checked");
+    assert!(!control.folded);
+    assert_eq!(control.family, fold.family);
+    assert!(
+        controls[0].label.starts_with("fetch_x_q") || controls[0].label.starts_with("extract_x_q"),
+        "the control is on a member's row, not {:?}",
+        controls[0].label
+    );
+    assert_eq!(
+        model.displayed_graph().nodes.len(),
+        canvas_before,
+        "the spine's fold leaves the canvas as it was"
+    );
+
+    model.toggle_spine_fold(&fold.family);
+    assert_eq!(
+        model.spine(),
+        folded,
+        "folded again, the spine is as it was"
     );
 }
 
