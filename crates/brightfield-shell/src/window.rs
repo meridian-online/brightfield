@@ -7596,6 +7596,7 @@ impl MeridianApp {
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
                                 muted: &|_| false,
+                                folds: false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;

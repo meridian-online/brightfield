@@ -464,10 +464,16 @@ fn space_adds_to_a_list_and_enter_takes_them_in_order() {
     let added = win.app.spine_pick().expect("still open").added().to_vec();
     assert_eq!(added, ["top", "by_age"]);
     assert_eq!(win.app.open_overlay(), None, "space opened the palette");
-    // An added table is drawn selected and says it is added.
+    // An added table is drawn selected. Its words, "added · shares
+    // house_age", are its row's output, and at the list's 240pt width the
+    // step row gives the output up so the name keeps its four ems: the row
+    // draws them once the list is wide enough for both.
     let top = table_row(&win, "top");
     assert!(top.washed);
-    assert_eq!(top.kind, format!("{ADDED} \u{b7} shares house_age"));
+    assert_eq!(
+        top.kind, "",
+        "the list is wide enough for {ADDED:?} and its trail now: pin the words"
+    );
     // Space on an added table takes it off the list, and adds it again at the end.
     win.key(egui::Key::Space);
     win.key(egui::Key::Space);

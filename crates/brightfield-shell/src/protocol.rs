@@ -4638,12 +4638,13 @@ impl Item<ProtocolDoc> for OutlinePane {
                         None => default_senses_click(row),
                     },
                     muted: &|row| picking.is_some() && pick_table(row).is_none(),
+                    folds: overridden.is_none() && picking.is_none(),
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
-                // A fold control folds the spine's own list. An overridden spine
-                // is another document's, and a picking one lists tables to pick.
-                if overridden.is_none() && picking.is_none() {
+                // A fold control folds the spine's own list, the one list that
+                // draws it.
+                if style.folds {
                     fold_family = listed
                         .fold_clicked
                         .and_then(|i| spine.rows.get(i))
@@ -4791,6 +4792,9 @@ pub struct SpineListStyle<'a> {
     /// Which rows are named in the muted ink: none, but while the spine picks
     /// a table for an operation, when each row that is not a table is.
     pub muted: &'a dyn Fn(&SpineRow) -> bool,
+    /// Whether a family's row draws its fold control: only where a click on
+    /// it is answered, on the document's own spine while it picks nothing.
+    pub folds: bool,
 }
 
 /// The rule the outline pane uses for which spine rows are controls: an asset
@@ -4858,6 +4862,16 @@ pub(crate) fn spine_list_ui(
             rows.push(record);
             continue;
         }
+        let folded;
+        let row = if style.folds || row.fold.is_none() {
+            row
+        } else {
+            folded = SpineRow {
+                fold: None,
+                ..row.clone()
+            };
+            &folded
+        };
         let (record, clicks) = spine_row(
             ui,
             row,
@@ -5228,7 +5242,13 @@ fn spine_row(
             .read_response(drawn.response.id.with("fold"))
             .map(|r| r.rect)
     });
-    let (name_rect, timeline_kept) = step_row_name_rect(ui, rect, row, lanes, fold_rect);
+    let (
+        name_rect,
+        Kept {
+            timeline_kept,
+            output_kept,
+        },
+    ) = step_row_name_rect(ui, rect, row, lanes, fold_rect);
 
     let ink = semantic(mode.is_dark());
     if row.struck && name_rect.width() > 0.0 {
@@ -5249,7 +5269,12 @@ fn spine_row(
     (
         SpineRowDrawn {
             label: row.label.clone(),
-            kind: output.unwrap_or_default().to_string(),
+            // A row too narrow for its output gives it up, so the record says
+            // what was drawn, as it does of the duration.
+            kind: output
+                .filter(|_| output_kept)
+                .unwrap_or_default()
+                .to_string(),
             depth: row.depth,
             marker: SpineMarker::None,
             mark: node.map(|_| mark),
@@ -5312,8 +5337,8 @@ fn marker_mark(marker: SpineMarker) -> meridian_egui::StepMark {
     }
 }
 
-/// Where a step row drawn in `rect` put its name, and whether it kept its
-/// timeline column.
+/// Where a step row drawn in `rect` put its name, and which of its trailing
+/// columns it kept.
 ///
 /// The component reports its own rect and its fold control's, not its name's
 /// or which columns it kept, so this places them as `step_row` does, from the
@@ -5322,14 +5347,14 @@ fn marker_mark(marker: SpineMarker) -> meridian_egui::StepMark {
 /// wider than the name itself or the room the output and timeline columns
 /// leave it. A name the component cut with an ellipsis is given the whole of
 /// that room. The timeline column stays while the name's floor and the whole
-/// output fit before it.
+/// output fit before it, and the output while the name's floor fits beside it.
 fn step_row_name_rect(
     ui: &egui::Ui,
     rect: egui::Rect,
     row: &SpineRow,
     lanes: u8,
     fold_rect: Option<egui::Rect>,
-) -> (egui::Rect, bool) {
+) -> (egui::Rect, Kept) {
     use meridian_egui::MeridianUi;
     let t = ui.tokens();
     let gap = t.space[3];
@@ -5356,7 +5381,8 @@ fn step_row_name_rect(
     } else {
         duration_right
     };
-    if let Some(w) = output.filter(|w| needs(Some(*w)) <= right) {
+    let output_kept = output.is_some_and(|w| needs(Some(w)) <= right);
+    if let Some(w) = output.filter(|_| output_kept) {
         right -= w + gap;
     }
     let shown = name.x.min((right - left).max(0.0));
@@ -5365,8 +5391,20 @@ fn step_row_name_rect(
             egui::pos2(left, rect.center().y - name.y / 2.0),
             egui::vec2(shown, name.y),
         ),
-        timeline_kept,
+        Kept {
+            timeline_kept,
+            output_kept,
+        },
     )
+}
+
+/// Which of a step row's trailing columns it kept, for the width it was given.
+#[derive(Clone, Copy, Debug)]
+struct Kept {
+    /// The timeline bar and the duration.
+    timeline_kept: bool,
+    /// What the row produced.
+    output_kept: bool,
 }
 
 /// One outline row: status dot, label, kind — and, when it is the selection,
