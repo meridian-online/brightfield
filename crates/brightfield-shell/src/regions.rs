@@ -21,8 +21,10 @@
 //!
 //! The [`RegionsWorker`] keeps one run per plot, stops a run a newer request
 //! replaces, and hands the answers over on a later frame. [`ink_regions`] draws
-//! an answer only while its extent is the one the plot is drawn at, so a zoom
-//! hides the old regions until the new ones arrive.
+//! an answer while its extent is the one the plot is drawn at, and not after a
+//! zoom moves the plot, so the old regions are hidden until the new ones
+//! arrive (`a_settled_zoom_recomputes_over_the_view` in
+//! `tests/regions_overlay.rs`).
 //!
 //! Regions are a render-time overlay rather than a mark injected into the spec,
 //! because mark indices identify layers throughout the pipeline and a new mark
@@ -99,7 +101,8 @@ pub struct KnownColumn {
 ///
 /// `None` when no layer is like that, when the plot asks for `regions: off`,
 /// or when it names a scale other than `linear` for either axis: the grid is
-/// equal-width in data units, which only a linear axis draws as equal-width.
+/// equal-width in data units, and a linear axis draws equal widths in data as
+equal widths on screen.
 /// Whether the two columns are numbers is the data's to say, so
 /// [`RegionJob::for_plot`] also checks that the plot drew both axes on
 /// linear scales.
