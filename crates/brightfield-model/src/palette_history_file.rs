@@ -32,8 +32,9 @@ pub fn load_palette_history(dir: &Path) -> Frecency {
 }
 
 /// Write `frecency` to its file in the config dir `dir`, making the dir if it
-/// is not there. The text goes to a file beside it first and is then renamed
-/// over the old one, so a write cut short leaves the old history whole.
+/// is not there. The text goes to a file beside it first, named for this
+/// process, and is then renamed over the old one, so a write cut short, or two
+/// windows saving at once, leaves a whole history rather than a mixed one.
 ///
 /// # Errors
 ///
@@ -41,7 +42,7 @@ pub fn load_palette_history(dir: &Path) -> Frecency {
 pub fn save_palette_history(dir: &Path, frecency: &Frecency) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = palette_history_path(dir);
-    let staged = dir.join(format!("{PALETTE_HISTORY_FILE}.tmp"));
+    let staged = dir.join(format!("{PALETTE_HISTORY_FILE}.{}.tmp", std::process::id()));
     std::fs::write(&staged, frecency.to_json())?;
     std::fs::rename(&staged, &path)
 }
@@ -71,8 +72,13 @@ mod tests {
         frecency.record("pan-left", NOW);
         save_palette_history(&dir, &frecency).expect("it saves, making the dir");
         assert_eq!(load_palette_history(&dir), frecency);
-        assert!(
-            !dir.join(format!("{PALETTE_HISTORY_FILE}.tmp")).exists(),
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [PALETTE_HISTORY_FILE],
             "the staged file was renamed into place"
         );
 

@@ -31,7 +31,7 @@ pub fn use_config_dir() {
 }
 
 /// The folder the history is kept in: the one the app named at launch, else the
-/// one `BRIGHTFIELD_CONFIG_DIR` names, else none.
+/// one `BRIGHTFIELD_CONFIG_DIR` names. `None` when neither is set.
 fn dir() -> Option<PathBuf> {
     INSTALLED
         .lock()

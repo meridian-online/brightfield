@@ -21,9 +21,10 @@ pub const FRECENCY_CAP: usize = 1_000;
 /// A file at any other version reads as no history at all.
 pub const FRECENCY_VERSION: u64 = 1;
 
-/// What one fresh use weighs. A use's weight halves every
-/// [`FRECENCY_HALF_LIFE_SECS`], and never falls below 1, so a command used once
-/// long ago still ranks above one never used.
+/// What one fresh use weighs. A use's weight halves once per
+/// [`FRECENCY_HALF_LIFE_SECS`] of its age, and never falls below 1, so a
+/// command used once long ago still ranks above one never used
+/// (`frecency_prefers_recent_and_frequent`).
 const FRESH_USE_WEIGHT: f64 = 1_000_000.0;
 
 /// The palette's frecency: which commands were run from it, and when, so the
@@ -67,8 +68,8 @@ impl Frecency {
             .sum()
     }
 
-    /// Every used command's [`Frecency::weight`] at `now_secs`, read in one pass,
-    /// for a ranking that asks for many of them.
+    /// The used commands' [`Frecency::weight`]s at `now_secs`, read in one
+    /// pass, for a ranking that asks for many of them.
     fn weights(&self, now_secs: u64) -> HashMap<&str, u64> {
         let mut weights: HashMap<&str, u64> = HashMap::new();
         for (name, at) in &self.uses {
