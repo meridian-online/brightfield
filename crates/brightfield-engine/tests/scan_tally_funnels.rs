@@ -196,6 +196,6 @@ fn the_cube_build_and_cube_serve_funnels_count() {
         sql.contains("CREATE TEMP TABLE \"__bf_preagg_")
     });
     counted(&tally, "cube serve", |sql| {
-        sql.contains("__bf_preagg_") && !sql.contains("CREATE TABLE")
+        sql.contains("__bf_preagg_") && !sql.starts_with("CREATE ")
     });
 }

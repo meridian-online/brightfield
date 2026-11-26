@@ -451,7 +451,8 @@ impl RegionReader {
     }
 
     /// Stop the query this reader is running, from any thread. The running
-    /// [`Self::query`] returns an error.
+    /// [`Self::query`] returns an error. An interrupt issued before a query
+    /// starts is lost, because DuckDB clears it at statement start.
     pub fn interrupt(&self) {
         self.interrupt.interrupt();
     }
@@ -1866,6 +1867,8 @@ impl Session {
     /// A reader on a second connection to this session's database, for a
     /// worker thread. Tables and views the session made are visible to it;
     /// connection-local TEMP tables are not (see [`RegionReader`]).
+    /// [`Session::materialise_source`] narrows global memory settings while it
+    /// copies, so a region read should not run during an open's materialise.
     ///
     /// # Errors
     ///
