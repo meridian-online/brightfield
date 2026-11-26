@@ -135,6 +135,25 @@ pub(super) struct Picking {
 /// A table the spine handed an operation, with its columns.
 type Taken = (String, Vec<String>);
 
+/// What an operation that matches columns by name says when no other table
+/// shares a column's name with the table in front.
+fn no_matching_table(spec: &OperationUi) -> String {
+    operation_ui::open::sentence(
+        operation_ui::Need::AnotherTableSharingAColumn,
+        &operation_ui::label(spec.long_name),
+        None,
+    )
+}
+
+/// What the pick says when the table under its cursor, dimmed, is added or
+/// taken by an operation that matches columns by name.
+fn shares_no_column(spec: &OperationUi, table: &str, in_front: &str) -> String {
+    format!(
+        "{table} shares no column with {in_front}: {} matches columns by name.",
+        operation_ui::label(spec.long_name)
+    )
+}
+
 /// The spine pick's `(keystroke token, longname)` pairs: every binding the
 /// registry declares in its SpinePick context, the arrow twins included.
 fn spine_pick_bindings() -> Vec<(&'static str, &'static str)> {
@@ -524,9 +543,15 @@ impl MeridianApp {
                     .is_some_and(|request| request.long_name == spec.long_name)
             })
             .cloned();
-        // An operation that reads a second table asks for it in the spine first. A kept
+        // An operation that reads a second table asks for it in the spine first, from
+        // whichever place it started: a key, a header's menu or the spine itself. A kept
         // step being corrected holds its tables already.
-        if let (Start::Spine { role }, None, None) = (start, &taken, &corrects) {
+        let spine_role = match (start, spec.starts.first()) {
+            (Start::Spine { role }, _) => Some(role),
+            (_, Some(Start::Spine { role })) => Some(*role),
+            _ => None,
+        };
+        if let (Some(role), None, None) = (spine_role, &taken, &corrects) {
             return self.open_pick(ctx, spec, (start, role), column, &description, &cx);
         }
         let model = taken.as_ref().and_then(|_| self.relationship_model());
@@ -1345,7 +1370,17 @@ impl MeridianApp {
             .iter()
             .find(|r| r.name == role)
             .is_some_and(|r| r.list);
-        let pick = SpinePick::new(role, list, &front.table, column.as_deref(), found);
+        let mut pick = SpinePick::new(role, list, &front.table, column.as_deref(), found);
+        if spec
+            .needs
+            .contains(&operation_ui::Need::AnotherTableSharingAColumn)
+        {
+            pick = pick.matching_columns(&front.columns);
+            if pick.none_shares_a_column() {
+                self.say_operation(ctx, no_matching_table(spec));
+                return false;
+            }
+        }
         let wake = ctx.clone();
         let columns = crate::spine_pick::read_columns(
             self.typed_source(None),
@@ -1415,6 +1450,14 @@ impl MeridianApp {
             return;
         };
         let tables = picking.pick.would_take();
+        if let Some(dimmed) = tables
+            .iter()
+            .find(|table| picking.pick.candidate(table).is_some_and(|c| c.disjoint))
+        {
+            let why = shares_no_column(picking.spec, dimmed, picking.pick.in_front());
+            self.say_operation(ctx, why);
+            return;
+        }
         if let Some(waiting) = tables
             .iter()
             .find(|table| picking.pick.columns_of(table).is_none())
@@ -1502,11 +1545,21 @@ impl MeridianApp {
                 "pick-next-table" => picking.pick.next(),
                 "pick-previous-table" => picking.pick.previous(),
                 "add-table-to-pick" if !picking.pick.add() => {
-                    let why = format!(
-                        "{} reads one table: press Enter to take the one under the cursor.",
-                        operation_ui::label(picking.spec.long_name)
-                    );
-                    self.say_operation(ctx, why);
+                    let pick = &picking.pick;
+                    let why = if pick.list() {
+                        // A list's add fails only on a dimmed table.
+                        pick.under_cursor()
+                            .filter(|c| c.disjoint)
+                            .map(|c| shares_no_column(picking.spec, &c.table, pick.in_front()))
+                    } else {
+                        Some(format!(
+                            "{} reads one table: press Enter to take the one under the cursor.",
+                            operation_ui::label(picking.spec.long_name)
+                        ))
+                    };
+                    if let Some(why) = why {
+                        self.say_operation(ctx, why);
+                    }
                 }
                 _ => {}
             }
@@ -1529,6 +1582,14 @@ impl MeridianApp {
         for (table, columns) in picking.columns.poll() {
             picking.pick.set_columns(&table, columns);
             ctx.request_repaint();
+        }
+        // Once every table's columns are read and none matches the table in front's,
+        // there is nothing to pick.
+        if picking.pick.none_shares_a_column() {
+            let why = no_matching_table(picking.spec);
+            self.end_pick(ctx);
+            self.say_operation(ctx, why);
+            return;
         }
         if let Some(table) = clicked {
             picking.pick.put_cursor_on(&table);
@@ -1557,6 +1618,12 @@ impl MeridianApp {
                 .candidates()
                 .iter()
                 .map(|c| (c.table.clone(), c.trail()))
+                .collect(),
+            dimmed: pick
+                .candidates()
+                .iter()
+                .filter(|c| c.disjoint)
+                .map(|c| c.table.clone())
                 .collect(),
             cursor: pick.under_cursor().map(|c| c.table.clone()),
             added: pick.added().to_vec(),
