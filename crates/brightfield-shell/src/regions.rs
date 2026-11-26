@@ -298,6 +298,9 @@ pub struct RegionJob {
     /// What Silverman's bandwidth is multiplied by: 1.0, except where a test
     /// changes it to show the regions follow the bandwidth.
     pub bandwidth_scale: f64,
+    /// The thresholds a region's name must clear: the defaults, except where a
+    /// test changes one to show the names follow the rule.
+    pub naming: NamingRules,
     reader: RegionReader,
 }
 
@@ -328,6 +331,7 @@ impl RegionJob {
                 .collect(),
             titles: axis_titles(spec),
             bandwidth_scale: 1.0,
+            naming: NamingRules::default(),
             reader,
         })
     }
@@ -397,7 +401,7 @@ impl RegionJob {
                 Some(sql) => {
                     let summary = read(&sql)?;
                     let shown = self.shown(&columns);
-                    name_regions_shown(&NamingRules::default(), &shown, &summary, regions.len())
+                    name_regions_shown(&self.naming, &shown, &summary, regions.len())
                 }
                 None => vec![None; regions.len()],
             }
