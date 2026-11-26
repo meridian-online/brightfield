@@ -48,6 +48,20 @@ pub fn arc_stores() -> &'static Path {
     .path()
 }
 
+/// Copy the folder `from` into `to`, its subfolders with it.
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from).expect("the folder reads") {
+        let entry = entry.expect("an entry reads");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("its type reads").is_dir() {
+            std::fs::create_dir_all(&target).expect("the subfolder is made");
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("the file copies");
+        }
+    }
+}
+
 fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key {
         key,
@@ -143,6 +157,92 @@ impl OpWindow {
             text_rects: Vec::new(),
             answered: Vec::new(),
             fixture: fixture.to_string(),
+            time: 0.0,
+            tmp: std::rc::Rc::new(tmp),
+        };
+        win.settle();
+        win
+    }
+
+    /// A window over a Protocol Brightfield made of a copy of
+    /// `tests/data/<fixture>`, as opening the file from the picker makes one:
+    /// a Protocol that takes sources. Its folder is under a Protocols folder of
+    /// this test binary's own.
+    pub fn on_own_protocol(fixture: &str) -> Self {
+        static PROTOCOLS: OnceLock<TempDir> = OnceLock::new();
+        let protocols = PROTOCOLS.get_or_init(|| {
+            let root = tempfile::Builder::new()
+                .prefix("bf-protocols-")
+                .tempdir()
+                .expect("a Protocols folder");
+            std::env::set_var(
+                brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+                root.path(),
+            );
+            root
+        });
+        let _ = protocols;
+        use_own_preview_gate_on_this_thread();
+        let tmp = tempfile::Builder::new()
+            .prefix("bf-operation-")
+            .tempdir()
+            .expect("a temp folder for the fixture");
+        let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(fixture);
+        let data = tmp.path().join(fixture);
+        std::fs::copy(&from, &data).expect("the fixture copies");
+        let mut win = Self {
+            app: MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light)
+                .running_with(Some(runner())),
+            ctx: egui::Context::default(),
+            texts: Vec::new(),
+            text_rects: Vec::new(),
+            answered: Vec::new(),
+            fixture: fixture.to_string(),
+            time: 0.0,
+            tmp: std::rc::Rc::new(tmp),
+        };
+        win.settle();
+        win.app
+            .open_queue()
+            .push(brightfield_shell::open_queue::OpenRequest::Path(data));
+        win.settle();
+        assert!(
+            win.app.own_protocol().is_some(),
+            "the open made no Protocol of Brightfield's own"
+        );
+        win
+    }
+
+    /// A window over a copy of the Protocol folder `tests/data/<folder>`, opened
+    /// by its manifest: a Protocol Brightfield did not make when the folder is
+    /// one written by hand.
+    pub fn on_protocol_folder(folder: &str) -> Self {
+        use_own_preview_gate_on_this_thread();
+        let tmp = tempfile::Builder::new()
+            .prefix("bf-operation-")
+            .tempdir()
+            .expect("a temp folder for the Protocol");
+        let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(folder);
+        copy_tree(&from, tmp.path());
+        let manifest = tmp.path().join("arcform.yaml");
+        let boot = Boot::open(
+            &manifest.to_string_lossy(),
+            brightfield_protocol::layout::Flow::Vertical,
+            None,
+        )
+        .expect("the Protocol opens");
+        let mut win = Self {
+            app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
+                .running_with(Some(runner())),
+            ctx: egui::Context::default(),
+            texts: Vec::new(),
+            text_rects: Vec::new(),
+            answered: Vec::new(),
+            fixture: "arcform.yaml".to_string(),
             time: 0.0,
             tmp: std::rc::Rc::new(tmp),
         };
