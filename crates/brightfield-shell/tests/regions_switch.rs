@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::{ChartDoc, RegionsSwitchDrawn};
+use brightfield_shell::app::{ChartDoc, GridLayout, RegionsSwitchDrawn};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::ast::SpecValue;
@@ -92,6 +92,20 @@ impl Live {
     fn open(path: &Path) -> Self {
         let boot = Boot::open(path.to_str().expect("utf-8 path"), Flow::Vertical, None)
             .expect("the panel opens");
+        Self::boot(boot)
+    }
+
+    /// The window the committed housing table opens as a generated dashboard,
+    /// which profiles the table at open.
+    fn housing() -> Self {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/california_housing_sample.csv");
+        let boot = Boot::data_file(path.to_str().expect("utf-8 path"))
+            .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        Self::boot(boot)
+    }
+
+    fn boot(boot: Boot) -> Self {
         let size = boot.window_size();
         let mut live = Self {
             app: MeridianApp::headless(boot, Mode::Light),
@@ -189,6 +203,26 @@ impl Live {
         live.regions()
             .drawn_on(&self.doc().composed.plots[plot])
             .is_some_and(|r| !r.regions.is_empty())
+    }
+
+    /// Throw the grid pane's layout switch to columns, the layout in which a
+    /// press on a tile body selects its column, as `tests/tile_scale_switch.rs`
+    /// does before its own press test.
+    fn transpose(&mut self) {
+        let at = self
+            .doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.click(at);
+        self.settle();
+        assert_eq!(self.app.grid_layout(), GridLayout::Columns);
     }
 
     fn save(&mut self, panel: &Path) {
@@ -298,4 +332,102 @@ fn a_spec_saved_with_regions_off_reopens_with_them_off() {
     );
     assert!(!reopened.switch(0).active, "the switch opens showing off");
     assert!(!reopened.draws_regions(0), "and the plot opens with none");
+}
+
+#[test]
+fn regions_under_plot_defaults_leave_the_switch_on_and_save_works() {
+    let defaulted = format!("plotDefaults:\n  regions: off\n{PANEL}");
+    let dir = TempDir::new("defaults");
+    let panel = dir.panel(&defaulted);
+    let mut live = Live::open(&panel);
+    assert!(
+        live.switch(0).active,
+        "`regions` under `plotDefaults:` is not handed to the plot"
+    );
+    assert!(live.draws_regions(0), "so its regions draw");
+
+    live.throw(0, false);
+    live.save(&panel);
+    let saved = std::fs::read_to_string(&panel).expect("the panel reads");
+    assert!(
+        saved.contains("    regions: off\n"),
+        "the plot's own `regions: off` is saved:\n{saved}"
+    );
+
+    live.throw(0, true);
+    assert!(live.draws_regions(0));
+    live.save(&panel);
+    assert_eq!(
+        std::fs::read_to_string(&panel).expect("the panel reads"),
+        defaulted,
+        "turning them on takes the plot's own line out and leaves the defaults"
+    );
+}
+
+/// The plot of the housing dashboard whose regions can be drawn: its hero
+/// point map.
+fn regions_plot(live: &Live) -> usize {
+    (0..live.doc().composed.plots.len())
+        .find(|&i| live.doc().region_job(i).is_some())
+        .expect("the housing dashboard has a plot with regions")
+}
+
+#[test]
+fn a_tile_switch_keeps_the_profiles_the_region_names_read() {
+    let mut live = Live::housing();
+    let plot = regions_plot(&live);
+    let read = |live: &Live| {
+        let job = live.doc().region_job(plot).expect("a region job");
+        (job.profiles, job.representations)
+    };
+    let opened = read(&live);
+    assert!(
+        opened.0.as_ref().is_some_and(|p| !p.is_empty()),
+        "the open profiled the table, so a job carries its profiles"
+    );
+
+    let scale = live.doc().scale_switches[0].clone();
+    assert!(
+        live.app.chart_doc_mut().set_plot_scale(
+            scale.plot,
+            scale.axis,
+            brightfield_spec::layout::ScaleType::Log
+        ),
+        "the scale switch rebuilds the page"
+    );
+    live.settle();
+    assert_eq!(read(&live), opened, "a scale switch keeps them");
+
+    live.throw(plot, false);
+    live.throw(plot, true);
+    assert_eq!(read(&live), opened, "the regions switch keeps them");
+}
+
+#[test]
+fn a_press_on_the_regions_switch_is_not_a_press_on_the_canvas() {
+    let mut live = Live::housing();
+    live.transpose();
+    let plot = regions_plot(&live);
+    let other = live.doc().scale_switches[0].plot;
+    let rect = live.app.composed_plot_rects()[other];
+    live.click(egui::pos2(rect.center().x, rect.center().y));
+    let selected = live.doc().selected_column().map(|c| c.column.clone());
+    assert!(
+        selected.is_some(),
+        "the press on a tile body selected it, so the check below measures something"
+    );
+
+    let switch = live.switch(plot);
+    live.click(switch.states[0].1.center());
+    live.settle();
+    assert_eq!(
+        live.doc().selected_column().map(|c| c.column.clone()),
+        selected,
+        "the press on the regions switch moved the window's selected tile"
+    );
+    assert!(
+        live.doc().selection_sql().is_none(),
+        "the press on the switch committed {:?}",
+        live.doc().selection_sql()
+    );
 }

@@ -2954,8 +2954,10 @@ impl ChartDoc {
     /// Save keeps it; on takes the key out, so a spec turned off and on again
     /// saves as it was, with no key that is not plain Mosaic.
     ///
-    /// Returns whether the picture changed, refusing on the conditions
-    /// [`Self::set_plot_scale`] does.
+    /// Returns whether the picture changed. `false`, with the previous page
+    /// standing, for a plot index off the end, a document with no live session
+    /// behind it, an edit [`brightfield_spec::edit::apply`] refused, and a
+    /// reload or a present the engine refused.
     pub fn set_plot_regions(&mut self, plot: usize, on: bool) -> bool {
         let refused = "the regions switch was refused";
         if on {
@@ -3035,7 +3037,8 @@ impl ChartDoc {
     }
 
     /// **Load the page again from `spec`**, with what the window decided about
-    /// the page it replaces put back onto it: the viewport and the ink mode.
+    /// the page it replaces put back onto it: the viewport, the ink mode, and
+    /// the table's profiled columns the region names read.
     /// The engine session is the new load's, so a committed selection is not
     /// carried. `Err` with the engine's words for a spec it would not load or
     /// present. The one rebuild the tile switches and the shelf both take.
@@ -3048,6 +3051,9 @@ impl ChartDoc {
         };
         let viewport = live.viewport();
         let mode = live.mode();
+        // The open profiled the table once; the spec's edit did not change it,
+        // so the region names keep reading the columns as typed.
+        let region_columns = live.region_columns().to_vec();
         // The base the FIRST load resolved this spec's relative `file:` sources
         // against, carried on the dashboard itself — see
         // [`LiveDashboard::base_dir`]. NOT the parent of `spec_path`, which for
@@ -3060,6 +3066,7 @@ impl ChartDoc {
         let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
             live.set_viewport(viewport);
             live.set_mode(mode);
+            live.set_region_columns(region_columns);
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);

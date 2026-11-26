@@ -315,7 +315,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         // The key, which is the word the author can search their file for.
-        ParseWarning::InvalidRegionsSwitch { .. } => "regions".to_string(),
+        ParseWarning::InvalidRegionsSwitch { .. } | ParseWarning::RegionsOnPlotDefaults { .. } => {
+            "regions".to_string()
+        }
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. }
         | ParseWarning::MarkDrewNothing { mark, .. }
@@ -364,6 +366,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InvalidAxisEndSwitch { .. }
         | ParseWarning::InvalidAxisReverseSwitch { .. }
         | ParseWarning::InvalidRegionsSwitch { .. }
+        | ParseWarning::RegionsOnPlotDefaults { .. }
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. }

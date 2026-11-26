@@ -1822,6 +1822,12 @@ impl LiveDashboard {
         self.region_columns = columns;
     }
 
+    /// What [`Self::set_region_columns`] was last given.
+    #[must_use]
+    pub fn region_columns(&self) -> &[KnownColumn] {
+        &self.region_columns
+    }
+
     /// The region job for `plot` at the extent it is drawn at, for a caller
     /// that runs it itself.
     #[must_use]

@@ -495,6 +495,16 @@ pub enum ParseWarning {
         value: String,
     },
 
+    /// `plotDefaults:` set `regions`. The key is a plot's own: the switch that
+    /// turns one plot's regions on again takes the key out of that plot, and a
+    /// key inherited from the defaults has no line on the plot to take out. So
+    /// it is not handed to the plots, and the regions draw as they do without
+    /// it.
+    RegionsOnPlotDefaults {
+        /// What the author wrote, on one line.
+        value: String,
+    },
+
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
     /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
@@ -1054,6 +1064,10 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `regions: {value}` is not `regions: off` — the key is ignored and the plot's regions draw as they do without it"
             ),
+            Self::RegionsOnPlotDefaults { value } => write!(
+                f,
+                "`regions: {value}` under `plotDefaults:` is ignored — `regions` belongs on a plot, written there as `regions: off`"
+            ),
             Self::UnreadAxisAttribute { attribute, plot } => match plot {
                 Some(plot) => write!(
                     f,
@@ -1437,8 +1451,14 @@ impl Walker {
                             });
                         }
                     }
-                    if let Some(v) = defaults.get(REGIONS_KEY) {
-                        self.warn_regions_switch(v);
+                    // `regions` is a plot's own key, so it is named and kept
+                    // out of the bag each plot fills its unset keys from; the
+                    // spec's own `plotDefaults:` keeps it as written.
+                    let mut inherited = defaults.clone();
+                    if let Some(v) = inherited.0.shift_remove(REGIONS_KEY) {
+                        self.warnings.push(ParseWarning::RegionsOnPlotDefaults {
+                            value: written_value_text(&v),
+                        });
                     }
                     // An axis attribute no resolver reads is named here, once,
                     // for the same reason: each plot that inherits it would
@@ -1452,7 +1472,7 @@ impl Walker {
                             plot: None,
                         });
                     }
-                    self.plot_defaults = defaults.clone();
+                    self.plot_defaults = inherited;
                     spec.plot_defaults = defaults;
                 }
                 _ => {

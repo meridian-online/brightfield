@@ -7,6 +7,7 @@
 //! nothing reads, and the author is told so rather than left wondering why the
 //! regions still draw.
 
+use brightfield_spec::layout::collect_plot_nodes;
 use brightfield_spec::{parse_spec, Format, ParseOutput, ParseWarning};
 
 fn parsed(attrs: &str) -> ParseOutput {
@@ -49,17 +50,47 @@ fn an_unknown_regions_value_warns() {
     }
 }
 
-#[test]
-fn an_unknown_regions_value_under_plot_defaults_warns_once() {
-    let source = "plotDefaults:\n  regions: maybe\n\
-                  data:\n  t:\n    - { x: 1, y: 2 }\n\
-                  hconcat:\n  - plot:\n      - mark: dot\n        data: { from: t }\n        x: x\n        y: y\n\
-                  \x20 - plot:\n      - mark: dot\n        data: { from: t }\n        x: y\n        y: x\n";
-    let out = parse_spec(source, Format::Yaml).expect("the spec parses");
-    assert_eq!(
-        regions_warnings(&out).len(),
-        1,
-        "named once, under `plotDefaults:`, not again for each plot: {:?}",
-        out.warnings
+/// Two plots under a `plotDefaults:` that sets `regions` to `value`.
+fn under_defaults(value: &str) -> ParseOutput {
+    let source = format!(
+        "plotDefaults:\n  regions: {value}\n\
+         data:\n  t:\n    - {{ x: 1, y: 2 }}\n\
+         hconcat:\n  - plot:\n      - mark: dot\n        data: {{ from: t }}\n        x: x\n        y: y\n\
+         \x20 - plot:\n      - mark: dot\n        data: {{ from: t }}\n        x: y\n        y: x\n"
     );
+    parse_spec(&source, Format::Yaml).unwrap_or_else(|e| panic!("the spec parses: {e}\n{source}"))
+}
+
+#[test]
+fn regions_under_plot_defaults_warns_and_is_not_inherited() {
+    for value in ["off", "maybe"] {
+        let out = under_defaults(value);
+        let named = regions_warnings(&out);
+        assert!(
+            matches!(
+                named.as_slice(),
+                [ParseWarning::RegionsOnPlotDefaults { value: v }] if v == value
+            ),
+            "`regions: {value}` under `plotDefaults:` is named once, as belonging on a plot: {:?}",
+            out.warnings
+        );
+        assert!(
+            named[0].to_string().contains("belongs on a plot"),
+            "the warning says where the key goes: {}",
+            named[0]
+        );
+        let plots = collect_plot_nodes(&out.spec);
+        assert_eq!(plots.len(), 2);
+        for (path, plot) in plots {
+            assert_eq!(
+                plot.attributes.get("regions"),
+                None,
+                "{path} does not inherit `regions` from the defaults"
+            );
+        }
+        assert!(
+            out.spec.plot_defaults.0.contains_key("regions"),
+            "the spec's own `plotDefaults:` keeps the key as written"
+        );
+    }
 }
