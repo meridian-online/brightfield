@@ -6749,7 +6749,7 @@ impl MeridianApp {
                 .charts
                 .doc
                 .making()
-                .is_none_or(|making| making.spec.form.is_none())
+                .is_none_or(|making| making.form().is_none())
             {
                 self.rail_before_ask = None;
             }

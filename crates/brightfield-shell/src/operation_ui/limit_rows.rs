@@ -21,6 +21,7 @@ use brightfield_workbench::chrome;
 use egui::{Key, Modifiers};
 use meridian_design::{semantic, spacing};
 
+use super::scan::Scan;
 use super::{
     Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
     Start,
@@ -50,43 +51,6 @@ impl Direction {
         match self {
             Self::Largest => "largest first",
             Self::Smallest => "smallest first",
-        }
-    }
-}
-
-/// What a character of an order is part of, read left to right: a `"name"`
-/// or a `'literal'` (a doubled quote inside one closes and opens it again,
-/// which leaves it open), and how many parentheses are open around it.
-#[derive(Default)]
-struct Scan {
-    quote: Option<char>,
-    depth: usize,
-}
-
-impl Scan {
-    /// Take `c`, and say whether it stands at the top level: outside every
-    /// quote and parenthesis, its own opening one included.
-    fn top(&mut self, c: char) -> bool {
-        match (self.quote, c) {
-            (Some(q), _) => {
-                if c == q {
-                    self.quote = None;
-                }
-                false
-            }
-            (None, '"' | '\'') => {
-                self.quote = Some(c);
-                false
-            }
-            (None, '(') => {
-                self.depth += 1;
-                false
-            }
-            (None, ')') => {
-                self.depth = self.depth.saturating_sub(1);
-                false
-            }
-            (None, _) => self.depth == 0,
         }
     }
 }

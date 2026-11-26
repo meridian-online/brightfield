@@ -49,6 +49,7 @@ pub mod open;
 pub mod read_file;
 pub mod reads;
 pub mod rename_column;
+mod scan;
 pub mod sort_rows;
 pub mod summarise_rows;
 

@@ -138,7 +138,7 @@ fn summarise_rows() -> VerbEntry {
 }
 
 // ---- dedupe-rows ----
-const DEDUPE_ROWS_BUILT: bool = false;
+const DEDUPE_ROWS_BUILT: bool = true;
 fn dedupe_rows() -> VerbEntry {
     entry(
         "dedupe-rows",
