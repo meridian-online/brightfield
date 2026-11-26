@@ -102,26 +102,41 @@ def write(path, text):
 
 
 def installed_ports(installed):
-    """The ports vcpkg installed, {name: version}, from its status database."""
-    status = os.path.join(installed, "vcpkg", "status")
+    """The ports vcpkg installed, {name: version}, from its install database.
+
+    vcpkg keeps that database as vcpkg/status plus a record per change in
+    vcpkg/updates/, and folds the records into status only when a later run
+    loads it. So, as vcpkg does, status is read first and then each update in
+    name order, a later paragraph for a package replacing an earlier one."""
+    database = os.path.join(installed, "vcpkg")
+    status = os.path.join(database, "status")
     if not os.path.isfile(status):
         fail(f"no vcpkg status database at {status}")
+    files = [status]
+    updates = os.path.join(database, "updates")
+    if os.path.isdir(updates):
+        files += [os.path.join(updates, f) for f in sorted(os.listdir(updates))]
+    entries = {}
+    for path in files:
+        for block in read(path).split("\n\n"):
+            fields = {}
+            for line in block.splitlines():
+                key, _, value = line.partition(": ")
+                fields[key] = value
+            if "Package" not in fields:
+                continue
+            key = (fields["Package"], fields.get("Architecture"), fields.get("Feature"))
+            entries[key] = fields
     ports = {}
-    for block in read(status).split("\n\n"):
-        fields = {}
-        for line in block.splitlines():
-            key, _, value = line.partition(": ")
-            fields[key] = value
-        if "Package" not in fields or "Feature" in fields:
-            continue
-        if fields.get("Status") != "install ok installed":
+    for (name, _, feature), fields in entries.items():
+        if feature is not None or fields.get("Status") != "install ok installed":
             continue
         version = fields.get("Version", "")
         if fields.get("Port-Version", "0") != "0":
             version += "#" + fields["Port-Version"]
-        ports[fields["Package"]] = version
+        ports[name] = version
     if not ports:
-        fail(f"{status} lists no installed port")
+        fail(f"vcpkg's database in {database} lists no installed port")
     return ports
 
 
@@ -305,7 +320,7 @@ def licence_files(package):
     return [(os.path.relpath(p, directory), p) for p in paths]
 
 
-def crate_source(package, workspace_root, home):
+def crate_source(package, workspace_root, home, revision):
     """Where the source of exactly this version is: its page on crates.io, the
     git repository and commit it was built from, or, for a path dependency
     such as Brightfield's patched libduckdb-sys, the place in its own
@@ -318,7 +333,7 @@ def crate_source(package, workspace_root, home):
         url, _, commit = source[len("git+"):].partition("#")
         return f"{url.split('?')[0]} at commit {commit}"
     path = os.path.relpath(os.path.dirname(package["manifest_path"]), workspace_root)
-    vendored = f"{path} in {home}"
+    vendored = f"{path} in {home} at commit {revision}"
     if package.get("repository"):
         vendored += f", vendored, and possibly changed, from {package['repository']}"
     return vendored
@@ -360,6 +375,7 @@ def shipped_packages(manifest_path, package_name, features):
 
 def rust(out_file, manifest_path, package_name, features, title, home):
     workspace_root, crates = shipped_packages(manifest_path, package_name, features)
+    revision = subprocess.check_output(["git", "-C", workspace_root, "rev-parse", "HEAD"], text=True).strip()
     known = {}  # a licence file's text, by hash, to the crate that first carried it
     needed = []  # SPDX ids whose text the file's end carries
     lines = [
@@ -382,7 +398,7 @@ def rust(out_file, manifest_path, package_name, features, title, home):
             "-" * 78,
             f"{crate['name']} {crate['version']}",
             f"Licence: {expression or 'see its licence file'}",
-            f"Source: {crate_source(crate, workspace_root, home)}",
+            f"Source: {crate_source(crate, workspace_root, home, revision)}",
         ]
         if not files:
             ids = spdx_ids(expression)
