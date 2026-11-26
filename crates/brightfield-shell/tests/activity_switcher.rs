@@ -277,3 +277,36 @@ fn relate_brings_the_model_back_from_behind_a_tables_grid() {
     );
     assert_eq!(win.app.node_in_focus(), Some(FocusedNode::Model));
 }
+
+#[test]
+fn the_chart_chord_as_the_mac_delivers_it_shows_the_chart_and_the_picture_chord_does_not() {
+    let mut win = scenes::data_file();
+    let (table, chart) = table_and_chart(&win);
+    win.press("cmd-alt-g");
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+
+    // The host makes a copy of the chord while Shift is held as well: that is
+    // the chart picture's chord, not the Chart activity's.
+    win.answered.clear();
+    let picture = egui::Modifiers::COMMAND | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    win.frame(picture, vec![egui::Event::Copy]);
+    win.settle();
+    assert!(
+        !win.answered.contains(&SHOW_CHART),
+        "the picture chord showed the chart"
+    );
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+
+    // The host makes a copy of ⌘⌥C in place of its key event.
+    win.answered.clear();
+    win.frame(
+        egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+        vec![egui::Event::Copy],
+    );
+    win.settle();
+    assert_eq!(win.answered, [SHOW_CHART]);
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Dashboard { node: chart, table }
+    );
+}
