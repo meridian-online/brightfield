@@ -227,6 +227,187 @@ pub fn cell_bounds(grid: &DensityGrid, cell: usize) -> ((f64, f64), (f64, f64)) 
     )
 }
 
+/// The region (an index into `regions`) whose cell holds the point `(x, y)`,
+/// or `None` in a gap between regions or outside the grid.
+///
+/// Regions never share a cell, so the answer is unique.
+pub fn region_at(grid: &DensityGrid, regions: &[Region], x: f64, y: f64) -> Option<usize> {
+    let cell = cell_of(grid, x, y)?;
+    regions
+        .iter()
+        .position(|r| r.cells.binary_search(&cell).is_ok())
+}
+
+/// The boundary of `region` as closed rings of `(x, y)` data coordinates.
+///
+/// Each ring follows cell edges, so it is axis-aligned, and lists its corners
+/// only: the first corner is not repeated at the end, and a drawer closes the
+/// ring itself. Outer rings come first, then holes. Within each group rings are
+/// ordered by their lowest-then-leftmost corner, and each ring starts at that
+/// corner and runs anticlockwise (outer) or clockwise (hole) in data space, so
+/// the output is the same on every run.
+///
+/// Two cells that touch only at a corner count as joined, as they do when
+/// regions are found. Where the boundary meets itself at such a corner, the
+/// trace turns toward the region's own cell, so the two cells stay in one ring
+/// that touches itself at that corner rather than splitting into two rings or
+/// crossing. The empty space is therefore read as 4-connected: a hole touching
+/// the outside only at a corner is still a hole.
+pub fn region_outline(grid: &DensityGrid, region: &Region) -> Vec<Vec<(f64, f64)>> {
+    let (cols, rows) = (grid.cols, grid.rows);
+    let n = cols * rows;
+    let mut mask = vec![false; n];
+    for &cell in region.cells.iter().filter(|&&c| c < n) {
+        mask[cell] = true;
+    }
+    let has = |c: isize, r: isize| {
+        (0..cols as isize).contains(&c)
+            && (0..rows as isize).contains(&r)
+            && mask[r as usize * cols + c as usize]
+    };
+
+    // Directed boundary edges with the region on their left, keyed by start
+    // vertex and heading. Vertices are cell corners, `(col, row)` in 0..=cols
+    // and 0..=rows; headings are 0 east, 1 north, 2 west, 3 south.
+    let mut edges: BTreeSet<(usize, usize, u8)> = BTreeSet::new();
+    for cell in (0..n).filter(|&c| mask[c]) {
+        let (c, r) = ((cell % cols) as isize, (cell / cols) as isize);
+        let (u, v) = (c as usize, r as usize);
+        if !has(c, r - 1) {
+            edges.insert((u, v, 0));
+        }
+        if !has(c + 1, r) {
+            edges.insert((u + 1, v, 1));
+        }
+        if !has(c, r + 1) {
+            edges.insert((u + 1, v + 1, 2));
+        }
+        if !has(c - 1, r) {
+            edges.insert((u, v + 1, 3));
+        }
+    }
+
+    let step = |(u, v, h): (usize, usize, u8)| match h {
+        0 => (u + 1, v),
+        1 => (u, v + 1),
+        2 => (u - 1, v),
+        _ => (u, v - 1),
+    };
+    let mut used: BTreeSet<(usize, usize, u8)> = BTreeSet::new();
+    // Each ring with its sort key: whether it is a hole, then its start corner
+    // as (row, col).
+    type Keyed = ((bool, (usize, usize)), Vec<(usize, usize)>);
+    let mut rings: Vec<Keyed> = Vec::new();
+    for &start in &edges {
+        if used.contains(&start) {
+            continue;
+        }
+        let mut corners: Vec<(usize, usize)> = Vec::new();
+        let mut edge = start;
+        loop {
+            used.insert(edge);
+            let (u, v) = step(edge);
+            // Prefer a right turn, then straight on, then a left turn. At a
+            // corner touch two edges leave the vertex, and the right turn is
+            // the one that keeps the two region cells together.
+            let heading = edge.2;
+            let next = [(heading + 3) % 4, heading, (heading + 1) % 4]
+                .into_iter()
+                .map(|h| (u, v, h))
+                .find(|e| edges.contains(e));
+            let Some(next) = next else { break };
+            if next.2 != heading {
+                corners.push((u, v));
+            }
+            if next == start {
+                break;
+            }
+            edge = next;
+        }
+        // Start the ring at its lowest-leftmost corner.
+        let first = corners
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &(u, v))| (v, u))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        corners.rotate_left(first);
+        let twice_area: i64 = corners
+            .iter()
+            .zip(corners.iter().cycle().skip(1))
+            .map(|(&(u0, v0), &(u1, v1))| u0 as i64 * v1 as i64 - u1 as i64 * v0 as i64)
+            .sum();
+        let key = corners.first().map_or((0, 0), |&(u, v)| (v, u));
+        rings.push(((twice_area < 0, key), corners));
+    }
+    rings.sort_by_key(|(key, _)| *key);
+
+    let edge =
+        |(lo, hi): (f64, f64), count: usize, i: usize| lo + (hi - lo) * (i as f64 / count as f64);
+    rings
+        .into_iter()
+        .map(|(_, corners)| {
+            corners
+                .into_iter()
+                .map(|(u, v)| (edge(grid.x, cols, u), edge(grid.y, rows, v)))
+                .collect()
+        })
+        .collect()
+}
+
+/// Where to write `region`'s name: the centre, in data units, of the largest
+/// square block of the region's own cells that lies nearest the peak.
+///
+/// The centre of a region's bounding box or its mass can fall in a hollow of a
+/// crescent or over a neighbour, but a block of the region's own cells cannot.
+/// Ties between equally large blocks go to the one whose centre is nearest the
+/// peak cell's centre, measured in cells, then to the one whose top-left (lowest
+/// row, then column) cell has the lowest index.
+pub fn label_anchor(grid: &DensityGrid, region: &Region) -> (f64, f64) {
+    let (cols, rows) = (grid.cols, grid.rows);
+    let n = cols * rows;
+    let mut mask = vec![false; n];
+    for &cell in region.cells.iter().filter(|&&c| c < n) {
+        mask[cell] = true;
+    }
+    // side[i]: the side of the largest all-region square whose far corner
+    // (highest row and column) is cell i.
+    let mut side = vec![0usize; n];
+    for cell in (0..n).filter(|&c| mask[c]) {
+        let (c, r) = (cell % cols, cell / cols);
+        side[cell] = if c == 0 || r == 0 {
+            1
+        } else {
+            1 + side[cell - 1]
+                .min(side[cell - cols])
+                .min(side[cell - cols - 1])
+        };
+    }
+    let k = side.iter().copied().max().unwrap_or(0);
+    let (peak_col, peak_row) = (region.peak % cols.max(1), region.peak / cols.max(1));
+    // Everything below is in half cells, so equal distances compare exactly.
+    let best = (0..n)
+        .filter(|&cell| side[cell] == k && k > 0)
+        .map(|cell| {
+            let (c0, r0) = (cell % cols + 1 - k, cell / cols + 1 - k);
+            let (cx, cy) = (2 * c0 + k, 2 * r0 + k);
+            let (dx, dy) = (
+                cx as i64 - (2 * peak_col + 1) as i64,
+                cy as i64 - (2 * peak_row + 1) as i64,
+            );
+            (dx * dx + dy * dy, r0 * cols + c0, cx, cy)
+        })
+        .min();
+    let (cx, cy) = match best {
+        Some((_, _, cx, cy)) => (cx, cy),
+        None => (2 * peak_col + 1, 2 * peak_row + 1),
+    };
+    let at = |(lo, hi): (f64, f64), count: usize, half: usize| {
+        lo + (hi - lo) * (half as f64 / (2 * count) as f64)
+    };
+    (at(grid.x, cols, cx), at(grid.y, rows, cy))
+}
+
 fn axis_bin(v: f64, (lo, hi): (f64, f64), bins: usize) -> Option<usize> {
     if bins == 0 || lo.partial_cmp(&hi) != Some(Ordering::Less) || !(lo..=hi).contains(&v) {
         return None;
@@ -608,5 +789,162 @@ mod tests {
         assert_eq!(cell_of(&grid, -3.1, 101.0), None);
         assert_eq!(cell_of(&grid, 0.0, 102.6), None);
         assert_eq!(cell_of(&grid, f64::NAN, 101.0), None);
+    }
+
+    /// A 10 × 10 grid over `[0, 10]²`, so a cell's data range is its own
+    /// column and row, and a region built from the given `(col, row)` cells.
+    fn small(cells: &[(usize, usize)], peak: (usize, usize)) -> (DensityGrid, Region) {
+        let grid = DensityGrid {
+            cols: 10,
+            rows: 10,
+            x: (0.0, 10.0),
+            y: (0.0, 10.0),
+            density: vec![1.0; 100],
+        };
+        let mut cells: Vec<usize> = cells.iter().map(|&(c, r)| r * 10 + c).collect();
+        cells.sort_unstable();
+        let region = Region {
+            peak: peak.1 * 10 + peak.0,
+            peak_density: 1.0,
+            cells,
+            share: 1.0,
+        };
+        (grid, region)
+    }
+
+    fn block(cols: std::ops::Range<usize>, rows: std::ops::Range<usize>) -> Vec<(usize, usize)> {
+        rows.flat_map(|r| cols.clone().map(move |c| (c, r)))
+            .collect()
+    }
+
+    #[test]
+    fn an_l_shaped_region_has_one_ring_of_six_corners() {
+        // Three cells along the bottom and two more up the left side.
+        let (grid, region) = small(&[(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], (0, 0));
+        let rings = region_outline(&grid, &region);
+        assert_eq!(
+            rings,
+            vec![vec![
+                (0.0, 0.0),
+                (3.0, 0.0),
+                (3.0, 1.0),
+                (1.0, 1.0),
+                (1.0, 3.0),
+                (0.0, 3.0),
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_region_with_a_hole_has_two_rings() {
+        let mut cells = block(2..5, 2..5);
+        cells.retain(|&c| c != (3, 3));
+        let (grid, region) = small(&cells, (2, 2));
+        let rings = region_outline(&grid, &region);
+        assert_eq!(rings.len(), 2);
+        // The outer ring first, anticlockwise from its lowest-left corner.
+        assert_eq!(
+            rings[0],
+            vec![(2.0, 2.0), (5.0, 2.0), (5.0, 5.0), (2.0, 5.0)]
+        );
+        // The hole runs the other way round.
+        assert_eq!(
+            rings[1],
+            vec![(3.0, 3.0), (3.0, 4.0), (4.0, 4.0), (4.0, 3.0)]
+        );
+    }
+
+    #[test]
+    fn cells_that_touch_at_a_corner_share_one_ring_that_touches_itself() {
+        let (grid, region) = small(&[(1, 1), (2, 2)], (1, 1));
+        let rings = region_outline(&grid, &region);
+        assert_eq!(rings.len(), 1);
+        // Eight corners: the pinch at (2, 2) is visited twice, and the walk
+        // goes round the lower cell, then the upper one.
+        assert_eq!(
+            rings[0],
+            vec![
+                (1.0, 1.0),
+                (2.0, 1.0),
+                (2.0, 2.0),
+                (3.0, 2.0),
+                (3.0, 3.0),
+                (2.0, 3.0),
+                (2.0, 2.0),
+                (1.0, 2.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hole_that_touches_the_outside_at_a_corner_is_still_a_hole() {
+        // A 3 x 3 block missing its centre and its top-right corner: the
+        // centre cell is closed in on its four sides and meets the gap in the
+        // corner only at a point.
+        let mut cells = block(1..4, 1..4);
+        cells.retain(|&c| c != (2, 2) && c != (3, 3));
+        let (grid, region) = small(&cells, (1, 1));
+        let rings = region_outline(&grid, &region);
+        assert_eq!(rings.len(), 2, "{rings:?}");
+        assert_eq!(
+            rings[1],
+            vec![(2.0, 2.0), (2.0, 3.0), (3.0, 3.0), (3.0, 2.0)]
+        );
+    }
+
+    #[test]
+    fn outlines_are_the_same_on_every_run() {
+        let (grid, region) = small(&block(2..6, 3..7), (3, 4));
+        assert_eq!(
+            region_outline(&grid, &region),
+            region_outline(&grid, &region)
+        );
+        assert_eq!(label_anchor(&grid, &region), label_anchor(&grid, &region));
+    }
+
+    #[test]
+    fn the_anchor_sits_inside_its_region() {
+        // A thick C: a square annulus with its right side cut away, so the
+        // bounding box's centre lies in the hollow.
+        let mut cells = block(1..9, 1..9);
+        cells.retain(|&(c, r)| !((3..7).contains(&c) && (3..7).contains(&r)));
+        cells.retain(|&(c, _)| c < 7);
+        let (grid, region) = small(&cells, (1, 4));
+        let (x, y) = label_anchor(&grid, &region);
+        let cell = cell_of(&grid, x, y).expect("the anchor is on the grid");
+        assert!(
+            region.cells.contains(&cell),
+            "anchor ({x}, {y}) is in the hollow"
+        );
+    }
+
+    #[test]
+    fn the_anchor_is_near_the_peak() {
+        let (grid, region) = small(&block(0..10, 0..10), (5, 5));
+        let (x, y) = label_anchor(&grid, &region);
+        let peak_centre = (5.5, 5.5);
+        assert!((x - peak_centre.0).abs() <= 3.0 && (y - peak_centre.1).abs() <= 3.0);
+    }
+
+    #[test]
+    fn among_equal_squares_the_anchor_takes_the_one_nearest_the_peak() {
+        // A bar three cells high and eight long: every 3 x 3 block is as big,
+        // and the peak sits at the right-hand end.
+        let (grid, region) = small(&block(1..9, 2..5), (8, 3));
+        assert_eq!(label_anchor(&grid, &region), (7.5, 3.5));
+        // With the peak at the left end, the leftmost block wins.
+        let (grid, region) = small(&block(1..9, 2..5), (1, 3));
+        assert_eq!(label_anchor(&grid, &region), (2.5, 3.5));
+    }
+
+    #[test]
+    fn region_at_finds_the_region_under_a_point_and_none_in_the_gap() {
+        let (grid, left) = small(&block(1..3, 1..3), (1, 1));
+        let (_, right) = small(&block(6..9, 6..9), (6, 6));
+        let regions = [left, right];
+        assert_eq!(region_at(&grid, &regions, 1.5, 1.5), Some(0));
+        assert_eq!(region_at(&grid, &regions, 7.0, 8.9), Some(1));
+        assert_eq!(region_at(&grid, &regions, 4.5, 4.5), None);
+        assert_eq!(region_at(&grid, &regions, -1.0, 1.5), None);
     }
 }
