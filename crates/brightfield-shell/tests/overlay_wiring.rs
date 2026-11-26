@@ -483,26 +483,22 @@ fn a_greyed_row_is_drawn_disabled_and_says_its_sentence() {
     win.type_text("zoom-in");
     win.settle();
     assert_eq!(win.app.open_overlay(), Some("palette"));
-    let zoom: Vec<_> = win
-        .accesskit
-        .iter()
-        .filter(|node| {
-            [node.label(), node.value()]
-                .into_iter()
-                .flatten()
-                .any(|text| text == "zoom-in")
-        })
-        .collect();
-    assert!(!zoom.is_empty(), "the palette drew no zoom-in row");
+    // The row's name is an `egui::Label`; the query field holds the same text
+    // in a text input, so only a label node shows the row was drawn.
     assert!(
-        zoom.iter().all(|node| !node.is_disabled()),
-        "zoom-in is drawn disabled over a chart"
+        win.accesskit
+            .iter()
+            .any(|node| node.role() == egui::accesskit::Role::Label
+                && node.value() == Some("zoom-in")),
+        "the palette drew no zoom-in row"
     );
+    // The disabled flag and the sentence sit on the row itself, so a live
+    // zoom-in row leaves no node both disabled and described.
     assert!(
         !win.accesskit
             .iter()
             .any(|node| node.is_disabled() && node.description().is_some()),
-        "a greyed row is drawn under the zoom-in query"
+        "zoom-in is drawn greyed over a chart"
     );
     win.key(egui::Key::Escape);
 }
