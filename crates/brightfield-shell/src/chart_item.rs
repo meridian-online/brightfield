@@ -2014,16 +2014,18 @@ fn regions_hover(plot: &PlotHandle) -> String {
 /// the pointer picked on this frame.
 ///
 /// The words are the scale switch's chrome, one kind of control wearing its
-/// own pair of words, but the switch sits inside `frame`, the plot area the
-/// marks are drawn in, at its top-right corner, rather than in the tile's
-/// head: the head is where a plot's title is written, and a long title runs
-/// the width of the tile, so a switch there was painted over it. Inside the
-/// frame it lies over the data instead, so it is drawn on a ground of the
-/// chart's own surface ink, which keeps it legible over dense points. `None`
-/// when the frame has no room for it.
+/// own pair of words, but the switch sits at the tile's bottom-right, in the
+/// row the x axis's title is written in, below the tick labels, rather than
+/// in the tile's head: the head is where a plot's title is written, and a
+/// long title runs the width of the tile, so a switch there was painted over
+/// it. The plot's data area stays free of chrome, as the first screen's map
+/// has always kept it. `row` is that row: its top, below the frame and the
+/// tick labels, and the x title's box when the axis has one. `None` when the
+/// row has no room for the switch clear of the title.
 fn draw_regions_switch(
     ui: &mut egui::Ui,
-    frame: egui::Rect,
+    tile: egui::Rect,
+    row: (f32, Option<egui::Rect>),
     clip: egui::Rect,
     subject: (usize, String, bool),
     mode: Mode,
@@ -2052,30 +2054,25 @@ fn draw_regions_switch(
     let height = control::HEIGHT_XS;
 
     let inset = spacing::SPACE_2;
-    let pad = spacing::SPACE_1;
-    if total + (inset + pad) * 2.0 > frame.width() || height + inset * 2.0 > frame.height() {
+    let (below, title) = row;
+    // Level with the x title when there is one, and never above the row's top.
+    let top = title.map_or(below + spacing::SPACE_1, |t| {
+        (t.center().y - height / 2.0).max(below)
+    });
+    // The press gate in `drive_gestures` reads this rect, so a press on the
+    // words is a press on chrome and starts no brush underneath.
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(tile.right() - inset - total, top),
+        egui::vec2(total, height),
+    );
+    let clear_of_title = title.is_none_or(|t| outer.left() >= t.right() + gap * 2.0);
+    if outer.left() < tile.left() + inset || outer.bottom() > tile.bottom() || !clear_of_title {
         return None;
     }
-    // The ground is the hit area too: the press gate in `drive_gestures` reads
-    // this rect, so a press anywhere on the drawn ground is a press on chrome
-    // and starts no brush or region pick underneath.
-    let outer = egui::Rect::from_min_size(
-        egui::pos2(
-            frame.right() - inset - total - pad * 2.0,
-            frame.top() + inset,
-        ),
-        egui::vec2(total + pad * 2.0, height),
-    );
-    let ground = if mode.is_dark() {
-        INK_DARK.surface
-    } else {
-        INK_LIGHT.surface
-    };
-    painter.rect_filled(outer, 0.0, chrome::colour(ground));
 
     let mut states = Vec::with_capacity(labels.len());
     let mut picked = None;
-    let mut x = outer.left() + pad;
+    let mut x = outer.left();
     for (i, label) in labels.iter().enumerate() {
         if i > 0 {
             painter.text(
@@ -2138,9 +2135,10 @@ fn draw_regions_switch(
 /// Offered on each plot [`crate::regions::offers_regions_switch`] names: one
 /// whose regions could be drawn at the extent it is drawn at, whether they are
 /// on or off now. A document with no live session behind it draws none, as it
-/// has no spec to write the choice into. Each sits in its plot's frame, so it
+/// has no spec to write the choice into. Each sits at its tile's foot, so it
 /// never meets the scale switch or the normalise control, which sit in the
-/// tile's head.
+/// tile's head. A plot drawing a count of rows past an end of its x axis
+/// writes that count in the same row, and draws no switch.
 fn draw_regions_switches(
     doc: &ChartDoc,
     ui: &mut egui::Ui,
@@ -2169,24 +2167,32 @@ fn draw_regions_switches(
             Some(view) => view.first,
             None => laid,
         };
-        // The plot area, in the plot's own pixels from its top-left corner,
-        // which is where the tile's rect starts.
+        if plot.rows_past.x.low > 0 || plot.rows_past.x.high > 0 {
+            continue;
+        }
+        // The axes report their parts in the plot's own pixels from its
+        // top-left corner, which is where the tile's rect starts.
         #[allow(clippy::cast_possible_truncation)]
-        let frame = egui::Rect::from_min_max(
-            tile.min
-                + egui::vec2(
-                    plot.layout.plot_x_start() as f32,
-                    plot.layout.plot_y_start() as f32,
-                ),
-            tile.min
-                + egui::vec2(
-                    plot.layout.plot_x_end() as f32,
-                    plot.layout.plot_y_end() as f32,
-                ),
-        );
+        let placed = |r: kurbo::Rect| {
+            egui::Rect::from_min_max(
+                tile.min + egui::vec2(r.x0 as f32, r.y0 as f32),
+                tile.min + egui::vec2(r.x1 as f32, r.y1 as f32),
+            )
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let frame_bottom = tile.top() + plot.layout.plot_y_end() as f32;
+        let x_axis = plot.axes.x;
+        let below = x_axis
+            .iter()
+            .flat_map(|axis| axis.labels.into_iter().chain([axis.line]))
+            .map(|r| placed(r).bottom())
+            .fold(frame_bottom, f32::max);
+        let title = x_axis.and_then(|axis| axis.title).map(placed);
         let active = !crate::regions::regions_switched_off(spec, &plot.path);
         let subject = (i, regions_hover(plot), active);
-        let Some((record, picked)) = draw_regions_switch(ui, frame, clip, subject, mode) else {
+        let Some((record, picked)) =
+            draw_regions_switch(ui, tile, (below, title), clip, subject, mode)
+        else {
             continue;
         };
         if let Some(state) = picked {

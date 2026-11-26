@@ -148,6 +148,41 @@ impl Live {
         self.doc().regions_switches.clone()
     }
 
+    /// Plot `plot`'s switch lies inside its tile, outside its frame, and
+    /// clear of the plot's title, written in the head above the frame, and
+    /// of its axis titles.
+    fn assert_clear(&self, plot: usize) {
+        let switch = self.switch(plot).rect;
+        let tile = self.app.composed_plot_rects()[plot];
+        let frame = self.frame(plot);
+        assert!(
+            tile.contains_rect(switch),
+            "the switch {switch:?} lies inside its tile {tile:?}"
+        );
+        assert!(
+            !frame.intersects(switch),
+            "the switch {switch:?} lies outside the frame {frame:?}"
+        );
+        let head = egui::Rect::from_min_max(tile.min, egui::pos2(tile.right(), frame.top()));
+        assert!(
+            !head.intersects(switch),
+            "the switch {switch:?} reaches into the head {head:?} the title is written in"
+        );
+        let axes = self.doc().composed.plots[plot].axes;
+        for title in [axes.x, axes.y]
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.title)
+        {
+            let at = |x: f64, y: f64| tile.min + egui::vec2(x as f32, y as f32);
+            let title = egui::Rect::from_min_max(at(title.x0, title.y0), at(title.x1, title.y1));
+            assert!(
+                !title.intersects(switch),
+                "the switch {switch:?} meets an axis title at {title:?}"
+            );
+        }
+    }
+
     /// The frame of plot `plot`, the area its marks are drawn in, in window
     /// points.
     fn frame(&self, plot: usize) -> egui::Rect {
@@ -253,17 +288,7 @@ fn the_switch_shows_only_on_qualifying_plots() {
     assert_eq!(plots, vec![0], "the dot plot carries one, the bars none");
 
     let switch = live.switch(0);
-    let frame = live.frame(0);
-    assert!(
-        frame.contains_rect(switch.rect),
-        "the switch {:?} sits inside its plot's frame {frame:?}",
-        switch.rect
-    );
-    assert!(
-        switch.rect.right() > frame.center().x && switch.rect.top() < frame.center().y,
-        "at the frame's top-right: {:?} in {frame:?}",
-        switch.rect
-    );
+    live.assert_clear(0);
     assert!(switch.active, "the regions are on until turned off");
     assert!(live.draws_regions(0), "and they are drawn");
 
@@ -283,51 +308,42 @@ const LONG_TITLE: &str = "Two square clusters of a hundred points each, one low 
                           one high, with a title that runs the width of the plot";
 
 #[test]
-fn the_switch_stays_clear_of_a_long_title() {
+fn the_switch_stays_clear_of_the_titles_and_the_data() {
     let titled = PANEL.replacen(
         "    xDomain: [0, 100]",
-        &format!("    title: \"{LONG_TITLE}\"\n    xDomain: [0, 100]"),
+        &format!(
+            "    title: \"{LONG_TITLE}\"\n    xLabel: across\n    yLabel: up\n    \
+             xDomain: [0, 100]"
+        ),
         1,
     );
     let dir = TempDir::new("titled");
     let live = Live::open(&dir.panel(&titled));
-    let switch = live.switch(0);
-    let frame = live.frame(0);
-    let tile = live.app.composed_plot_rects()[0];
+    let axes = live.doc().composed.plots[0].axes;
     assert!(
-        frame.top() > tile.top(),
-        "the title takes a head above the frame, so the check below measures something: \
-         frame {frame:?} in tile {tile:?}"
+        axes.x.and_then(|a| a.title).is_some() && axes.y.and_then(|a| a.title).is_some(),
+        "both axes draw a title, so the check below measures something"
     );
-    let head = egui::Rect::from_min_max(tile.min, egui::pos2(tile.right(), frame.top()));
-    assert!(
-        frame.contains_rect(switch.rect),
-        "the switch {:?} sits inside the frame {frame:?}",
-        switch.rect
-    );
-    assert!(
-        !head.intersects(switch.rect),
-        "the switch {:?} reaches into the head {head:?} the title is written in",
-        switch.rect
-    );
+    live.assert_clear(0);
 }
 
 #[test]
-fn a_frame_too_small_for_the_switch_draws_none() {
-    let small = PANEL.replacen(
-        "    width: 360\n    height: 300",
-        "    width: 90\n    height: 70",
+fn a_row_with_no_room_beside_the_x_title_draws_no_switch() {
+    let crowded = PANEL.replacen(
+        "    xDomain: [0, 100]",
+        "    xLabel: an x axis title long enough to fill the whole row it is written in\n    \
+         xDomain: [0, 100]",
         1,
     );
-    let dir = TempDir::new("small");
-    let live = Live::open(&dir.panel(&small));
+    let dir = TempDir::new("crowded");
+    let live = Live::open(&dir.panel(&crowded));
     assert!(
         live.draws_regions(0),
-        "the small plot still has regions, so it would be offered a switch with room"
+        "the plot still has regions, so it would be offered a switch with room"
     );
     assert!(
         live.switches().is_empty(),
-        "a frame narrower than the switch draws none: {:?}",
+        "a row the x title fills draws no switch: {:?}",
         live.switches()
     );
 }
