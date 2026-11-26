@@ -244,19 +244,21 @@ fn the_spine_and_the_ledger_strip_read_the_run_off_the_frame() {
     );
     let unrun: Vec<&str> = steps
         .iter()
-        .filter(|row| row.kind.contains(NOT_RUN))
+        .filter(|row| row.mark == Some(meridian_egui::StepMark::NotRun))
         .map(|row| row.label.as_str())
         .collect();
     assert!(
         unrun.is_empty(),
-        "{} of {} step rows on the spine still trail {NOT_RUN:?}: {unrun:?}",
+        "{} of {} step rows on the spine are still marked {NOT_RUN:?}: {unrun:?}",
         unrun.len(),
         steps.len()
     );
     assert!(
-        steps.iter().all(|row| row.kind.contains("ok")),
-        "a step row carries neither {NOT_RUN:?} nor a recorded state: {:?}",
-        steps.iter().map(|r| &r.kind).collect::<Vec<_>>()
+        steps
+            .iter()
+            .all(|row| row.mark == Some(meridian_egui::StepMark::Ok)),
+        "a step row is marked neither {NOT_RUN:?} nor ok: {:?}",
+        steps.iter().map(|r| r.mark).collect::<Vec<_>>()
     );
 
     let summary = win

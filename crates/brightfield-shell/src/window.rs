@@ -7611,6 +7611,7 @@ impl MeridianApp {
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
                                 muted: &|_| false,
+                                folds: false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -12895,8 +12896,18 @@ impl MeridianApp {
             controls.extend(strip.controls.iter().cloned());
         }
         for row in &self.protocol.doc.spine_drawn {
-            if row.control {
+            // A spine row is drawn by the step row, which senses a click on the
+            // whole row whether or not the row answers one, and on its fold
+            // control, which it names by the row's label: so each is named.
+            let step_row = matches!(
+                row.role,
+                SpineRole::Asset | SpineRole::Step | SpineRole::View | SpineRole::Model
+            );
+            if row.control || step_row {
                 controls.push(chrome::NamedControl::labelled(row.rect, &row.label));
+            }
+            if let Some(fold) = row.fold_rect {
+                controls.push(chrome::NamedControl::labelled(fold, &row.label));
             }
             if let Some(chip) = row.chip {
                 controls.push(chrome::NamedControl::hovered(chip.rect, chip.hint));

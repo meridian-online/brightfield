@@ -362,7 +362,7 @@ fn cmd_enter_keeps_a_statement_as_a_new_step_in_front() {
         w.app
             .spine_rows()
             .iter()
-            .any(|r| r.label == STEP && r.kind == "table \u{b7} 52 rows")
+            .any(|r| r.label == STEP && r.kind == "52 rows")
     });
     let at = |label: &str| {
         win.app
