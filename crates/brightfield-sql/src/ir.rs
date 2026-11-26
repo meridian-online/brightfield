@@ -241,17 +241,21 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    /// A [`Predicate::Cells`] with `cells` sorted and deduplicated.
+    /// A [`Predicate::Cells`] with `cells` sorted and deduplicated, or `None`
+    /// for an extent that [`crate::regions::region_grid_sql`] would also refuse.
     #[must_use]
-    pub fn cells(x: &str, y: &str, extent: GridExtent, mut cells: Vec<u32>) -> Self {
+    pub fn cells(x: &str, y: &str, extent: GridExtent, mut cells: Vec<u32>) -> Option<Self> {
+        if !extent.is_usable() {
+            return None;
+        }
         cells.sort_unstable();
         cells.dedup();
-        Self::Cells {
+        Some(Self::Cells {
             x: x.to_string(),
             y: y.to_string(),
             extent,
             cells,
-        }
+        })
     }
 }
 

@@ -80,7 +80,7 @@ fn a_cells_predicate_selects_exactly_the_rows_in_those_cells() {
     // Cells (bx = 0, by = 0): the row (0, 0). Cells (bx = 1, by = 99): the row
     // (19, 9), since the only i in 10..=19 with i % 10 = 9 is 19.
     let cells = vec![99 * 100 + 1, 0, 0];
-    let p = Predicate::cells("x", "y", extent.clone(), cells);
+    let p = Predicate::cells("x", "y", extent.clone(), cells).expect("usable extent");
     let selected = count(&c, &format!("SELECT count(*) FROM t WHERE {p}"));
     assert_eq!(selected, 2);
 

@@ -31,7 +31,7 @@ impl GridExtent {
     }
 
     /// Both ranges are finite and have positive width.
-    fn is_usable(&self) -> bool {
+    pub(crate) fn is_usable(&self) -> bool {
         let ok = |(lo, hi): (f64, f64)| lo.is_finite() && hi.is_finite() && lo < hi;
         self.bins > 0 && ok(self.x) && ok(self.y)
     }
@@ -165,9 +165,28 @@ mod tests {
     }
 
     #[test]
+    fn a_degenerate_extent_yields_no_cells_predicate() {
+        let nan = GridExtent {
+            x: (f64::NAN, 1.0),
+            ..extent()
+        };
+        let flat = GridExtent {
+            y: (2.0, 2.0),
+            ..extent()
+        };
+        let no_bins = GridExtent {
+            bins: 0,
+            ..extent()
+        };
+        for e in [nan, flat, no_bins] {
+            assert_eq!(Predicate::cells("x", "y", e, vec![1]), None);
+        }
+    }
+
+    #[test]
     fn cells_predicate_is_canonical() {
-        let a = Predicate::cells("x", "y", extent(), vec![7, 3, 7, 1]);
-        let b = Predicate::cells("x", "y", extent(), vec![1, 3, 7]);
+        let a = Predicate::cells("x", "y", extent(), vec![7, 3, 7, 1]).unwrap();
+        let b = Predicate::cells("x", "y", extent(), vec![1, 3, 7]).unwrap();
         assert_eq!(a, b);
         assert_eq!(a.to_string(), b.to_string());
         assert!(a.to_string().contains("IN (1, 3, 7)"), "{a}");
