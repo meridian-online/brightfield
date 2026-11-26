@@ -541,3 +541,41 @@ fn the_open_header_is_two_rows() {
         "a locator band was drawn"
     );
 }
+
+/// The grid's "N of M columns" note keeps off the switcher and the crumbs as
+/// the window narrows, and is left out when there is no room for it.
+#[test]
+fn the_columns_note_never_lands_on_the_switcher_or_the_crumbs() {
+    let mut win = scenes::data_file();
+    win.press("cmd-alt-g");
+    assert_eq!(win.answered, [SHOW_GRID]);
+    let mut noted = 0;
+    for width in [1280.0, 1000.0, 800.0, 700.0, 620.0, 560.0] {
+        win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 820.0));
+        win.settle();
+        let header = win
+            .app
+            .pane_header()
+            .cloned()
+            .expect("the grid drew a pane header");
+        let Some((note, text)) = win.app.canvas_panes().rows_note.clone() else {
+            continue;
+        };
+        noted += 1;
+        let switcher = header.switcher.expect("the grid's header has a switcher");
+        assert!(
+            !note.intersects(switcher),
+            "at {width}: {text:?} at {note:?} lands on the switcher {switcher:?}"
+        );
+        for (crumb, rect) in &header.crumbs {
+            assert!(
+                !note.intersects(*rect),
+                "at {width}: {text:?} at {note:?} lands on the crumb {crumb:?}"
+            );
+        }
+    }
+    assert!(
+        noted > 0,
+        "no width drew the columns note, so this held nothing"
+    );
+}

@@ -254,3 +254,18 @@ fn on_a_narrow_window_the_place_fields_keep_off_the_mark() {
     win.click(mark.center());
     assert!(win.app.front_door_is_live(), "the mark took the click home");
 }
+
+/// The spec file a chart was composed from is offered on the hover of the
+/// title band's name, by its file name alone.
+#[test]
+fn the_title_bands_name_offers_the_spec_file_on_hover() {
+    let win = scenes::data_file();
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("a Protocol made from a data file composes a spec file");
+    let name = spec.file_name().expect("a file name").to_string_lossy();
+    assert_eq!(win.app.document_source_about().as_deref(), Some(&*name));
+}

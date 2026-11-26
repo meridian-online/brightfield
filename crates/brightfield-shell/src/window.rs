@@ -12475,8 +12475,8 @@ impl MeridianApp {
         // Read everything the band says before drawing it, so the closure
         // below borrows no more of `self` than the state it writes.
         let title = self.title();
-        // Where a panel open from its tile is kept, offered on the name's
-        // hover: the band names the panel, and its file is what the name
+        // Where the document came from, offered on the name's hover: the
+        // band names the panel or the chart, and its file is what the name
         // leaves out.
         let title_about = self.document_source_about();
         let flow = self.protocol.doc.model.flow();
@@ -17449,9 +17449,22 @@ impl MeridianApp {
 
     /// What the title band's name says when it is hovered: the open panel's
     /// path and kind, the tooltip its tile carries.
-    fn document_source_about(&self) -> Option<String> {
+    /// What the title band's name offers on hover: where the document came
+    /// from. A panel open from its tile names its file; a chart composed from
+    /// a spec file names that file, without its folder, so a picture of the
+    /// window does not depend on the machine that drew it.
+    #[must_use]
+    pub fn document_source_about(&self) -> Option<String> {
         self.open_tile_file()
             .map(|file| crate::panel_tiles::panel_about(&file))
+            .or_else(|| {
+                self.charts
+                    .doc
+                    .spec_path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
     }
 
     /// The panel file of the tile open as the chart document, when one is.
@@ -21619,6 +21632,12 @@ fn draw_canvas_grid_pane(
     }
     let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
     let size_note = drawn.size_note;
+    let header_drawn_right = drawn
+        .switcher
+        .into_iter()
+        .chain(drawn.crumbs.iter().map(|(_, rect)| *rect))
+        .map(|rect| rect.right())
+        .reduce(f32::max);
     if let Some(head) = head {
         head.keep(drawn, requests);
     }
@@ -21642,14 +21661,16 @@ fn draw_canvas_grid_pane(
     if let Some(note) = size_note {
         room.max.x = note.left();
     }
+    room.min.x = header_drawn_right.map_or(room.min.x, |right| right + spacing::SPACE_4);
     let rows_note = charts
         .doc
         .grid_drawn()
         .filter(|drawn| drawn.some_column_is_off_screen())
-        .map(|drawn| {
-            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
-            (band_note(ui, room, &text, mode), text)
-        });
+        .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
+        // Left out, as the header leaves out its size note, rather than
+        // drawn over the switcher or the crumbs.
+        .filter(|text| band_note_fits(ui, room, text))
+        .map(|text| (band_note(ui, room, &text, mode), text));
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
@@ -21742,6 +21763,17 @@ fn grid_pane_title(doc: &ChartDoc) -> String {
         Some(typed) => format!("{GRID_PANE_TITLE} \u{b7} {}", typed.step()),
         None => GRID_PANE_TITLE.to_string(),
     }
+}
+
+/// Whether [`band_note`] would draw `text` inside `band`, a `SPACE_4` in from
+/// each end.
+fn band_note_fits(ui: &egui::Ui, band: egui::Rect, text: &str) -> bool {
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), ui_font(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x;
+    width + 2.0 * spacing::SPACE_4 <= band.width()
 }
 
 /// A note at the **trailing end of a pane's header band**: muted, in the
