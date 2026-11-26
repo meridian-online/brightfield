@@ -125,7 +125,7 @@ fn cast_column() -> VerbEntry {
 }
 
 // ---- summarise-rows ----
-const SUMMARISE_ROWS_BUILT: bool = false;
+const SUMMARISE_ROWS_BUILT: bool = true;
 fn summarise_rows() -> VerbEntry {
     entry(
         "summarise-rows",

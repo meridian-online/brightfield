@@ -1,0 +1,75 @@
+# Build the Mac App Store package, by hand (`gh workflow run store.yml --ref
+# <branch>`) or on a Store tag (`store-v*`).
+#
+# It builds the managed edition's DuckDB, packages the sandboxed bundle with
+# scripts/package-store.sh, checks it with the package-store-selftest step, and
+# uploads the .pkg as an artifact. With the four Store secrets that
+# scripts/store-signing.sh names, the bundle is signed with the Mac App
+# Distribution identity and the provisioning profile, and the package with the
+# Mac Installer Distribution identity. Without them it is signed ad-hoc and the
+# package is unsigned, which App Store Connect refuses but every check here
+# reads. Uploading the package to App Store Connect is done by hand.
+
+name: store
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['store-v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  store:
+    name: The Mac App Store package builds, signs and passes its checks
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: cmake and ninja
+        run: brew install cmake ninja
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: duckdb-managed-${{ hashFiles('scripts/build-duckdb.sh', 'scripts/duckdb-managed/**', 'packaging/finetype-pin.env') }}
+          restore-keys: duckdb-managed-
+
+      - name: build the managed edition's DuckDB and check it
+        run: cargo xtask ci --step duckdb-managed
+
+      - name: the Store identities and profile, when the secrets are set
+        env:
+          MAS_APP_P12_BASE64: ${{ secrets.MAS_APP_P12_BASE64 }}
+          MAS_INSTALLER_P12_BASE64: ${{ secrets.MAS_INSTALLER_P12_BASE64 }}
+          MAS_P12_PASSWORD: ${{ secrets.MAS_P12_PASSWORD }}
+          MAS_PROFILE_BASE64: ${{ secrets.MAS_PROFILE_BASE64 }}
+        run: scripts/store-signing.sh setup
+
+      - name: package the sandboxed bundle
+        run: |
+          version="v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/brightfield-shell/Cargo.toml | head -1)"
+          case "$GITHUB_REF" in refs/tags/store-v*) version="${GITHUB_REF#refs/tags/store-}" ;; esac
+          scripts/package-store.sh "$version"
+
+      - name: its entitlements, helpers, DuckDB and signature are as the Store build requires
+        env:
+          BRIGHTFIELD_STORE_APP: dist/store/Brightfield.app
+        run: cargo xtask ci --step package-store-selftest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brightfield-store-pkg
+          path: dist/store/*.pkg
+          if-no-files-found: error
+
+      - name: remove the signing keychain
+        if: always()
+        run: scripts/store-signing.sh cleanup

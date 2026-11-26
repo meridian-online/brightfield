@@ -377,12 +377,13 @@ const CHIP_SPECIMEN: [&str; 3] = ["Esc", "⌘S", "Space"];
 /// `every_chip_in_every_gallery_specimen_spends_the_named_padding` and says so
 /// in the failure, instead of being discovered as a golden nobody expected to
 /// move. Counts are per frame, and identical in light and dark.
-const CHIP_CENSUS: [(&str, usize, usize); 7] = [
+const CHIP_CENSUS: [(&str, usize, usize); 8] = [
     // (specimen id, pills, keycaps)
     ("key-chip", 0, 3),
     ("key-tip", 0, 1),
+    ("menu-item", 0, 4),
     ("modal-chrome", 0, 1),
-    ("picker", 0, 3),
+    ("picker", 0, 4),
     ("reason-popover", 0, 1),
     ("ribbon-row", 0, 1),
     ("status-pill", 3, 0),

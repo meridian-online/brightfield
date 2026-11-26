@@ -919,13 +919,17 @@ fn verify_against_manifest_except(
     let Some(entries) = manifest_entries(dir)? else {
         return Ok(());
     };
-    if entries.is_empty() {
-        return Err("the manifest names no files, so it verified nothing".to_string());
-    }
-    for (want, rel) in entries
+    let checked: Vec<_> = entries
         .iter()
         .filter(|(_, rel)| !skipped.contains(&rel.as_str()))
-    {
+        .collect();
+    // Counted after the skipped entries are passed over: a manifest that names
+    // only the extension's files verifies nothing in a built-in open, and is
+    // refused as an empty one is, rather than accepted as no manifest is.
+    if checked.is_empty() {
+        return Err("the manifest names no files, so it verified nothing".to_string());
+    }
+    for (want, rel) in checked {
         let path = dir.join(rel);
         let got: String = conn
             .query_row(
