@@ -102,7 +102,7 @@ pub struct KnownColumn {
 /// `None` when no layer is like that, when the plot asks for `regions: off`,
 /// or when it names a scale other than `linear` for either axis: the grid is
 /// equal-width in data units, and a linear axis draws equal widths in data as
-equal widths on screen.
+/// equal widths on screen.
 /// Whether the two columns are numbers is the data's to say, so
 /// [`RegionJob::for_plot`] also checks that the plot drew both axes on
 /// linear scales.
