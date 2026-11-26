@@ -3955,8 +3955,9 @@ pub struct SpineRowDrawn {
     /// how wide the text was, which is how a caption too long for the rail is
     /// caught rather than cropped quietly by the clip rect.
     pub name_rect: egui::Rect,
-    /// The rect the trailing text occupied, `None` on a row with no trailing
-    /// text.
+    /// The rect the trailing text occupied: on a column row of the Outline,
+    /// its type. `None` on a row with no trailing text, and on a spine row,
+    /// whose output the step row places and does not report.
     pub kind_rect: Option<egui::Rect>,
     /// The rug the row drew at its trailing end in place of its type — a
     /// numeric column's row while the Outline lists a channel's columns. `None`
@@ -3980,10 +3981,9 @@ pub struct SpineRowDrawn {
     /// click was answered by; elsewhere, the sense the row was allocated with.
     pub control: bool,
     /// Whether the row was drawn struck through: a step removed and not yet
-    /// saved, and what it makes. On a spine row the name keeps the step row's
-    /// own ink, primary for a step and secondary for a table, and the rule
-    /// alone marks it as going; on an Outline row the name is in the
-    /// secondary ink.
+    /// saved, and what it makes. Only a spine row is struck. Its name keeps the
+    /// step row's own ink, primary for a step and secondary for a table, and
+    /// the rule alone marks it as going.
     pub struck: bool,
     /// Whether the row's name was drawn in the muted ink: a row that is not a
     /// table, while the spine picks a table for an operation.
@@ -4153,8 +4153,13 @@ pub struct SpinePickRows {
 /// What the row of the table in front trails while the spine picks.
 pub const IN_FRONT: &str = "in front";
 
-/// What the row of a table added to an operation's list trails, ahead of what
-/// it has in common with the table in front.
+/// What the row of a table added to an operation's list trails in place of
+/// what it has in common with the table in front.
+///
+/// The word alone, because it is what tells an added row from the row under
+/// the cursor, which is drawn selected too, and at the list's width a step row
+/// gives up an output longer than a word or two. What the table has in common
+/// with the one in front was on its row before it was added.
 pub const ADDED: &str = "added";
 
 impl SpinePickRows {
@@ -4177,11 +4182,10 @@ impl SpinePickRows {
         };
         let added = self.added.contains(name);
         row.selected = added || self.cursor.as_ref() == Some(name);
-        row.output = match (added, trail) {
-            (true, Some(trail)) => Some(format!("{ADDED} \u{b7} {trail}")),
-            (true, None) => Some(ADDED.to_string()),
-            (false, Some(trail)) => Some(trail.clone()),
-            (false, None) => None,
+        row.output = if added {
+            Some(ADDED.to_string())
+        } else {
+            trail.clone()
         };
     }
 }
@@ -4641,12 +4645,13 @@ impl Item<ProtocolDoc> for OutlinePane {
                         None => default_senses_click(row),
                     },
                     muted: &|row| picking.is_some() && pick_table(row).is_none(),
-                    folds: overridden.is_none() && picking.is_none(),
+                    folds: overridden.is_none(),
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
                 // A fold control folds the spine's own list, the one list that
-                // draws it.
+                // draws it, picking or not: the pick dresses rows by their
+                // tables, which a fold leaves as they are.
                 if style.folds {
                     fold_family = listed
                         .fold_clicked
@@ -4796,7 +4801,9 @@ pub struct SpineListStyle<'a> {
     /// a table for an operation, when each row that is not a table is.
     pub muted: &'a dyn Fn(&SpineRow) -> bool,
     /// Whether a family's row draws its fold control: only where a click on
-    /// it is answered, on the document's own spine while it picks nothing.
+    /// it is answered, on the document's own spine. Elsewhere a family's row
+    /// draws no control and no member count, since the step row draws the
+    /// count only as part of the control.
     pub folds: bool,
 }
 
