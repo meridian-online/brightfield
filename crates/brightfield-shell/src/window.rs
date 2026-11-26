@@ -12902,7 +12902,9 @@ impl MeridianApp {
                     self.pick_requested = true;
                 }
                 // An operation's verb is the window's: chosen from a palette or a menu, it starts
-                // the operation as its key does, or says what it needs.
+                // the operation as its key does, or says what it needs. `open-sources-browser` is
+                // `read-file`'s, so it comes here too and opens the browser over the Protocol the
+                // window holds, whichever document is on the canvas.
                 Request::Verb(verb) if crate::operation_ui::by_verb(verb.as_str()).is_some() => {
                     taken = self.start_operation_verb(ctx, verb.as_str());
                 }
@@ -12981,11 +12983,6 @@ impl MeridianApp {
                 // store and the reopen are the window's, not either document's.
                 Request::Verb(verb) if verb.as_str() == UNTRUST_PROTOCOL => {
                     self.untrust_open_protocol(ctx);
-                }
-                // open-sources-browser is the window's as A is: the browser adds to the Protocol
-                // the window holds, whichever document is on the canvas.
-                Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
-                    self.open_sources_browser(ctx);
                 }
                 // organise-joins is the window's too: the sheet is over the model it holds.
                 Request::Verb(verb) if verb.as_str() == crate::protocol::ORGANISE_JOINS => {

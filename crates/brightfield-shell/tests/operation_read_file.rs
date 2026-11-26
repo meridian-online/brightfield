@@ -73,12 +73,22 @@ fn the_bring_in_command_opens_the_sources_browser() {
 
 #[test]
 fn a_protocol_brightfield_did_not_make_says_sources_are_not_added_to_it() {
-    let win = OpWindow::on_protocol_folder("shipped-protocol");
+    const SENTENCE: &str = "Sources are added to Protocols Brightfield made, and this one was not.";
+    let mut win = OpWindow::on_protocol_folder("shipped-protocol");
     let before = win.snapshot();
-    assert_eq!(
-        offered(&win),
-        Err("Sources are added to Protocols Brightfield made, and this one was not.".to_string())
-    );
+    // The palette greys the row with the sentence.
+    assert_eq!(offered(&win), Err(SENTENCE.to_string()));
+    // Started anyway, as a key an unavailable command keeps would start it, it
+    // raises the browser's own banner, opens nothing and begins no draft.
+    let spec = operation_ui::spec("read-file").expect("read-file is built");
+    let ctx = win.ctx.clone();
+    let started = win
+        .app
+        .start_operation_spec(&ctx, spec, Start::SourcesBrowser, None);
+    win.settle();
+    assert!(!started, "the browser did not open");
+    let banners = win.banners();
+    assert!(banners.contains(SENTENCE), "{banners}");
     assert!(win.making().is_none());
     assert_ne!(win.app.open_overlay(), Some("sources-browser"));
     assert_eq!(win.snapshot(), before);

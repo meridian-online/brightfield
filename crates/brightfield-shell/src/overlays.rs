@@ -1301,7 +1301,8 @@ mod tests {
 
     /// A palette lists the stages its rows have, so neither the window's
     /// palette nor the chart's draws all four: each draws its own, in the
-    /// ribbon's order, once each, and the rows of no stage last.
+    /// ribbon's order, once each, and the rows of no stage last. The chart's
+    /// has Connect for Add sources, which is how a file is read in.
     #[test]
     fn the_empty_palette_reads_in_stage_order_under_each_stages_name() {
         let order: Vec<&str> = Stage::ALL
@@ -1314,7 +1315,10 @@ mod tests {
                 palette_at(Altitude::Protocol),
                 vec!["Connect", "Model", "Other"],
             ),
-            (chart_palette(), vec!["Shape", "Publish", "Other"]),
+            (
+                chart_palette(),
+                vec!["Connect", "Shape", "Publish", "Other"],
+            ),
         ] {
             let drawn = headings(&p);
             let ranks: Vec<usize> = drawn
