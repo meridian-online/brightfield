@@ -17,7 +17,7 @@ scripts/package-store.sh copies to Contents/Resources/licenses/.
       cargo-deny holds those crates to Brightfield's own licence policy.
 
   notices.py rust OUT_FILE --manifest-path FILE --package NAME [--features F]
-                           --title TEXT
+                           --title TEXT --home URL
       the Rust crates one package of a workspace compiles in, with each
       crate's licence files, or, for a crate whose package carries none, the
       SPDX text of each licence its licence expression names.
@@ -305,16 +305,23 @@ def licence_files(package):
     return [(os.path.relpath(p, directory), p) for p in paths]
 
 
-def crate_source(package):
-    """Where the source of exactly this version is: its page on crates.io, or
-    the git repository and commit it was built from."""
+def crate_source(package, workspace_root, home):
+    """Where the source of exactly this version is: its page on crates.io, the
+    git repository and commit it was built from, or, for a path dependency
+    such as Brightfield's patched libduckdb-sys, the place in its own
+    workspace's repository it is vendored at, which may differ from the
+    project it came from."""
     source = package.get("source") or ""
     if source.startswith("registry+") or source.startswith("sparse+"):
         return f"https://crates.io/crates/{package['name']}/{package['version']}"
     if source.startswith("git+"):
         url, _, commit = source[len("git+"):].partition("#")
         return f"{url.split('?')[0]} at commit {commit}"
-    return package.get("repository") or "this app's source"
+    path = os.path.relpath(os.path.dirname(package["manifest_path"]), workspace_root)
+    vendored = f"{path} in {home}"
+    if package.get("repository"):
+        vendored += f", vendored, and possibly changed, from {package['repository']}"
+    return vendored
 
 
 def shipped_packages(manifest_path, package_name, features):
@@ -345,14 +352,14 @@ def shipped_packages(manifest_path, package_name, features):
                 stack.append(dep["pkg"])
     # The workspace's own crates are Meridian's, under the licence the bundle
     # carries for them.
-    return sorted(
+    return metadata["workspace_root"], sorted(
         (packages[i] for i in seen if i not in members),
         key=lambda p: (p["name"], p["version"]),
     )
 
 
-def rust(out_file, manifest_path, package_name, features, title):
-    crates = shipped_packages(manifest_path, package_name, features)
+def rust(out_file, manifest_path, package_name, features, title, home):
+    workspace_root, crates = shipped_packages(manifest_path, package_name, features)
     known = {}  # a licence file's text, by hash, to the crate that first carried it
     needed = []  # SPDX ids whose text the file's end carries
     lines = [
@@ -375,7 +382,7 @@ def rust(out_file, manifest_path, package_name, features, title):
             "-" * 78,
             f"{crate['name']} {crate['version']}",
             f"Licence: {expression or 'see its licence file'}",
-            f"Source: {crate_source(crate)}",
+            f"Source: {crate_source(crate, workspace_root, home)}",
         ]
         if not files:
             ids = spdx_ids(expression)
@@ -453,7 +460,8 @@ def managed(args):
     ):
         manifest = os.path.join(args.finetype_src, "crates", crate, "Cargo.toml")
         deny(manifest, args.deny_config)
-        rust(os.path.join(out, "rust-crates", file), manifest, package, None, where)
+        rust(os.path.join(out, "rust-crates", file), manifest, package, None, where,
+             "https://github.com/meridian-online/finetype")
 
 
 def index(args):
@@ -510,13 +518,14 @@ def main():
     r.add_argument("--package", required=True)
     r.add_argument("--features")
     r.add_argument("--title", required=True)
+    r.add_argument("--home", required=True, help="the repository a path dependency is vendored in")
     i = commands.add_parser("index")
     i.add_argument("dir")
     args = parser.parse_args()
     if args.command == "managed":
         managed(args)
     elif args.command == "rust":
-        count = rust(args.out_file, args.manifest_path, args.package, args.features, args.title)
+        count = rust(args.out_file, args.manifest_path, args.package, args.features, args.title, args.home)
         print(f"notices: {count} crates in {args.out_file}", file=sys.stderr)
     else:
         index(args)

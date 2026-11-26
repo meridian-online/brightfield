@@ -213,7 +213,8 @@ NOTICES="$APP/Contents/Resources/licenses"
 cp -R "$MANAGED/licenses" "$NOTICES"
 python3 scripts/duckdb-managed/notices/notices.py rust "$NOTICES/rust-crates/brightfield.txt" \
   --manifest-path crates/brightfield-shell/Cargo.toml --package brightfield-shell \
-  --features managed-duckdb --title "Brightfield, Contents/MacOS/brightfield and Contents/Helpers/brightfield-helper"
+  --features managed-duckdb --home https://github.com/meridian-online/brightfield \
+  --title "Brightfield, Contents/MacOS/brightfield and Contents/Helpers/brightfield-helper"
 python3 scripts/duckdb-managed/notices/notices.py index "$NOTICES"
 
 # FineType's model and catalogue, and nothing that is code: the extension is
