@@ -8869,7 +8869,7 @@ impl MeridianApp {
     ///
     /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
     /// a case inside it: `open-home` is a runtime dispatch, not an overlay
-    /// opener, and [`OverlayKeys`] holds the overlay openers only. It
+    /// opener, and [`OverlayKeys`] holds the overlay openers. It
     /// still invents no binding — the token comes off the registry
     /// ([`Self::home_binding`]) and runs through the same
     /// [`consume_token`]. `open_home` is a no-op on the front door, so an
