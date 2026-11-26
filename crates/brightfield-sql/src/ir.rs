@@ -230,7 +230,8 @@ pub enum Predicate {
     /// plot's view: `x` and `y` are column names (quoted when rendered) and
     /// `cells` are indices as [`crate::regions::cell_index_sql`] defines them.
     /// Build it with [`Predicate::cells`], which sorts and deduplicates `cells`
-    /// so the same set of cells is always the same predicate.
+    /// so two predicates over the same cells are equal
+    /// (`cells_predicate_is_canonical` checks it).
     Cells {
         x: String,
         y: String,
