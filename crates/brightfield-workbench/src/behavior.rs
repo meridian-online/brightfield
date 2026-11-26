@@ -2,7 +2,7 @@
 //!
 //! `egui_tiles` asks a `Behavior` two things about a pane: what to call it,
 //! and how to draw it. [`PaneChrome`] answers both from the same place — the
-//! pane's [`Subject`](crate::Subject) — so a tab title and a header band
+//! pane's [`Subject`] — so a tab title and a header band
 //! cannot say different things about the same pane, which is precisely what
 //! happened in the shell this replaces.
 //!
