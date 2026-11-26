@@ -2947,6 +2947,22 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "alt-c" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::C)),
         "alt-x" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::X)),
         "alt-r" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)),
+        // The node's activities: ⌘⌥ and the activity's initial.
+        "cmd-alt-g" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::G))
+        }
+        "cmd-alt-m" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::M))
+        }
+        // C with the command key held arrives as `Event::Copy`, as for
+        // cmd-shift-c below, here with ⌥ held and Shift not.
+        "cmd-alt-c" => ctx.input_mut(|i| {
+            let held = i.modifiers.command && i.modifiers.alt && !i.modifiers.shift;
+            let before = i.events.len();
+            i.events
+                .retain(|e| !(held && matches!(e, egui::Event::Copy)));
+            i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::C)
+        }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
@@ -4010,6 +4026,9 @@ pub struct MeridianApp {
     /// The ribbon verbs' keystroke tokens, read off the registry at boot, each
     /// with its verb.
     ribbon_bindings: [(Option<&'static str>, &'static str); 6],
+    /// The node's activity verbs' keystroke tokens, read off the registry at
+    /// boot, each with its verb.
+    activity_bindings: [(Option<&'static str>, &'static str); 3],
     /// A picture the export verb drew, waiting for the save dialog after the
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
     /// where [`Self::dialogs_allowed`] says a person is there to answer it.
@@ -4549,6 +4568,13 @@ impl MeridianApp {
             }),
             ribbon: crate::ribbon::RibbonState::default(),
             ribbon_bindings: brightfield_keys::ribbon::RIBBON_VERBS.map(|longname| {
+                let key = brightfield_keys::registry()
+                    .iter()
+                    .find(|v| v.longname == longname)
+                    .and_then(brightfield_keys::VerbEntry::primary_key);
+                (key, longname)
+            }),
+            activity_bindings: brightfield_keys::activity::ACTIVITY_VERBS.map(|longname| {
                 let key = brightfield_keys::registry()
                     .iter()
                     .find(|v| v.longname == longname)
@@ -7206,6 +7232,8 @@ impl MeridianApp {
         self.run_key(&ctx);
         // The ribbon's tabs and collapse, on the same gate.
         self.ribbon_keys(&ctx);
+        // The node's activities, on the same gate.
+        self.activity_keys(&ctx);
         // The picture verbs, on the same gate, where a chart holds the canvas.
         self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
@@ -9122,6 +9150,167 @@ impl MeridianApp {
         self.ribbon
     }
 
+    /// Switch the node in focus to an activity if one of the activity verbs'
+    /// keystrokes is down this frame. Gated exactly as [`Self::home_key`] is.
+    /// A key whose activity cannot be taken says why in a toast, as a menu
+    /// command does.
+    fn activity_keys(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.activity_bindings {
+            if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.answered(longname);
+                match self.availability_of(longname) {
+                    Some(brightfield_keys::Availability::Available) => {
+                        self.perform_activity(ctx, longname);
+                    }
+                    Some(brightfield_keys::Availability::Missing(sentence)) => {
+                        self.say_activity_refused(ctx, sentence);
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// Say in an Info toast why an activity was not taken.
+    fn say_activity_refused(&mut self, ctx: &egui::Context, sentence: String) {
+        self.toasts
+            .push(Toast::new(Severity::Info, sentence.clone()));
+        self.menu_said = Some(sentence);
+        ctx.request_repaint();
+    }
+
+    /// **The node whose activities the window offers**: the model step while
+    /// the model pane holds the canvas, the node a grid lists, the chart on
+    /// the canvas with the table it reads, or, over the graph, the node
+    /// selected there: a viewable node, or a chart with the table it reads.
+    /// `None` on the front door and for a chart with no Protocol behind it.
+    #[must_use]
+    pub fn node_in_focus(&self) -> Option<crate::node_activity::FocusedNode> {
+        use crate::node_activity::FocusedNode;
+        if self.front_door_is_live() {
+            return None;
+        }
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return Some(FocusedNode::Model);
+        }
+        let model = &self.protocol.doc.model;
+        match &self.canvas_holds {
+            CanvasHolds::View { node, .. } => Some(FocusedNode::Table(node.clone())),
+            CanvasHolds::Dashboard { node, table } => Some(FocusedNode::Chart {
+                node: node.clone(),
+                table: table.clone(),
+            }),
+            CanvasHolds::Graph => {
+                let node = model.selected()?;
+                if model.is_viewable(node) {
+                    return Some(FocusedNode::Table(node.clone()));
+                }
+                // The held dashboard reads the held table, whichever of its
+                // tables the graph lists first.
+                let table = if model.dashboard() == Some(node) {
+                    model.table()?
+                } else {
+                    model.table_read_by(node)?
+                };
+                Some(FocusedNode::Chart {
+                    node: node.clone(),
+                    table: table.clone(),
+                })
+            }
+            CanvasHolds::Chart => None,
+        }
+    }
+
+    /// **The chart the window can draw for `table`**: of the charts that read
+    /// it ([`ProtocolModel::charts_reading`]), the one the chart document
+    /// holds. The window holds one table's rows and one chart, so that is the
+    /// held table's dashboard, and no other table has one to show.
+    #[must_use]
+    pub fn chart_reading(&self, table: &AssetId) -> Option<AssetId> {
+        let model = &self.protocol.doc.model;
+        let held = model.dashboard()?;
+        (model.table() == Some(table) && model.charts_reading(table).contains(held))
+            .then(|| held.clone())
+    }
+
+    /// **The chart Chart puts on the canvas for `node`**, with the table it
+    /// reads: for a table or view, the chart that reads it
+    /// ([`Self::chart_reading`]); for a chart, itself, when it is the one the
+    /// window holds. `None` when the window has no such chart to show.
+    #[must_use]
+    pub fn chart_for(
+        &self,
+        node: &crate::node_activity::FocusedNode,
+    ) -> Option<(AssetId, AssetId)> {
+        use crate::node_activity::FocusedNode;
+        let model = &self.protocol.doc.model;
+        match node {
+            FocusedNode::Table(table) => self
+                .chart_reading(table)
+                .map(|chart| (chart, table.clone())),
+            FocusedNode::Chart { node, table } => (model.dashboard() == Some(node)
+                && model.table() == Some(table))
+            .then(|| (node.clone(), table.clone())),
+            FocusedNode::Model => None,
+        }
+    }
+
+    /// **Switch the node in focus to the activity `verb` names**, where the
+    /// window can. Answers whether the canvas now shows it.
+    ///
+    /// Grid puts the node's rows on the canvas, or the rows a chart reads.
+    /// Chart puts on the chart that reads the node, or the chart in focus.
+    /// Relate brings the model pane back from behind a table's grid,
+    /// and is already taken while the pane holds the canvas. The node, the
+    /// selected column and the grid's cursor are left as they were, so a trip
+    /// from the chart to the grid and back comes back to the same place.
+    fn perform_activity(&mut self, ctx: &egui::Context, verb: &str) -> bool {
+        use brightfield_keys::activity::{RELATE, SHOW_CHART, SHOW_GRID};
+        if !matches!(
+            self.availability_of(verb),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        let focus = self.node_in_focus();
+        let table = focus.as_ref().and_then(|f| f.table()).cloned();
+        let taken = match verb {
+            SHOW_GRID => match table {
+                Some(node) => {
+                    // The held table's grid is the one grid, so it leaves the
+                    // ledger, as a click on its `grid` row does.
+                    if self.protocol.doc.model.table() == Some(&node) {
+                        self.grid_spot = crate::app::GridSpot::Canvas;
+                    }
+                    self.graph_reached_from = None;
+                    self.canvas_holds = CanvasHolds::View {
+                        node,
+                        view: NodeView::Grid,
+                    };
+                    true
+                }
+                None => false,
+            },
+            SHOW_CHART => match focus.as_ref().and_then(|f| self.chart_for(f)) {
+                Some((node, table)) => {
+                    self.graph_reached_from = None;
+                    self.canvas_holds = CanvasHolds::Dashboard { node, table };
+                    true
+                }
+                None => false,
+            },
+            RELATE => self.model.as_ref().is_some_and(ModelDoc::shown) || self.back_to_model(),
+            _ => false,
+        };
+        if taken {
+            ctx.request_repaint();
+        }
+        taken
+    }
+
     /// Copy or export the chart under the pointer if the registry's
     /// `copy-chart-picture` or `export-chart-picture` keystroke is down this
     /// frame. Gated as [`Self::home_key`] is, and while a chart holds the canvas:
@@ -10241,6 +10430,11 @@ impl MeridianApp {
             Selected::Asset,
         );
         hold(protocol.removable_step().is_some(), Selected::Step);
+        let focus = self.node_in_focus();
+        hold(
+            focus.as_ref().and_then(|f| f.table()).is_some(),
+            Selected::NodeRows,
+        );
         if let Some(pane) = model_pane {
             use brightfield_render::model_scene::Selection;
             selected.push(Selected::Model);
@@ -10288,6 +10482,10 @@ impl MeridianApp {
             Condition::FileToReload,
         );
         when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        when(
+            focus.as_ref().and_then(|f| self.chart_for(f)).is_some(),
+            Condition::ChartReadsFocus,
+        );
         when(
             self.held_protocol_dir().is_some(),
             Condition::ProtocolFolder,
@@ -12751,6 +12949,13 @@ impl MeridianApp {
                     if brightfield_keys::ribbon::RIBBON_VERBS.contains(&verb.as_str()) =>
                 {
                     taken = self.perform_ribbon_verb(ctx, verb.as_str());
+                }
+                // The node's activities are the window's for the same reason:
+                // what the canvas holds is the window's latch.
+                Request::Verb(verb)
+                    if brightfield_keys::activity::ACTIVITY_VERBS.contains(&verb.as_str()) =>
+                {
+                    taken = self.perform_activity(ctx, verb.as_str());
                 }
                 // save-protocol is the window's for the same reason: the editor raises it after
                 // saving its buffer, and what it writes is the Protocol's, not either document's.

@@ -126,7 +126,10 @@ const CONNECT: &[Group] = &[&[
     entry("open-sources-browser", "database"),
 ]];
 const SHAPE: &[Group] = &[];
-const MODEL: &[Group] = &[&[entry("organise-joins", "hierarchy")]];
+const MODEL: &[Group] = &[&[
+    entry("organise-joins", "hierarchy"),
+    entry("relate", "arrows-join"),
+]];
 const PUBLISH: &[Group] = &[&[
     entry("copy-chart-picture", "copy"),
     entry("export-chart-picture", "download"),
@@ -236,6 +239,7 @@ mod tests {
     #[test]
     fn joining_sits_under_model() {
         assert_eq!(stage_of("organise-joins"), Some(Stage::Model));
+        assert_eq!(stage_of("relate"), Some(Stage::Model));
     }
 
     #[test]

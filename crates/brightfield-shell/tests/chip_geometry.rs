@@ -383,7 +383,7 @@ const CHIP_CENSUS: [(&str, usize, usize); 8] = [
     ("key-tip", 0, 1),
     ("menu-item", 0, 4),
     ("modal-chrome", 0, 1),
-    ("picker", 0, 3),
+    ("picker", 0, 4),
     ("reason-popover", 0, 1),
     ("ribbon-row", 0, 1),
     ("status-pill", 3, 0),
