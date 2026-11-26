@@ -91,9 +91,10 @@ impl Default for NamingRules {
 /// - a date, a time or a timestamp is skipped, since a time range rarely names a place on the
 ///   plot, and so is any other type (a list, a struct, a blob).
 ///
-/// A trusted FineType label only refines that: a date label, a coordinate, and a label that
-/// identifies a thing or holds a document ([`ColumnRole::Neither`], free text aside) take the
-/// column out. The axis columns `x` and `y` are never candidates.
+/// A trusted FineType label refines that and nothing more: a date label, a coordinate, and a
+/// label that identifies a thing or holds a document ([`ColumnRole::Neither`], free text aside)
+/// take the column out (`identifiers_and_axis_columns_are_never_tried`). The axis columns `x`
+/// and `y` are never candidates.
 #[must_use]
 pub fn label_columns(columns: &[ColumnProfile], x: &str, y: &str) -> Vec<LabelColumn> {
     columns
@@ -159,7 +160,7 @@ pub fn name_regions(
     name_regions_with(&NamingRules::default(), columns, summary, regions)
 }
 
-/// [`name_regions`] by `rules`, with every number written in its axis's default form.
+/// [`name_regions`] by `rules`, with a number written in its axis's default form.
 #[must_use]
 pub fn name_regions_with(
     rules: &NamingRules,
@@ -296,9 +297,9 @@ impl Facts {
 /// The term most typical of the region, by class-based TF-IDF: its share of the region's rows
 /// times `ln(1 + A / f)`, where `A` is the average rows per class (each region and the rest of
 /// the view is a class) and `f` the rows of the whole view that hold it. A term shared widely
-/// scores low however common it is in the region. Only terms in at least `text_min_share` of
-/// the region's rows are scored, so the share rule is a gate and the score picks among the
-/// terms that pass it. Ties go to the longer phrase, which says more, and then to the term
+/// scores low however common it is in the region. A term in less than `text_min_share` of the
+/// region's rows is not scored, so the share rule is a gate and the score picks among the terms
+/// that pass it. Ties go to the longer phrase, which says more, and then to the term
 /// that sorts first.
 fn name_by_term(
     rules: &NamingRules,
