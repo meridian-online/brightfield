@@ -438,13 +438,10 @@ fn confirming_a_greyed_row_says_its_sentence_and_runs_nothing() {
     // row itself carries rather than a hint under the query.
     assert_eq!(win.app.open_palette_hint(), None);
     assert!(
-        win.app
-            .open_palette_missing()
-            .iter()
-            .any(|(v, s)| {
-                *v == "run-protocol"
-            && s == "Run needs a Protocol to act on: open one, or open a data file or a folder."
-            }),
+        win.app.open_palette_missing().iter().any(|(v, s)| {
+            *v == "run-protocol"
+                && s == "Run needs a Protocol to act on: open one, or open a data file or a folder."
+        }),
         "the greyed Run lost its sentence: {:?}",
         win.app.open_palette_missing()
     );
@@ -485,11 +482,27 @@ fn a_greyed_row_is_drawn_disabled_and_says_its_sentence() {
     win.key(egui::Key::Space);
     win.type_text("zoom-in");
     win.settle();
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    let zoom: Vec<_> = win
+        .accesskit
+        .iter()
+        .filter(|node| {
+            [node.label(), node.value()]
+                .into_iter()
+                .flatten()
+                .any(|text| text == "zoom-in")
+        })
+        .collect();
+    assert!(!zoom.is_empty(), "the palette drew no zoom-in row");
+    assert!(
+        zoom.iter().all(|node| !node.is_disabled()),
+        "zoom-in is drawn disabled over a chart"
+    );
     assert!(
         !win.accesskit
             .iter()
             .any(|node| node.is_disabled() && node.description().is_some()),
-        "zoom-in is drawn disabled over a chart"
+        "a greyed row is drawn under the zoom-in query"
     );
     win.key(egui::Key::Escape);
 }
