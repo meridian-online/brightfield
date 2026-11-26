@@ -76,6 +76,7 @@ pub fn menu_bar() -> Vec<Menu> {
             items: vec![
                 asks("new-protocol"),
                 asks("open"),
+                asks("quick-open"),
                 acts("open-home"),
                 Separator,
                 acts("save-protocol"),
@@ -165,6 +166,7 @@ pub fn menu_bar() -> Vec<Menu> {
                 Native(NativeItem::Zoom),
                 Separator,
                 acts("toggle-outline-rail"),
+                acts("toggle-inspector-rail"),
                 acts("move-grid"),
                 Separator,
                 Native(NativeItem::BringAllToFront),
@@ -330,7 +332,11 @@ mod tests {
             .expect("a Window menu");
         assert_eq!(
             items_without_native(&window),
-            [acts("toggle-outline-rail"), acts("move-grid")]
+            [
+                acts("toggle-outline-rail"),
+                acts("toggle-inspector-rail"),
+                acts("move-grid")
+            ]
         );
     }
 

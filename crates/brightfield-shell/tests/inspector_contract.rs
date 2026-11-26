@@ -29,12 +29,13 @@ use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::inspector::{reading_line, NOT_RUN};
-use brightfield_shell::inspector::{InspectorPane, Selection, TableHandle};
+use brightfield_shell::inspector::{InspectorPane, Section, Selection, TableHandle};
 use brightfield_shell::operation;
 use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::arrangement::{self, Occupant, INSPECTOR_RAIL};
 use brightfield_workbench::{Item, PaneKey};
 use operations::{runner, OpWindow};
 
@@ -81,6 +82,172 @@ fn the_controls_rail_is_drawn_by_the_inspector_pane() {
         title, "Inspector",
         "the CONTROLS slot is drawn by ControlsPane, not InspectorPane — the \
          swap in window.rs::assemble did not happen"
+    );
+}
+
+/// Run one frame with `events` as its input.
+fn frame_with(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    modifiers: egui::Modifiers,
+) {
+    let raw = egui::RawInput {
+        screen_rect: Some(screen()),
+        events,
+        modifiers,
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+}
+
+/// ⌘⌥B pressed, then a settled frame.
+fn press_cmd_alt_b(app: &mut MeridianApp, ctx: &egui::Context) {
+    let modifiers = egui::Modifiers {
+        alt: true,
+        command: true,
+        mac_cmd: cfg!(target_os = "macos"),
+        ctrl: !cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    frame_with(
+        app,
+        ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }],
+        modifiers,
+    );
+    frame(app, ctx);
+}
+
+/// The chart window with its inspector rail open.
+fn settled_open() -> (MeridianApp, egui::Context) {
+    let (mut app, ctx) = settled();
+    if app.rail_is_collapsed(INSPECTOR_RAIL) {
+        press_cmd_alt_b(&mut app, &ctx);
+    }
+    assert!(
+        !app.rail_is_collapsed(INSPECTOR_RAIL),
+        "the rail did not open"
+    );
+    (app, ctx)
+}
+
+/// **The right rail is one inspector**: the arrangement declares one pane
+/// there, so its strip names it and offers no choice between panes, and the
+/// rail draws its sections under that one name.
+#[test]
+fn the_inspector_rail_draws_one_pane_and_no_tab_strip() {
+    let rail = arrangement::default_arrangement().expect_region(INSPECTOR_RAIL);
+    let Occupant::Panes(panes) = rail.occupant else {
+        panic!("the inspector rail holds panes");
+    };
+    assert_eq!(panes.len(), 1, "the rail declares {panes:?}");
+    let (app, _ctx) = settled_open();
+    assert_eq!(
+        app.rail_pane_title(INSPECTOR_RAIL).as_deref(),
+        Some("Inspector")
+    );
+    assert!(
+        !app.inspector_sections().is_empty(),
+        "the open rail drew no section"
+    );
+}
+
+/// **Step is last, and folded while a section above it is open.** A chart
+/// with nothing selected is described by its Parameters, which open over the
+/// Step section; opening Step folds Parameters, and opening Parameters again
+/// folds Step.
+#[test]
+fn the_step_section_is_last_and_collapsed_while_another_is_open() {
+    let (mut app, ctx) = settled_open();
+    assert_eq!(
+        app.inspector_sections(),
+        [(Section::Parameters, true), (Section::Step, false)]
+    );
+    app.toggle_inspector_section(Section::Step);
+    frame(&mut app, &ctx);
+    assert_eq!(
+        app.inspector_sections(),
+        [(Section::Parameters, false), (Section::Step, true)]
+    );
+    app.toggle_inspector_section(Section::Parameters);
+    frame(&mut app, &ctx);
+    assert_eq!(
+        app.inspector_sections(),
+        [(Section::Parameters, true), (Section::Step, false)]
+    );
+}
+
+/// **⌘⌥B hides the inspector and brings it back**, and the key is answered
+/// by its handler.
+#[test]
+fn cmd_alt_b_hides_and_brings_back_the_inspector() {
+    let (mut app, ctx) = settled_open();
+    press_cmd_alt_b(&mut app, &ctx);
+    assert!(
+        app.rail_is_collapsed(INSPECTOR_RAIL),
+        "⌘⌥B did not hide the rail"
+    );
+    assert!(app.inspector_sections().is_empty());
+    press_cmd_alt_b(&mut app, &ctx);
+    assert!(
+        !app.rail_is_collapsed(INSPECTOR_RAIL),
+        "⌘⌥B did not bring the rail back"
+    );
+    assert_eq!(
+        app.inspector_sections(),
+        [(Section::Parameters, true), (Section::Step, false)],
+        "the rail came back without its sections"
+    );
+}
+
+/// **A layout saved when the rail held three panes opens on the one
+/// inspector.** The saved tree names the operator's pane, the chart's and the
+/// operation panel, and those ids stay published, so the file loads whole and
+/// the rail draws its sections from them.
+#[test]
+fn a_layout_saved_with_three_inspector_panes_opens_on_the_one_inspector() {
+    use brightfield_workbench::persist::{self, LoadOutcome};
+    // A window publishes the panes' ids at boot, before it reads a layout, so
+    // one is booted first as the app's own start does.
+    let _ = settled();
+    let saved = brightfield_shell::startup::default_layout();
+    let json = serde_json::to_string(&saved).expect("a layout serialises");
+    for pane in [
+        "protocol-inspector",
+        "chart-controls",
+        "operation-inspector",
+    ] {
+        assert!(
+            json.contains(&format!("\"{pane}\"")),
+            "the saved layout does not name {pane}, so this test proves nothing"
+        );
+    }
+    let dir = std::env::temp_dir().join(format!("bf-inspector-layout-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch folder");
+    let path = dir.join("layout.json");
+    std::fs::write(&path, json).expect("writes");
+    let (restored, outcome) = persist::load(&path, brightfield_shell::startup::default_layout);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+
+    let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    let mut app = MeridianApp::headless_with_layout(Boot::charts(composed), restored, Mode::Light);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    frame(&mut app, &ctx);
+    if app.rail_is_collapsed(INSPECTOR_RAIL) {
+        press_cmd_alt_b(&mut app, &ctx);
+    }
+    assert_eq!(
+        app.inspector_sections(),
+        [(Section::Parameters, true), (Section::Step, false)]
     );
 }
 

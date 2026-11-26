@@ -878,7 +878,7 @@ fn a_field_not_drawn_last_frame_holds_no_keys() {
     let mut win = Window::housing();
     win.press_cell(2, HOUSE_AGE);
     let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
-    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
+    let pane = win.app.inspector_sections().to_vec();
     win.key(egui::Key::W);
     assert!(win.doc().grid_foot().holds_keys());
 
@@ -895,7 +895,7 @@ fn a_field_not_drawn_last_frame_holds_no_keys() {
         "the field still asks, drawn nowhere"
     );
     assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
-    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+    assert_eq!(win.app.inspector_sections().to_vec(), pane);
 
     win.app
         .set_grid_layout(brightfield_shell::app::GridLayout::Rows);
@@ -914,7 +914,7 @@ fn w_and_o_ask_nothing_in_the_columns_layout() {
         .set_grid_layout(brightfield_shell::app::GridLayout::Columns);
     win.settle();
     let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
-    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
+    let pane = win.app.inspector_sections().to_vec();
 
     for key in [egui::Key::W, egui::Key::O] {
         win.key(key);
@@ -923,7 +923,7 @@ fn w_and_o_ask_nothing_in_the_columns_layout() {
             "{key:?} asked in the columns layout"
         );
         assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
-        assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+        assert_eq!(win.app.inspector_sections().to_vec(), pane);
     }
 
     // The same key on the same cursor asks once the rows are back.

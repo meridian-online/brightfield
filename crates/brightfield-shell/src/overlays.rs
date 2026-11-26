@@ -23,8 +23,8 @@
 //!   argument-taking verbs, driven by `brightfield_model::arg_collector`.
 //!   Enumerable steps read as a filtered pick list; a step with no
 //!   enumerable options is the typed-value shape (the query *is* the value).
-//! - [`JumpToNode`] / [`JumpToColumn`] — flat jump lists: fuzzy filter,
-//!   rows, confirm.
+//! - [`JumpToNode`] / [`JumpToColumn`] / [`QuickOpen`] — flat jump lists:
+//!   fuzzy filter, rows, confirm.
 //! - [`HelpSheet`] — the grouped read-only sheet over
 //!   `brightfield_keys::help_sheet`; enter is another way out.
 //!
@@ -567,9 +567,14 @@ impl JumpList {
             })
             .collect();
         if !query.is_empty() {
-            // Stable, so equal scores keep the caller's order.
-            self.matches
-                .sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+            // A label that is the query exactly comes first, so typing a whole
+            // name finds that name ahead of the longer names it begins. Stable,
+            // so equal scores keep the caller's order.
+            let targets = &self.targets;
+            self.matches.sort_by_key(|&(i, score)| {
+                let exact = targets[i].label.eq_ignore_ascii_case(query);
+                (std::cmp::Reverse(exact), std::cmp::Reverse(score))
+            });
         }
     }
 
@@ -628,6 +633,61 @@ impl PickerDelegate for JumpToNode {
     }
     fn empty_text(&self) -> Option<String> {
         Some("No matching asset".to_owned())
+    }
+}
+
+/// **Quick open** (`⌘P`): find any table or view of the Protocol by its
+/// DuckDB name, from whatever holds the canvas. Each row's label is the
+/// relation's name and its detail the step that produces it. The host supplies
+/// the targets in the outline's order and puts the confirmed one in focus.
+pub struct QuickOpen(JumpList);
+
+impl QuickOpen {
+    /// A quick open list over `targets`, kept in the given order under an
+    /// empty query.
+    #[must_use]
+    pub fn new(targets: Vec<JumpTarget>) -> Self {
+        Self(JumpList::new(targets))
+    }
+
+    /// The confirmed target's id, surrendered once.
+    pub fn take_picked(&mut self) -> Option<String> {
+        self.0.picked.take()
+    }
+
+    /// The rows the current query lists, in the order they are drawn: each
+    /// label with its detail.
+    #[must_use]
+    pub fn listed(&self) -> Vec<(String, Option<String>)> {
+        self.0
+            .matches
+            .iter()
+            .map(|&(i, _)| {
+                let t = &self.0.targets[i];
+                (t.label.clone(), t.detail.clone())
+            })
+            .collect()
+    }
+}
+
+impl PickerDelegate for QuickOpen {
+    fn update_query(&mut self, query: &str) {
+        self.0.update_query(query);
+    }
+    fn match_count(&self) -> usize {
+        self.0.matches.len()
+    }
+    fn row(&self, index: usize) -> PickerRow {
+        self.0.row(index)
+    }
+    fn confirm(&mut self, index: Option<usize>, _query: &str) -> PickerOutcome {
+        self.0.confirm(index)
+    }
+    fn placeholder(&self) -> String {
+        "Open a table or view by name…".to_owned()
+    }
+    fn empty_text(&self) -> Option<String> {
+        Some("No table or view by that name".to_owned())
     }
 }
 
@@ -1423,14 +1483,14 @@ mod tests {
 
     #[test]
     fn a_reserved_verb_is_flagged_and_refuses_to_run() {
-        // The inspector rail's toggle rather than the outline rail's: the
-        // outline rail's toggle is bound and performed now that the navigator
-        // rail is a region of the window, so it is no longer an example of
-        // this. The claim is unchanged and the bucket is the same one.
+        // The run log's show verb: the outline and inspector rails' toggles
+        // are bound and performed now that each rail is a region of the
+        // window, so neither is an example of this. The claim is unchanged
+        // and the bucket is the same one.
         let mut p = palette_at(Altitude::Protocol);
-        p.update_query("inspector");
+        p.update_query("run log");
         let i = (0..p.match_count())
-            .find(|&i| p.candidate(i).unwrap().longname == "toggle-inspector-rail")
+            .find(|&i| p.candidate(i).unwrap().longname == "open-run-log")
             .expect("the reserved rail toggle is shown, not hidden");
         let row = p.row(i);
         assert!(
@@ -1703,6 +1763,32 @@ mod tests {
         assert_eq!(jump.match_count(), 0);
         assert_eq!(jump.confirm(None, "zzz"), PickerOutcome::KeepOpen);
         assert!(jump.take_picked().is_none());
+    }
+
+    #[test]
+    fn quick_open_lists_each_table_by_its_name_with_its_step() {
+        let mut open = QuickOpen::new(nodes());
+        open.update_query("");
+        assert_eq!(
+            open.listed()[0],
+            ("filings".to_owned(), Some("raw.filings".to_owned()))
+        );
+        open.update_query("gleif");
+        assert_eq!(open.listed()[0].0, "edgar_gleif");
+        assert_eq!(open.confirm(Some(0), "gleif"), PickerOutcome::Close);
+        assert_eq!(open.take_picked().as_deref(), Some("crosswalk.edgar_gleif"));
+    }
+
+    #[test]
+    fn a_whole_name_typed_lists_that_name_before_the_longer_ones_it_begins() {
+        let target = |name: &str| JumpTarget {
+            id: format!("asset.p.{name}"),
+            label: name.to_owned(),
+            detail: None,
+        };
+        let mut open = QuickOpen::new(vec![target("housing__failed"), target("housing")]);
+        open.update_query("housing");
+        assert_eq!(open.listed()[0].0, "housing");
     }
 
     #[test]

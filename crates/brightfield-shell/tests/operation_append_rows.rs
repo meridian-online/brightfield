@@ -225,6 +225,24 @@ fn append_rows_starts_from_the_header_menu_and_dims_a_table_sharing_no_column() 
     win.key(egui::Key::Enter);
     assert!(win.making().is_none());
     assert!(win.app.spine_pick().is_some(), "the pick stays open");
+
+    // A click reaches it too, though it is drawn faded: the cursor goes onto
+    // it, which is where the window says why it cannot be taken.
+    win.letter(egui::Key::K, "k");
+    assert_eq!(cursor(&win), "top");
+    let at = win
+        .rows()
+        .into_iter()
+        .find(|row| row.role == SpineRole::Asset && row.label == "counted")
+        .expect("the spine still draws counted")
+        .rect
+        .center();
+    win.click(at);
+    assert_eq!(
+        cursor(&win),
+        "counted",
+        "a click on a dimmed table puts the pick's cursor on it"
+    );
 }
 
 #[test]

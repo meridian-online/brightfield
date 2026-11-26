@@ -187,7 +187,7 @@ pub fn operation_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
         id: OPERATION,
         slot: Slot::CentreTab,
-        toggle: Some(Verb::new("toggle-controls-rail")),
+        toggle: Some(Verb::new("toggle-inspector-rail")),
         make: || Box::new(OperationPane),
     }
 }
@@ -262,8 +262,10 @@ impl Item<ChartDoc> for OperationPane {
         let primary = chrome::colour(sem.text.primary);
         let secondary = chrome::colour(sem.text.secondary);
 
+        // Shrunk to its content's height, since this is one section of the
+        // inspector and the sections below it follow where it ends.
         egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(hand.long_name)

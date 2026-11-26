@@ -53,6 +53,7 @@ use brightfield_protocol::layout::Flow;
 use brightfield_shell::dashboard::{ChosenBy, Dashboard};
 use brightfield_shell::design::Mode;
 use brightfield_shell::one_step::{self, OneStepProtocol};
+use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{data_file, protocol};
@@ -2152,21 +2153,23 @@ fn clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state() {
 
 /// **The strip reads the run and the spine reads the step, on one screen.**
 ///
-/// AC5 and the one-place clause. Hugh ruled on 2026-09-11, from the running
-/// app, that both stay: the navigator spine's step row keeps `sql · not run`
-/// as the STEP's status, and the ledger strip reads `last run · not run` as
-/// the RUN's state. So this asserts the two together, and asserts that nothing
-/// else on the first screen draws those words a third time.
+/// The run's state is drawn in one place. Hugh ruled on 2026-09-11, from the running
+/// app, that both stay: the navigator spine's step row keeps the STEP's
+/// status, and the ledger strip reads `last run \u{b7} not run` as the RUN's
+/// state. The step row now carries that status as its mark, the not-run glyph
+/// a screen reader names, rather than as words, so the words are drawn in one
+/// place: this asserts the mark, and that nothing else on the first screen
+/// draws the words a second time.
 ///
 /// **The negative is counted over the whole frame, not searched band by
 /// band.** A band-by-band search passes when it looks in the wrong place, and
 /// a region that draws no rect this frame — the status band is an overlay and
 /// has one only when it has a line to draw — would be skipped silently by one.
 /// Counting every galley the frame paints instead, and then placing each of
-/// them, cannot be vacuous: two galleys carry the words, one is inside the
-/// ledger rail and one inside the navigator rail, so no third place has them.
-/// The named bands are read after that, because the count says how many there
-/// are and these say a particular band is not where one of them went.
+/// them, cannot be vacuous: one galley carries the words and it is inside the
+/// ledger rail, so no other place has them. The named bands are read after
+/// that, because the count says how many there are and these say a particular
+/// band is not where one of them went.
 #[test]
 fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
     use brightfield_workbench::arrangement::{
@@ -2193,12 +2196,23 @@ fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
         .app
         .region_rect(NAVIGATOR_RAIL)
         .expect("the navigator rail drew");
-    let spine_words = win.drawn_text_in(spine);
+    let step = win
+        .app
+        .spine_rows()
+        .iter()
+        .find(|row| row.role == SpineRole::Step)
+        .expect("the navigator spine drew a step row");
+    assert_eq!(
+        step.mark,
+        Some(meridian_egui::StepMark::NotRun),
+        "the navigator spine's step row is marked {:?}, which does not carry \
+         the step's own status, which the spine keeps",
+        step.mark
+    );
     assert!(
-        spine_words.iter().any(|w| w == "sql \u{b7} not run"),
-        "the navigator spine drew {spine_words:?}, which does not carry the \
-         step's own status — the sibling card's AC1 pinned it there and this \
-         card leaves it"
+        spine.contains_rect(step.rect),
+        "the step row at {:?} is outside the navigator rail at {spine:?}",
+        step.rect
     );
 
     let whole: Vec<String> = win
@@ -2208,18 +2222,15 @@ fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
         .collect();
     assert_eq!(
         whole.len(),
-        2,
+        1,
         "the first screen drew {whole:?} — the run's state belongs to the \
-         ledger strip and the step's to the spine's step row, so a third \
-         galley carrying the words is a second place drawing the state"
+         ledger strip and the step's to the spine's mark, so a second galley \
+         carrying the words is a second place drawing the state"
     );
     let in_ledger = strip_words.iter().filter(|w| w.contains("not run")).count();
-    let in_spine = spine_words.iter().filter(|w| w.contains("not run")).count();
     assert_eq!(
-        (in_ledger, in_spine),
-        (1, 1),
-        "the two galleys reading `not run` are not one in the ledger rail and \
-         one in the navigator rail: {in_ledger} and {in_spine}"
+        in_ledger, 1,
+        "the one galley reading `not run` is not in the ledger rail: {whole:?}"
     );
 
     // …and the title band, read by its own rect. It draws on each frame of

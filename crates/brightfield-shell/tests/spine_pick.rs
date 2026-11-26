@@ -465,12 +465,19 @@ fn space_adds_to_a_list_and_enter_takes_them_in_order() {
     let added = win.app.spine_pick().expect("still open").added().to_vec();
     assert_eq!(added, ["top", "by_age"]);
     assert_eq!(win.app.open_overlay(), None, "space opened the palette");
-    // An added table is drawn selected and says it is added.
+    // An added table is drawn selected and says it is added, which is what
+    // tells it from the row under the cursor, selected too.
     let top = table_row(&win, "top");
     assert!(top.washed);
-    assert_eq!(top.kind, format!("{ADDED} \u{b7} shares house_age"));
+    assert_eq!(top.kind, ADDED);
     // Space on an added table takes it off the list, and adds it again at the end.
     win.key(egui::Key::Space);
+    // Off the list and under the cursor, by_age is drawn selected and does not
+    // say it is added: the word is what tells the two apart.
+    let by_age = table_row(&win, "by_age");
+    assert!(by_age.washed, "the cursor is on by_age");
+    assert_ne!(by_age.kind, ADDED);
+    assert_eq!(table_row(&win, "top").kind, ADDED);
     win.key(egui::Key::Space);
     assert_eq!(
         win.app.spine_pick().expect("still open").added(),

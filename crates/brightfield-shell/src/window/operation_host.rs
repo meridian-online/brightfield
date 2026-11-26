@@ -562,11 +562,29 @@ impl MeridianApp {
             return self.open_pick(ctx, spec, (start, role), column, &description, &cx);
         }
         let model = taken.as_ref().and_then(|_| self.relationship_model());
+        // Each name a draft may write as SQL: the table's columns, and for an
+        // operation the spine fed, the tables taken and their columns, with the
+        // table in front, as a join's condition names them.
+        let mut names = front.columns.clone();
+        for (table, columns) in taken.iter().flatten() {
+            names.push(table.clone());
+            names.extend(columns.iter().cloned());
+        }
+        if taken.is_some() && !front.table.is_empty() {
+            names.push(front.table.clone());
+        }
+        // A correction skips the pick, so the tables its kept step reads are
+        // spelled from that step.
+        let kept_reads = corrects
+            .as_ref()
+            .and_then(|step| step.operation.as_ref())
+            .map(|request| request.reads.iter().map(|(_, table)| table.clone()));
+        names.extend(kept_reads.into_iter().flatten());
         let with = BegunWith {
             start,
             table: Some(front.table.clone()).filter(|t| !t.is_empty()),
             column: column.clone(),
-            spelled: self.quoted_columns(&front.columns),
+            spelled: self.quoted_columns(&names),
             columns: front.columns.clone(),
             facts: front.facts.clone(),
             description,
@@ -1071,19 +1089,10 @@ impl MeridianApp {
         self.start_operation(ctx, spec, start, hit.column.clone());
     }
 
-    /// Open the Inspector rail on the operation panel for a form, remembering how the rail
+    /// Open the Inspector rail on its Operation section for a form, remembering how the rail
     /// stood so that keeping or dropping the operation puts it back.
     fn open_rail_on_form(&mut self) {
-        let Some(at) = Self::operation_pane_index() else {
-            return;
-        };
-        self.rail_before_ask = Some(super::RailBeforeAsk {
-            collapsed: self
-                .collapsed
-                .remove(&brightfield_workbench::arrangement::INSPECTOR_RAIL),
-            panel: self.inspector_panel,
-        });
-        self.inspector_panel = at;
+        self.open_operation_section();
     }
 
     /// The step the grid shows a draft's page under, while it shows one.

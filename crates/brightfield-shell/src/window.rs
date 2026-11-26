@@ -96,7 +96,7 @@ use crate::editor::EDITOR;
 use crate::inspector::{InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
-    HelpSheet, JumpTarget, JumpToNode,
+    HelpSheet, JumpTarget, JumpToNode, QuickOpen,
 };
 use crate::panel_tiles::{PanelTiles, TilesAction};
 use crate::pipeline::Composed;
@@ -2290,6 +2290,9 @@ enum Overlay {
     Help(Picker<HelpSheet>),
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
+    /// Quick open (`⌘P`): every table and view of the Protocol by its DuckDB
+    /// name, from whatever holds the canvas.
+    QuickOpen(Picker<QuickOpen>),
     /// The question a close request raises over a window that carries the
     /// unsaved mark: save and close, close without saving, or keep editing. It
     /// holds what it says — the chart file, the unsaved edits in the shelf's
@@ -2522,6 +2525,7 @@ struct OverlayKeys {
     palette: Vec<&'static str>,
     help: Option<&'static str>,
     jump: Option<&'static str>,
+    quick_open: Option<&'static str>,
 }
 
 impl OverlayKeys {
@@ -2540,6 +2544,7 @@ impl OverlayKeys {
                 .unwrap_or_default(),
             help: primary("open-help"),
             jump: primary("focus-jump"),
+            quick_open: primary(QUICK_OPEN),
         }
     }
 }
@@ -2776,6 +2781,9 @@ pub const QUIT: &str = "quit";
 /// the palette.
 pub const NEW_PROTOCOL: &str = "new-protocol";
 
+/// The registry verb that opens quick open, ⌘P.
+pub const QUICK_OPEN: &str = "quick-open";
+
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
 
@@ -2950,6 +2958,9 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-alt-g" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::G))
         }
+        "cmd-alt-b" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::B))
+        }
         "cmd-alt-m" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::M))
         }
@@ -2963,6 +2974,12 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::C)
         }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        // Quick open. egui's key match ignores a Shift or an ⌥ the pattern
+        // leaves out, so without the guard ⌘P would also take the palette's
+        // ⇧⌘P.
+        "cmd-p" => ctx.input_mut(|i| {
+            !i.modifiers.shift && !i.modifiers.alt && i.consume_key(Modifiers::COMMAND, Key::P)
+        }),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
@@ -3390,13 +3407,14 @@ enum Refused {
     Recording(String),
 }
 
-/// How the Inspector rail stood before a key moved it to the operation panel.
+/// How the Inspector rail stood before a key opened its Operation section.
 #[derive(Clone, Copy, Debug)]
 struct RailBeforeAsk {
     /// Whether it was collapsed.
     collapsed: bool,
-    /// The pane it was on.
-    panel: usize,
+    /// Whether the reader had set the Operation section open or closed, or
+    /// left it at its default.
+    operation_open: Option<bool>,
 }
 
 /// The protocol half of the window: its document and its live items.
@@ -3556,7 +3574,7 @@ pub struct MeridianApp {
     /// # Why this is session state and not in the saved layout
     ///
     /// It joins [`Self::projection`], [`Self::ledger_panel`] and
-    /// [`Self::inspector_panel`] rather than [`SavedLayout`], and those three
+    /// [`Self::inspector_open`] rather than [`SavedLayout`], and those three
     /// are the argument: a collapsed rail is set from the same strip, at the
     /// same granularity, by the same click as which pane that strip is
     /// showing, and the other three are dropped at the next launch. Restoring a
@@ -3589,8 +3607,13 @@ pub struct MeridianApp {
     projection: usize,
     /// Which of the ledger rail's panes is showing.
     ledger_panel: usize,
-    /// Which of the inspector rail's panes is showing.
-    inspector_panel: usize,
+    /// Which of the inspector's sections the reader has opened or closed. A
+    /// section not named here is at its default, which
+    /// [`crate::inspector::sections_open`] gives.
+    inspector_open: std::collections::BTreeMap<crate::inspector::Section, bool>,
+    /// The inspector's sections as the last frame drew them, each with whether
+    /// it was open. Read back through [`MeridianApp::inspector_sections`].
+    inspector_drawn: Vec<(crate::inspector::Section, bool)>,
     /// What the canvas's pane group drew last frame — empty on a frame the
     /// canvas drew one pane instead. Read back through
     /// [`MeridianApp::canvas_panes`]; recorded for the reason [`Self::regions`]
@@ -4011,6 +4034,9 @@ pub struct MeridianApp {
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
     navigator_binding: Option<&'static str>,
+    /// The `toggle-inspector-rail` keystroke token, read off the registry at
+    /// boot as the navigator's is.
+    inspector_binding: Option<&'static str>,
     /// The `move-grid` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     grid_binding: Option<&'static str>,
@@ -4379,17 +4405,6 @@ impl MeridianApp {
         // could not say what the column belongs to.
         wire_columns(&mut chart_doc, &protocol_doc.model, &inspector_table);
 
-        // The inspector rail opens on the pane belonging to whichever document
-        // is leading the window — the operator when the graph has the canvas,
-        // the chart's own controls otherwise. Derived from the documents, by
-        // the same rule the canvas is, so the rail cannot open on the chart's
-        // controls over a window with no chart in it. Read before the two
-        // documents are moved into the fields below.
-        let inspector_panel = usize::from(!graph_takes_the_canvas(
-            protocol_doc.model.has_assets(),
-            !chart_doc.is_empty(),
-        ));
-
         let mut app = Self {
             layout,
             charts: ChartView {
@@ -4418,7 +4433,8 @@ impl MeridianApp {
             // the canvas's own group rather than a second projection of it.
             projection: 0,
             ledger_panel: 0,
-            inspector_panel,
+            inspector_open: std::collections::BTreeMap::new(),
+            inspector_drawn: Vec::new(),
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
             canvas_split,
@@ -4548,6 +4564,10 @@ impl MeridianApp {
             navigator_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == NAVIGATOR_TOGGLE)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            inspector_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == INSPECTOR_TOGGLE)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             grid_binding: brightfield_keys::registry()
                 .iter()
@@ -5570,6 +5590,9 @@ impl MeridianApp {
     /// strip and a pane header saying different things about one pane is the
     /// drift the workbench exists to end.
     fn pane_title_of(&self, item: ItemId) -> String {
+        if item == arrangement::INSPECTOR {
+            return "Inspector".to_string();
+        }
         let key = PaneKey::new(item);
         if let Some(pane) = self.protocol.items.get(&key) {
             return pane.subject(&self.protocol.doc).title;
@@ -5651,14 +5674,13 @@ impl MeridianApp {
 
     /// Put the ledger AND the inspector rail at the state
     /// [`Self::ledger_opens_collapsed`] gives the document this window is now
-    /// holding, and re-derive [`Self::inspector_panel`] alongside them.
+    /// holding, and put the inspector's sections back at their defaults.
     ///
     /// One function for the three because they are one fact about the
     /// document just adopted, read at one moment: a caller that ran the
     /// ledger's half alone would leave the inspector rail open on a Protocol
-    /// of one step, and a caller that skipped `inspector_panel` would open
-    /// the caret on the Operator pane over a chart document that has since
-    /// taken the canvas. The inspector rail's own default is the ledger's,
+    /// of one step, and a caller that kept the sections the reader set would
+    /// carry them over to a document they were not set on. The inspector rail's own default is the ledger's,
     /// copied rather than re-derived from a rule of its own.
     ///
     /// These are defaults, and a saved layout's grid spot comes after them:
@@ -5678,10 +5700,7 @@ impl MeridianApp {
             self.collapsed.remove(&arrangement::LEDGER_RAIL);
             self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
         }
-        self.inspector_panel = usize::from(!graph_takes_the_canvas(
-            self.protocol.doc.model.has_assets(),
-            !self.charts.doc.is_empty(),
-        ));
+        self.inspector_open.clear();
         // **A Protocol's panel tiles take the window's width.** The ledger
         // and the inspector have nothing to say about the tiles, so they stay
         // shut while the tiles hold the canvas. The navigator lists the
@@ -5993,7 +6012,6 @@ impl MeridianApp {
         };
         let index = match id {
             arrangement::LEDGER_RAIL => self.ledger_panel,
-            arrangement::INSPECTOR_RAIL => self.inspector_panel,
             _ => 0,
         };
         items
@@ -6769,47 +6787,65 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
-    /// Where the operation panel sits among the Inspector rail's panes.
-    fn operation_pane_index() -> Option<usize> {
-        region_panes(arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL))
-            .iter()
-            .position(|item| *item == crate::operation_panel::OPERATION)
+    /// **Open the Inspector rail on its Operation section**, remembering how
+    /// the rail stood so Esc, or keeping or dropping the operation, can put it
+    /// back. The section is drawn at the top of the rail while an operation is
+    /// in hand.
+    pub(super) fn open_operation_section(&mut self) {
+        self.rail_before_ask = Some(RailBeforeAsk {
+            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
+            operation_open: self
+                .inspector_open
+                .insert(crate::inspector::Section::Operation, true),
+        });
     }
 
-    /// **Open the Inspector rail on the operation panel**, for a key that has
-    /// just asked a field at the grid's foot, remembering how the rail stood
-    /// so Esc can put it back.
+    /// **Open the Inspector rail on its Operation section**, for a key that
+    /// has just asked a field at the grid's foot.
     ///
     /// Only when there is an operation in hand to explain: a grid with no
-    /// table in view asks with nothing for the panel to say, and the rail is
+    /// table in view asks with nothing for the section to say, and the rail is
     /// left as it is.
     fn open_rail_on_operation(&mut self) {
         if self.charts.doc.operation_in_hand().is_none() {
             return;
         }
-        let Some(at) = Self::operation_pane_index() else {
-            return;
-        };
-        self.rail_before_ask = Some(RailBeforeAsk {
-            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
-            panel: self.inspector_panel,
-        });
-        self.inspector_panel = at;
+        self.open_operation_section();
     }
 
-    /// **Put the Inspector rail back** as it stood before the key moved it,
-    /// for Esc from the field: the pane it was on, if it is still on the
-    /// operation panel, and collapsed, if it was.
+    /// **Close the Operation section and put the Inspector rail back** as it
+    /// stood before the key opened it, for Esc from the field: the section at
+    /// whatever the reader had set, and the rail collapsed, if it was.
     fn restore_rail_after_ask(&mut self) {
         let Some(before) = self.rail_before_ask.take() else {
             return;
         };
-        if Some(self.inspector_panel) == Self::operation_pane_index() {
-            self.inspector_panel = before.panel;
+        match before.operation_open {
+            Some(open) => {
+                self.inspector_open
+                    .insert(crate::inspector::Section::Operation, open);
+            }
+            None => {
+                self.inspector_open
+                    .remove(&crate::inspector::Section::Operation);
+            }
         }
         if before.collapsed {
             self.collapsed.insert(arrangement::INSPECTOR_RAIL);
         }
+    }
+
+    /// Open or close one of the inspector's sections, as a click or Enter on
+    /// its header does, against the sections the last frame drew.
+    pub fn toggle_inspector_section(&mut self, section: crate::inspector::Section) {
+        crate::inspector::toggle_section(section, &self.inspector_drawn, &mut self.inspector_open);
+    }
+
+    /// The inspector's sections as the last frame drew them, top to bottom,
+    /// each with whether it was open. Empty while the rail is collapsed.
+    #[must_use]
+    pub fn inspector_sections(&self) -> &[(crate::inspector::Section, bool)] {
+        &self.inspector_drawn
     }
 
     /// Hand the operation panel the state of arc's description of the
@@ -7307,6 +7343,9 @@ impl MeridianApp {
         // Cmd+O, from anywhere no overlay owns the keyboard.
         self.open_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
+        // ⌘⌥B before ⌘B: egui matches a key with an extra ⌥ held as the key
+        // without it, so the spine's ⌘B read first would take ⌘⌥B.
+        self.inspector_key(&ctx);
         self.navigator_key(&ctx);
         // The grid's move, on the same gate: a window verb, wherever focus is.
         self.grid_key(&ctx);
@@ -7678,6 +7717,7 @@ impl MeridianApp {
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
                                 muted: &|_| false,
+                                folds: false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -7799,7 +7839,6 @@ impl MeridianApp {
 
             let projection = self.projection.min(projections.len() - 1);
             let ledger_panel = self.ledger_panel.min(ledger_panes.len() - 1);
-            let inspector_panel = self.inspector_panel.min(inspector_panes.len() - 1);
 
             // Read before the borrows below take this app apart field by
             // field, so each rail's block has a plain `bool` rather than a
@@ -7839,6 +7878,23 @@ impl MeridianApp {
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
+            // The inspector's sections, chosen from what the window holds and
+            // read here, before the borrows below take the documents apart.
+            let inspector_sections = {
+                let doc = &self.charts.doc;
+                let selection = crate::inspector::InspectorSelection {
+                    operation: doc.operation_in_hand().is_some()
+                        || doc.making().is_some_and(|making| making.form().is_some()),
+                    column: doc.selected_column().is_some()
+                        || self.charts.inspector_inspected.get().is_some(),
+                    chart: !doc.is_empty(),
+                };
+                crate::inspector::sections_open(
+                    &crate::inspector::sections_for(&selection),
+                    &self.inspector_open,
+                )
+            };
+            let mut inspector_toggled = None;
             // What the inspector's own collapsed stub names itself with, read
             // here for the reason `grid_title` below is: before the borrows
             // that follow take the documents apart. The word is
@@ -8239,43 +8295,31 @@ impl MeridianApp {
                     // floor.
                     ui.set_min_width(ui.available_width());
                     let (strip, body) = chrome::rail_split(ui.max_rect());
+                    // One pane, so the strip names it and offers no choice.
                     inspector_strip = Some(chrome::rail_selector(
                         ui,
                         strip,
                         &pane_labels(&inspector_labels),
-                        inspector_panel,
+                        0,
                         Some(collapse),
                         chrome::Trailing::default(),
                         mode,
                     ));
-                    let item = inspector_panes[inspector_panel];
-                    if item == PROTOCOL_INSPECTOR {
-                        draw_protocol_pane(
-                            ui,
-                            body,
-                            protocol,
+                    inspector_toggled = draw_inspector_sections(
+                        ui,
+                        body,
+                        &inspector_sections,
+                        InspectorDocs {
+                            protocol: &mut *protocol,
+                            charts: &mut *charts,
                             ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    } else {
-                        draw_chart_pane(
-                            ui,
-                            body,
-                            charts,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    }
+                        },
+                        mode,
+                        focused,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
                 });
             if let Some(strip) = inspector_strip {
                 picks.inspector = strip.picked;
@@ -8657,9 +8701,16 @@ impl MeridianApp {
                     self.set_grid_spot(crate::app::GridSpot::Ledger);
                 }
             }
-            if let Some(next) = picks.inspector {
-                self.inspector_panel = next;
+            if picks.inspector.is_some() {
                 self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
+            }
+            self.inspector_drawn = if inspector_collapsed {
+                Vec::new()
+            } else {
+                inspector_sections
+            };
+            if let Some(section) = inspector_toggled {
+                self.toggle_inspector_section(section);
             }
             if picks.run {
                 self.run_protocol(&ctx);
@@ -8906,9 +8957,23 @@ impl MeridianApp {
                 palette |= consume_token(ctx, token);
             }
         }
+        // Quick open's chord is no field's either, so it opens from a field as
+        // the palette's does.
+        let quick_open = self
+            .overlay_keys
+            .quick_open
+            .is_some_and(|t| (!typing || t.starts_with("cmd-")) && consume_token(ctx, t));
         if palette {
             self.open_palette_for_canvas(graph_on_canvas);
             self.answered("open-palette");
+        } else if quick_open {
+            self.answered(QUICK_OPEN);
+            match self.availability_of(QUICK_OPEN) {
+                Some(brightfield_keys::Availability::Missing(sentence)) => {
+                    self.say_activity_refused(ctx, sentence);
+                }
+                _ => self.open_quick_open(),
+            }
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
             self.answered("focus-jump");
@@ -8923,7 +8988,7 @@ impl MeridianApp {
     ///
     /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
     /// a case inside it: `open-home` is a runtime dispatch, not an overlay
-    /// opener, and [`OverlayKeys`] is pinned to exactly the three that are. It
+    /// opener, and [`OverlayKeys`] holds the overlay openers. It
     /// still invents no binding — the token comes off the registry
     /// ([`Self::home_binding`]) and runs through the same
     /// [`consume_token`]. `open_home` is a no-op on the front door, so an
@@ -8952,14 +9017,17 @@ impl MeridianApp {
     }
 
     /// **What stands over the window, as the menus read it**: a sheet that
-    /// waits on an answer is an overlay that is not one of the three pickers
-    /// (the palette, the help sheet, the node jump). While one is up the
+    /// waits on an answer is an overlay that is not one of the four pickers
+    /// (the palette, the help sheet, the node jump, quick open). While one is up the
     /// menus are greyed and a command chosen from one is dropped, but for the
     /// commands [`crate::menu_bar::Sheet::stops`] leaves live.
     fn sheet(&self) -> crate::menu_bar::Sheet {
         use crate::menu_bar::Sheet;
         match self.overlay {
-            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_)) => Sheet::None,
+            None
+            | Some(
+                Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_) | Overlay::QuickOpen(_),
+            ) => Sheet::None,
             Some(Overlay::CloseQuestion(_)) => Sheet::CloseQuestion,
             Some(_) => Sheet::Up,
         }
@@ -9179,6 +9247,38 @@ impl MeridianApp {
             self.answered(NAVIGATOR_TOGGLE);
             self.toggle_navigator_focus(ctx);
         }
+    }
+
+    /// Hide the inspector rail, or bring it back, if the registry's
+    /// `toggle-inspector-rail` keystroke is down this frame. Gated exactly as
+    /// [`Self::home_key`] is.
+    fn inspector_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self
+            .inspector_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.answered(INSPECTOR_TOGGLE);
+            self.toggle_inspector_rail(ctx);
+        }
+    }
+
+    /// Collapse the inspector rail, or open it, where its verb is available,
+    /// over an open Protocol. Answers whether the rail moved.
+    fn toggle_inspector_rail(&mut self, ctx: &egui::Context) -> bool {
+        if !matches!(
+            self.availability_of(INSPECTOR_TOGGLE),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        if !self.collapsed.remove(&arrangement::INSPECTOR_RAIL) {
+            self.collapsed.insert(arrangement::INSPECTOR_RAIL);
+        }
+        ctx.request_repaint();
+        true
     }
 
     /// Run the open Protocol if the registry's `run-protocol` keystroke is down
@@ -10624,6 +10724,79 @@ impl MeridianApp {
         self.overlay = Some(Overlay::Jump(Picker::new(JumpToNode::new(targets))));
     }
 
+    /// Open quick open over every table and view of the Protocol, in the
+    /// outline's order: each by its DuckDB name, with the step that makes it.
+    fn open_quick_open(&mut self) {
+        let targets = self
+            .protocol
+            .doc
+            .model
+            .tables()
+            .into_iter()
+            .map(|(id, label, step)| JumpTarget {
+                id,
+                label,
+                detail: step,
+            })
+            .collect();
+        self.overlay = Some(Overlay::QuickOpen(Picker::new(QuickOpen::new(targets))));
+    }
+
+    /// **Put `node`, chosen in quick open, in focus in the activity the canvas
+    /// is showing.** The selection moves to it whatever holds the canvas, so
+    /// the spine and the graph follow. A grid stays a grid, of the chosen
+    /// table. A chart stays a chart when one the window can draw reads the
+    /// table, and gives way to the table's grid when none does, since the
+    /// window draws one chart. The graph stays the graph, and the model pane
+    /// stays up, each with the table selected behind it.
+    fn quick_open_to(&mut self, node: AssetId) {
+        self.protocol.doc.model.select_id(node.clone());
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return;
+        }
+        let viewable = self.protocol.doc.model.is_viewable(&node);
+        let holds = match &self.canvas_holds {
+            CanvasHolds::View { view, .. } if viewable => Some(CanvasHolds::View {
+                node: node.clone(),
+                view: *view,
+            }),
+            CanvasHolds::Dashboard { .. } => match self.chart_reading(&node) {
+                Some(chart) => Some(CanvasHolds::Dashboard {
+                    node: chart,
+                    table: node.clone(),
+                }),
+                None if viewable => Some(CanvasHolds::View {
+                    node: node.clone(),
+                    view: NodeView::Grid,
+                }),
+                None => None,
+            },
+            _ => None,
+        };
+        if let Some(holds) = holds {
+            // The held table's grid is the one grid, so it leaves the ledger,
+            // as Grid does.
+            if matches!(holds, CanvasHolds::View { .. })
+                && self.protocol.doc.model.table() == Some(&node)
+            {
+                self.grid_spot = crate::app::GridSpot::Canvas;
+            }
+            self.graph_reached_from = None;
+            self.canvas_holds = holds;
+        }
+    }
+
+    /// The rows the open quick open lists, in the order it draws them: each
+    /// table's name with the step that makes it. Empty when quick open is not
+    /// open. A test hook, like [`Self::open_overlay`].
+    #[must_use]
+    pub fn quick_open_rows(&self) -> Vec<(String, Option<String>)> {
+        match self.overlay.as_ref() {
+            Some(Overlay::QuickOpen(picker)) => picker.delegate.listed(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Draw the open overlay, if any, and act on what it reports.
     ///
     /// Dismissal arrives two ways and both mean close: a [`Picker`] inside a
@@ -10759,6 +10932,22 @@ impl MeridianApp {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(id) = picker.delegate.take_picked() {
                             self.protocol.doc.model.select_id(id);
+                        }
+                        close = true;
+                    }
+                    Some(PickerEvent::Dismissed) => close = true,
+                    None => close = shown.dismissed,
+                }
+            }
+            Overlay::QuickOpen(picker) => {
+                let chrome = ModalChrome::new().title("Quick open").enter_hint("open");
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-quick-open", &chrome, |ui| picker.show(ui));
+                match shown.inner.event {
+                    Some(PickerEvent::Confirmed) => {
+                        if let Some(id) = picker.delegate.take_picked() {
+                            self.quick_open_to(id);
+                            ctx.request_repaint();
                         }
                         close = true;
                     }
@@ -12342,6 +12531,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
+            Overlay::QuickOpen(_) => "quick-open",
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
             Overlay::NewProtocol(_) => "new-protocol",
@@ -12862,8 +13052,18 @@ impl MeridianApp {
             controls.extend(strip.controls.iter().cloned());
         }
         for row in &self.protocol.doc.spine_drawn {
-            if row.control {
+            // A spine row is drawn by the step row, which senses a click on the
+            // whole row whether or not the row answers one, and on its fold
+            // control, which it names by the row's label: so each is named.
+            let step_row = matches!(
+                row.role,
+                SpineRole::Asset | SpineRole::Step | SpineRole::View | SpineRole::Model
+            );
+            if row.control || step_row {
                 controls.push(chrome::NamedControl::labelled(row.rect, &row.label));
+            }
+            if let Some(fold) = row.fold_rect {
+                controls.push(chrome::NamedControl::labelled(fold, &row.label));
             }
             if let Some(chip) = row.chip {
                 controls.push(chrome::NamedControl::hovered(chip.rect, chip.hint));
@@ -12963,6 +13163,15 @@ impl MeridianApp {
                         self.open_jump();
                     }
                 }
+                Request::Verb(verb) if verb.as_str() == QUICK_OPEN => {
+                    taken = matches!(
+                        self.availability_of(QUICK_OPEN),
+                        Some(brightfield_keys::Availability::Available)
+                    );
+                    if taken {
+                        self.open_quick_open();
+                    }
+                }
                 // set-channel hands the hero pane's keys to the shelf band, as
                 // `e` does with the pane focused.
                 Request::Verb(verb) if verb.as_str() == "set-channel" => {
@@ -13026,6 +13235,10 @@ impl MeridianApp {
                 // silently no-ops an unknown verb.
                 Request::Verb(verb) if verb.as_str() == NAVIGATOR_TOGGLE => {
                     self.toggle_navigator_focus(ctx);
+                }
+                // The inspector rail is the window's, as the navigator's is.
+                Request::Verb(verb) if verb.as_str() == INSPECTOR_TOGGLE => {
+                    taken = self.toggle_inspector_rail(ctx);
                 }
                 // reload-data is the window's verb for the same reason
                 // open-home is: the notice that raises it lives on the chart
@@ -19868,6 +20081,9 @@ fn relative_time(now: u64, then: u64) -> String {
 /// test that presses it.
 pub const NAVIGATOR_TOGGLE: &str = "toggle-outline-rail";
 
+/// The verb that hides the inspector rail and brings it back.
+pub const INSPECTOR_TOGGLE: &str = "toggle-inspector-rail";
+
 // ---------------------------------------------------------------------------
 // Reading the arrangement
 // ---------------------------------------------------------------------------
@@ -20632,6 +20848,121 @@ fn draw_canvas_chart_pane(
     let _ = behavior.pane_ui(&mut child, tile, &mut key);
     // The behaviour has already queued an activity the header was asked for.
     head.drawn = behavior.header_drawn().cloned();
+}
+
+/// The two documents and the workspace the inspector's sections draw from.
+struct InspectorDocs<'a> {
+    protocol: &'a mut ProtocolView,
+    charts: &'a mut ChartView,
+    ws: &'a Workspace,
+}
+
+/// Draw the one inspector into `body`: each of `sections`, stacked, with the
+/// design system's section header over the body of the pane that describes
+/// it. Returns the section whose header was clicked, for the caller to flip.
+///
+/// A section's body is the pane that drew it when the rail held three panes,
+/// drawn without its frame: Operation is the operation panel, Column and
+/// Parameters the chart's inspector, and Step the operator's facts. Each open
+/// body scrolls within the room the headers below it leave, so those headers
+/// stay in the rail where a click can reach them.
+#[allow(clippy::too_many_arguments)]
+fn draw_inspector_sections(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    sections: &[(crate::inspector::Section, bool)],
+    docs: InspectorDocs<'_>,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) -> Option<crate::inspector::Section> {
+    use crate::inspector::Section;
+    let InspectorDocs {
+        protocol,
+        charts,
+        ws,
+    } = docs;
+    // One pane's frame round the whole stack, with no header band: the rail's
+    // strip names it, and the frame is the raised surface every pane stands
+    // on, as the spine's does across the window.
+    let mut outer = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    outer.shrink_clip_rect(body);
+    let subject = brightfield_workbench::Subject::new(
+        "Inspector",
+        brightfield_workbench::Icon("info-panel"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let mut column = chrome::pane_frame(&mut outer, &subject, false, mode);
+    let body = column.max_rect();
+    let mut toggled = None;
+    // What one closed section below takes: its header and the gap the column
+    // leaves before it.
+    let header_step = meridian_design::control::HEIGHT_MD + column.spacing().item_spacing.y;
+    for (index, (section, open)) in sections.iter().enumerate() {
+        let headers_below = (sections.len() - 1 - index) as f32 * header_step;
+        let drawn = meridian_egui::section(
+            &mut column,
+            meridian_egui::Section::new(section.title(), *open),
+            |ui| {
+                // The body scrolls within the room the headers below leave
+                // it, so a tall body cannot push them out of the rail.
+                let room =
+                    (body.bottom() - headers_below - spacing::SPACE_5 - ui.cursor().min.y).max(0.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("inspector-section", *section))
+                    .max_height(room)
+                    // egui keeps a scroll area at least 64 tall by default,
+                    // which a body given less room would push the headers
+                    // below it out of the rail with.
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let item = match section {
+                            Section::Operation => crate::operation_panel::OPERATION,
+                            Section::Step => PROTOCOL_INSPECTOR,
+                            _ => CONTROLS,
+                        };
+                        let key = PaneKey::new(item);
+                        let Some(tile) = ws.tile_of(key) else {
+                            return;
+                        };
+                        if *section == Section::Step {
+                            PaneChrome::new(
+                                &mut protocol.doc,
+                                &mut protocol.items,
+                                mode,
+                                focused,
+                                headed,
+                                requests,
+                                affordances,
+                            )
+                            .body_ui(ui, tile, key);
+                        } else {
+                            PaneChrome::new(
+                                &mut charts.doc,
+                                &mut charts.items,
+                                mode,
+                                focused,
+                                headed,
+                                requests,
+                                affordances,
+                            )
+                            .body_ui(ui, tile, key);
+                        }
+                    });
+            },
+        );
+        if drawn.toggled {
+            toggled = Some(*section);
+        }
+    }
+    toggled
 }
 
 // ---------------------------------------------------------------------------
@@ -22962,16 +23293,17 @@ mod tests {
         assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
+        assert_eq!(keys.quick_open, primary("quick-open"));
         // …and every token an opener binds today is one `consume_token` can
         // map to a key, so none of them is silently unwired.
-        let tokens = keys
-            .palette
-            .iter()
-            .copied()
-            .chain([keys.help, keys.jump].into_iter().flatten());
+        let tokens = keys.palette.iter().copied().chain(
+            [keys.help, keys.jump, keys.quick_open]
+                .into_iter()
+                .flatten(),
+        );
         for token in tokens {
             assert!(
-                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?" | "cmd-p"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );
