@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use brightfield_engine::{ColumnProfile, RecordBatch, RegionReader, SemanticType, Session};
 use brightfield_render::channel::Channel;
@@ -689,11 +690,54 @@ pub struct RegionsWorker {
     wake: Option<Wake>,
     started: usize,
     superseded: usize,
-    /// Every run's thread not yet seen to end, a stopped run's among them,
-    /// so dropping the worker can wait for each: a thread left running a
-    /// query when the process exits reads DuckDB's state as it is torn down,
-    /// and crashes the process on its way out.
-    threads: Vec<std::thread::JoinHandle<()>>,
+    /// Every run not yet seen to end, a stopped run's among them, so dropping
+    /// the worker can stop and wait for each: a thread left running a query
+    /// when the process exits reads DuckDB's state as it is torn down, and
+    /// crashes the process on its way out.
+    runs: Vec<Run>,
+}
+
+/// A run's thread and the interrupt for the query it runs, kept until the
+/// thread ends.
+struct Run {
+    thread: std::thread::JoinHandle<()>,
+    interrupt: Arc<duckdb::InterruptHandle>,
+}
+
+/// How long dropping the worker waits for its runs to end before it leaves
+/// the rest to finish alone. An interrupted query stops within a step, so a
+/// run still going after this is in a part of DuckDB an interrupt does not
+/// reach; the window it is dropped from (a rebuild, an open, a quit) should
+/// not wait on that.
+const STOP_PATIENCE: Duration = Duration::from_millis(250);
+
+/// Wait for `runs` to end, for at most `patience`: every millisecond, take
+/// each run that has `finished` to `reap`, and `interrupt` each one left.
+/// Returns the runs still going when the patience ran out.
+///
+/// The interrupt is sent again on every pass because a single one can be
+/// lost: DuckDB clears it when a statement starts, so a run that read its
+/// stop flag just before the flag was set, and then began its next query,
+/// would run that query to the end. Sent until the run ends, one lands
+/// inside the query.
+fn wind_down<R>(
+    mut runs: Vec<R>,
+    patience: Duration,
+    interrupt: impl Fn(&R),
+    finished: impl Fn(&R) -> bool,
+    mut reap: impl FnMut(R),
+) -> Vec<R> {
+    let started = Instant::now();
+    loop {
+        let (done, going): (Vec<R>, Vec<R>) = runs.into_iter().partition(|r| finished(r));
+        done.into_iter().for_each(&mut reap);
+        runs = going;
+        if runs.is_empty() || started.elapsed() >= patience {
+            return runs;
+        }
+        runs.iter().for_each(&interrupt);
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 impl RegionsWorker {
@@ -722,7 +766,7 @@ impl RegionsWorker {
         let interrupt = job.reader.interrupt_handle();
         let (send, answer) = channel();
         let (stopped, wake) = (Arc::clone(&cancelled), self.wake.clone());
-        self.threads.retain(|thread| !thread.is_finished());
+        self.runs.retain(|run| !run.thread.is_finished());
         let thread = std::thread::spawn(move || {
             let answer = job.run_unless(&stopped);
             if !stopped.load(Ordering::Relaxed) {
@@ -732,7 +776,10 @@ impl RegionsWorker {
                 }
             }
         });
-        self.threads.push(thread);
+        self.runs.push(Run {
+            thread,
+            interrupt: Arc::clone(&interrupt),
+        });
         self.in_flight.insert(
             path,
             Flight {
@@ -854,13 +901,27 @@ impl RegionsWorker {
 }
 
 impl Drop for RegionsWorker {
-    /// Stop every run and wait for its thread, which a stop ends at its next
-    /// step or by interrupting its query, so no run outlives the worker.
+    /// Stop every run and wait for its thread, so no run outlives the worker:
+    /// the usual end, a quit included, is every thread joined.
+    ///
+    /// A run still going after [`STOP_PATIENCE`] is left to finish alone
+    /// rather than block the window. That is safe: it owns its reader and its
+    /// job, its stop flag is set so it gives up at its next step, and the
+    /// answer it would send has no receiver left. The one cost is the one the
+    /// join guards against, a crash if the process exits under it, which
+    /// needs a query no interrupt reaches still running at the exit.
     fn drop(&mut self) {
         self.stop_all();
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
-        }
+        let left = wind_down(
+            std::mem::take(&mut self.runs),
+            STOP_PATIENCE,
+            |run| run.interrupt.interrupt(),
+            |run| run.thread.is_finished(),
+            |run| {
+                let _ = run.thread.join();
+            },
+        );
+        drop(left);
     }
 }
 
@@ -1099,4 +1160,74 @@ fn draw_regions(scene: &mut Scene, plot: &PlotHandle, regions: &PlotRegions, hel
         );
     }
     scene.pop_layer();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// A run that ends once it has been interrupted `needs` times, or never.
+    struct Fake {
+        needs: Option<usize>,
+        interrupts: Cell<usize>,
+    }
+
+    impl Fake {
+        fn new(needs: Option<usize>) -> Self {
+            Self {
+                needs,
+                interrupts: Cell::new(0),
+            }
+        }
+
+        fn finished(&self) -> bool {
+            self.needs.is_some_and(|n| self.interrupts.get() >= n)
+        }
+    }
+
+    #[test]
+    fn a_run_whose_first_interrupt_is_lost_ends_on_a_later_one() {
+        let runs = vec![Fake::new(Some(0)), Fake::new(Some(1)), Fake::new(Some(3))];
+        let mut reaped = Vec::new();
+        let left = wind_down(
+            runs,
+            Duration::from_secs(5),
+            |r| r.interrupts.set(r.interrupts.get() + 1),
+            Fake::finished,
+            |r| reaped.push(r.interrupts.get()),
+        );
+        assert!(left.is_empty(), "every run ended and was reaped");
+        assert_eq!(
+            reaped,
+            vec![0, 1, 3],
+            "each run was reaped once it ended, and the interrupt was sent \
+             again until the one that needed three had them"
+        );
+    }
+
+    #[test]
+    fn a_run_no_interrupt_reaches_is_left_after_the_patience() {
+        let runs = vec![Fake::new(Some(1)), Fake::new(None)];
+        let mut reaped = 0;
+        let started = Instant::now();
+        let left = wind_down(
+            runs,
+            Duration::from_millis(20),
+            |r| r.interrupts.set(r.interrupts.get() + 1),
+            Fake::finished,
+            |_| reaped += 1,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the wait stopped near its patience"
+        );
+        assert_eq!(reaped, 1, "the run that ended was reaped");
+        assert_eq!(left.len(), 1, "the run that never ends is handed back");
+        assert!(
+            left[0].interrupts.get() > 1,
+            "it was interrupted on every pass, not once"
+        );
+    }
 }
