@@ -136,7 +136,7 @@ pub struct Crumb {
     /// The words a linked crumb offers on hover, when the crumb is a way back:
     /// the header draws it as a link and reports its click
     /// ([`crate::chrome::HeaderDrawn::crumb_link`]). `None` for a crumb that
-    /// only says where the pane sits.
+    /// says where the pane sits and goes nowhere.
     pub link: Option<String>,
 }
 

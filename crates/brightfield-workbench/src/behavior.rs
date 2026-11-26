@@ -121,7 +121,7 @@ pub struct PaneChrome<'a, D: ?Sized> {
     /// What the shell says about one pane's node, folded into that pane's
     /// subject before its header is drawn: the breadcrumb, the activities and
     /// the size note. The item cannot know which node the window has in
-    /// focus, and the shell can. `None` leaves every subject as its item
+    /// focus, and the shell can. `None` leaves each subject as its item
     /// describes it.
     header_for: Option<(PaneKey, NodeHeader)>,
     /// What that pane's header did on this draw.
