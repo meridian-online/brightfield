@@ -909,6 +909,7 @@ name = "brightfield-keys"
 version = "0.1.0"
 dependencies = [
  "brightfield-spec",
+ "serde_json",
 ]
 
 [[package]]
@@ -916,6 +917,7 @@ name = "brightfield-model"
 version = "0.1.0"
 dependencies = [
  "brightfield-engine",
+ "brightfield-keys",
  "brightfield-spec",
  "brightfield-ui",
  "serde_json",
