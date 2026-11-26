@@ -91,6 +91,7 @@ The bundle holds:
 | `Contents/Frameworks/` | `libduckdb.dylib`, with the extensions compiled in, and GEOS beside it |
 | `Contents/Resources/finetype/` | FineType's model and taxonomy catalogue, with `bundle-manifest.sha256` over them. No extension file: FineType is compiled into the library |
 | `Contents/Resources/` | The icon, `LICENSE` and the examples, as in the full edition |
+| `Contents/Resources/licenses/` | The third-party licence notices: GEOS's LGPL-2.1 text and the offer of its source, the C libraries', DuckDB's and FineType's licences, and the Rust crates compiled into each executable and the library (`docs/managed-duckdb.md`) |
 
 No `.duckdb_extension` file is in the bundle, because `codesign` cannot sign one, and every piece of code in a Store bundle is signed.
 
