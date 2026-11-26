@@ -688,6 +688,11 @@ pub struct RegionsWorker {
     wake: Option<Wake>,
     started: usize,
     superseded: usize,
+    /// Every run's thread not yet seen to end, a stopped run's among them,
+    /// so dropping the worker can wait for each: a thread left running a
+    /// query when the process exits reads DuckDB's state as it is torn down,
+    /// and crashes the process on its way out.
+    threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl RegionsWorker {
@@ -716,7 +721,8 @@ impl RegionsWorker {
         let interrupt = job.reader.interrupt_handle();
         let (send, answer) = channel();
         let (stopped, wake) = (Arc::clone(&cancelled), self.wake.clone());
-        std::thread::spawn(move || {
+        self.threads.retain(|thread| !thread.is_finished());
+        let thread = std::thread::spawn(move || {
             let answer = job.run_unless(&stopped);
             if !stopped.load(Ordering::Relaxed) {
                 let _ = send.send(answer);
@@ -725,6 +731,7 @@ impl RegionsWorker {
                 }
             }
         });
+        self.threads.push(thread);
         self.in_flight.insert(
             path,
             Flight {
@@ -846,8 +853,13 @@ impl RegionsWorker {
 }
 
 impl Drop for RegionsWorker {
+    /// Stop every run and wait for its thread, which a stop ends at its next
+    /// step or by interrupting its query, so no run outlives the worker.
     fn drop(&mut self) {
         self.stop_all();
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
     }
 }
 
