@@ -3016,11 +3016,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
-                // The new session holds no gesture's clause, so the document
-                // forgets the ones it recorded; the grid's is published again
-                // below.
-                self.active_selections
-                    .retain(|(_, c)| c.0 == GRID_CONTRIBUTOR);
+                self.forget_gestures();
                 self.publish_grid_condition();
                 if changed {
                     self.pending_edits.push(edit);
@@ -3039,6 +3035,16 @@ impl ChartDoc {
                 false
             }
         }
+    }
+
+    /// Forget the gestures this document recorded, keeping the grid's: what a
+    /// page drawn from a fresh session needs, since that session holds no
+    /// gesture's clause and the grid's is published to it again. Without it
+    /// the document would report a selection held over a session holding
+    /// none, and Escape would be spent clearing nothing.
+    fn forget_gestures(&mut self) {
+        self.active_selections
+            .retain(|(_, c)| c.0 == GRID_CONTRIBUTOR);
     }
 
     /// **Load the page again from `spec`**, with what the window decided about
@@ -3247,6 +3253,8 @@ impl ChartDoc {
             },
         );
         self.pending_edits.extend(preview.edits);
+        // The preview's page, drawn from a fresh session, is now the kept one.
+        self.forget_gestures();
         true
     }
 
@@ -3311,6 +3319,7 @@ impl ChartDoc {
                 let now = self.setting_text(plot, live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
+                self.forget_gestures();
                 self.publish_grid_condition();
                 self.shelf_undo.push(
                     before,
@@ -3795,6 +3804,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.forget_gestures();
                 self.publish_grid_condition();
                 let KeptShelfEdit {
                     words,
@@ -4052,6 +4062,8 @@ impl ChartDoc {
         );
         self.stepped_back = Some(SteppedBack { id, text });
         self.versions.clear_cursor();
+        // The version's page, drawn from a fresh session, is now the kept one.
+        self.forget_gestures();
         true
     }
 
@@ -4242,6 +4254,10 @@ impl ChartDoc {
     /// would be showing a string nothing executed. Shown *is* executed, or the
     /// readout is a second opinion about the filter rather than a view of it.
     ///
+    /// The one exception is a region's cells ([`readable_clause`]): the SQL
+    /// lists every cell, hundreds for a large region, so the readout names its
+    /// two columns, how many cells it holds and the grid they are on.
+    ///
     /// # Why `$name = clause` and not "Filter:"
     ///
     /// Four things make "the filter" ambiguous, and this phrasing is chosen to
@@ -4274,7 +4290,7 @@ impl ChartDoc {
         }
         Some(
             held.iter()
-                .map(|(name, clause)| format!("${name} = {clause}"))
+                .map(|(name, clause)| format!("${name} = {}", readable_clause(clause)))
                 .collect::<Vec<_>>()
                 .join(" · "),
         )
@@ -5355,6 +5371,36 @@ impl Item<ChartDoc> for ControlsPane {
 // through the private fields.
 // ---------------------------------------------------------------------------
 
+/// A held clause as the selection readout writes it: as its SQL, except that a
+/// region's cells read as their columns, their count and their grid, such as
+/// `longitude, latitude in 212 of 100×100 cells`, where the SQL lists each
+/// cell. An `And` or `Or` around one is written as the SQL writes it.
+fn readable_clause(clause: &brightfield_engine::SqlPredicate) -> String {
+    use brightfield_engine::SqlPredicate as P;
+    let joined = |parts: &[P], op: &str, empty: &str| {
+        if parts.is_empty() {
+            return empty.to_string();
+        }
+        let parts: Vec<String> = parts.iter().map(readable_clause).collect();
+        format!("({})", parts.join(op))
+    };
+    match clause {
+        P::Cells {
+            x,
+            y,
+            extent,
+            cells,
+        } => format!(
+            "{x}, {y} in {} of {}\u{d7}{} cells",
+            cells.len(),
+            extent.bins,
+            extent.bins
+        ),
+        P::And(parts) => joined(parts, " AND ", "TRUE"),
+        P::Or(parts) => joined(parts, " OR ", "FALSE"),
+        other => other.to_string(),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

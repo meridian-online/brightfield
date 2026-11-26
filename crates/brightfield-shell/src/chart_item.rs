@@ -2367,8 +2367,8 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
 ///   is still there to leave alone.
 /// - An interval click **inside a drawn region** — `region`, the region's
 ///   [`SqlPredicate::Cells`], which the caller offers on an `intervalXY`
-///   plot (`a_plot_without_an_xy_brush_offers_no_click`) — selects the region's rows in place of whatever the
-///   plot held, and a click that would publish the clause already held clears
+///   plot and on no other kind of brush — selects the region's rows in place
+///   of whatever the plot held, and a click that would publish the clause already held clears
 ///   it, the point click's toggle below. A press on a committed rectangle
 ///   still leaves the rectangle alone.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
@@ -2933,6 +2933,61 @@ mod tests {
         };
         let binding = point.gesture.clone().expect("bound");
         assert_eq!(resolve_gesture(&binding, &point, sweep, None, None), None);
+    }
+
+    /// A click on a region selects its cells, a click on the region already
+    /// held clears it, and a press on a committed rectangle leaves the
+    /// rectangle alone even with a region under it.
+    #[test]
+    fn a_region_click_selects_toggles_and_spares_a_committed_rectangle() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        scales.insert(Channel::Y, linear((0.0, 100.0), (0.0, 10.0)));
+        let xy = plot(scales, BrushKind::IntervalXY);
+        let binding = xy.gesture.clone().expect("bound");
+        let extent = brightfield_sql::regions::GridExtent {
+            x: (0.0, 10.0),
+            y: (0.0, 10.0),
+            bins: 100,
+        };
+        let region = |cells| SqlPredicate::cells("x", "y", extent.clone(), cells).expect("usable");
+        let click = Drag {
+            plot: 0,
+            start: kurbo::Point::new(40.0, 40.0),
+            current: kurbo::Point::new(41.0, 41.0),
+            by: egui::Vec2::ZERO,
+            move_from: None,
+        };
+
+        let other = region(vec![1, 2]);
+        assert_eq!(
+            resolve_gesture(&binding, &xy, click, Some(&other), Some(region(vec![7, 8]))),
+            Some(Interaction::Select {
+                name: binding.selection.clone(),
+                contributor: binding.contributor.clone(),
+                predicate: region(vec![7, 8]),
+            }),
+            "a region other than the one held is selected"
+        );
+
+        let held = region(vec![7, 8]);
+        assert!(
+            matches!(
+                resolve_gesture(&binding, &xy, click, Some(&held), Some(region(vec![8, 7]))),
+                Some(Interaction::ClearSelect { .. })
+            ),
+            "the region already held is cleared"
+        );
+
+        let on_rectangle = Drag {
+            move_from: Some(kurbo::Rect::new(20.0, 20.0, 60.0, 60.0)),
+            ..click
+        };
+        assert_eq!(
+            resolve_gesture(&binding, &xy, on_rectangle, None, Some(region(vec![7, 8]))),
+            None,
+            "a press on the committed rectangle selects no region"
+        );
     }
 
     /// Two plots placed side by side on one raster, as a root `hconcat` of

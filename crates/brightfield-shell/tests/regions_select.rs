@@ -21,8 +21,10 @@ use brightfield_render::channel::Channel;
 use brightfield_render::regions::cell_bounds;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
+use brightfield_shell::shelf::{RowEdit, SettingValue, TITLE_ROW};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
+use brightfield_workbench::channel::ShelfChannel;
 
 /// The map's selection in the earthquake panel.
 const SELECTION: &str = "sel";
@@ -346,9 +348,19 @@ fn clicking_a_region_filters_the_other_plots_to_its_rows() {
     );
     assert_eq!(live.emphasised(), Some(0), "the region is drawn as held");
     let readout = live.doc().selection_sql().expect("a selection is shown");
+    let SqlPredicate::Cells { ref cells, .. } = held else {
+        unreachable!("matched above")
+    };
     assert!(
-        readout.starts_with("$sel = ") && readout.contains(&held.to_string()),
-        "the readout shows the clause that ran: {readout}"
+        readout.contains(&format!(
+            "longitude, latitude in {} of 100\u{d7}100 cells",
+            cells.len()
+        )),
+        "the readout names the region's columns, cells and grid: {readout}"
+    );
+    assert!(
+        !readout.contains(" IN ("),
+        "and does not list each cell: {readout}"
     );
 }
 
@@ -447,6 +459,42 @@ fn turning_regions_off_drops_a_held_region_selection() {
         "the document holds no gesture that the session no longer has"
     );
     assert_eq!(live.emphasised(), None, "and no held outline is drawn");
+}
+
+#[test]
+fn an_axis_row_change_or_its_undo_drops_a_held_region_selection() {
+    let mut live = Live::open("axis-row", &earthquake_spec());
+    live.click(live.region_point(0, 0));
+    assert!(live.held().is_some());
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("lon".to_owned()),
+    };
+    assert!(
+        live.app.chart_doc_mut().set_axis_row(0, &title),
+        "the row change rebuilds the page"
+    );
+    live.settle();
+    assert_eq!(
+        live.held(),
+        None,
+        "the rebuild dropped the region selection"
+    );
+    assert!(
+        !live.doc().selection_active(),
+        "the document holds no gesture that the session no longer has"
+    );
+
+    live.click(live.region_point(0, 0));
+    assert!(live.held().is_some(), "selected again on the rebuilt page");
+    assert!(
+        live.app.chart_doc_mut().undo_shelf_edit().is_some(),
+        "the row change is taken back"
+    );
+    live.settle();
+    assert_eq!(live.held(), None, "the undo dropped the region selection");
+    assert!(!live.doc().selection_active());
 }
 
 #[test]
