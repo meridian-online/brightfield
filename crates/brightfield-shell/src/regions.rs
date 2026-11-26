@@ -78,6 +78,16 @@ pub const GRID_BINS: u32 = 100;
 /// zooming in, where it holds more of the view.
 pub const MIN_DRAWN_SHARE: f64 = 0.01;
 
+/// The fewest rows a plot must have in view for its regions to be drawn.
+///
+/// A density estimate over a handful of points spreads each one across a wide
+/// patch, so the regions it finds tile the whole view between the points and
+/// run along the plot's edges: they partition the space rather than pick out
+/// where the points gather, and say nothing a reader cannot see by looking at
+/// the few dots. Fifty is a small table's worth, where a cluster can begin to
+/// stand out from its neighbours.
+pub const MIN_REGION_ROWS: u64 = 50;
+
 /// The width of a region's outline, in pixels: a hairline, so the points
 /// under it stay the picture.
 const OUTLINE_WIDTH: f64 = 1.0;
@@ -376,7 +386,11 @@ impl RegionJob {
         let Some(grid_sql) = region_grid_sql(&self.rows_sql, &self.x, &self.y, &self.extent) else {
             return Some(PlotRegions::none(self.x, self.y, self.extent));
         };
-        let grid = density_grid(&read(&grid_sql)?, &self.extent, self.bandwidth_scale);
+        let counted = read(&grid_sql)?;
+        if rows_in_grid(&counted, &self.extent) < MIN_REGION_ROWS {
+            return Some(PlotRegions::none(self.x, self.y, self.extent));
+        }
+        let grid = density_grid(&counted, &self.extent, self.bandwidth_scale);
         let mut regions = find_regions(&grid);
         regions.retain(|r| r.share >= MIN_DRAWN_SHARE);
         let outlines = regions.iter().map(|r| region_outline(&grid, r)).collect();
@@ -451,6 +465,32 @@ fn cell_regions(regions: &[Region]) -> Vec<(u32, u32)> {
                 .filter_map(move |&c| Some((u32::try_from(c).ok()?, region)))
         })
         .collect()
+}
+
+/// The rows the grid query counted inside `extent`, before any smoothing.
+fn rows_in_grid(batches: &[RecordBatch], extent: &GridExtent) -> u64 {
+    let bins = i64::from(extent.bins);
+    let mut total = 0.0;
+    for batch in batches {
+        let (Some(bx), Some(by), Some(n)) = (
+            batch.column(0).as_any().downcast_ref::<Int32Array>(),
+            batch.column(1).as_any().downcast_ref::<Int32Array>(),
+            batch.column(2).as_any().downcast_ref::<Float64Array>(),
+        ) else {
+            continue;
+        };
+        for i in 0..batch.num_rows() {
+            let inside = |b: i32| (0..bins).contains(&i64::from(b));
+            if inside(bx.value(i)) && inside(by.value(i)) {
+                total += n.value(i).max(0.0);
+            }
+        }
+    }
+    // A sum of row counts: a whole number, not negative.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        total.round() as u64
+    }
 }
 
 /// The smoothed density over `extent` from the grid query's counts.
@@ -598,7 +638,8 @@ pub struct PlotRegions {
 }
 
 impl PlotRegions {
-    /// No regions over `extent`, which has no grid.
+    /// No regions over `extent`, which has no grid: no rows in view, or too
+    /// few to find regions among.
     fn none(x: String, y: String, extent: GridExtent) -> Self {
         Self {
             x,

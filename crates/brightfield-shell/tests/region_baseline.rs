@@ -24,11 +24,11 @@ use std::path::{Path, PathBuf};
 
 use brightfield_render::scale::ViewExtent;
 use brightfield_shell::app::ChartDoc;
-use brightfield_shell::data_file;
 use brightfield_shell::navigation::NavOutcome;
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::region_names::NamingRules;
 use brightfield_shell::regions::{qualifying_layer, KnownColumn, PlotRegions, RegionJob};
+use brightfield_shell::{data_file, regions};
 use brightfield_spec::{parse_spec, Format};
 
 fn root() -> PathBuf {
@@ -388,6 +388,60 @@ fn the_housing_point_map_at_its_default_view() {
     let found = run(housing_job());
     assert_table("housing_point_map", &found);
     assert_anchors_inside(&found);
+}
+
+/// The job for the first plot with regions of the data file `name` under
+/// `tests/data`, opened as the window opens it.
+fn data_file_job(name: &str) -> RegionJob {
+    let path = own_copy(name);
+    let chosen = path.to_str().expect("a UTF-8 path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {chosen}: {e}"));
+    let plot = opened
+        .composed
+        .plots
+        .iter()
+        .find(|p| qualifying_layer(opened.live.spec(), &p.path).is_some())
+        .expect("a plot with regions");
+    opened.live.region_job(plot).expect("the plot has a job")
+}
+
+/// A dot plot of `rows` points, a grid of seven columns, on fixed axes.
+fn dots(rows: u32) -> String {
+    format!(
+        "data:\n  t:\n    query: |\n      \
+         SELECT i % 7 AS x, i // 7 AS y FROM range({rows}) r(i)\n\
+         plot:\n  - mark: dot\n    data: {{ from: t }}\n    x: x\n    y: y\n\
+         xDomain: [-1, 8]\nyDomain: [-1, 8]\n"
+    )
+}
+
+#[test]
+fn a_plot_with_too_few_rows_in_view_draws_no_regions() {
+    let found = run(data_file_job("point_map_baseline.csv"));
+    assert!(
+        found.regions.is_empty(),
+        "the eight-row point map is answered with no regions: {}",
+        region_table(&found)
+    );
+
+    let below = regions::MIN_REGION_ROWS - 1;
+    let few = dots(u32::try_from(below).expect("a small count"));
+    let doc = doc_over(&few);
+    let found = run(doc.region_job(0).expect("the plot has a job"));
+    assert!(
+        found.regions.is_empty(),
+        "{below} rows draw no regions: {}",
+        region_table(&found)
+    );
+
+    let enough = dots(u32::try_from(regions::MIN_REGION_ROWS).expect("a small count"));
+    let doc = doc_over(&enough);
+    let found = run(doc.region_job(0).expect("the plot has a job"));
+    assert!(
+        !found.regions.is_empty(),
+        "{} rows are enough to draw regions",
+        regions::MIN_REGION_ROWS
+    );
 }
 
 #[test]
