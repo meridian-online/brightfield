@@ -20565,8 +20565,8 @@ struct InspectorDocs<'a> {
 /// A section's body is the pane that drew it when the rail held three panes,
 /// drawn without its frame: Operation is the operation panel, Column and
 /// Parameters the chart's inspector, and Step the operator's facts. Each open
-/// body may grow until the headers below it would leave the rail, so every
-/// section's header stays where a click can reach it.
+/// body scrolls within the room the headers below it leave, so those headers
+/// stay in the rail where a click can reach them.
 #[allow(clippy::too_many_arguments)]
 fn draw_inspector_sections(
     ui: &mut egui::Ui,
@@ -20602,26 +20602,28 @@ fn draw_inspector_sections(
     let mut column = chrome::pane_frame(&mut outer, &subject, false, mode);
     let body = column.max_rect();
     let mut toggled = None;
+    // What one closed section below takes: its header and the gap the column
+    // leaves before it.
+    let header_step = meridian_design::control::HEIGHT_MD + column.spacing().item_spacing.y;
     for (index, (section, open)) in sections.iter().enumerate() {
-        let headers_below =
-            (sections.len() - 1 - index) as f32 * meridian_design::control::HEIGHT_MD;
+        let headers_below = (sections.len() - 1 - index) as f32 * header_step;
         let drawn = meridian_egui::section(
             &mut column,
             meridian_egui::Section::new(section.title(), *open),
             |ui| {
-                let room = egui::Rect::from_min_max(
-                    ui.cursor().min,
-                    egui::pos2(
-                        ui.max_rect().right(),
-                        (body.bottom() - headers_below - spacing::SPACE_5).max(ui.cursor().min.y),
-                    ),
-                );
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(room)
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                    |ui| {
-                        ui.shrink_clip_rect(room);
+                // The body scrolls within the room the headers below leave
+                // it, so a tall body cannot push them out of the rail.
+                let room =
+                    (body.bottom() - headers_below - spacing::SPACE_5 - ui.cursor().min.y).max(0.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("inspector-section", *section))
+                    .max_height(room)
+                    // egui keeps a scroll area at least 64 tall by default,
+                    // which a body given less room would push the headers
+                    // below it out of the rail with.
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                         let item = match section {
                             Section::Operation => crate::operation_panel::OPERATION,
                             Section::Step => PROTOCOL_INSPECTOR,
@@ -20654,8 +20656,7 @@ fn draw_inspector_sections(
                             )
                             .body_ui(ui, tile, key);
                         }
-                    },
-                );
+                    });
             },
         );
         if drawn.toggled {

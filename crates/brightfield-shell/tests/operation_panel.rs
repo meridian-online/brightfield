@@ -227,6 +227,28 @@ fn w_opens_the_operation_section_at_the_top() {
     );
 }
 
+/// **In a short window the Step header stays in the rail** while the
+/// Operation section and the chart's section above it are both open: each
+/// body scrolls in the room the headers below leave it.
+#[test]
+fn a_short_window_keeps_the_step_header_in_the_rail() {
+    let mut win = Window::housing(Some(runner()));
+    win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 560.0));
+    win.settle();
+    win.press_cell(2, HOUSE_AGE);
+    win.keystroke(egui::Key::W, "w");
+    let drawn = win.until_rail_draws(described("filter-rows").summary.as_str());
+    assert!(
+        win.showing_operation_pane(),
+        "{:?}",
+        win.app.inspector_sections()
+    );
+    assert!(
+        has(&drawn, "STEP"),
+        "the Step header left the rail: {drawn:?}"
+    );
+}
+
 /// **Esc from the field closes the Operation section, and shuts the rail the
 /// key opened.**
 #[test]
