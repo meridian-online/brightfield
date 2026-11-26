@@ -621,10 +621,9 @@ impl Item<ChartDoc> for InspectorPane {
 /// rail that describes one aspect of the selection.
 ///
 /// The rail draws the sections [`sections_for`] gives, most specific first,
-/// each with the design system's section header over its body. Not every
-/// section has a body yet: the chart's Encoding, Reads and Fields are named
-/// here so their order is fixed in one place, and [`sections_for`] lists a
-/// section only once something draws it.
+/// each with the design system's section header over its body. The chart's
+/// Encoding, Reads and Fields have no body yet: they are named here so their
+/// order is fixed in one place, and [`sections_for`] does not list them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     /// The operation a foot field or an operation form is asking.
