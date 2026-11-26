@@ -177,7 +177,7 @@ fn fill_nulls() -> VerbEntry {
 }
 
 // ---- join-tables ----
-const JOIN_TABLES_BUILT: bool = false;
+const JOIN_TABLES_BUILT: bool = true;
 fn join_tables() -> VerbEntry {
     entry(
         "join-tables",

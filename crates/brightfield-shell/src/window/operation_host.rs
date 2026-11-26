@@ -530,11 +530,22 @@ impl MeridianApp {
             return self.open_pick(ctx, spec, (start, role), column, &description, &cx);
         }
         let model = taken.as_ref().and_then(|_| self.relationship_model());
+        // Each name a draft may write as SQL: the table's columns, and for an
+        // operation the spine fed, the tables taken and their columns, with the
+        // table in front, as a join's condition names them.
+        let mut names = front.columns.clone();
+        for (table, columns) in taken.iter().flatten() {
+            names.push(table.clone());
+            names.extend(columns.iter().cloned());
+        }
+        if taken.is_some() && !front.table.is_empty() {
+            names.push(front.table.clone());
+        }
         let with = BegunWith {
             start,
             table: Some(front.table.clone()).filter(|t| !t.is_empty()),
             column: column.clone(),
-            spelled: self.quoted_columns(&front.columns),
+            spelled: self.quoted_columns(&names),
             columns: front.columns.clone(),
             facts: front.facts.clone(),
             description,
@@ -1030,12 +1041,19 @@ impl MeridianApp {
             return;
         };
         // An operation chosen from the menu starts from the part it names, when it names one.
-        let start = spec
-            .starts
-            .iter()
-            .copied()
-            .find(|s| matches!(s, Start::Header(part) if *part == hit.part || hit.verb.is_some()))
-            .unwrap_or(Start::Header(hit.part));
+        // One that reads a second table asks the spine for it first, from the menu as from
+        // its key.
+        let start = match spec.starts.first() {
+            Some(spine @ Start::Spine { .. }) => *spine,
+            _ => spec
+                .starts
+                .iter()
+                .copied()
+                .find(
+                    |s| matches!(s, Start::Header(part) if *part == hit.part || hit.verb.is_some()),
+                )
+                .unwrap_or(Start::Header(hit.part)),
+        };
         self.start_operation(ctx, spec, start, hit.column.clone());
     }
 

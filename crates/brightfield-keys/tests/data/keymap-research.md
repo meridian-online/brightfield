@@ -198,6 +198,7 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | `summarise-rows` | `shift-f` | 3 / 3 / 5 | `F` is VisiData's frequency table of the cursor's column; "Summarise by this column" on a header's menu does the same |
 | `limit-rows` | `shift-l` | 2 / 4 / 2 | `L` = limit; bare `l` stays the grid's move right, and "Top rows by this column" on a header's menu does the same |
 | `dedupe-rows` | `shift-u` | 2 / 3 / 2 | `U` = unique; bare `u` is undo elsewhere, and "Remove duplicate rows" on a header's menu does the same |
+| `join-tables` | `&` | 2 / 4 / 5 | `&` is VisiData's join; it first picks the other table in the spine, and "Join on this column" on a header's menu does the same |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 
