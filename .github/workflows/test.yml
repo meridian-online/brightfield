@@ -1,12 +1,13 @@
 name: test
 
 # By hand only: `gh workflow run test.yml --ref <branch>`. A pull request's gate
-# is `cargo xtask gate <pr>` on the reference Mac, which runs the same steps and
-# posts the `local-gate` status a merge waits on, and the Mac Studio's nightly
+# is `cargo xtask gate <pr>` on the reference Mac, which runs the same steps
+# but for brightfield-shell's own test targets and the managed edition's tests,
+# and posts the `local-gate` status a merge waits on. The Mac Studio's nightly
 # (`cargo xtask nightly`) runs every one of them on `main` each night and posts
 # the `nightly-gate` status the gate reads. This hosted run is for a question
 # only GitHub's runner can answer, such as whether a clean macOS image still
-# builds and passes.
+# builds and passes, and like the nightly it runs the whole suite.
 on:
   workflow_dispatch:
 
@@ -454,7 +455,9 @@ jobs:
       # Every shard computes the same packing from this file and from `cargo
       # metadata`, runs only its own part, and prints all of them, so each
       # target runs on exactly one shard and a target nobody weighed still
-      # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the time from
+      # runs. A local `cargo xtask ci --nightly` runs each whole group instead,
+      # and a local `cargo xtask ci`, a pull request's gate, runs each group
+      # without brightfield-shell's own targets. The seconds are the `target-seconds:` lines below: the time from
       # each target's `Running` line in the job log to the next one, rounded
       # up, for every target of 10 seconds or more, plus four stand-ins. The
       # figures began as the longest of `main` run 39858758378 and pull
