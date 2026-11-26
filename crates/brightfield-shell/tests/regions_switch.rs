@@ -168,7 +168,14 @@ impl Live {
             !head.intersects(switch),
             "the switch {switch:?} reaches into the head {head:?} the title is written in"
         );
-        let axes = self.doc().composed.plots[plot].axes;
+        let handle = &self.doc().composed.plots[plot];
+        let labels =
+            tile.top() + brightfield_render::axis::x_tick_labels_bottom(&handle.layout) as f32;
+        assert!(
+            switch.top() >= labels,
+            "the switch {switch:?} sits below the x tick labels, which end at {labels}"
+        );
+        let axes = handle.axes;
         for title in [axes.x, axes.y]
             .into_iter()
             .flatten()
@@ -325,6 +332,17 @@ fn the_switch_stays_clear_of_the_titles_and_the_data() {
         "both axes draw a title, so the check below measures something"
     );
     live.assert_clear(0);
+}
+
+#[test]
+fn on_a_map_the_switch_sits_below_the_graticule_labels() {
+    let live = Live::housing();
+    let plot = regions_plot(&live);
+    assert!(
+        live.doc().composed.plots[plot].axes.x.is_none(),
+        "a projected plot reports no axis parts, so the labels are found another way"
+    );
+    live.assert_clear(plot);
 }
 
 #[test]

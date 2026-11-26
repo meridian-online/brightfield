@@ -2179,14 +2179,17 @@ fn draw_regions_switches(
                 tile.min + egui::vec2(r.x1 as f32, r.y1 as f32),
             )
         };
+        // Below the tick labels the axis reports, or, on a map, which reports
+        // none, below its graticule labels, which sit where tick labels do.
         #[allow(clippy::cast_possible_truncation)]
-        let frame_bottom = tile.top() + plot.layout.plot_y_end() as f32;
+        let labels_bottom =
+            tile.top() + brightfield_render::axis::x_tick_labels_bottom(&plot.layout) as f32;
         let x_axis = plot.axes.x;
         let below = x_axis
             .iter()
             .flat_map(|axis| axis.labels.into_iter().chain([axis.line]))
             .map(|r| placed(r).bottom())
-            .fold(frame_bottom, f32::max);
+            .fold(labels_bottom, f32::max);
         let title = x_axis.and_then(|axis| axis.title).map(placed);
         let active = !crate::regions::regions_switched_off(spec, &plot.path);
         let subject = (i, regions_hover(plot), active);
