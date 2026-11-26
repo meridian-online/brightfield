@@ -163,11 +163,26 @@ pub mod label_kind {
     pub const Q3: &str = "q3";
     /// How many of the region's rows hold a number in the column.
     pub const PRESENT: &str = "present";
-    /// A number column's lower quartile over the view's rows outside the region.
-    pub const REST_Q1: &str = "rest_q1";
-    /// A number column's upper quartile over the view's rows outside the region.
-    pub const REST_Q3: &str = "rest_q3";
+    /// A number column's smallest value in the view, on a row with region `-1`
+    /// whatever region holds it: the low edge of its histogram.
+    pub const LO: &str = "lo";
+    /// A number column's largest value in the view, on a row with region `-1`:
+    /// the high edge of its histogram.
+    pub const HI: &str = "hi";
+    /// How many of the region's rows have a number in one bin of the column's
+    /// histogram; `key` is the bin's index, `0..NUMBER_BINS`, as text.
+    ///
+    /// [`NUMBER_BINS`]: super::NUMBER_BINS
+    pub const BIN: &str = "bin";
 }
+
+/// How many equal-width bins span a number column's range in the view, for the
+/// histogram the rest of the view's quartiles are read from. A quartile read
+/// off it is within about a bin of the exact one, 1/1024 of the view's range,
+/// which is finer than the two figures a range name prints; and the summary
+/// stays at most this many rows per region per number column, however many
+/// rows the view holds.
+pub const NUMBER_BINS: u32 = 1024;
 
 /// Words a text column's terms leave out, besides any word of fewer than three
 /// letters: English words that join a description rather than say what it is
@@ -259,25 +274,36 @@ pub const STOP_WORDS: &[&str] = &[
 ///   [`label_kind::ROWS`] row;
 /// - `region INTEGER`: the region, or `-1`;
 /// - `kind VARCHAR`: one of [`label_kind`];
-/// - `key VARCHAR`: the term or the category value, null for the others;
-/// - `value DOUBLE`: the count or the quartile.
+/// - `key VARCHAR`: the term, the category value or the bin, null for the
+///   others;
+/// - `value DOUBLE`: the count, the quartile or the edge.
 ///
-/// A text column is split into words on anything that is not a letter or an
-/// apostrophe. A word keeps an apostrophe inside it (`Kuril'sk`, a
-/// transliteration's soft sign) and loses one at either end, and a typographic
-/// apostrophe reads as a plain one. A hyphen splits (`Severo-Kuril'sk` is
-/// `Severo` and `Kuril'sk`), so a hyphenated name and its parts meet the phrase
-/// rule rather than being one rare word. Digits split too, so numbers drop out.
-/// Words of fewer than three letters and the [`STOP_WORDS`] are dropped, and
-/// each pair of adjacent kept words is also a term. Terms are compared
-/// lower-cased and a row counts once per term. Null and blank values hold no
-/// term and no category value, so they count against a share without ever
-/// being named.
+/// A text column is cut into runs at anything that is not a letter, an
+/// apostrophe, a hyphen or a space, so punctuation and digits end a run, and
+/// each run is split into words at spaces. A word keeps an apostrophe or a
+/// hyphen inside it (`Kuril'sk`, a transliteration's soft sign;
+/// `Severo-Kuril'sk`, one name) and loses either at its ends, and a typographic
+/// apostrophe reads as a plain one. Words of fewer than three letters and the
+/// [`STOP_WORDS`] are dropped and leave a gap. Each kept word is a term, and so
+/// is each pair of kept words next to each other in a run with no gap between,
+/// so a phrase is always one the row wrote (`Fiji Islands` from `south of the
+/// Fiji Islands`, but no `Gulf California` from `Gulf of California` and no
+/// `Kuril'sk Russia` across a comma). Terms are compared lower-cased and a row
+/// counts once per term. Null and blank values hold no term and no category
+/// value, and a category value is trimmed, so `Gentoo ` is `Gentoo`; empty
+/// values count against a share without ever being named.
 ///
-/// The quartiles are DuckDB's `quantile_cont`, over the non-null numbers. The
-/// rest-of-view quartiles join every region to the rows outside it, so their
-/// cost grows with the number of regions; the rows are materialised once
-/// first, so the source is still read once.
+/// A number column's quartiles in each region are DuckDB's `quantile_cont`
+/// over its non-null numbers, exact because they are what a name prints. The
+/// rest of the view's are left to the reader: the query counts each region's
+/// numbers in [`NUMBER_BINS`] equal-width bins between the column's [`LO`] and
+/// [`HI`] in the view, so the rest of a region is the view's histogram less the
+/// region's, and the summary grows with regions times bins rather than with
+/// regions times rows. The rows are materialised once first, so the source is
+/// read once.
+///
+/// [`LO`]: label_kind::LO
+/// [`HI`]: label_kind::HI
 ///
 /// `None` when `extent` has no usable grid or `cell_regions` is empty, since
 /// then there is no region to name.
@@ -305,9 +331,8 @@ pub fn region_label_sql(
             let name = quoted_name(&c.name);
             match c.role {
                 LabelRole::Number => format!(", TRY_CAST({name} AS DOUBLE) AS __bf_c{i}"),
-                LabelRole::Text | LabelRole::Category => {
-                    format!(", CAST({name} AS VARCHAR) AS __bf_c{i}")
-                }
+                LabelRole::Text => format!(", CAST({name} AS VARCHAR) AS __bf_c{i}"),
+                LabelRole::Category => format!(", trim(CAST({name} AS VARCHAR)) AS __bf_c{i}"),
             }
         })
         .collect();
@@ -340,7 +365,7 @@ pub fn region_label_sql(
         match c.role {
             LabelRole::Category => branches.push(format!(
                 "SELECT {i}, __bf_region, '{}', {v}, CAST(count(*) AS DOUBLE) \
-                 FROM __bf_view WHERE trim({v}) <> '' GROUP BY __bf_region, {v}",
+                 FROM __bf_view WHERE {v} <> '' GROUP BY __bf_region, {v}",
                 label_kind::VALUE
             )),
             LabelRole::Text => {
@@ -371,16 +396,21 @@ pub fn region_label_sql(
                     q3 = label_kind::Q3,
                     present = label_kind::PRESENT,
                 ));
+                let bin = equiwidth_bin_index(&v, "b.lo", "b.hi", i64::from(NUMBER_BINS));
                 branches.push(format!(
-                    "SELECT {i}, region, kind, CAST(NULL AS VARCHAR), value FROM (\
-                     SELECT r.__bf_region AS region, \
-                     quantile_cont(v.{v}, 0.25) AS {q1}, quantile_cont(v.{v}, 0.75) AS {q3} \
-                     FROM (SELECT DISTINCT __bf_region FROM __bf_cells) AS r \
-                     JOIN __bf_view AS v ON v.__bf_region <> r.__bf_region \
-                     GROUP BY r.__bf_region) \
-                     UNPIVOT (value FOR kind IN ({q1}, {q3}))",
-                    q1 = label_kind::REST_Q1,
-                    q3 = label_kind::REST_Q3,
+                    "SELECT {i}, -1, kind, CAST(NULL AS VARCHAR), value FROM (\
+                     SELECT min({v}) AS {lo}, max({v}) AS {hi} FROM __bf_view) \
+                     UNPIVOT (value FOR kind IN ({lo}, {hi}))",
+                    lo = label_kind::LO,
+                    hi = label_kind::HI,
+                ));
+                branches.push(format!(
+                    "SELECT {i}, v.__bf_region, '{}', \
+                     CAST(CAST({bin} AS INTEGER) AS VARCHAR), CAST(count(*) AS DOUBLE) \
+                     FROM __bf_view AS v, \
+                     (SELECT min({v}) AS lo, max({v}) AS hi FROM __bf_view) AS b \
+                     WHERE v.{v} IS NOT NULL GROUP BY ALL",
+                    label_kind::BIN
                 ));
             }
         }
@@ -396,21 +426,26 @@ pub fn region_label_sql(
 /// spelling the row wrote it in. See [`region_label_sql`] for the rules.
 fn text_terms_cte(i: usize) -> String {
     let stop: Vec<String> = STOP_WORDS.iter().map(|w| format!("'{w}'")).collect();
+    let stop = stop.join(", ");
+    // Each run's words, with a dropped word as '' and a '' after the run, so
+    // two words pair only when both are kept and nothing came between them.
+    let word = "trim(w, '''-')";
     let words = format!(
-        "list_transform(regexp_split_to_array(replace(__bf_c{i}, '\u{2019}', ''''), \
-         '[^\\p{{L}}'']+'), lambda w: trim(w, ''''))"
-    );
-    let kept = format!(
-        "list_filter({words}, lambda w: length(replace(w, '''', '')) >= 3 \
-         AND NOT list_contains([{}], lower(w)))",
-        stop.join(", ")
+        "flatten(list_transform(\
+         regexp_split_to_array(replace(__bf_c{i}, '\u{2019}', ''''), '[^\\p{{L}}''\\s-]+'), \
+         lambda g: list_append(list_transform(regexp_split_to_array(g, '\\s+'), \
+         lambda w: CASE WHEN length(regexp_replace({word}, '[''-]', '', 'g')) >= 3 \
+         AND NOT list_contains([{stop}], lower({word})) THEN {word} ELSE '' END), '')))"
     );
     format!(
         "__bf_terms{i} AS MATERIALIZED (\
          SELECT DISTINCT __bf_row, __bf_region, lower(form) AS term, form FROM (\
-         SELECT __bf_row, __bf_region, unnest(list_concat(k, \
-         list_transform(range(1, len(k)), lambda j: k[j] || ' ' || k[j + 1]))) AS form \
-         FROM (SELECT __bf_row, __bf_region, {kept} AS k FROM __bf_view \
+         SELECT __bf_row, __bf_region, unnest(list_concat(\
+         list_filter(ws, lambda w: w <> ''), \
+         list_filter(list_transform(range(1, len(ws)), lambda j: \
+         CASE WHEN ws[j] <> '' AND ws[j + 1] <> '' THEN ws[j] || ' ' || ws[j + 1] END), \
+         lambda p: p IS NOT NULL))) AS form \
+         FROM (SELECT __bf_row, __bf_region, {words} AS ws FROM __bf_view \
          WHERE __bf_c{i} IS NOT NULL)))"
     )
 }

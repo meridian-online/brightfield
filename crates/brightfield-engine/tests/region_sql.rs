@@ -4,7 +4,7 @@
 use brightfield_sql::ir::Predicate;
 use brightfield_sql::regions::{
     cell_index_sql, label_kind, region_grid_sql, region_label_sql, GridExtent, LabelColumn,
-    LabelRole,
+    LabelRole, NUMBER_BINS,
 };
 use duckdb::Connection;
 
@@ -112,7 +112,7 @@ fn label_connection() -> Connection {
         "CREATE TABLE q (x DOUBLE, y DOUBLE, place VARCHAR, species VARCHAR, value DOUBLE); \
          INSERT INTO q VALUES \
            (1.5, 1.5, '45 km SW of Severo-Kuril''sk, Russia', 'Gentoo', 10), \
-           (1.5, 2.5, '120 km E of Petropavlovsk-Kamchatsky, Russia', 'Gentoo', 20), \
+           (1.5, 2.5, '120 km E of Petropavlovsk-Kamchatsky, Russia', 'Gentoo ', 20), \
            (2.5, 1.5, 'Komandorskiye Ostrova, Russia', 'Adelie', 30), \
            (7.5, 7.5, '100 km NNE of Neiafu, Tonga', 'Adelie', 40), \
            (4.5, 4.5, 'Fiji region', NULL, 50), \
@@ -207,18 +207,30 @@ fn the_label_query_runs_and_counts_rows_per_region() {
     assert_eq!(totals, 5.0);
 
     // Terms count rows, in the capitalisation the rows use. Numbers, distance
-    // and compass words and short words are dropped; a hyphen splits a word
-    // and an apostrophe stays inside one.
+    // and compass words and short words are dropped; a hyphen and an
+    // apostrophe stay inside a word, and a phrase never crosses a comma.
     let place = Some(0);
     assert_eq!(fact(&rows, place, 0, label_kind::TERM, Some("Russia")), 3.0);
     assert_eq!(
-        fact(&rows, place, 0, label_kind::TERM, Some("Kuril'sk")),
+        fact(&rows, place, 0, label_kind::TERM, Some("Severo-Kuril'sk")),
         1.0
     );
     assert_eq!(
-        fact(&rows, place, 0, label_kind::TERM, Some("Severo Kuril'sk")),
+        fact(
+            &rows,
+            place,
+            0,
+            label_kind::TERM,
+            Some("Komandorskiye Ostrova")
+        ),
         1.0
     );
+    for unwritten in ["Severo-Kuril'sk Russia", "Ostrova Russia", "Kuril'sk"] {
+        assert!(
+            !rows.iter().any(|r| r.3.as_deref() == Some(unwritten)),
+            "{unwritten} is not a term"
+        );
+    }
     assert_eq!(fact(&rows, place, 1, label_kind::TERM, Some("Tonga")), 1.0);
     for dropped in ["45", "km", "SW", "of", "NNE", "E", "100"] {
         assert!(
@@ -230,7 +242,7 @@ fn the_label_query_runs_and_counts_rows_per_region() {
         );
     }
 
-    // Category values count rows; a null is not a value.
+    // Category values count rows, trimmed; a null is not a value.
     let species = Some(1);
     assert_eq!(
         fact(&rows, species, 0, label_kind::VALUE, Some("Gentoo")),
@@ -242,15 +254,32 @@ fn the_label_query_runs_and_counts_rows_per_region() {
     );
     assert!(!rows.iter().any(|r| r.0 == species && r.1 == -1));
 
-    // Quartiles per region and over the rest of the view: region 0 holds 10,
-    // 20 and 30, and the rest of the view 40 and 50.
+    // Exact quartiles per region: region 0 holds 10, 20 and 30.
     let value = Some(2);
     assert_eq!(fact(&rows, value, 0, label_kind::Q1, None), 15.0);
     assert_eq!(fact(&rows, value, 0, label_kind::Q3, None), 25.0);
     assert_eq!(fact(&rows, value, 0, label_kind::PRESENT, None), 3.0);
-    assert_eq!(fact(&rows, value, 0, label_kind::REST_Q1, None), 42.5);
-    assert_eq!(fact(&rows, value, 0, label_kind::REST_Q3, None), 47.5);
-    assert_eq!(fact(&rows, value, 1, label_kind::REST_Q1, None), 17.5);
+
+    // The histogram spans the view's 10..=50 in NUMBER_BINS bins, so a value v
+    // is in bin floor((v - 10) / 40 * 1024), and 50 is in the last bin.
+    assert_eq!(NUMBER_BINS, 1024);
+    assert_eq!(fact(&rows, value, -1, label_kind::LO, None), 10.0);
+    assert_eq!(fact(&rows, value, -1, label_kind::HI, None), 50.0);
+    let bins: Vec<(i32, &str, f64)> = rows
+        .iter()
+        .filter(|r| r.0 == value && r.2 == label_kind::BIN)
+        .map(|r| (r.1, r.3.as_deref().unwrap_or_default(), r.4))
+        .collect();
+    assert_eq!(
+        bins,
+        [
+            (-1, "1023", 1.0),
+            (0, "0", 1.0),
+            (0, "256", 1.0),
+            (0, "512", 1.0),
+            (1, "768", 1.0)
+        ]
+    );
 
     // The rows are read once, however many columns are summarised.
     let plan: String = c

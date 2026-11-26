@@ -23,7 +23,8 @@ use std::collections::BTreeMap;
 use brightfield_engine::profile::VALUE_BAR_LIMIT;
 use brightfield_engine::{ColumnProfile, RecordBatch};
 use brightfield_render::axis::format_number;
-use brightfield_sql::regions::label_kind;
+use brightfield_spec::number_format::NumberFormat;
+use brightfield_sql::regions::{label_kind, NUMBER_BINS};
 pub use brightfield_sql::regions::{LabelColumn, LabelRole};
 use duckdb::arrow::array::{Array, Float64Array, Int32Array, StringArray};
 
@@ -87,7 +88,9 @@ impl Default for NamingRules {
 /// - a string with at most [`VALUE_BAR_LIMIT`] distinct values, the bound under which the
 ///   column header draws one bar per value, is a [`LabelRole::Category`], one with more is
 ///   [`LabelRole::Text`], and one whose distinct count is near its row count is an identifier;
-/// - a boolean is a category;
+///   an enum is a category;
+/// - a boolean is skipped: a region named `true` says nothing, and no name is better than
+///   clutter;
 /// - a date, a time or a timestamp is skipped, since a time range rarely names a place on the
 ///   plot, and so is any other type (a list, a struct, a blob).
 ///
@@ -130,7 +133,7 @@ fn storage_role(column: &ColumnProfile) -> Option<LabelRole> {
         return (!(integer && near_unique)).then_some(LabelRole::Number);
     }
     match base.as_str() {
-        "BOOLEAN" | "ENUM" => Some(LabelRole::Category),
+        "ENUM" => Some(LabelRole::Category),
         "VARCHAR" if near_unique => None,
         "VARCHAR" if column.distinct <= VALUE_BAR_LIMIT => Some(LabelRole::Category),
         "VARCHAR" => Some(LabelRole::Text),
@@ -149,8 +152,18 @@ fn refined_by_label(column: &ColumnProfile) -> bool {
     role != ColumnRole::Neither || label.starts_with("representation.text.")
 }
 
+/// A label column with the representation its axis, grid and tooltip already use
+/// ([`crate::representation::representation_of`]), which a range name is written in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShownColumn {
+    pub column: LabelColumn,
+    pub representation: Representation,
+}
+
 /// One name per region, `0..regions`, read from `summary`, the batches the label query over
-/// `columns` returned, by the default [`NamingRules`].
+/// `columns` returned, by the default [`NamingRules`]. Every number is written in the plain form
+/// an unformatted axis writes its ticks in; [`name_regions_shown`] writes each in its column's
+/// own format.
 #[must_use]
 pub fn name_regions(
     columns: &[LabelColumn],
@@ -160,7 +173,7 @@ pub fn name_regions(
     name_regions_with(&NamingRules::default(), columns, summary, regions)
 }
 
-/// [`name_regions`] by `rules`, with a number written in its axis's default form.
+/// [`name_regions`] by `rules`, with every number in the plain form, as there.
 #[must_use]
 pub fn name_regions_with(
     rules: &NamingRules,
@@ -168,37 +181,39 @@ pub fn name_regions_with(
     summary: &[RecordBatch],
     regions: usize,
 ) -> Vec<Option<String>> {
-    name_regions_shown(rules, columns, &[], summary, regions)
+    let shown: Vec<ShownColumn> = columns
+        .iter()
+        .map(|column| ShownColumn {
+            column: column.clone(),
+            representation: Representation::default(),
+        })
+        .collect();
+    name_regions_shown(rules, &shown, summary, regions)
 }
 
-/// [`name_regions_with`], with `shown[i]` the representation of `columns[i]`, the one its axis,
-/// grid and tooltip already use ([`crate::representation::representation_of`]). A number range
-/// is written as the tooltip reads a value on that axis ([`format_compact`]); a column with no
-/// entry in `shown`, or the default representation, is written as an unformatted axis writes its
-/// ticks ([`format_number`]).
+/// One name per region by `rules`, with a number range written in its column's representation,
+/// as the tooltip reads a value on its axis ([`format_compact`]). A column whose representation
+/// is the default is written as an unformatted axis writes its ticks ([`format_number`]).
 #[must_use]
 pub fn name_regions_shown(
     rules: &NamingRules,
-    columns: &[LabelColumn],
-    shown: &[Representation],
+    columns: &[ShownColumn],
     summary: &[RecordBatch],
     regions: usize,
 ) -> Vec<Option<String>> {
     let summary = Summary::read(summary, columns.len());
-    let plain = Representation::default();
     (0..regions)
         .map(|region| {
             let region = i32::try_from(region).ok()?;
             let rows = summary.rows.get(&region).copied().filter(|&n| n > 0.0)?;
-            columns.iter().enumerate().find_map(|(i, column)| {
+            columns.iter().enumerate().find_map(|(i, shown)| {
                 let facts = &summary.columns[i];
                 let at = Region { region, rows };
-                match column.role {
+                match shown.column.role {
                     LabelRole::Text => name_by_term(rules, &summary, facts, at),
                     LabelRole::Category => name_by_value(rules, &summary, facts, at),
                     LabelRole::Number => {
-                        let rep = shown.get(i).unwrap_or(&plain);
-                        name_by_range(&column.name, rep, facts, at)
+                        name_by_range(&shown.column.name, &shown.representation, facts, at)
                     }
                 }
             })
@@ -227,8 +242,11 @@ struct Summary {
 struct Facts {
     /// Rows holding each term or value, per region.
     counts: BTreeMap<i32, BTreeMap<String, f64>>,
-    /// A number's quartiles and present count, per region and kind.
+    /// A number's quartiles and present count per region, and its range in the view under
+    /// region `-1`, by region and kind.
     numbers: BTreeMap<(i32, String), f64>,
+    /// A number's histogram: rows per bin, per region.
+    bins: BTreeMap<i32, BTreeMap<u32, f64>>,
 }
 
 impl Summary {
@@ -268,13 +286,21 @@ impl Summary {
                 else {
                     continue;
                 };
-                if kind == label_kind::TERM || kind == label_kind::VALUE {
-                    if !key.is_null(row) {
+                let key = (!key.is_null(row)).then(|| key.value(row));
+                match (kind, key) {
+                    (label_kind::TERM | label_kind::VALUE, Some(key)) => {
                         let terms = facts.counts.entry(r).or_default();
-                        terms.insert(key.value(row).to_owned(), n);
+                        terms.insert(key.to_owned(), n);
                     }
-                } else {
-                    facts.numbers.insert((r, kind.to_owned()), n);
+                    (label_kind::BIN, Some(key)) => {
+                        if let Ok(bin) = key.parse::<u32>() {
+                            facts.bins.entry(r).or_default().insert(bin, n);
+                        }
+                    }
+                    (label_kind::TERM | label_kind::VALUE | label_kind::BIN, None) => {}
+                    (kind, _) => {
+                        facts.numbers.insert((r, kind.to_owned()), n);
+                    }
                 }
             }
         }
@@ -291,6 +317,46 @@ impl Facts {
     /// How many rows of the whole view hold `key`.
     fn in_view(&self, key: &str) -> f64 {
         self.counts.values().filter_map(|m| m.get(key)).sum()
+    }
+
+    /// The lower and upper quartiles of the numbers in view outside `region`, read off the
+    /// histogram: the view's bins less the region's, with the rows of a bin taken as spread
+    /// evenly across it. The quartile's place among the sorted values is `quantile_cont`'s,
+    /// `p × (n − 1)`, and the `k`-th value (from 0) sits at the middle of its share of a bin, so
+    /// the answer is within about a bin of the exact quartile where the bins are well filled.
+    /// `None` when no number is outside the region.
+    fn rest_quartiles(&self, region: i32) -> Option<(f64, f64)> {
+        let lo = *self.numbers.get(&(-1, label_kind::LO.to_owned()))?;
+        let hi = *self.numbers.get(&(-1, label_kind::HI.to_owned()))?;
+        let mut rest: BTreeMap<u32, f64> = BTreeMap::new();
+        for (&r, bins) in &self.bins {
+            if r != region {
+                for (&bin, &n) in bins {
+                    *rest.entry(bin).or_default() += n;
+                }
+            }
+        }
+        let total: f64 = rest.values().sum();
+        if total <= 0.0 {
+            return None;
+        }
+        if hi <= lo {
+            return Some((lo, lo));
+        }
+        let width = (hi - lo) / f64::from(NUMBER_BINS);
+        let quantile = |p: f64| {
+            let place = p * (total - 1.0) + 0.5;
+            let mut before = 0.0;
+            for (&bin, &n) in &rest {
+                if n > 0.0 && before + n >= place {
+                    let within = (place - before) / n;
+                    return (lo + width * (f64::from(bin) + within)).clamp(lo, hi);
+                }
+                before += n;
+            }
+            hi
+        };
+        Some((quantile(0.25), quantile(0.75)))
     }
 }
 
@@ -349,41 +415,50 @@ fn name_by_value(
 }
 
 /// `<column> <lo>–<hi>`, the region's interquartile range, when at least
-/// [`NUMBER_MIN_PRESENT`] of its rows hold a number and the range does not overlap (or touch)
-/// the interquartile range of the rest of the view.
+/// [`NUMBER_MIN_PRESENT`] of its rows hold a number, the range does not overlap (or touch) the
+/// interquartile range of the rest of the view, and its two ends print differently.
 fn name_by_range(name: &str, rep: &Representation, facts: &Facts, at: Region) -> Option<String> {
     let get = |kind: &str| facts.numbers.get(&(at.region, kind.to_owned())).copied();
     let (q1, q3) = (get(label_kind::Q1)?, get(label_kind::Q3)?);
-    let (rest_q1, rest_q3) = (get(label_kind::REST_Q1)?, get(label_kind::REST_Q3)?);
+    let (rest_q1, rest_q3) = facts.rest_quartiles(at.region)?;
     let present = get(label_kind::PRESENT)? / at.rows;
     let apart = q3 < rest_q1 || q1 > rest_q3;
-    (present >= NUMBER_MIN_PRESENT && apart).then(|| format!("{name} {}", range_text(rep, q1, q3)))
+    if present < NUMBER_MIN_PRESENT || !apart {
+        return None;
+    }
+    range_text(rep, q1, q3).map(|range| format!("{name} {range}"))
 }
 
 /// `lo–hi` (an en dash), each end rounded to two significant figures of the larger one, so a
 /// range reads as neatly as an axis's ticks (`300,000–450,000`, not `312,456.3–447,812.8`), and
-/// printed as `rep` prints a value. One value when both ends print the same.
-fn range_text(rep: &Representation, lo: f64, hi: f64) -> String {
+/// printed as `rep` prints a value. With the default representation a range of whole numbers
+/// prints as an unformatted axis does, and a smaller one with the decimals its rounding keeps
+/// (`0.012–0.034`). `None` when the two ends print the same, since that is no range.
+fn range_text(rep: &Representation, lo: f64, hi: f64) -> Option<String> {
     let largest = lo.abs().max(hi.abs());
-    let (lo, hi) = if largest > 0.0 && largest.is_finite() {
-        let step = 10_f64.powf(largest.log10().floor() - 1.0);
-        ((lo / step).round() * step, (hi / step).round() * step)
+    let (lo, hi, decimals) = if largest > 0.0 && largest.is_finite() {
+        let exponent = largest.log10().floor() - 1.0;
+        let step = 10_f64.powf(exponent);
+        // The clamp keeps the float within `0..=12` before the cast.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let decimals = (-exponent).clamp(0.0, 12.0) as usize;
+        let round = |v: f64| (v / step).round() * step;
+        (round(lo), round(hi), decimals)
     } else {
-        (lo, hi)
+        (lo, hi, 0)
     };
+    let fixed = NumberFormat::parse(&format!(",.{decimals}f"));
     let print = |v: f64| {
-        if *rep == Representation::default() {
-            format_number(v)
-        } else {
+        if *rep != Representation::default() {
             format_compact(rep, v)
+        } else if let Some(fixed) = fixed.filter(|_| decimals > 0) {
+            fixed.format(v)
+        } else {
+            format_number(v)
         }
     };
     let (lo, hi) = (print(lo), print(hi));
-    if lo == hi {
-        lo
-    } else {
-        format!("{lo}\u{2013}{hi}")
-    }
+    (lo != hi).then(|| format!("{lo}\u{2013}{hi}"))
 }
 
 #[cfg(test)]
@@ -524,7 +599,7 @@ mod tests {
         // Gentoo is every row of region 0 and a third of the view. Adelie is 60% of region 1
         // but over half the view, so it does not stand out there.
         let table = species(
-            &["Gentoo"; 5],
+            &["Gentoo", "Gentoo ", "Gentoo", " Gentoo", "Gentoo"],
             &["Adelie", "Adelie", "Adelie", "Chinstrap", "Chinstrap"],
             &["Adelie"; 5],
         );
@@ -593,8 +668,12 @@ mod tests {
             ..FieldRecord::default()
         };
         let money = representation_of(&profile, Some(&display), Some(&record), true);
+        let shown = [ShownColumn {
+            column: columns[0].clone(),
+            representation: money,
+        }];
         assert_eq!(
-            name_regions_shown(&NamingRules::default(), &columns, &[money], &summary, 2),
+            name_regions_shown(&NamingRules::default(), &shown, &summary, 2),
             [
                 Some("median_house_value $300\u{a0}k\u{2013}$450\u{a0}k".to_owned()),
                 None
@@ -740,6 +819,7 @@ mod tests {
             profile("code", "VARCHAR", rows, rows - 10),
             profile("place", "VARCHAR", rows, 5_469),
             profile("reviewed", "BOOLEAN", rows, 2),
+            profile("status", "ENUM('ok', 'late')", rows, 2),
             labelled(
                 profile("contact", "VARCHAR", rows, 300),
                 "identity.person.email",
@@ -765,7 +845,7 @@ mod tests {
                 column("mag", LabelRole::Number),
                 column("magType", LabelRole::Category),
                 column("place", LabelRole::Text),
-                column("reviewed", LabelRole::Category),
+                column("status", LabelRole::Category),
                 column("summary", LabelRole::Category),
             ]
         );
@@ -784,5 +864,97 @@ mod tests {
             name_regions_with(&strict, &columns, &summary, 2),
             [Some("Russia".to_owned()), None]
         );
+    }
+
+    /// Whether every one of `rows` at `x` holds `name`, ignoring case.
+    fn written_in_every_row(rows: &[(f64, Option<&str>)], x: f64, name: &str) -> bool {
+        rows.iter().filter(|r| r.0 == x).all(|r| {
+            r.1.is_some_and(|t| t.to_lowercase().contains(&name.to_lowercase()))
+        })
+    }
+
+    #[test]
+    fn a_phrase_is_one_the_rows_wrote() {
+        // Every word here is in every row of its region, so the longer phrase would win a tie:
+        // it must be one written in the rows, never one joined across a comma or a dropped word.
+        let rows = [
+            (LEFT, Some("Kuril Islands, Russia")),
+            (LEFT, Some("Kuril Islands, Russia")),
+            (LEFT, Some("Kuril Islands, Russia")),
+            (RIGHT, Some("15 km NNE of Gulf of California")),
+            (RIGHT, Some("40 km W of Gulf of California")),
+            (RIGHT, Some("8 km SSW of Gulf of California")),
+            (BETWEEN, Some("Fiji region")),
+            (BETWEEN, Some("Tonga")),
+        ];
+        let named = names(&text_table(&rows), &[column("c", LabelRole::Text)]);
+        assert_eq!(
+            named,
+            [
+                Some("Kuril Islands".to_owned()),
+                Some("California".to_owned())
+            ]
+        );
+        for (name, x) in named.iter().zip([LEFT, RIGHT]) {
+            let name = name.as_deref().expect("a name");
+            assert!(written_in_every_row(&rows, x, name), "{name}");
+        }
+    }
+
+    /// The name region 0 gets from a number column `c` holding `left` there and `others` in
+    /// region 1 and between the regions.
+    fn range_name(left: &[f64], others: &[f64]) -> Option<String> {
+        let rows: Vec<(f64, Option<f64>)> = left
+            .iter()
+            .map(|&v| (LEFT, Some(v)))
+            .chain(others.iter().map(|&v| (RIGHT, Some(v))))
+            .chain(others.iter().map(|&v| (BETWEEN, Some(v))))
+            .collect();
+        names(&number_table("c", &rows), &[column("c", LabelRole::Number)]).swap_remove(0)
+    }
+
+    #[test]
+    fn a_small_range_keeps_the_decimals_its_rounding_needs() {
+        let high = [0.8, 0.85, 0.9, 0.95, 1.0];
+        assert_eq!(
+            range_name(&[0.005, 0.012, 0.02, 0.034, 0.05], &high).as_deref(),
+            Some("c 0.012\u{2013}0.034")
+        );
+        assert_eq!(
+            range_name(&[0.02, 0.12, 0.2, 0.34, 0.5], &high).as_deref(),
+            Some("c 0.12\u{2013}0.34")
+        );
+        // A range whose ends print the same is no range.
+        assert_eq!(range_name(&[5.0; 5], &[10.0, 20.0, 30.0]), None);
+    }
+
+    #[test]
+    fn the_rest_of_the_view_quartiles_are_within_a_bin_of_the_exact_ones() {
+        // 3,000 rows, a third in each band, with values skewed towards 0 over 0..1000.
+        let table = "CREATE TABLE t AS SELECT \
+            CASE i % 3 WHEN 0 THEN 1.5 WHEN 1 THEN 7.5 ELSE 4.5 END AS x, \
+            0.5 + i % 9 AS y, \
+            pow((i * 7919) % 3000 / 3000.0, 2) * 1000 AS c FROM range(3000) r(i);";
+        let columns = [column("c", LabelRole::Number)];
+        let summary = Summary::read(&summarise(table, &columns), 1);
+        let (q1, q3) = summary.columns[0].rest_quartiles(0).expect("rows outside");
+
+        let c = Connection::open_in_memory().expect("duckdb");
+        c.execute_batch(table).expect("fixture table");
+        let (exact_q1, exact_q3): (f64, f64) = c
+            .query_row(
+                "SELECT quantile_cont(c, 0.25), quantile_cont(c, 0.75) FROM t WHERE x <> 1.5",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("exact quartiles");
+        let (lo, hi): (f64, f64) = c
+            .query_row("SELECT min(c), max(c) FROM t", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("range");
+        let bin = (hi - lo) / f64::from(NUMBER_BINS);
+        assert!((q1 - exact_q1).abs() <= bin, "{q1} against {exact_q1}");
+        assert!((q3 - exact_q3).abs() <= bin, "{q3} against {exact_q3}");
     }
 }
