@@ -335,10 +335,11 @@ impl PickerDelegate for CommandPalette {
     fn row(&self, index: usize) -> PickerRow {
         let c = &self.matches[index];
         let mut row = PickerRow::new(c.longname);
-        // The row stays drawn as a row: a greyed one reads by its detail.
+        // A row missing an input is drawn greyed, with its sentence in place of
+        // its help; a reserved row still reads by its detail.
         row = match (c.reserved_reason, &c.missing) {
             (Some(reason), _) => row.detail(format!("{} — {}", c.help, reason.reason())),
-            (None, Some(sentence)) => row.detail(format!("{} — {sentence}", c.help)),
+            (None, Some(sentence)) => row.detail(c.help).unavailable(sentence.as_str()),
             (None, None) => row.detail(c.help),
         };
         if let Some(key) = c.primary_key {
@@ -1365,9 +1366,10 @@ mod tests {
         drawn
     }
 
-    /// A palette lists the stages its rows have, so neither the window's
-    /// palette nor the chart's draws all four: each draws its own, in the
-    /// ribbon's order, once each, and the rows of no stage last.
+    /// A palette lists the stages its rows have: each draws its own, in the
+    /// ribbon's order, once each, and the rows of no stage last. The window's
+    /// draws no Shape or Publish; the chart's draws all four, with Connect for
+    /// Add sources, which is how a file is read in.
     #[test]
     fn the_empty_palette_reads_in_stage_order_under_each_stages_name() {
         let order: Vec<&str> = Stage::ALL
@@ -1380,8 +1382,12 @@ mod tests {
                 palette_at(Altitude::Protocol),
                 vec!["Connect", "Model", "Other"],
             ),
-            // Append rows, a Model operation, starts from the grid's cursor.
-            (chart_palette(), vec!["Shape", "Model", "Publish", "Other"]),
+            // Add sources reads a file in, under Connect; Append rows, a Model
+            // operation, starts from the grid's cursor.
+            (
+                chart_palette(),
+                vec!["Connect", "Shape", "Model", "Publish", "Other"],
+            ),
         ] {
             let drawn = headings(&p);
             let ranks: Vec<usize> = drawn
@@ -1595,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_missing_an_input_says_its_sentence_and_refuses_to_run() {
+    fn a_missing_candidate_is_a_disabled_row_with_its_sentence() {
         let allow = chart_palette_verbs();
         let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow)
             .with_situation(Situation::default());
@@ -1604,12 +1610,13 @@ mod tests {
             .find(|&i| p.candidate(i).unwrap().longname == "zoom-in")
             .expect("zoom-in is listed with its input missing");
         let sentence = "Zoom in needs a chart on the canvas.";
+        assert_eq!(p.row(i).unavailable.as_deref(), Some(sentence));
         assert!(
             p.row(i)
                 .detail
                 .as_deref()
-                .is_some_and(|detail| detail.ends_with(sentence)),
-            "the row's detail carries the sentence: {:?}",
+                .is_some_and(|d| !d.contains(sentence)),
+            "the sentence rides on the row, not in its detail too: {:?}",
             p.row(i).detail
         );
         assert_eq!(p.confirm(Some(i), "zoom-in"), PickerOutcome::KeepOpen);
