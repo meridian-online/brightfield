@@ -1,0 +1,505 @@
+//! Dense regions of a two-column plot, found on its density grid.
+//!
+//! The method is the density-map clustering of "A Scalable Approach to
+//! Clustering Embedding Projections" (arXiv 2504.07285, Section 2 and its
+//! Algorithm 1), in four steps:
+//!
+//! 1. Every cell climbs to its highest neighbour (8-neighbourhood), and the
+//!    cells that reach the same local maximum form an initial cluster.
+//! 2. Neighbouring clusters are joined in a graph whose edges carry the
+//!    highest density on their shared boundary, the saddle between them.
+//! 3. Clusters are merged greedily, closest first, while a cluster's peak
+//!    stands barely above the saddle it shares with a neighbour.
+//! 4. Each cluster is truncated to the cells at or above a tenth of its peak.
+//!
+//! Clusters left with fewer than [`MIN_REGION_CELLS`] cells are then dropped.
+//!
+//! The output must be identical run to run, since a baseline that pins regions
+//! would otherwise pin noise. Every tie therefore breaks by the lower
+//! row-major cell index, and nothing iterates a hash map.
+
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap};
+
+/// A density grid over a plot's view.
+///
+/// `density` is row-major with `cols * rows` cells, row `r` and column `c` at
+/// `r * cols + c`; rows run along y and columns along x. `x` and `y` are the
+/// grid's outer edges in data units, low edge first. Densities are finite and
+/// non-negative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DensityGrid {
+    pub cols: usize,
+    pub rows: usize,
+    pub x: (f64, f64),
+    pub y: (f64, f64),
+    pub density: Vec<f64>,
+}
+
+/// One dense region of a grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Region {
+    /// The cell of the region's highest density.
+    pub peak: usize,
+    /// The density at `peak`.
+    pub peak_density: f64,
+    /// The region's cells, as row-major indices in ascending order.
+    pub cells: Vec<usize>,
+    /// The region's density mass (the sum over `cells`) over the grid's total.
+    pub share: f64,
+}
+
+/// The fewest cells a region may have once truncated.
+///
+/// On the 100 × 100 grid a plot uses, six cells is a patch about 2 × 3 cells,
+/// under a thousandth of the view. Anything smaller is a speck: too small to
+/// read as an outline or to hold a name, and the size of the bumps a density
+/// estimate makes around a handful of stray rows.
+pub const MIN_REGION_CELLS: usize = 6;
+
+/// A cluster is truncated to the cells at or above this fraction of its own
+/// peak. The paper's value (Section 2, "Truncate Clusters").
+const TRUNCATE_FRACTION: f64 = 0.1;
+
+/// Two neighbouring clusters merge when the saddle between them is at least
+/// this fraction of the lower of their two peaks.
+///
+/// The paper (Section 2, "Union Clusters") merges a cluster into its
+/// neighbour when its local maximum lies close to their shared boundary,
+/// because such a maximum "is merely slightly higher than the boundary and
+/// thus may not stand out much on its own", and it merges the pairs that meet
+/// the criterion best first. It states the criterion in words and gives no
+/// constant for it. This module measures that closeness in density, which is
+/// the paper's stated reason, as saddle / lower peak, and sets the constant
+/// itself: a peak less than a fifth above its saddle does not stand out. Two
+/// equal Gaussians three standard deviations apart, which read as two lobes,
+/// have a ratio near 0.64 and stay apart.
+const MERGE_SADDLE_RATIO: f64 = 0.8;
+
+/// The regions of `grid`, highest peak first, ties by the lower peak cell.
+///
+/// A grid with no cells, a density vector of the wrong length, or no
+/// variation at all (all zero, or constant) has no regions.
+pub fn find_regions(grid: &DensityGrid) -> Vec<Region> {
+    let n = grid.cols * grid.rows;
+    let d = &grid.density;
+    if n == 0 || d.len() != n {
+        return Vec::new();
+    }
+    let lo = d.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = d.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if hi.partial_cmp(&lo) != Some(Ordering::Greater) {
+        return Vec::new();
+    }
+    let total: f64 = d.iter().sum();
+
+    // Step 1: each cell points uphill to its highest neighbour; following the
+    // pointers ends at the cell's local maximum, which names its cluster.
+    let mut uphill: Vec<usize> = (0..n).map(|cell| highest_neighbour(grid, cell)).collect();
+    let peak_of: Vec<usize> = (0..n).map(|cell| find(&mut uphill, cell)).collect();
+
+    // Step 2: the saddle between two clusters is the highest boundary between
+    // them, a boundary between adjacent cells being the lower of the two.
+    let mut graph: BTreeMap<usize, BTreeMap<usize, f64>> = BTreeMap::new();
+    for cell in 0..n {
+        for other in neighbours(grid, cell).filter(|&o| o > cell) {
+            let (a, b) = (peak_of[cell], peak_of[other]);
+            if a != b {
+                let saddle = d[cell].min(d[other]);
+                raise_edge(&mut graph, a, b, saddle);
+                raise_edge(&mut graph, b, a, saddle);
+            }
+        }
+    }
+
+    // Step 3: merge greedily, the pair whose saddle is closest to its lower
+    // peak first. The heap holds candidates lazily: a merge pushes the merged
+    // cluster's edges afresh, and a popped candidate whose clusters or ratio
+    // have changed since is stale and skipped.
+    let mut merged_into: Vec<usize> = (0..n).collect();
+    let mut heap = BinaryHeap::new();
+    for (&a, edges) in &graph {
+        for (&b, &saddle) in edges.range(a + 1..) {
+            push_candidate(&mut heap, d, a, b, saddle);
+        }
+    }
+    while let Some(candidate) = heap.pop() {
+        let Candidate { ratio, a, b } = candidate;
+        if merged_into[a] != a || merged_into[b] != b {
+            continue;
+        }
+        let saddle = graph[&a][&b];
+        if merge_ratio(d, a, b, saddle).map(f64::to_bits) != Some(ratio.to_bits()) {
+            continue;
+        }
+        let (winner, loser) = if ranks_above(d, a, b) { (a, b) } else { (b, a) };
+        merged_into[loser] = winner;
+        let loser_edges = graph.remove(&loser).unwrap_or_default();
+        if let Some(edges) = graph.get_mut(&winner) {
+            edges.remove(&loser);
+        }
+        for (other, saddle) in loser_edges {
+            if other == winner {
+                continue;
+            }
+            if let Some(edges) = graph.get_mut(&other) {
+                edges.remove(&loser);
+            }
+            raise_edge(&mut graph, winner, other, saddle);
+            raise_edge(&mut graph, other, winner, saddle);
+        }
+        for (&other, &saddle) in graph.get(&winner).into_iter().flatten() {
+            push_candidate(&mut heap, d, winner.min(other), winner.max(other), saddle);
+        }
+    }
+
+    // Step 4: truncate each cluster at a tenth of its peak, then drop specks.
+    // A merged cluster's peak is its winner, the highest cell it holds.
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for cell in 0..n {
+        let peak = find(&mut merged_into, peak_of[cell]);
+        if d[cell] >= TRUNCATE_FRACTION * d[peak] {
+            clusters.entry(peak).or_default().push(cell);
+        }
+    }
+    let mut regions: Vec<Region> = clusters
+        .into_iter()
+        .filter(|(peak, cells)| d[*peak] > 0.0 && cells.len() >= MIN_REGION_CELLS)
+        .map(|(peak, cells)| {
+            let mass: f64 = cells.iter().map(|&c| d[c]).sum();
+            Region {
+                peak,
+                peak_density: d[peak],
+                cells,
+                share: mass / total,
+            }
+        })
+        .collect();
+    regions.sort_by(|a, b| {
+        b.peak_density
+            .total_cmp(&a.peak_density)
+            .then(a.peak.cmp(&b.peak))
+    });
+    regions
+}
+
+/// The cell holding the point `(x, y)`, or `None` outside the grid's edges.
+///
+/// Each axis is cut into equal bins from its low edge; a point on the high
+/// edge belongs to the last row or column.
+pub fn cell_of(grid: &DensityGrid, x: f64, y: f64) -> Option<usize> {
+    let col = axis_bin(x, grid.x, grid.cols)?;
+    let row = axis_bin(y, grid.y, grid.rows)?;
+    Some(row * grid.cols + col)
+}
+
+/// The `(x, y)` data ranges a cell covers, each low edge first.
+///
+/// `cell` must be a cell of the grid.
+pub fn cell_bounds(grid: &DensityGrid, cell: usize) -> ((f64, f64), (f64, f64)) {
+    let (col, row) = (cell % grid.cols, cell / grid.cols);
+    (
+        axis_span(grid.x, grid.cols, col),
+        axis_span(grid.y, grid.rows, row),
+    )
+}
+
+fn axis_bin(v: f64, (lo, hi): (f64, f64), bins: usize) -> Option<usize> {
+    if bins == 0 || lo.partial_cmp(&hi) != Some(Ordering::Less) || !(lo..=hi).contains(&v) {
+        return None;
+    }
+    let bin = ((v - lo) / (hi - lo) * bins as f64).floor() as usize;
+    Some(bin.min(bins - 1))
+}
+
+fn axis_span((lo, hi): (f64, f64), bins: usize, bin: usize) -> (f64, f64) {
+    let edge = |i: usize| lo + (hi - lo) * (i as f64 / bins as f64);
+    (edge(bin), edge(bin + 1))
+}
+
+/// The cells around `cell` in its 8-neighbourhood, in ascending index order.
+fn neighbours(grid: &DensityGrid, cell: usize) -> impl Iterator<Item = usize> + '_ {
+    let (col, row) = (cell % grid.cols, cell / grid.cols);
+    (-1isize..=1).flat_map(move |dr| {
+        (-1isize..=1).filter_map(move |dc| {
+            let (c, r) = (col as isize + dc, row as isize + dr);
+            let inside = (dc, dr) != (0, 0)
+                && (0..grid.cols as isize).contains(&c)
+                && (0..grid.rows as isize).contains(&r);
+            inside.then(|| r as usize * grid.cols + c as usize)
+        })
+    })
+}
+
+/// Whether cell `a` ranks above cell `b`: denser, or as dense and earlier.
+/// A strict total order, so climbing it never cycles, even on a plateau.
+fn ranks_above(d: &[f64], a: usize, b: usize) -> bool {
+    d[a].total_cmp(&d[b]).then(b.cmp(&a)) == Ordering::Greater
+}
+
+/// The neighbour of `cell` that ranks highest, or `cell` itself when it ranks
+/// above all its neighbours (a local maximum).
+fn highest_neighbour(grid: &DensityGrid, cell: usize) -> usize {
+    neighbours(grid, cell).fold(cell, |best, other| {
+        if ranks_above(&grid.density, other, best) {
+            other
+        } else {
+            best
+        }
+    })
+}
+
+/// The root of `cell` in a forest of parent pointers, compressing the path.
+fn find(parent: &mut [usize], cell: usize) -> usize {
+    let mut root = cell;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    let mut at = cell;
+    while parent[at] != root {
+        let next = parent[at];
+        parent[at] = root;
+        at = next;
+    }
+    root
+}
+
+fn raise_edge(graph: &mut BTreeMap<usize, BTreeMap<usize, f64>>, a: usize, b: usize, s: f64) {
+    let saddle = graph.entry(a).or_default().entry(b).or_insert(s);
+    *saddle = saddle.max(s);
+}
+
+/// Saddle over the lower of the two clusters' peaks, or `None` when that peak
+/// has no density to compare against.
+fn merge_ratio(d: &[f64], a: usize, b: usize, saddle: f64) -> Option<f64> {
+    let lower = d[a].min(d[b]);
+    (lower > 0.0).then(|| saddle / lower)
+}
+
+fn push_candidate(heap: &mut BinaryHeap<Candidate>, d: &[f64], a: usize, b: usize, s: f64) {
+    if let Some(ratio) = merge_ratio(d, a, b, s) {
+        if ratio >= MERGE_SADDLE_RATIO {
+            heap.push(Candidate { ratio, a, b });
+        }
+    }
+}
+
+/// A pair of clusters, named by their peaks with `a < b`, that meets the merge
+/// criterion. The heap pops the highest ratio first, then the lower pair.
+#[derive(Debug, Clone, Copy)]
+struct Candidate {
+    ratio: f64,
+    a: usize,
+    b: usize,
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ratio
+            .total_cmp(&other.ratio)
+            .then((other.a, other.b).cmp(&(self.a, self.b)))
+    }
+}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Candidate {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIDE: usize = 100;
+
+    /// A `SIDE` × `SIDE` grid over `[0, 100]²` whose density is a sum of
+    /// isotropic Gaussians, each `(col, row, height, sigma)` in cell units.
+    fn gaussians(peaks: &[(f64, f64, f64, f64)]) -> DensityGrid {
+        let mut density = vec![0.0; SIDE * SIDE];
+        for row in 0..SIDE {
+            for col in 0..SIDE {
+                density[row * SIDE + col] = peaks
+                    .iter()
+                    .map(|&(pc, pr, h, s)| {
+                        let d2 = (col as f64 - pc).powi(2) + (row as f64 - pr).powi(2);
+                        h * (-d2 / (2.0 * s * s)).exp()
+                    })
+                    .sum();
+            }
+        }
+        DensityGrid {
+            cols: SIDE,
+            rows: SIDE,
+            x: (0.0, 100.0),
+            y: (0.0, 100.0),
+            density,
+        }
+    }
+
+    fn index(col: usize, row: usize) -> usize {
+        row * SIDE + col
+    }
+
+    #[test]
+    fn two_separated_peaks_are_two_regions() {
+        let grid = gaussians(&[(20.0, 20.0, 1.0, 5.0), (80.0, 80.0, 2.0, 5.0)]);
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].peak, index(80, 80));
+        assert_eq!(regions[1].peak, index(20, 20));
+        assert!(regions[0].peak_density > regions[1].peak_density);
+        for region in &regions {
+            assert!(region.cells.windows(2).all(|w| w[0] < w[1]));
+            assert!(region.cells.contains(&region.peak));
+        }
+        // The taller peak of equal width holds twice the mass.
+        assert!((regions[0].share / regions[1].share - 2.0).abs() < 0.01);
+        assert!(regions[0].share + regions[1].share < 1.0);
+    }
+
+    #[test]
+    fn a_bump_on_a_mountain_merges_into_it() {
+        // A small bump on the flank of a wide mountain: it is its own local
+        // maximum, but the saddle to the mountain is barely below it.
+        let grid = gaussians(&[(50.0, 50.0, 1.0, 12.0), (74.0, 50.0, 0.15, 2.0)]);
+        let d = &grid.density;
+        let bump = (71..78)
+            .map(|col| index(col, 50))
+            .max_by(|&a, &b| d[a].total_cmp(&d[b]))
+            .unwrap();
+        let is_local_max = [-1isize, 1]
+            .iter()
+            .flat_map(|&dc| [-1isize, 0, 1].map(move |dr| (dc, dr)))
+            .chain([(0, -1), (0, 1)])
+            .all(|(dc, dr)| d[(bump as isize + dc + dr * SIDE as isize) as usize] < d[bump]);
+        assert!(is_local_max, "the bump must be a local maximum of its own");
+
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].peak, index(50, 50));
+        assert!(regions[0].cells.contains(&bump));
+    }
+
+    #[test]
+    fn regions_are_truncated_at_a_tenth_of_their_peak() {
+        let grid = gaussians(&[
+            (25.0, 30.0, 1.0, 6.0),
+            (75.0, 30.0, 0.5, 8.0),
+            (50.0, 75.0, 0.8, 4.0),
+        ]);
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 3);
+        for region in &regions {
+            let floor = 0.1 * region.peak_density;
+            for &cell in &region.cells {
+                assert!(grid.density[cell] >= floor);
+            }
+        }
+        // Truncation leaves the low tails out of every region.
+        let covered: usize = regions.iter().map(|r| r.cells.len()).sum();
+        assert!(covered < SIDE * SIDE / 2);
+    }
+
+    #[test]
+    fn a_speck_is_not_a_region() {
+        // A peak so narrow that only its own cell clears a tenth of its height.
+        let grid = gaussians(&[(30.0, 30.0, 1.0, 6.0), (80.0, 80.0, 1.0, 0.4)]);
+        let speck_cells = (0..SIDE * SIDE)
+            .filter(|&c| {
+                let (col, row) = (c % SIDE, c / SIDE);
+                col.abs_diff(80) <= 3 && row.abs_diff(80) <= 3 && grid.density[c] >= 0.1
+            })
+            .count();
+        assert!(speck_cells < MIN_REGION_CELLS);
+
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].peak, index(30, 30));
+    }
+
+    #[test]
+    fn empty_and_flat_grids_have_no_regions() {
+        let mut grid = gaussians(&[]);
+        assert_eq!(find_regions(&grid), vec![]);
+        grid.density.fill(0.37);
+        assert_eq!(find_regions(&grid), vec![]);
+    }
+
+    #[test]
+    fn a_single_cloud_is_one_region() {
+        let grid = gaussians(&[(40.0, 60.0, 3.0, 10.0)]);
+        let regions = find_regions(&grid);
+        assert_eq!(regions.len(), 1);
+        let region = &regions[0];
+        assert_eq!(region.peak, index(40, 60));
+        assert_eq!(region.peak_density, grid.density[index(40, 60)]);
+        // The 0.1 level of a Gaussian lies at sigma * sqrt(2 ln 10) ≈ 21.5
+        // cells, so the region is roughly that disc.
+        let disc = std::f64::consts::PI * 21.46_f64.powi(2);
+        let n = region.cells.len() as f64;
+        assert!((n - disc).abs() / disc < 0.05, "{n} cells vs disc {disc}");
+        // Inside that disc is ~90% of the cloud's mass.
+        assert!((region.share - 0.9).abs() < 0.02, "share {}", region.share);
+    }
+
+    #[test]
+    fn equal_neighbours_break_ties_by_cell_index() {
+        // A flat-topped block: every cell of the top has equal density.
+        let mut grid = gaussians(&[]);
+        for row in 40..50 {
+            for col in 30..45 {
+                grid.density[index(col, row)] = 1.0;
+            }
+        }
+        for row in 38..52 {
+            for col in 28..47 {
+                if grid.density[index(col, row)] == 0.0 {
+                    grid.density[index(col, row)] = 0.5;
+                }
+            }
+        }
+        let first = find_regions(&grid);
+        for _ in 0..20 {
+            assert_eq!(find_regions(&grid), first);
+        }
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].peak, index(30, 40));
+        assert_eq!(first[0].cells.len(), 14 * 19);
+    }
+
+    #[test]
+    fn cell_of_and_cell_bounds_agree() {
+        let grid = DensityGrid {
+            cols: 7,
+            rows: 5,
+            x: (-3.0, 11.0),
+            y: (100.0, 102.5),
+            density: vec![0.0; 35],
+        };
+        for cell in 0..35 {
+            let ((x0, x1), (y0, y1)) = cell_bounds(&grid, cell);
+            assert!(x0 < x1 && y0 < y1);
+            let centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            assert_eq!(cell_of(&grid, centre.0, centre.1), Some(cell));
+        }
+        assert_eq!(cell_bounds(&grid, 0), ((-3.0, -1.0), (100.0, 100.5)));
+        // The top edges belong to the last column and the last row.
+        assert_eq!(cell_of(&grid, 11.0, 102.5), Some(34));
+        assert_eq!(cell_of(&grid, 11.0, 100.0), Some(6));
+        assert_eq!(cell_of(&grid, -3.0, 102.5), Some(28));
+        assert_eq!(cell_of(&grid, -3.0, 100.0), Some(0));
+        // Outside the grid, or not a number, is no cell.
+        assert_eq!(cell_of(&grid, -3.1, 101.0), None);
+        assert_eq!(cell_of(&grid, 0.0, 102.6), None);
+        assert_eq!(cell_of(&grid, f64::NAN, 101.0), None);
+    }
+}
