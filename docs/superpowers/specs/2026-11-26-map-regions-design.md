@@ -4,7 +4,7 @@
 
 An analyst opens a plot of two numeric columns, whether the earthquake start's map, a generated point map or a scatter they picked, and each dense region of it is outlined and named from the rows inside it. Nobody types a query or writes a label. Zooming in recomputes the regions over what is on screen, so finer clusters and their own names appear the way they do on a map. Clicking a region selects exactly its rows, and every other plot on the page filters to them.
 
-Why: a map that names its own clusters is the difference between a picture of where the rows are and a picture of what they are about, and the analyst does nothing to get it. It is part of what a newcomer's first hour with Brightfield should show: the earthquake start's cluster off Kamchatka reads "Kamchatka" without anyone asking.
+Why: a map that names its own clusters is the difference between a picture of where the rows are and a picture of what they are about, and the analyst does nothing to get it. It is part of what a newcomer's first hour with Brightfield should show: the earthquake start's cluster off Kamchatka is named from its own rows without anyone asking ("Russia" at the wide view, since that is the word its rows share; zooming in refines it to the phrases its sub-clusters share, such as "Kuril Islands").
 
 ## Rulings from the brainstorm (Hugh, 2026-11-26)
 
@@ -14,6 +14,7 @@ Why: a map that names its own clusters is the difference between a picture of wh
 - **Layers come from zooming, recomputed over the view.** Of three ways to show coarse and fine regions (recompute on zoom; one tree computed once, with its level chosen by zoom; both layers drawn at once), Hugh chose recomputing on each settled zoom. A name may change as the view narrows: "precision refines the view at lower levels."
 - **A single cloud is not the end of the taxonomy.** A plot whose whole-view density has one peak still has structure inside it, which zooming in reveals. This is why the layers come from zooming rather than from a fixed set of named regions.
 - **Clicking a region selects its rows**, as a crossfilter selection the other plots on the page follow.
+- **Names are the rows' own words, with no place-name list.** Measured on the earthquake rows, only 3 of the 1,851 quakes off Kamchatka mention "Kamchatka" in `place`, and 1,809 mention "Russia", so the wide view names that cluster "Russia". Mapping "Petropavlovsk-Kamchatsky" to "Kamchatka" would need a shipped gazetteer, a second source of names; the spec was approved without one, so the baseline pins what the rows say.
 
 Constraints carried from the issue, unchanged:
 
@@ -91,7 +92,7 @@ A plot qualifies when one of its layers is `dot` or `hexbin`, with `x` and `y` n
 
 Tried column by column, in the table's column order, skipping the two columns on the axes; the first column that passes its test names the region:
 
-- **Text column** (finetype types it as free text or a place-like string, such as `place`): the token or two-token phrase most typical of the region against the rest of the view, by class-based TF-IDF (term frequency in the region × log of inverse frequency across regions). It must appear in at least half the region's rows. Example: "Kamchatka", "Tonga".
+- **Text column** (finetype types it as free text or a place-like string, such as `place`): the token or two-token phrase most typical of the region against the rest of the view, by class-based TF-IDF (term frequency in the region × log of inverse frequency across regions). It must appear in at least half the region's rows. Example: "Russia" and "Tonga" at the wide view of the earthquake map.
 - **Category column** (low distinct count, or typed as a category or code): the most common value, when at least 60% of the region's rows hold it and its share in the region is at least twice its share in the view. Example: "Gentoo".
 - **Number column** (quantitative, not an identifier or coordinate): the region's interquartile range, when it does not overlap the interquartile range of the rest of the view. Written as `<column title> <lo>–<hi>` in the column's own format (from its finetype type, as the axes already do). Example: `median house value $300k–$450k`.
 - **Skipped:** identifiers (finetype types them as unique codes, such as an LEI or an event id, or distinct count near row count), dates and timestamps (a time range rarely names a place on the plot), and the axis columns.
