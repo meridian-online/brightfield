@@ -8869,7 +8869,7 @@ impl MeridianApp {
     ///
     /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
     /// a case inside it: `open-home` is a runtime dispatch, not an overlay
-    /// opener, and [`OverlayKeys`] is pinned to exactly the three that are. It
+    /// opener, and [`OverlayKeys`] holds the overlay openers only. It
     /// still invents no binding — the token comes off the registry
     /// ([`Self::home_binding`]) and runs through the same
     /// [`consume_token`]. `open_home` is a no-op on the front door, so an
@@ -22945,16 +22945,17 @@ mod tests {
         assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
+        assert_eq!(keys.quick_open, primary("quick-open"));
         // …and every token an opener binds today is one `consume_token` can
         // map to a key, so none of them is silently unwired.
-        let tokens = keys
-            .palette
-            .iter()
-            .copied()
-            .chain([keys.help, keys.jump].into_iter().flatten());
+        let tokens = keys.palette.iter().copied().chain(
+            [keys.help, keys.jump, keys.quick_open]
+                .into_iter()
+                .flatten(),
+        );
         for token in tokens {
             assert!(
-                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?" | "cmd-p"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );
