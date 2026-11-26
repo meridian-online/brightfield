@@ -1314,7 +1314,8 @@ mod tests {
                 palette_at(Altitude::Protocol),
                 vec!["Connect", "Model", "Other"],
             ),
-            (chart_palette(), vec!["Shape", "Publish", "Other"]),
+            // Append rows, a Model operation, starts from the grid's cursor.
+            (chart_palette(), vec!["Shape", "Model", "Publish", "Other"]),
         ] {
             let drawn = headings(&p);
             let ranks: Vec<usize> = drawn

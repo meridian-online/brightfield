@@ -23,6 +23,12 @@
 //! it follows what the columns say as they come, so it does not settle on the
 //! first table only because that table's columns were read first.
 //!
+//! **A table that shares no column.** An operation that matches columns by
+//! name, as an append does, opens its pick with the table in front's columns
+//! ([`SpinePick::matching_columns`]). A candidate whose columns are known and
+//! share no name with them is dimmed and trails `shares no column`; the
+//! cursor does not start on it, and it can be neither added nor taken.
+//!
 //! The candidates stay in the spine's order, so `j` and `k` move the cursor
 //! down and up the rail as it is drawn.
 
@@ -44,6 +50,9 @@ pub struct Candidate {
     pub shares: Option<String>,
     /// Whether the Protocol's model relates it to the table in front.
     pub related: bool,
+    /// Whether its columns are known and share no name with the table in
+    /// front's, for an operation that matches columns by name.
+    pub disjoint: bool,
     /// Where its rows are read from.
     pub source: CandidateSource,
 }
@@ -69,11 +78,18 @@ impl Candidate {
         if self.related {
             return Some("related".to_string());
         }
+        if self.disjoint {
+            return Some(SHARES_NO_COLUMN.to_string());
+        }
         self.shares
             .as_ref()
             .map(|column| format!("shares {column}"))
     }
 }
+
+/// What a candidate trails when it shares no column's name with the table in
+/// front, for an operation that matches columns by name.
+pub const SHARES_NO_COLUMN: &str = "shares no column";
 
 /// A table the spine lists, before it is known whether an operation can read
 /// it: its name, its columns where they are already known, and where its rows
@@ -107,6 +123,7 @@ pub fn candidates(
             columns: columns.clone(),
             shares: None,
             related: related(table),
+            disjoint: false,
             source: source.clone(),
         })
         .collect()
@@ -119,6 +136,9 @@ pub struct SpinePick {
     list: bool,
     in_front: String,
     cursor_column: Option<String>,
+    /// The table in front's columns, lowercased, when the operation matches
+    /// columns by name.
+    matching: Option<Vec<String>>,
     candidates: Vec<Candidate>,
     cursor: usize,
     /// Whether a key has moved the cursor, after which it stays where it was put.
@@ -143,6 +163,7 @@ impl SpinePick {
             list,
             in_front: in_front.to_string(),
             cursor_column: cursor_column.map(str::to_string),
+            matching: None,
             candidates,
             cursor: 0,
             moved: false,
@@ -153,6 +174,38 @@ impl SpinePick {
         }
         pick.cursor = pick.best();
         pick
+    }
+
+    /// The same ask, for an operation that matches columns by name with the
+    /// table in front's `columns`: a candidate sharing none of them is dimmed.
+    #[must_use]
+    pub fn matching_columns(mut self, columns: &[String]) -> Self {
+        self.matching = Some(columns.iter().map(|c| c.to_lowercase()).collect());
+        for at in 0..self.candidates.len() {
+            self.candidates[at].disjoint = self.shares_nothing(&self.candidates[at]);
+        }
+        if !self.moved {
+            self.cursor = self.best();
+        }
+        self
+    }
+
+    /// Whether `candidate`'s columns are known and share no name with the
+    /// table in front's, when the operation matches columns by name.
+    fn shares_nothing(&self, candidate: &Candidate) -> bool {
+        match (&self.matching, &candidate.columns) {
+            (Some(front), Some(theirs)) => !theirs
+                .iter()
+                .any(|column| front.contains(&column.to_lowercase())),
+            _ => false,
+        }
+    }
+
+    /// Whether every candidate's columns are known and none shares a name
+    /// with the table in front's: the operation has nothing it can read.
+    #[must_use]
+    pub fn none_shares_a_column(&self) -> bool {
+        self.matching.is_some() && self.candidates.iter().all(|c| c.disjoint)
     }
 
     /// The cursor's column as `candidate` spells it, when it holds it.
@@ -167,12 +220,18 @@ impl SpinePick {
     }
 
     /// Where the cursor starts: the first related candidate, else the first
-    /// that shares the cursor's column, else the first.
+    /// that shares the cursor's column, else the first that is not dimmed,
+    /// else the first.
     fn best(&self) -> usize {
         self.candidates
             .iter()
-            .position(|c| c.related)
-            .or_else(|| self.candidates.iter().position(|c| c.shares.is_some()))
+            .position(|c| c.related && !c.disjoint)
+            .or_else(|| {
+                self.candidates
+                    .iter()
+                    .position(|c| c.shares.is_some() && !c.disjoint)
+            })
+            .or_else(|| self.candidates.iter().position(|c| !c.disjoint))
             .unwrap_or(0)
     }
 
@@ -244,12 +303,16 @@ impl SpinePick {
 
     /// Add the table under the cursor to the list, or take it off when it is
     /// already there. Whether the list changed: an ask for one table adds
-    /// none.
+    /// none, and a dimmed table is not added.
     pub fn add(&mut self) -> bool {
         if !self.list {
             return false;
         }
-        let Some(table) = self.under_cursor().map(|c| c.table.clone()) else {
+        let Some(table) = self
+            .under_cursor()
+            .filter(|c| !c.disjoint)
+            .map(|c| c.table.clone())
+        else {
             return false;
         };
         self.moved = true;
@@ -291,6 +354,7 @@ impl SpinePick {
         };
         self.candidates[at].columns = Some(columns);
         self.candidates[at].shares = self.shared_by(&self.candidates[at]);
+        self.candidates[at].disjoint = self.shares_nothing(&self.candidates[at]);
         if !self.moved {
             self.cursor = self.best();
         }
@@ -604,5 +668,50 @@ mod tests {
         // No candidate, nothing to take.
         let empty = SpinePick::new("other", true, "housing", None, Vec::new());
         assert!(empty.would_take().is_empty());
+    }
+
+    #[test]
+    fn a_table_sharing_no_column_is_dimmed_and_neither_added_nor_started_on() {
+        let tables = [
+            table("housing", Some(&["house_age", "rooms"])),
+            table("counted", Some(&["n"])),
+            table("top", None),
+        ];
+        let front = ["House_Age".to_string(), "rooms".to_string()];
+        let mut pick = SpinePick::new(
+            "other",
+            true,
+            "housing",
+            None,
+            candidates(&tables, "housing", &[]),
+        )
+        .matching_columns(&front);
+        assert!(pick.candidates()[0].disjoint);
+        assert_eq!(
+            pick.candidates()[0].trail().as_deref(),
+            Some(SHARES_NO_COLUMN)
+        );
+        // A table whose columns are not known yet is not dimmed.
+        assert!(!pick.candidates()[1].disjoint);
+        assert_eq!(pick.cursor(), 1, "the cursor starts past the dimmed table");
+        assert!(!pick.none_shares_a_column());
+        pick.previous();
+        assert!(!pick.add(), "a dimmed table is not added");
+        assert!(pick.added().is_empty());
+        // Columns read later dim a table too, matched without regard to case.
+        pick.set_columns("top", vec!["ROOMS".to_string()]);
+        assert!(!pick.candidates()[1].disjoint);
+        pick.set_columns("top", vec!["x".to_string()]);
+        assert!(pick.none_shares_a_column());
+        // An operation that does not match by name dims nothing.
+        let plain = SpinePick::new(
+            "other",
+            true,
+            "housing",
+            None,
+            candidates(&tables, "housing", &[]),
+        );
+        assert!(!plain.candidates()[0].disjoint);
+        assert!(!plain.none_shares_a_column());
     }
 }
