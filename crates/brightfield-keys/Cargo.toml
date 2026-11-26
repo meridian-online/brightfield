@@ -9,6 +9,7 @@ description = "Framework-free semantic layer for the selection-first keyboard gr
 
 [dependencies]
 brightfield-spec = { workspace = true }
+serde_json = { workspace = true }
 
 [lib]
 name = "brightfield_keys"
