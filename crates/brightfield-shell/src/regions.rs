@@ -467,25 +467,43 @@ fn cell_regions(regions: &[Region]) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The rows the grid query counted inside `extent`, before any smoothing.
-fn rows_in_grid(batches: &[RecordBatch], extent: &GridExtent) -> u64 {
-    let bins = i64::from(extent.bins);
-    let mut total = 0.0;
-    for batch in batches {
-        let (Some(bx), Some(by), Some(n)) = (
+/// Each cell the grid query counted inside `extent`, as `(column, row,
+/// count)`: the one reading of its batches that both the row floor and the
+/// density read. A batch not of the query's shape, and a cell outside the
+/// grid, are skipped.
+fn grid_cells<'a>(
+    batches: &'a [RecordBatch],
+    extent: &GridExtent,
+) -> impl Iterator<Item = (usize, usize, f64)> + 'a {
+    let bins = extent.bins as usize;
+    batches.iter().flat_map(move |batch| {
+        let columns = (
             batch.column(0).as_any().downcast_ref::<Int32Array>(),
             batch.column(1).as_any().downcast_ref::<Int32Array>(),
             batch.column(2).as_any().downcast_ref::<Float64Array>(),
-        ) else {
-            continue;
+        );
+        let rows = match columns {
+            (Some(_), Some(_), Some(_)) => batch.num_rows(),
+            _ => 0,
         };
-        for i in 0..batch.num_rows() {
-            let inside = |b: i32| (0..bins).contains(&i64::from(b));
-            if inside(bx.value(i)) && inside(by.value(i)) {
-                total += n.value(i).max(0.0);
-            }
-        }
-    }
+        (0..rows).filter_map(move |i| {
+            let (Some(bx), Some(by), Some(n)) = columns else {
+                return None;
+            };
+            let (col, row) = (
+                usize::try_from(bx.value(i)).ok()?,
+                usize::try_from(by.value(i)).ok()?,
+            );
+            (col < bins && row < bins).then(|| (col, row, n.value(i)))
+        })
+    })
+}
+
+/// The rows the grid query counted inside `extent`, before any smoothing.
+fn rows_in_grid(batches: &[RecordBatch], extent: &GridExtent) -> u64 {
+    let total: f64 = grid_cells(batches, extent)
+        .map(|(_, _, n)| n.max(0.0))
+        .sum();
     // A sum of row counts: a whole number, not negative.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
@@ -505,33 +523,16 @@ fn density_grid(batches: &[RecordBatch], extent: &GridExtent, scale: f64) -> Den
     let (dx, dy) = (step(extent.x), step(extent.y));
     let mut counts = vec![0_u32; bins * bins];
     let (mut xs, mut ys) = (Vec::new(), Vec::new());
-    for batch in batches {
-        let (Some(bx), Some(by), Some(n)) = (
-            batch.column(0).as_any().downcast_ref::<Int32Array>(),
-            batch.column(1).as_any().downcast_ref::<Int32Array>(),
-            batch.column(2).as_any().downcast_ref::<Float64Array>(),
-        ) else {
-            continue;
-        };
-        for i in 0..batch.num_rows() {
-            let (Ok(col), Ok(row)) = (usize::try_from(bx.value(i)), usize::try_from(by.value(i)))
-            else {
-                continue;
-            };
-            if col >= bins || row >= bins {
-                continue;
-            }
-            let count = n.value(i);
-            // A row count, so a whole number well inside u32.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            {
-                counts[row * bins + col] = count.round().max(0.0) as u32;
-            }
-            #[allow(clippy::cast_precision_loss)]
-            {
-                xs.push((extent.x.0 + (col as f64 + 0.5) * dx, count));
-                ys.push((extent.y.0 + (row as f64 + 0.5) * dy, count));
-            }
+    for (col, row, count) in grid_cells(batches, extent) {
+        // A row count, so a whole number well inside u32.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            counts[row * bins + col] = count.round().max(0.0) as u32;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        {
+            xs.push((extent.x.0 + (col as f64 + 0.5) * dx, count));
+            ys.push((extent.y.0 + (row as f64 + 0.5) * dy, count));
         }
     }
     let density = if xs.is_empty() {
