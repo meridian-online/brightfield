@@ -7253,6 +7253,10 @@ impl MeridianApp {
         // switches, which a frame with the graph or the front door on the
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
+        // …and the canvas's pane header, which a frame with the front door,
+        // the graph or the tiles on the canvas does not draw.
+        self.pane_header = None;
+        self.crumb_link_rect = None;
 
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
@@ -17447,8 +17451,6 @@ impl MeridianApp {
         Some(panels.tiles.get(tiles.selected()?)?.file.clone())
     }
 
-    /// What the title band's name says when it is hovered: the open panel's
-    /// path and kind, the tooltip its tile carries.
     /// What the title band's name offers on hover: where the document came
     /// from. A panel open from its tile names its file; a chart composed from
     /// a spec file names that file, without its folder, so a picture of the
