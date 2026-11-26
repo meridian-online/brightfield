@@ -1802,8 +1802,8 @@ impl LiveDashboard {
     }
 
     /// The region drawn on `plot` that the plot's own selection holds, which
-    /// the page outlines heavier: `None` when it holds none, or holds cells
-    /// selected over an extent other than the one drawn.
+    /// the page outlines heavier: `None` when it holds no region's cells, or
+    /// holds cells selected over an extent other than the one drawn.
     #[must_use]
     pub fn held_region(&self, plot: &PlotHandle) -> Option<usize> {
         crate::regions::held_region(&self.regions, self.coordinator.session(), plot)

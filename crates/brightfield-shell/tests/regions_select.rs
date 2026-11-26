@@ -1,7 +1,7 @@
 //! **A click inside a region's outline selects the region's rows.**
 //!
 //! The click publishes to the plot's own `intervalXY` selection, in place of
-//! the brush's clause, so every plot already following that selection follows
+//! the brush's clause, so the plots already following that selection follow
 //! the region. The clause is the region's grid cells over the extent they were
 //! found on. Clicking the same region again clears it, Escape clears it, and a
 //! drag still draws the rectangle brush. A plot with no `intervalXY` draws its
@@ -260,7 +260,7 @@ impl Live {
     }
 
     /// The selected rows the layer `mark` counts across its groups, or `None`
-    /// when its query counts none (nothing is selected).
+    /// when its query has no selected count (nothing is selected).
     fn selected_total(&mut self, mark: usize) -> Option<f64> {
         let batches = self
             .app

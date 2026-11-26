@@ -4212,7 +4212,7 @@ impl ChartDoc {
     }
 
     /// The selection a click at raster-local `p` on plot `plot` makes on a
-    /// region drawn there, or `None` where none is drawn — see
+    /// region drawn there, or `None` off the regions — see
     /// [`crate::regions::region_clause_at`]. `None` on a document with no live
     /// session, which draws no regions.
     #[must_use]

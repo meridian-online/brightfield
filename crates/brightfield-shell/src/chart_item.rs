@@ -2366,8 +2366,8 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
 ///   was: `None`, not a clear, because the press landed on a selection that
 ///   is still there to leave alone.
 /// - An interval click **inside a drawn region** — `region`, the region's
-///   [`SqlPredicate::Cells`], which the caller offers only on an
-///   `intervalXY` plot — selects the region's rows in place of whatever the
+///   [`SqlPredicate::Cells`], which the caller offers on an `intervalXY`
+///   plot (`a_plot_without_an_xy_brush_offers_no_click`) — selects the region's rows in place of whatever the
 ///   plot held, and a click that would publish the clause already held clears
 ///   it, the point click's toggle below. A press on a committed rectangle
 ///   still leaves the rectangle alone.
