@@ -33,6 +33,10 @@ struct Window {
     /// Every command the frames asked the platform to carry out, oldest first:
     /// where a clipboard write shows.
     commands: Vec<egui::OutputCommand>,
+    /// The nodes of the last frame's accesskit update, once
+    /// [`Window::read_accesskit`] has turned it on: what a screen reader is
+    /// told about each drawn widget.
+    accesskit: Vec<egui::accesskit::Node>,
 }
 
 impl Window {
@@ -42,7 +46,13 @@ impl Window {
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             commands: Vec::new(),
+            accesskit: Vec::new(),
         }
+    }
+
+    /// Publish the accesskit tree from the next frame on.
+    fn read_accesskit(&mut self) {
+        self.ctx.enable_accesskit();
     }
 
     /// The protocol view over the shipped crosswalk — a real graph for the
@@ -89,6 +99,9 @@ impl Window {
             };
             let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
             self.commands.extend(out.platform_output.commands);
+            if let Some(update) = out.platform_output.accesskit_update {
+                self.accesskit = update.nodes.into_iter().map(|(_, node)| node).collect();
+            }
         }
     }
 
@@ -394,8 +407,8 @@ fn a_chart_start_greys_save_and_run_with_their_sentences() {
     win.key(egui::Key::Escape);
 }
 
-/// Confirming a greyed row says the sentence it declares, in the palette's
-/// own hint, keeps the palette open, and runs nothing: over a shipped chart
+/// Confirming a greyed row keeps the palette open, with the row still saying
+/// the sentence it declares, and runs nothing: over a shipped chart
 /// start, Run starts no run.
 #[test]
 fn confirming_a_greyed_row_says_its_sentence_and_runs_nothing() {
@@ -421,12 +434,73 @@ fn confirming_a_greyed_row_says_its_sentence_and_runs_nothing() {
         banners,
         "a greyed Run reached its handler, which raised a banner"
     );
-    assert_eq!(
-        win.app.open_palette_hint().as_deref(),
-        Some("Run needs a Protocol to act on: open one, or open a data file or a folder."),
+    // The picker picks nothing on a greyed row, so the sentence is the one the
+    // row itself carries rather than a hint under the query.
+    assert_eq!(win.app.open_palette_hint(), None);
+    assert!(
+        win.app.open_palette_missing().iter().any(|(v, s)| {
+            *v == "run-protocol"
+                && s == "Run needs a Protocol to act on: open one, or open a data file or a folder."
+        }),
+        "the greyed Run lost its sentence: {:?}",
+        win.app.open_palette_missing()
     );
     win.key(egui::Key::Escape);
     assert_eq!(win.app.open_overlay(), None);
+}
+
+/// A greyed row is drawn greyed: the open palette tells a screen reader the
+/// row is disabled, and gives the sentence that says why as its description.
+#[test]
+fn a_greyed_row_is_drawn_disabled_and_says_its_sentence() {
+    let boot = Boot::start(starts::DASHBOARD, Flow::Vertical).expect("the start ships");
+    let mut win = Window::open(boot);
+    win.settle();
+    win.read_accesskit();
+
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.type_text("run-protocol");
+    win.settle();
+
+    let sentence = "Run needs a Protocol to act on: open one, or open a data file or a folder.";
+    let described: Vec<_> = win
+        .accesskit
+        .iter()
+        .filter(|node| node.description() == Some(sentence))
+        .collect();
+    assert!(
+        !described.is_empty(),
+        "no drawn node gives the greyed Run's sentence"
+    );
+    assert!(
+        described.iter().all(|node| node.is_disabled()),
+        "the greyed Run's row is drawn live"
+    );
+    // A row whose inputs the window holds is not drawn disabled.
+    win.run(vec![vec![press(egui::Key::Escape)], Vec::new()]);
+    win.key(egui::Key::Space);
+    win.type_text("zoom-in");
+    win.settle();
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    // The row's name is an `egui::Label`; the query field holds the same text
+    // in a text input, so only a label node shows the row was drawn.
+    assert!(
+        win.accesskit
+            .iter()
+            .any(|node| node.role() == egui::accesskit::Role::Label
+                && node.value() == Some("zoom-in")),
+        "the palette drew no zoom-in row"
+    );
+    // The disabled flag and the sentence sit on the row itself, so a live
+    // zoom-in row leaves no node both disabled and described.
+    assert!(
+        !win.accesskit
+            .iter()
+            .any(|node| node.is_disabled() && node.description().is_some()),
+        "zoom-in is drawn greyed over a chart"
+    );
+    win.key(egui::Key::Escape);
 }
 
 /// **AC2 + AC3.** Every verb the chart palette lists is dispatchable at the
