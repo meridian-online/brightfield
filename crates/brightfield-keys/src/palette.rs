@@ -344,7 +344,8 @@ mod tests {
             &reg,
             Altitude::Protocol,
             "open",
-            &RecencyCounter::new(),
+            &Frecency::new(),
+            NOW,
             None,
         );
         assert_eq!(got.first().map(|c| c.longname), Some("open"));
