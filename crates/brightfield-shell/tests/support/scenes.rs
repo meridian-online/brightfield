@@ -379,6 +379,7 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Selected::Graph
             | Selected::Chart
             | Selected::Rows
+            | Selected::NodeRows
             | Selected::Model => true,
         },
         Need::Condition(condition) => match condition {
@@ -391,7 +392,8 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Condition::TakesSources
             | Condition::FileToReload
             | Condition::ShelfDrawn
-            | Condition::NotRunning => true,
+            | Condition::NotRunning
+            | Condition::ChartReadsFocus => true,
         },
     }
 }

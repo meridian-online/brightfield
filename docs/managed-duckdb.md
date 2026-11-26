@@ -51,7 +51,7 @@ Measured on 2026-11-17 on Apple Silicon, release builds:
 | Brightfield's binary, managed edition | 123,431,232 |
 | Brightfield's binary, full edition, with its static DuckDB | 184,100,272 |
 
-So the managed edition's DuckDB, its libraries and shell together, is about 134.2 MB, against about 126.9 MB of DuckDB in the full edition's bundle before any extension is fetched: the 60.7 MB by which its Brightfield binary is larger, and the release shell. The full edition's v0.1.8 disk image is 117.9 MB. The managed edition's disk image is measured when its packaging is built.
+So the managed edition's DuckDB, its libraries and shell together, is about 134.2 MB, against about 126.9 MB of DuckDB in the full edition's bundle before any extension is fetched: the 60.7 MB by which its Brightfield binary is larger, and the release shell. The full edition's v0.1.8 disk image is 117.9 MB. The managed edition ships as an installer package, not a disk image: measured on 2026-11-26, its ad-hoc `.pkg` from `scripts/package-store.sh` is 245,080,585 bytes, around an app of 492,816 KiB on disk, which carries Brightfield's executable twice, once as the helper that runs arc and dovetail (`packaging/README.md`).
 
 ## Extensions built in, install and load off
 

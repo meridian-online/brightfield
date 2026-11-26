@@ -432,7 +432,7 @@ impl OpWindow {
         );
     }
 
-    fn graph_to_canvas(&mut self) {
+    pub fn graph_to_canvas(&mut self) {
         if self.app.graph_on_canvas() {
             return;
         }

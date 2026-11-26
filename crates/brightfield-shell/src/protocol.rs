@@ -2479,6 +2479,50 @@ impl ProtocolModel {
         })
     }
 
+    /// The charts that read `table`: the dashboard nodes an edge out of it
+    /// reaches in the collapsed graph, in the order the graph lists its edges.
+    ///
+    /// [`Self::dashboard`] answers the first of these for the held table, which
+    /// is the page the canvas opens on. This answers all of them for any node,
+    /// which is what the Chart activity asks: none, one, or several.
+    #[must_use]
+    pub fn charts_reading(&self, table: &AssetId) -> Vec<AssetId> {
+        let graph = &self.graph_collapsed;
+        let mut charts: Vec<AssetId> = Vec::new();
+        for edge in &graph.edges {
+            if edge.from == *table
+                && graph
+                    .nodes
+                    .get(&edge.to)
+                    .is_some_and(|n| n.kind == AssetKind::Dashboard)
+                && !charts.contains(&edge.to)
+            {
+                charts.push(edge.to.clone());
+            }
+        }
+        charts
+    }
+
+    /// The table the chart `chart` reads: the tabular node an edge into it
+    /// comes from in the collapsed graph. `None` for a node that is not a chart,
+    /// or a chart no table feeds.
+    #[must_use]
+    pub fn table_read_by(&self, chart: &AssetId) -> Option<&AssetId> {
+        let graph = &self.graph_collapsed;
+        graph
+            .nodes
+            .get(chart)
+            .filter(|n| n.kind == AssetKind::Dashboard)?;
+        graph.edges.iter().find_map(|edge| {
+            (edge.to == *chart
+                && graph
+                    .nodes
+                    .get(&edge.from)
+                    .is_some_and(|n| n.kind.is_tabular()))
+            .then_some(&edge.from)
+        })
+    }
+
     /// Whether `node` is a node of the collapsed graph a grid can list — the
     /// nodes the spine gives a `grid` row.
     #[must_use]
@@ -2540,6 +2584,37 @@ impl ProtocolModel {
     #[must_use]
     pub fn refusals(&self) -> Vec<crate::refusal::Refusal> {
         crate::refusal::refusals_in_graph(&self.graph_full)
+    }
+
+    /// What the table `node` is belongs to: its name, the step that makes it,
+    /// that step's kind and the state the run record gives it, in the words
+    /// the steps sheet uses. `None` for a node the graph does not hold, or one
+    /// no step makes, such as a file.
+    #[must_use]
+    pub fn column_table(&self, node: &AssetId) -> Option<crate::inspector::ColumnTable> {
+        // Of `node` itself: `inspector` answers for the spine's selection
+        // first, which may be another table.
+        let facts = inspector_for(
+            &self.graph_collapsed,
+            &self.assets,
+            &self.steps,
+            &self.statuses,
+            Some(node),
+        );
+        let step = facts.producing_step?;
+        Some(crate::inspector::ColumnTable {
+            table: facts.label,
+            kind: seam_kind_word(&self.graph_collapsed, &step),
+            state: status_word(facts.status),
+            step,
+        })
+    }
+
+    /// The content hash the run record gives the table `node`, when it gives
+    /// one.
+    #[must_use]
+    pub fn content_hash_of(&self, node: &AssetId) -> Option<&str> {
+        self.assets.get(node)?.content_hash.as_deref()
     }
 
     /// The node of the table the step `name` makes, found by its label in the

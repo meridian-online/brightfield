@@ -32,7 +32,8 @@
 //! search path. A packaged build carries the official CLI beside its own
 //! executable (`scripts/package.sh` stages it), and [`staged_engine_beside`]
 //! finds it from the runner program — in the live app that is
-//! [`std::env::current_exe`], by way of [`Runner::this_binary`]. When it is
+//! [`std::env::current_exe`], or the Mac App Store bundle's helper copy of it,
+//! by way of [`Runner::this_binary`]. When it is
 //! there the child is told it in [`ENGINE_ENV`], so a stranger's run needs no
 //! second install. When it is not — a `cargo run`, a test harness — the
 //! variable is left as the parent had it, so an inherited [`ENGINE_ENV`] or the
@@ -94,6 +95,12 @@ pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
     .into_iter()
     .find(|candidate| candidate.is_file())
 }
+
+/// The file name of the helper copy of Brightfield's executable that a Mac App
+/// Store bundle carries in `Contents/Helpers/`, which runs as arc and as
+/// dovetail ([`Runner::for_executable`]). `scripts/package-store.sh` lays it out
+/// under this name.
+pub const HELPER_NAME: &str = "brightfield-helper";
 
 /// The environment variable arc reads for FineType's command line, which its
 /// `finetype` operator and its profiling run: `finetype_bin` in arc's private
@@ -249,12 +256,34 @@ pub struct Runner {
 
 impl Runner {
     /// The binary this process is running, which is the runner when this
-    /// process is `brightfield-shell`.
+    /// process is `brightfield-shell`, or its helper copy when the bundle
+    /// carries one ([`Self::for_executable`]).
     ///
     /// `None` when the operating system will not say where the executable is.
     #[must_use]
     pub fn this_binary() -> Option<Self> {
-        std::env::current_exe().ok().map(Self::at)
+        std::env::current_exe().ok().map(Self::for_executable)
+    }
+
+    /// The runner for a window running `exe`: the helper copy of `exe` that a
+    /// Mac App Store bundle carries at `Contents/Helpers/`[`HELPER_NAME`] when
+    /// it is there, and otherwise `exe` itself.
+    ///
+    /// The Store bundle signs its main executable with the app's entitlements
+    /// and every program it starts with only `app-sandbox` and `inherit`, as
+    /// Apple documents for a sandboxed app's helpers. The helper is the same
+    /// executable, so it serves as arc and dovetail by the same variables, and
+    /// it finds the DuckDB CLI, FineType's CLI and FineType's model from its
+    /// own path as the main executable does, since `Contents/Helpers/` and
+    /// `Contents/MacOS/` sit at the same depth. The full edition carries no
+    /// helper and its window starts itself, as before.
+    #[must_use]
+    pub fn for_executable(exe: PathBuf) -> Self {
+        let helper = exe
+            .parent()
+            .map(|dir| dir.join("../Helpers").join(HELPER_NAME))
+            .filter(|helper| helper.is_file());
+        Self::at(helper.unwrap_or(exe))
     }
 
     /// The runner at `program`.
@@ -884,6 +913,36 @@ mod tests {
         );
         assert_eq!(staged_engine_beside(&tmp.join("bare/brightfield")), None);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// **A window in a bundle that carries the helper copy starts the helper**,
+    /// and finds the bundle's DuckDB CLI from it; a window with no helper beside
+    /// it, as in the full edition's bundle and a `cargo run`, starts itself.
+    #[test]
+    fn the_runner_is_the_helper_copy_when_the_bundle_carries_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("Brightfield.app/Contents");
+        std::fs::create_dir_all(app.join("MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Helpers")).unwrap();
+        let exe = app.join("MacOS/brightfield");
+        std::fs::write(&exe, b"x").unwrap();
+        std::fs::write(app.join("Helpers/duckdb"), b"x").unwrap();
+
+        assert_eq!(Runner::for_executable(exe.clone()).program(), exe);
+
+        std::fs::write(app.join("Helpers").join(HELPER_NAME), b"x").unwrap();
+        let runner = Runner::for_executable(exe.clone());
+        assert_eq!(
+            runner.program(),
+            app.join("MacOS/../Helpers").join(HELPER_NAME)
+        );
+        assert_eq!(
+            staged_engine_beside(runner.program()),
+            Some(app.join("MacOS/../Helpers/../Helpers/duckdb"))
+        );
+
+        let bare = tmp.path().join("target/release/brightfield-shell");
+        assert_eq!(Runner::for_executable(bare.clone()).program(), bare);
     }
 
     /// A tarball-shaped directory whose `engine/duckdb` is `script`, and the

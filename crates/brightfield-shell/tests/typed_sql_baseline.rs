@@ -85,7 +85,8 @@ fn script(keep: bool) -> Vec<Vec<egui::Event>> {
 
 /// Whether the window has nothing on a worker that the picture waits for:
 /// the statement on the form has been answered, each kept statement's rows
-/// have been counted, and the grid's preview has been read.
+/// have been counted, the grid's preview has been read, and the columns of
+/// the table the inspector describes have been read.
 fn settled(app: &MeridianApp) -> bool {
     if app.typed_statement().is_some() {
         return app.typed_said().is_some();
@@ -98,6 +99,11 @@ fn settled(app: &MeridianApp) -> bool {
             .chart_doc()
             .grid_preview()
             .is_none_or(|p| !p.is_reading())
+        // Once the canvas holds the kept step's table, the inspector
+        // describes it and asks for its columns as it draws it: the picture
+        // waits for them, not for whichever of the reading line or the
+        // columns a frame drew.
+        && !app.inspector_awaits_columns()
 }
 
 /// What the last frame drew, noted for the guards.

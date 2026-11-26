@@ -49,6 +49,8 @@ pub enum Selected {
     Chart,
     /// A table whose rows the grid shows.
     Rows,
+    /// A table or view is the node in focus, or a chart that reads one.
+    NodeRows,
     /// The grid's cursor is on a cell.
     GridCell,
     /// An asset is selected on the spine.
@@ -101,6 +103,8 @@ pub enum Condition {
     ShelfDrawn,
     /// No run of the Protocol is under way.
     NotRunning,
+    /// A chart the window can show reads the table or view in focus.
+    ChartReadsFocus,
 }
 
 impl Need {
@@ -130,6 +134,7 @@ impl Need {
             }
             Need::Selected(Selected::Chart) => "{command} needs a chart on the canvas.",
             Need::Selected(Selected::Rows) => "{command} needs a table's rows.",
+            Need::Selected(Selected::NodeRows) => "{command} needs a table or view in focus.",
             Need::Selected(Selected::GridCell) => "{command} needs the grid's cursor on a cell.",
             Need::Selected(Selected::Asset) => "{command} needs an asset selected on the spine.",
             Need::Selected(Selected::Step) => {
@@ -169,6 +174,9 @@ impl Need {
             Need::Condition(Condition::FileToReload) => "{command} needs a data file open.",
             Need::Condition(Condition::ShelfDrawn) => "{command} needs the chart's shelf.",
             Need::Condition(Condition::NotRunning) => "{command} waits for the run under way.",
+            Need::Condition(Condition::ChartReadsFocus) => {
+                "{command} needs a chart that reads the table or view in focus."
+            }
         }
     }
 }

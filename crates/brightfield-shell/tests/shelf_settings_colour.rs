@@ -1199,6 +1199,7 @@ fn income_moments() -> ColumnMoments {
     ColumnMoments {
         mean: 3.87,
         median: 3.47,
+        upper_quartile: None,
         sd: Some(1.9),
         distinct: 12_000,
         min: 0.5,
