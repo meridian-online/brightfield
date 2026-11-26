@@ -670,6 +670,53 @@ fn every_chart_palette_candidate_actually_dispatches() {
                 assert!(picture.width() > 0 && picture.height() > 0);
                 let _ = std::fs::remove_dir_all(&dir);
             }
+            // read-file's verb is the sources browser's, over a Protocol
+            // Brightfield made of a data file: what is read back is the browser
+            // over the window, which a verb that reached no handler does not open.
+            "open-sources-browser" => {
+                let dir = save_fixture_dir();
+                std::env::set_var(
+                    brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+                    dir.join("protocols"),
+                );
+                let csv = dir.join("harbour.csv");
+                std::fs::write(&csv, "station,reading\nnorth,12\nsouth,31\n")
+                    .expect("the fixture writes");
+                let mut win = Window {
+                    app: MeridianApp::headless_with_layout(
+                        Boot::empty(),
+                        default_layout(),
+                        Mode::Light,
+                    )
+                    .running_with(Some(brightfield_shell::run::Runner::at(env!(
+                        "CARGO_BIN_EXE_brightfield-shell"
+                    )))),
+                    ..Window::open(Boot::empty())
+                };
+                win.settle();
+                win.app
+                    .open_queue()
+                    .push(brightfield_shell::open_queue::OpenRequest::Path(csv));
+                win.settle();
+                assert!(
+                    win.app.own_protocol().is_some(),
+                    "the open made no Protocol"
+                );
+                // Confirming the row puts the browser where the palette was, so
+                // `confirm_chart_verb`'s closed palette is not what is read here.
+                win.key(egui::Key::Space);
+                assert_eq!(win.app.open_overlay(), Some("palette"));
+                win.settle();
+                win.type_text(longname);
+                win.key(egui::Key::Enter);
+                win.settle();
+                assert_eq!(
+                    win.app.open_overlay(),
+                    Some("sources-browser"),
+                    "open-sources-browser opened no sources browser"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             // An operation's verb, over a data file in a directory this test
             // owns, with the grid's cursor on a cell. What is read back is that
             // the operation started, or said on the status band what it needs:

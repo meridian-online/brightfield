@@ -461,6 +461,13 @@ impl MeridianApp {
         column: Option<String>,
         taken: Option<Vec<Taken>>,
     ) -> bool {
+        // A file is brought in through the sources browser, which begins no draft, so one
+        // being made is left as it is. Over a Protocol that takes no sources, the browser's
+        // own banner says why it stays closed.
+        if start == Start::SourcesBrowser {
+            self.open_sources_browser(ctx);
+            return matches!(self.overlay, Some(super::Overlay::SourcesBrowser(_)));
+        }
         // One operation is made at a time; starting another drops the first,
         // and an ask the spine has open for one.
         self.drop_making(ctx);

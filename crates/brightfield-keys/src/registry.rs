@@ -1089,14 +1089,16 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "d d = delete the line (vim); doubled so a stray d removes nothing; d d again puts the step back" }),
         },
         // Open the sources browser over the Protocol, on its first source. Opening it writes
-        // nothing, so View; the add the browser then makes is its own Data verb.
+        // nothing, so View; the add the browser then makes is its own Data verb. It is how
+        // `read-file` is made, so it applies over a grid or a chart as well, where the chart
+        // palette lists it with the other operations.
         VerbEntry {
             longname: "open-sources-browser",
             label: "Add sources",
             needs: NEEDS_TAKES_SOURCES,
             tier: CommandTier::View,
             binding_specs: vec![proto("shift-a")],
-            scope_applicability: vec![Protocol],
+            scope_applicability: vec![Protocol, View],
             drives: D::PaletteMeta,
             status: VerbStatus::Built,
             reserved_reason: None,
