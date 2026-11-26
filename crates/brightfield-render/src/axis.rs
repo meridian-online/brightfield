@@ -727,8 +727,9 @@ pub(crate) fn nice_linear_domain(min: f64, max: f64, target_count: usize) -> (f6
     (lo, hi)
 }
 
-/// Format a number for tick labels.
-pub(crate) fn format_number(value: f64) -> String {
+/// Format a number for tick labels: the text a number axis with no format
+/// prints.
+pub fn format_number(value: f64) -> String {
     let spec = if (value - value.round()).abs() < 1e-9 {
         ","
     } else {

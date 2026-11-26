@@ -172,6 +172,7 @@ pub mod protocol_panels;
 pub mod protocols_dir;
 pub mod ranked_bars;
 pub mod refusal;
+pub mod region_names;
 pub mod remote;
 pub mod rename;
 pub mod representation;

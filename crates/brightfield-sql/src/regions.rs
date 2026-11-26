@@ -1,12 +1,14 @@
 //! SQL for the dense-region overlay on a two-column plot: a count of rows on a
-//! square grid laid over the plot's current view, and the expression that tells
-//! which cell of that grid a row falls in.
+//! square grid laid over the plot's current view, the expression that tells
+//! which cell of that grid a row falls in, and the summary of each region's
+//! rows its name is read from.
 //!
 //! The grid's edges are the view extent the caller passes, not the table's
 //! min and max, so a zoomed plot gets a grid over what it shows. The binning is
 //! the density lowerer's own arithmetic ([`crate::lower::equiwidth_bin_index`]),
 //! so a region grid cell and a density cell cover the same data range.
 
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use crate::lower::{equiwidth_bin_index, quoted_name};
@@ -126,6 +128,291 @@ pub fn region_grid_sql(
          FROM (SELECT {bx} AS bx, {by} AS \"by\" FROM ({rows_sql}) AS __bf_rows WHERE {in_view}) \
          GROUP BY bx, \"by\" ORDER BY \"by\", bx"
     ))
+}
+
+/// What the label query asks of a column, and so how a region may be named
+/// after it: by a word its rows share, by a value most of them hold, or by the
+/// range most of them fall in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelRole {
+    Text,
+    Category,
+    Number,
+}
+
+/// A column the label query summarises per region, with the role it is asked
+/// in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelColumn {
+    pub name: String,
+    pub role: LabelRole,
+}
+
+/// The `kind` of each row [`region_label_sql`] returns.
+pub mod label_kind {
+    /// How many rows of the view are in the region. `col` and `key` are null.
+    pub const ROWS: &str = "rows";
+    /// A text column's word or two-word phrase, in the capitalisation the
+    /// view's rows use most, and how many of the region's rows hold it.
+    pub const TERM: &str = "term";
+    /// A category column's value and how many of the region's rows hold it.
+    pub const VALUE: &str = "value";
+    /// A number column's lower quartile in the region.
+    pub const Q1: &str = "q1";
+    /// A number column's upper quartile in the region.
+    pub const Q3: &str = "q3";
+    /// How many of the region's rows hold a number in the column.
+    pub const PRESENT: &str = "present";
+    /// A number column's lower quartile over the view's rows outside the region.
+    pub const REST_Q1: &str = "rest_q1";
+    /// A number column's upper quartile over the view's rows outside the region.
+    pub const REST_Q3: &str = "rest_q3";
+}
+
+/// Words a text column's terms leave out, besides any word of fewer than three
+/// letters: English words that join a description rather than say what it is
+/// about, and the distance and compass words of a place written relative to a
+/// town, so `45 km SW of Severo-Kuril'sk, Russia` is about Severo-Kuril'sk and
+/// Russia. Compass points of one and two letters, `km` and `of` fall to the
+/// length rule. Whole compass words (`south`) are kept, since they are often
+/// part of a name (`South Sandwich Islands`).
+pub const STOP_WORDS: &[&str] = &[
+    // English.
+    "the",
+    "and",
+    "for",
+    "from",
+    "with",
+    "near",
+    "off",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "about",
+    "this",
+    "that",
+    "are",
+    "was",
+    "were",
+    "has",
+    "have",
+    "had",
+    "not",
+    "but",
+    "its",
+    "per",
+    "via",
+    "than",
+    "then",
+    "there",
+    "their",
+    "they",
+    "them",
+    "who",
+    "what",
+    "when",
+    "where",
+    "which",
+    "will",
+    "would",
+    "also",
+    "any",
+    "all",
+    "can",
+    // Distance.
+    "kms",
+    "mile",
+    "miles",
+    "kilometre",
+    "kilometres",
+    "kilometer",
+    "kilometers",
+    "metre",
+    "metres",
+    "meter",
+    "meters",
+    "feet",
+    // Three-letter compass points.
+    "nne",
+    "ene",
+    "ese",
+    "sse",
+    "ssw",
+    "wsw",
+    "wnw",
+    "nnw",
+];
+
+/// The query that summarises each of `columns` per region of the view, for
+/// naming the regions: one statement that reads the rows of `rows_sql` once.
+///
+/// A row is in the view when both coordinates are inside `extent` (the
+/// [`region_grid_sql`] guard, which [`cell_index_sql`] needs), and in the
+/// region its grid cell is paired with in `cell_regions`, `(cell index,
+/// region index)`; a row in view whose cell is in no region is in region `-1`,
+/// the rest of the view. A cell listed twice keeps its first region.
+///
+/// The result is one long table, ordered by `col`, `region`, `kind` and `key`:
+///
+/// - `col INTEGER`: the column's index in `columns`, null on a
+///   [`label_kind::ROWS`] row;
+/// - `region INTEGER`: the region, or `-1`;
+/// - `kind VARCHAR`: one of [`label_kind`];
+/// - `key VARCHAR`: the term or the category value, null for the others;
+/// - `value DOUBLE`: the count or the quartile.
+///
+/// A text column is split into words on anything that is not a letter or an
+/// apostrophe. A word keeps an apostrophe inside it (`Kuril'sk`, a
+/// transliteration's soft sign) and loses one at either end, and a typographic
+/// apostrophe reads as a plain one. A hyphen splits (`Severo-Kuril'sk` is
+/// `Severo` and `Kuril'sk`), so a hyphenated name and its parts meet the phrase
+/// rule rather than being one rare word. Digits split too, so numbers drop out.
+/// Words of fewer than three letters and the [`STOP_WORDS`] are dropped, and
+/// each pair of adjacent kept words is also a term. Terms are compared
+/// lower-cased and a row counts once per term. Null and blank values hold no
+/// term and no category value, so they count against a share without ever
+/// being named.
+///
+/// The quartiles are DuckDB's `quantile_cont`, over the non-null numbers. The
+/// rest-of-view quartiles join every region to the rows outside it, so their
+/// cost grows with the number of regions; the rows are materialised once
+/// first, so the source is still read once.
+///
+/// `None` when `extent` has no usable grid or `cell_regions` is empty, since
+/// then there is no region to name.
+#[must_use]
+pub fn region_label_sql(
+    rows_sql: &str,
+    x_col: &str,
+    y_col: &str,
+    extent: &GridExtent,
+    cell_regions: &[(u32, u32)],
+    columns: &[LabelColumn],
+) -> Option<String> {
+    if !extent.is_usable() || cell_regions.is_empty() {
+        return None;
+    }
+    let mut cells = BTreeMap::new();
+    for &(cell, region) in cell_regions {
+        cells.entry(cell).or_insert(region);
+    }
+    let pairs: Vec<String> = cells.iter().map(|(c, r)| format!("({c}, {r})")).collect();
+    let picked: String = columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let name = quoted_name(&c.name);
+            match c.role {
+                LabelRole::Number => format!(", TRY_CAST({name} AS DOUBLE) AS __bf_c{i}"),
+                LabelRole::Text | LabelRole::Category => {
+                    format!(", CAST({name} AS VARCHAR) AS __bf_c{i}")
+                }
+            }
+        })
+        .collect();
+    let kept: String = (0..columns.len()).map(|i| format!(", __bf_c{i}")).collect();
+    let cell = cell_index_sql(x_col, y_col, extent);
+    let in_view = in_extent_sql(x_col, y_col, extent);
+
+    let mut ctes = vec![
+        format!(
+            "__bf_cells(__bf_cell, __bf_region) AS (VALUES {})",
+            pairs.join(", ")
+        ),
+        format!(
+            "__bf_view AS MATERIALIZED (\
+             SELECT row_number() OVER () AS __bf_row, \
+             CAST(coalesce(__bf_cells.__bf_region, -1) AS INTEGER) AS __bf_region{kept} \
+             FROM (SELECT {cell} AS __bf_cell{picked} FROM ({rows_sql}) AS __bf_rows \
+             WHERE {in_view}) AS __bf_in \
+             LEFT JOIN __bf_cells USING (__bf_cell))"
+        ),
+    ];
+    let mut branches = vec![format!(
+        "SELECT CAST(NULL AS INTEGER) AS col, __bf_region AS region, '{}' AS kind, \
+         CAST(NULL AS VARCHAR) AS key, CAST(count(*) AS DOUBLE) AS value \
+         FROM __bf_view GROUP BY __bf_region",
+        label_kind::ROWS
+    )];
+    for (i, c) in columns.iter().enumerate() {
+        let v = format!("__bf_c{i}");
+        match c.role {
+            LabelRole::Category => branches.push(format!(
+                "SELECT {i}, __bf_region, '{}', {v}, CAST(count(*) AS DOUBLE) \
+                 FROM __bf_view WHERE trim({v}) <> '' GROUP BY __bf_region, {v}",
+                label_kind::VALUE
+            )),
+            LabelRole::Text => {
+                ctes.push(text_terms_cte(i));
+                ctes.push(format!(
+                    "__bf_forms{i} AS (SELECT term, form FROM (\
+                     SELECT term, form, row_number() OVER \
+                     (PARTITION BY term ORDER BY count(*) DESC, form) AS rank \
+                     FROM __bf_terms{i} GROUP BY term, form) WHERE rank = 1)"
+                ));
+                branches.push(format!(
+                    "SELECT {i}, t.__bf_region, '{}', f.form, \
+                     CAST(count(DISTINCT t.__bf_row) AS DOUBLE) \
+                     FROM __bf_terms{i} AS t JOIN __bf_forms{i} AS f USING (term) \
+                     GROUP BY t.__bf_region, f.form",
+                    label_kind::TERM
+                ));
+            }
+            LabelRole::Number => {
+                branches.push(format!(
+                    "SELECT {i}, region, kind, CAST(NULL AS VARCHAR), value FROM (\
+                     SELECT __bf_region AS region, \
+                     quantile_cont({v}, 0.25) AS {q1}, quantile_cont({v}, 0.75) AS {q3}, \
+                     CAST(count({v}) AS DOUBLE) AS {present} \
+                     FROM __bf_view GROUP BY __bf_region) \
+                     UNPIVOT (value FOR kind IN ({q1}, {q3}, {present}))",
+                    q1 = label_kind::Q1,
+                    q3 = label_kind::Q3,
+                    present = label_kind::PRESENT,
+                ));
+                branches.push(format!(
+                    "SELECT {i}, region, kind, CAST(NULL AS VARCHAR), value FROM (\
+                     SELECT r.__bf_region AS region, \
+                     quantile_cont(v.{v}, 0.25) AS {q1}, quantile_cont(v.{v}, 0.75) AS {q3} \
+                     FROM (SELECT DISTINCT __bf_region FROM __bf_cells) AS r \
+                     JOIN __bf_view AS v ON v.__bf_region <> r.__bf_region \
+                     GROUP BY r.__bf_region) \
+                     UNPIVOT (value FOR kind IN ({q1}, {q3}))",
+                    q1 = label_kind::REST_Q1,
+                    q3 = label_kind::REST_Q3,
+                ));
+            }
+        }
+    }
+    Some(format!(
+        "WITH {} SELECT * FROM ({}) ORDER BY col NULLS FIRST, region, kind, key NULLS FIRST",
+        ctes.join(", "),
+        branches.join(" UNION ALL ")
+    ))
+}
+
+/// The terms of text column `i`: one row per row of the view, term and the
+/// spelling the row wrote it in. See [`region_label_sql`] for the rules.
+fn text_terms_cte(i: usize) -> String {
+    let stop: Vec<String> = STOP_WORDS.iter().map(|w| format!("'{w}'")).collect();
+    let words = format!(
+        "list_transform(regexp_split_to_array(replace(__bf_c{i}, '\u{2019}', ''''), \
+         '[^\\p{{L}}'']+'), lambda w: trim(w, ''''))"
+    );
+    let kept = format!(
+        "list_filter({words}, lambda w: length(replace(w, '''', '')) >= 3 \
+         AND NOT list_contains([{}], lower(w)))",
+        stop.join(", ")
+    );
+    format!(
+        "__bf_terms{i} AS MATERIALIZED (\
+         SELECT DISTINCT __bf_row, __bf_region, lower(form) AS term, form FROM (\
+         SELECT __bf_row, __bf_region, unnest(list_concat(k, \
+         list_transform(range(1, len(k)), lambda j: k[j] || ' ' || k[j + 1]))) AS form \
+         FROM (SELECT __bf_row, __bf_region, {kept} AS k FROM __bf_view \
+         WHERE __bf_c{i} IS NOT NULL)))"
+    )
 }
 
 #[cfg(test)]
