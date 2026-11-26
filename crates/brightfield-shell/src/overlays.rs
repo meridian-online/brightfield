@@ -1410,14 +1410,14 @@ mod tests {
 
     #[test]
     fn a_reserved_verb_is_flagged_and_refuses_to_run() {
-        // The inspector rail's toggle rather than the outline rail's: the
-        // outline rail's toggle is bound and performed now that the navigator
-        // rail is a region of the window, so it is no longer an example of
-        // this. The claim is unchanged and the bucket is the same one.
+        // The run log's show verb: the outline and inspector rails' toggles
+        // are bound and performed now that each rail is a region of the
+        // window, so neither is an example of this. The claim is unchanged
+        // and the bucket is the same one.
         let mut p = palette_at(Altitude::Protocol);
-        p.update_query("inspector");
+        p.update_query("run log");
         let i = (0..p.match_count())
-            .find(|&i| p.candidate(i).unwrap().longname == "toggle-inspector-rail")
+            .find(|&i| p.candidate(i).unwrap().longname == "open-run-log")
             .expect("the reserved rail toggle is shown, not hidden");
         let row = p.row(i);
         assert!(

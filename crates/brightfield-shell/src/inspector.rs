@@ -614,6 +614,138 @@ impl Item<ChartDoc> for InspectorPane {
 }
 
 // ---------------------------------------------------------------------------
+// The one inspector's sections
+// ---------------------------------------------------------------------------
+
+/// A section of the one inspector: a titled, collapsible part of the right
+/// rail that describes one aspect of the selection.
+///
+/// The rail draws the sections [`sections_for`] gives, most specific first,
+/// each with the design system's section header over its body. Not every
+/// section has a body yet: the chart's Encoding, Reads and Fields are named
+/// here so their order is fixed in one place, and [`sections_for`] lists a
+/// section only once something draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Section {
+    /// The operation a foot field or an operation form is asking.
+    Operation,
+    /// The selected column: what it is, its values, and what can be done
+    /// with it.
+    Column,
+    /// A chart's channels and the fields on them.
+    Encoding,
+    /// The table a chart reads and the rows it draws.
+    Reads,
+    /// The fields a chart can use.
+    Fields,
+    /// A chart's live controls: its sliders.
+    Parameters,
+    /// The focused node's facts. Always last.
+    Step,
+}
+
+impl Section {
+    /// The section's title, as its header names it. The header draws it in
+    /// capitals; the accessible name is this, as written.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Operation => "Operation",
+            Self::Column => "Column",
+            Self::Encoding => "Encoding",
+            Self::Reads => "Reads",
+            Self::Fields => "Fields",
+            Self::Parameters => "Parameters",
+            Self::Step => "Step",
+        }
+    }
+}
+
+/// What the window holds that decides which sections the inspector draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InspectorSelection {
+    /// An operation is being asked: a foot field or an operation form is open.
+    pub operation: bool,
+    /// A column is selected, or a table a later step makes is on the canvas.
+    pub column: bool,
+    /// A chart document is open.
+    pub chart: bool,
+}
+
+/// The sections the inspector draws for `selection`, in the order they stack:
+/// Operation, then the column's, then the chart's, then Step, which is always
+/// there and always last.
+///
+/// The chart's pane body draws its live controls under whatever it describes,
+/// so a chart with a column selected is described by the Column section, and
+/// one with nothing selected by Parameters.
+#[must_use]
+pub fn sections_for(selection: &InspectorSelection) -> Vec<Section> {
+    let mut sections = Vec::new();
+    if selection.operation {
+        sections.push(Section::Operation);
+    }
+    if selection.chart {
+        sections.push(if selection.column {
+            Section::Column
+        } else {
+            Section::Parameters
+        });
+    }
+    sections.push(Section::Step);
+    sections
+}
+
+/// Whether each of `sections` is open, from what the reader set in `open`.
+///
+/// Every section is open until the reader closes it, except Step: it is open
+/// only while no section above it is, so the focused node's facts give way to
+/// whatever is more specific about the selection.
+#[must_use]
+pub fn sections_open(
+    sections: &[Section],
+    open: &std::collections::BTreeMap<Section, bool>,
+) -> Vec<(Section, bool)> {
+    let set = |s: Section| open.get(&s).copied().unwrap_or(true);
+    let above_open = sections.iter().any(|s| *s != Section::Step && set(*s));
+    sections
+        .iter()
+        .map(|s| {
+            let is_open = if *s == Section::Step {
+                set(Section::Step) && !above_open
+            } else {
+                set(*s)
+            };
+            (*s, is_open)
+        })
+        .collect()
+}
+
+/// Flip `section`, as a click or Enter on its header does, given how the
+/// sections stood when it was drawn.
+///
+/// Opening Step closes the sections above it, since Step is open only while
+/// none of them is.
+pub fn toggle_section(
+    section: Section,
+    drawn: &[(Section, bool)],
+    open: &mut std::collections::BTreeMap<Section, bool>,
+) {
+    let was_open = drawn
+        .iter()
+        .find(|(s, _)| *s == section)
+        .is_some_and(|(_, o)| *o);
+    open.insert(section, !was_open);
+    if section == Section::Step && !was_open {
+        for (s, _) in drawn {
+            if *s != Section::Step {
+                open.insert(*s, false);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -674,6 +806,54 @@ mod tests {
             "the rail drew a Save button; the entry is the editor's and the \
              dispatch is the Protocol's, so whichever the reader meant, one of \
              the two silently does not happen"
+        );
+    }
+
+    #[test]
+    fn the_sections_stack_most_specific_first_with_step_last() {
+        let all = InspectorSelection {
+            operation: true,
+            column: true,
+            chart: true,
+        };
+        assert_eq!(
+            sections_for(&all),
+            [Section::Operation, Section::Column, Section::Step]
+        );
+        assert_eq!(
+            sections_for(&InspectorSelection {
+                chart: true,
+                ..Default::default()
+            }),
+            [Section::Parameters, Section::Step]
+        );
+        assert_eq!(
+            sections_for(&InspectorSelection::default()),
+            [Section::Step]
+        );
+    }
+
+    #[test]
+    fn step_is_open_only_while_no_section_above_it_is() {
+        let mut open = std::collections::BTreeMap::new();
+        let sections = [Section::Parameters, Section::Step];
+        let drawn = sections_open(&sections, &open);
+        assert_eq!(drawn, [(Section::Parameters, true), (Section::Step, false)]);
+        assert_eq!(
+            sections_open(&[Section::Step], &open),
+            [(Section::Step, true)]
+        );
+
+        // Opening Step closes the section above it.
+        toggle_section(Section::Step, &drawn, &mut open);
+        let drawn = sections_open(&sections, &open);
+        assert_eq!(drawn, [(Section::Parameters, false), (Section::Step, true)]);
+
+        // Opening the section above again folds Step away.
+        toggle_section(Section::Parameters, &drawn, &mut open);
+        assert_eq!(
+            sections_open(&sections, &open),
+            [(Section::Parameters, true), (Section::Step, false)]
         );
     }
 

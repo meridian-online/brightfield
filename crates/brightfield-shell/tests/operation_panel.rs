@@ -14,6 +14,7 @@
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::grid_foot::FootField;
+use brightfield_shell::inspector::Section;
 use brightfield_shell::operation::{self, OperationDescription};
 use brightfield_shell::run::Runner;
 use brightfield_shell::startup::default_layout;
@@ -67,9 +68,6 @@ const HOUSE_AGE: usize = 1;
 /// The table the housing sample's one step makes: the file's stem, not the
 /// step's name.
 const TABLE: &str = "california_housing_sample";
-
-/// The title the operation pane carries in the rail's strip.
-const PANE_TITLE: &str = "Operation";
 
 /// One headless window over the housing sample.
 struct Window {
@@ -191,9 +189,10 @@ impl Window {
         }
     }
 
+    /// Whether the rail is open with the Operation section open at its top.
     fn showing_operation_pane(&self) -> bool {
         !self.app.rail_is_collapsed(INSPECTOR_RAIL)
-            && self.app.rail_pane_title(INSPECTOR_RAIL).as_deref() == Some(PANE_TITLE)
+            && self.app.inspector_sections().first() == Some(&(Section::Operation, true))
     }
 }
 
@@ -205,10 +204,10 @@ fn has(drawn: &[String], text: &str) -> bool {
     drawn.iter().any(|t| t == text)
 }
 
-/// **`w` on a cell opens the Inspector rail on the operation panel.** A data
-/// file's rail starts collapsed, so the key is what opens it.
+/// **`w` on a cell opens the Inspector rail with its Operation section at the
+/// top.** A data file's rail starts collapsed, so the key is what opens it.
 #[test]
-fn w_opens_the_inspector_on_the_operation_panel() {
+fn w_opens_the_operation_section_at_the_top() {
     let mut win = Window::housing(Some(runner()));
     assert!(
         win.app.rail_is_collapsed(INSPECTOR_RAIL),
@@ -222,15 +221,16 @@ fn w_opens_the_inspector_on_the_operation_panel() {
     ));
     assert!(
         win.showing_operation_pane(),
-        "the rail is not open on the operation pane: collapsed {}, showing {:?}",
+        "the rail is not open on the Operation section: collapsed {}, sections {:?}",
         win.app.rail_is_collapsed(INSPECTOR_RAIL),
-        win.app.rail_pane_title(INSPECTOR_RAIL)
+        win.app.inspector_sections()
     );
 }
 
-/// **Esc from the field shuts the rail the key opened.**
+/// **Esc from the field closes the Operation section, and shuts the rail the
+/// key opened.**
 #[test]
-fn escape_shuts_the_rail_it_opened() {
+fn escape_closes_the_operation_section() {
     let mut win = Window::housing(Some(runner()));
     win.press_cell(2, HOUSE_AGE);
     win.keystroke(egui::Key::W, "w");
@@ -240,6 +240,15 @@ fn escape_shuts_the_rail_it_opened() {
     assert!(
         win.app.rail_is_collapsed(INSPECTOR_RAIL),
         "Esc left open the rail the key opened"
+    );
+    open_rail(&mut win);
+    assert!(
+        !win.app
+            .inspector_sections()
+            .iter()
+            .any(|(section, _)| *section == Section::Operation),
+        "the Operation section outlived the operation: {:?}",
+        win.app.inspector_sections()
     );
 }
 
@@ -268,15 +277,17 @@ fn escape_leaves_an_already_open_rail_open() {
         "Esc shut a rail the key did not open"
     );
 
-    // Enter leaves the rail as it is, even one the key opened.
+    // Enter leaves the rail open, even one the key opened. The Operation
+    // section goes with the asking, since nothing is asked once the operation
+    // is applied.
     let mut win = Window::housing(Some(runner()));
     win.press_cell(2, HOUSE_AGE);
     win.keystroke(egui::Key::W, "w");
     win.key(egui::Key::Enter);
     assert_eq!(win.doc().foot_asking(), None);
     assert!(
-        win.showing_operation_pane(),
-        "Enter moved the rail the key opened"
+        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
+        "Enter shut the rail the key opened"
     );
 }
 
@@ -444,14 +455,14 @@ fn open_rail(win: &mut Window) {
     );
 }
 
-/// **Esc puts back the pane the rail was on** when the key moved an open rail
-/// to the operation panel.
+/// **Esc puts the rail's sections back as they were** when the key opened the
+/// Operation section on an open rail.
 #[test]
 fn escape_puts_the_rail_back_on_the_pane_it_was_on() {
     let mut win = Window::housing(Some(runner()));
     open_rail(&mut win);
-    let before = win.app.rail_pane_title(INSPECTOR_RAIL);
-    assert_ne!(before.as_deref(), Some(PANE_TITLE));
+    let before = win.app.inspector_sections().to_vec();
+    assert!(!before.iter().any(|(s, _)| *s == Section::Operation));
 
     win.press_cell(2, HOUSE_AGE);
     win.keystroke(egui::Key::W, "w");
@@ -460,9 +471,9 @@ fn escape_puts_the_rail_back_on_the_pane_it_was_on() {
     assert_eq!(win.doc().foot_asking(), None);
     assert!(!win.app.rail_is_collapsed(INSPECTOR_RAIL));
     assert_eq!(
-        win.app.rail_pane_title(INSPECTOR_RAIL),
+        win.app.inspector_sections(),
         before,
-        "Esc left the rail on the operation panel"
+        "Esc left the rail with the Operation section in it"
     );
 }
 
@@ -487,7 +498,7 @@ fn a_grid_with_no_table_in_view_leaves_the_rail_alone() {
 
 fn no_panel_for_a_grid_with_no_table(win: &mut Window) {
     let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
-    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
+    let pane = win.app.inspector_sections().to_vec();
 
     win.press_cell(2, HOUSE_AGE);
     win.keystroke(egui::Key::W, "w");
@@ -497,12 +508,12 @@ fn no_panel_for_a_grid_with_no_table(win: &mut Window) {
     );
     assert_eq!(win.doc().operation_in_hand(), None);
     assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
-    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+    assert_eq!(win.app.inspector_sections().to_vec(), pane);
 
     win.key(egui::Key::Escape);
     assert_eq!(win.doc().foot_asking(), None);
     assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
-    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+    assert_eq!(win.app.inspector_sections().to_vec(), pane);
 }
 
 /// **An empty `where` still reads as asked**: the field is this parameter's

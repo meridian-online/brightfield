@@ -53,6 +53,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `export-chart-picture` | `cmd-shift-e` | 2 / 5 / 4 | cmd-shift-e = export (Figma's export chord); `cmd-e` is `toggle-focus`'s; global, so it reaches the chart under the pointer from any pane |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
+| `toggle-inspector-rail` | `cmd-alt-b` | 3 / 3 / 4 | cmd-b is the left rail, so ⌘⌥B is the right one, as VS Code's secondary side bar is ⌘⌥B: hides the inspector and brings it back |
 | `show-connect-tab` | `alt-c` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Connect tab |
 | `show-shape-tab` | `alt-s` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Shape tab |
 | `show-model-tab` | `alt-m` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Model tab |

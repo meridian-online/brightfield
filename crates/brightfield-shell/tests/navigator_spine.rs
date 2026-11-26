@@ -919,18 +919,17 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
     );
 }
 
-/// **The Operator tab, switched to on a fresh open, describes the table the
+/// **The Step section, opened on a fresh open, describes the table the
 /// canvas holds — it does not say "Nothing selected."**
 ///
-/// The inspector rail's strip offers two tabs over one document each —
-/// `Operator` (the Protocol's) and `Inspector` (the chart's), sharing
-/// `INSPECTOR_PANES` behind one selector — and a fresh data-file open leaves
-/// the chart's own tab active, but a reader can switch. `has_selection` and
-/// `inspector` both fall back to the node the canvas holds when no asset is
-/// explicitly picked, held by
+/// The inspector stacks a section from each document — the chart's
+/// Parameters over the Protocol's Step — and a fresh data-file open leaves
+/// the chart's section open and Step folded, but a reader can open Step.
+/// `has_selection` and `inspector` both fall back to the node the canvas
+/// holds when no asset is explicitly picked, held by
 /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
-/// (this test) — so switching to Operator there answers for the table rather
-/// than for an empty state. Before that fallback existed, this tab read
+/// (this test) — so opening Step there answers for the table rather than for
+/// an empty state. Before that fallback existed, this pane read
 /// `Nothing selected` regardless of which row the bar was on.
 ///
 /// The Address field's own explainer is a separate claim from the fallback
@@ -943,7 +942,8 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 ///
 /// A one-step Protocol (which the housing fixture is) opens the inspector
 /// collapsed to its own stub, so this test's first gesture is the caret that
-/// reopens it — the tab search below finds no `Operator` text otherwise.
+/// reopens it. The chart's Parameters section is open over the Step section
+/// there, so the second is the click on Step's header that opens it.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
@@ -951,12 +951,12 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     win.click_rail_caret(brightfield_workbench::arrangement::INSPECTOR_RAIL);
 
     let shapes = win.shapes();
-    let operator = texts(&shapes)
+    let step = texts(&shapes)
         .into_iter()
-        .find(|(text, _, _)| text == "Operator")
+        .find(|(text, _, _)| text == "STEP")
         .map(|(_, rect, _)| rect)
-        .expect("the inspector rail's strip offers an Operator tab");
-    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+        .expect("the inspector draws a Step section");
+    win.run(vec![click_at(step.center()), Vec::new(), Vec::new()]);
 
     let shapes = win.shapes();
     let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
@@ -1002,8 +1002,9 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
 /// chart beside it latches the graph;
 /// `a_windows_latched_canvas_agrees_with_the_derived_answer` pins that on one
 /// settled frame of the edgar_gleif fixture, beside a data-file window that
-/// latches a view. Selecting an asset row and switching to Operator here is the
-/// frame the keystroke actually reaches on that same fixture.
+/// latches a view. Selecting an asset row here is the frame the keystroke
+/// actually reaches on that same fixture; with no chart, the inspector's Step
+/// section is its only one, and open.
 #[test]
 fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
     let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1031,14 +1032,11 @@ fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
         .find(|row| row.role == SpineRole::Asset)
         .expect("a manifest with steps draws at least one asset row");
     win.click_row(&asset_row.label);
-
-    let shapes = win.shapes();
-    let operator = texts(&shapes)
-        .into_iter()
-        .find(|(text, _, _)| text == "Operator")
-        .map(|(_, rect, _)| rect)
-        .expect("the inspector rail's strip offers an Operator tab");
-    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+    assert_eq!(
+        win.app.inspector_sections(),
+        [(brightfield_shell::inspector::Section::Step, true)],
+        "a manifest window with no chart draws the Step section alone, open"
+    );
 
     let shapes = win.shapes();
     let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
