@@ -38,6 +38,12 @@
 #                                       into the library
 #   Contents/Resources/                 the icon, LICENSE and the examples, as
 #                                       the full edition's bundle carries them
+#   Contents/Resources/licenses/        the licence notices of the third-party
+#                                       code the bundle carries: what the managed
+#                                       DuckDB build wrote, GEOS's licence and the
+#                                       offer of its source among them, and the
+#                                       Rust crates compiled into Brightfield.
+#                                       README.txt there says what is where
 #
 # No .duckdb_extension file is in the bundle, because codesign cannot sign one
 # (docs/app-sandbox.md), and every piece of code in a Store bundle is signed.
@@ -112,6 +118,8 @@ MANAGED="${BRIGHTFIELD_DUCKDB_MANAGED_DIR:-target/duckdb-managed}"
 case "$MANAGED" in /*) ;; *) MANAGED="${ROOT}/${MANAGED}" ;; esac
 [ -f "$MANAGED/lib/libduckdb.dylib" ] && [ -x "$MANAGED/bin/duckdb" ] \
   || fail "no managed DuckDB build in ${MANAGED}: run cargo xtask ci --step duckdb-managed"
+[ -f "$MANAGED/licenses/GEOS/SOURCE.txt" ] \
+  || fail "the managed DuckDB build in ${MANAGED} wrote no licence notices: build it again with cargo xtask ci --step duckdb-managed"
 
 OUT="dist/store"
 WORK="${OUT}/work"
@@ -197,6 +205,17 @@ cp -R examples/remote "$APP/Contents/Resources/examples/remote"
 mkdir -p "$APP/Contents/Resources/examples/data"
 cp crates/brightfield-shell/tests/data/edgar_gleif_reduced.parquet crates/brightfield-shell/tests/data/edgar_gleif_reduced.json \
   "$APP/Contents/Resources/examples/data/"
+
+# The licence notices: the managed build's, for the libraries in Frameworks and
+# FineType's command line, and the Rust crates compiled into Brightfield, read
+# from the lockfile with the features it was built with above.
+NOTICES="$APP/Contents/Resources/licenses"
+cp -R "$MANAGED/licenses" "$NOTICES"
+python3 scripts/duckdb-managed/notices/notices.py rust "$NOTICES/rust-crates/brightfield.txt" \
+  --manifest-path crates/brightfield-shell/Cargo.toml --package brightfield-shell \
+  --features managed-duckdb --home https://github.com/meridian-online/brightfield \
+  --title "Brightfield, Contents/MacOS/brightfield and Contents/Helpers/brightfield-helper"
+python3 scripts/duckdb-managed/notices/notices.py index "$NOTICES"
 
 # FineType's model and catalogue, and nothing that is code: the extension is
 # compiled into the library. The manifest names only these files, so the

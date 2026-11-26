@@ -4162,6 +4162,9 @@ pub struct SpinePickRows {
     /// Each table the operation can read, with what its row trails: `related`,
     /// `shares <column>`, or nothing.
     pub candidates: Vec<(String, Option<String>)>,
+    /// The candidates that share no column's name with the table in front,
+    /// for an operation that matches columns by name: drawn in the muted ink.
+    pub dimmed: Vec<String>,
     /// The table under the cursor.
     pub cursor: Option<String>,
     /// The tables added to the operation's list, in order.
@@ -4657,7 +4660,13 @@ impl Item<ProtocolDoc> for OutlinePane {
                         }
                         None => default_senses_click(row),
                     },
-                    muted: &|row| picking.is_some() && pick_table(row).is_none(),
+                    muted: &|row| {
+                        picking.as_ref().is_some_and(|pick| {
+                            pick_table(row).is_none_or(|table| {
+                                pick.dimmed.iter().any(|d| d.eq_ignore_ascii_case(&table))
+                            })
+                        })
+                    },
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
