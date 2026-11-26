@@ -135,8 +135,6 @@ pub(super) struct Picking {
 /// A table the spine handed an operation, with its columns.
 type Taken = (String, Vec<String>);
 
-/// The spine pick's `(keystroke token, longname)` pairs: every binding the
-/// registry declares in its SpinePick context, the arrow twins included.
 /// What an operation that matches columns by name says when no other table
 /// shares a column's name with the table in front.
 fn no_matching_table(spec: &OperationUi) -> String {
@@ -156,6 +154,8 @@ fn shares_no_column(spec: &OperationUi, table: &str, in_front: &str) -> String {
     )
 }
 
+/// The spine pick's `(keystroke token, longname)` pairs: every binding the
+/// registry declares in its SpinePick context, the arrow twins included.
 fn spine_pick_bindings() -> Vec<(&'static str, &'static str)> {
     brightfield_keys::registry()
         .iter()

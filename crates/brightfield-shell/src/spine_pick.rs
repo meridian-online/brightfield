@@ -355,6 +355,11 @@ impl SpinePick {
         self.candidates[at].columns = Some(columns);
         self.candidates[at].shares = self.shared_by(&self.candidates[at]);
         self.candidates[at].disjoint = self.shares_nothing(&self.candidates[at]);
+        // A table added before its columns were read, which they show shares
+        // no column, comes off the list: it could be neither taken nor taken off.
+        if self.candidates[at].disjoint {
+            self.added.retain(|added| *added != table);
+        }
         if !self.moved {
             self.cursor = self.best();
         }
@@ -701,7 +706,13 @@ mod tests {
         // Columns read later dim a table too, matched without regard to case.
         pick.set_columns("top", vec!["ROOMS".to_string()]);
         assert!(!pick.candidates()[1].disjoint);
+        // A table added before its columns were read comes off the list once
+        // they show it shares no column.
+        pick.next();
+        assert!(pick.add());
+        assert_eq!(pick.added(), ["top"]);
         pick.set_columns("top", vec!["x".to_string()]);
+        assert!(pick.added().is_empty());
         assert!(pick.none_shares_a_column());
         // An operation that does not match by name dims nothing.
         let plain = SpinePick::new(
