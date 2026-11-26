@@ -471,6 +471,32 @@ mod tests {
     }
 
     #[test]
+    fn silverman_2d_weighted_concentrated_mass_matches_expanded() {
+        // Nearly all weight on one bin: the interquartile range is 0 while the
+        // standard deviation is not, so the rule falls back to sigma.
+        let bins = [
+            (0.0, 0.0, 1.0),
+            (1.0, 3.0, 40.0),
+            (5.0, 2.0, 1.0),
+            (2.0, 7.0, 2.0),
+        ];
+        let (mut ex, mut ey) = (Vec::new(), Vec::new());
+        for &(x, y, c) in &bins {
+            for _ in 0..(c as usize) {
+                ex.push(x);
+                ey.push(y);
+            }
+        }
+        let wx: Vec<(f64, f64)> = bins.iter().map(|&(x, _, c)| (x, c)).collect();
+        let wy: Vec<(f64, f64)> = bins.iter().map(|&(_, y, c)| (y, c)).collect();
+        let (hx, hy) = silverman_2d_per_axis_weighted(&wx, &wy);
+        let (ex_h, ey_h) = silverman_2d_per_axis(&ex, &ey);
+        assert!(ex_h > 0.0 && ey_h > 0.0);
+        assert!((hx - ex_h).abs() <= 1e-12 * ex_h, "x: {hx} vs {ex_h}");
+        assert!((hy - ey_h).abs() <= 1e-12 * ey_h, "y: {hy} vs {ey_h}");
+    }
+
+    #[test]
     fn silverman_2d_weighted_degenerate_returns_zero() {
         assert_eq!(
             silverman_2d_per_axis_weighted(&[(3.0, 1.0)], &[(4.0, 1.0)]),

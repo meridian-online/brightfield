@@ -7738,12 +7738,12 @@ mod tests {
         );
     }
 
-    // Density marks: the shared KDE-grid helper reproduces
-    // exactly the values the inline Density2D path produced — same histogram
-    // reconstruction (row order and gaps included), same Silverman bandwidths,
-    // same kde_2d call — pinned by replaying the inline formula over the fixture
-    // and asserting bitwise equality. (The byte-identical density example PNGs
-    // are the end-to-end gate; this pins the seam headlessly.)
+    // Density marks: the shared KDE-grid helper reproduces the values the
+    // inline Density2D path produced: the same histogram reconstruction (row
+    // order and gaps included) and kde_2d call, with a bandwidth that now comes
+    // from the weighted Silverman form. Replaying the inline formula over the
+    // fixture, the grid matches to floating-point rounding, not bit for bit.
+    // The snapshot tests are what pin the drawn pixels.
     #[test]
     fn kde_grid_helper_matches_inline_path() {
         let schema = Arc::new(Schema::new(vec![
