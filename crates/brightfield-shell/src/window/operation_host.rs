@@ -541,6 +541,13 @@ impl MeridianApp {
         if taken.is_some() && !front.table.is_empty() {
             names.push(front.table.clone());
         }
+        // A correction skips the pick, so the tables its kept step reads are
+        // spelled from that step.
+        let kept_reads = corrects
+            .as_ref()
+            .and_then(|step| step.operation.as_ref())
+            .map(|request| request.reads.iter().map(|(_, table)| table.clone()));
+        names.extend(kept_reads.into_iter().flatten());
         let with = BegunWith {
             start,
             table: Some(front.table.clone()).filter(|t| !t.is_empty()),

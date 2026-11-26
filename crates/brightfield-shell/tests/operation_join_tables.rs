@@ -214,6 +214,44 @@ fn join_tables_keeps_a_step_named_by_its_effect_and_save_records_arcs_model() {
 }
 
 #[test]
+fn a_kept_join_is_corrected_in_its_form_and_read_as_it_was_made() {
+    let mut win = window();
+    join_with_key(&mut win, "house_age");
+    win.key(egui::Key::Enter);
+    assert_eq!(win.kept().len(), 1, "{:?}", win.said());
+    win.wait_for_preview();
+
+    // `&` over the kept join's own grid corrects it, with no pick.
+    for _ in 0..600 {
+        win.press("&");
+        if win.making().is_some() {
+            break;
+        }
+        assert!(reading_description(&win), "{:?}", win.said());
+        std::thread::sleep(Duration::from_millis(20));
+        win.run(Vec::new());
+    }
+    assert!(win.app.spine_pick().is_none());
+    assert_eq!(
+        win.app.making().and_then(|m| m.corrects.clone()),
+        Some(format!("{ROOT}_joined_by_age"))
+    );
+    win.settle_reads();
+    assert!(
+        win.texts
+            .iter()
+            .any(|t| t == "left join by_age using (house_age)"),
+        "{:?}",
+        win.texts
+    );
+    assert!(
+        !win.texts.iter().any(|t| t.starts_with("Adds ")),
+        "{:?}",
+        win.texts
+    );
+}
+
+#[test]
 fn join_tables_reopens_as_a_step_not_run_that_previews_the_same() {
     let mut win = window();
     join_with_key(&mut win, "house_age");

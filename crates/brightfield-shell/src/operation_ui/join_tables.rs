@@ -22,7 +22,7 @@
 //! `<other>_` until one is typed, which `semi` and `anti` joins, keeping the
 //! table's columns alone, do not offer; and a line that reads the join as SQL,
 //! such as `left join by_age using (house_age)`, with the count of the columns
-//! the preview adds. Each change re-reads the rows, and Enter keeps the step,
+//! the preview adds while the join is first made. Each change re-reads the rows, and Enter keeps the step,
 //! named for the table joined (`<table>_joined_<other>`).
 
 use brightfield_ossie::Model;
@@ -169,8 +169,13 @@ fn as_sql(draft: &Draft, other: &str) -> String {
     format!("{kind} join {other}{on}")
 }
 
-/// How many columns the answer adds to the table's: `None` before an answer.
+/// How many columns the answer adds to the table's: `None` before an answer,
+/// and for a kept join being corrected, whose grid in front is the join's own
+/// rows rather than the table joined.
 fn added(cx: &FormCx<'_>) -> Option<usize> {
+    if cx.begin.taken.is_empty() {
+        return None;
+    }
     let answer = cx.answer?;
     Some(
         answer
