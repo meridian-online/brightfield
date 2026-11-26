@@ -77,7 +77,7 @@
 //! 5. carry **two goldens**, light and dark, at the `kittest.toml` floor.
 
 use brightfield_keys::ribbon::{Context as RibbonContext, Stage};
-use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
+use brightfield_keys::{Altitude, BindingContext, Frecency};
 use brightfield_workbench::arrangement::{self, Extent, Region};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
@@ -1289,10 +1289,7 @@ struct PickerDemo {
 impl Default for PickerDemo {
     fn default() -> Self {
         Self {
-            picker: Picker::new(CommandPalette::new(
-                Altitude::Protocol,
-                RecencyCounter::new(),
-            )),
+            picker: Picker::new(CommandPalette::new(Altitude::Protocol, Frecency::new())),
         }
     }
 }

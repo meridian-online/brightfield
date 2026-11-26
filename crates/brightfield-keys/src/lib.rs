@@ -40,7 +40,7 @@ pub use esc::{esc_action, EscAction, EscState};
 pub use focus::{focus_jump_candidates, FocusNode, FocusState, FocusTree, JumpCandidate, NodeKind};
 pub use keystroke::{keys_label, parse_keystrokes, KeyPlatform, Keystroke, KEY_NAMES};
 pub use menus::{item_title, items_without_native, menu_bar, Menu, MenuItem, NativeItem};
-pub use palette::{palette_filter, PaletteCandidate, RecencyCounter};
+pub use palette::{palette_filter, unix_now_secs, Frecency, PaletteCandidate};
 pub use registry::{
     help_sheet, keymap_bindings, palette_corpus, registry, BindingContext, BindingSpec, BoundKey,
     CommandTier, Drives, HelpRow, PaletteEntry, ReservedReason, Scores, VerbEntry, VerbStatus,
@@ -57,7 +57,7 @@ mod tests {
         // The verbs a bare key FIRES at an altitude equal the verbs the palette
         // ENABLES there (enabled = not-reserved, applicable) — one predicate.
         let reg = registry();
-        let recency = RecencyCounter::new();
+        let frecency = Frecency::new();
         for altitude in [Altitude::Dashboard, Altitude::View] {
             let bare_fires: std::collections::HashSet<&str> = reg
                 .iter()
@@ -65,7 +65,7 @@ mod tests {
                 .map(|v| v.longname)
                 .collect();
             let palette_enables: std::collections::HashSet<&str> =
-                palette_filter(&reg, altitude, "", &recency, None)
+                palette_filter(&reg, altitude, "", &frecency, 0, None)
                     .into_iter()
                     .filter(|c| c.enabled)
                     .map(|c| c.longname)
