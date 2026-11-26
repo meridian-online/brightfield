@@ -74,6 +74,10 @@ The palette over a grid, typing:
   Fill in missing values    fill-nulls                        f
 › where
   Filter rows        WHERE in SQL                             w
+› derive
+  Add a calculated column    derive-column                    =
+› cast
+  Change a column's type     cast-column                      ⇧T
 ```
 
 On an empty query, the rows read under the ribbon's stage headings, as they do today.
@@ -83,7 +87,7 @@ On an empty query, the rows read under the ribbon's stage headings, as they do t
 A row's tier is the best of its matches. A lower number ranks higher, and at each degree of match our own names rank above an alias:
 
 1. An exact match, case-folded, on the title or the long name.
-2. A prefix of the title or the long name, or of any word in the title. So "filter" lists "Filter rows" before any operation that another tool calls "Filter".
+2. A prefix of the title or the long name, or of any word in either, the long name's words being split at its hyphens. So "filter" lists "Filter rows" before any operation that another tool calls "Filter", and "derive" and "cast" find "Add a calculated column" and "Change a column's type" through `derive-column` and `cast-column`, ranked with a title prefix. The long names keep the working vocabulary an analyst uses (derive, cast, dedupe, summarise), while the titles say it in plain English, so both are searched at the same tier.
 3. An exact match, case-folded, on a whole alias.
 4. A prefix of any word inside an alias. So "kee" finds "Keep Only", but not "Peek".
 5. A fuzzy match on the title or the long name, by the palette's existing subsequence scorer.
@@ -115,6 +119,7 @@ This follows what the code of real palettes does: a name outranks a synonym (Jet
 ```
 
 - **`serves` lists only the variants the operation performs**, never a nearest home. An operation serves a whole class only when it performs every variant in it. An operation takes the crosswalk words of each variant it serves. A variant several operations perform together lists each of them: the `all_in_one` variant, Alteryx's "Select", is served by hide, rename and cast. A crosswalk row whose word names the opposite of the operation, such as "Null If" under the fill class, falls in a variant the operation does not serve, so it is never an alias. The variant ids in the example stand for whichever of the class's variants the catalogue holds. Writing the thirteen entries is the catalogue task's work, and the owner reviews the entries in its pull request.
+- **The thirteen titles**, approved by the owner on 2026-11-26 as plain English: Filter rows, Sort rows, Hide a column, Rename a column, Add a calculated column (`derive-column`), Change a column's type (`cast-column`), Fill in missing values (`fill-nulls`), Summarise by group (`summarise-rows`), Deduplicate rows (`dedupe-rows`), Take the first or last rows (`limit-rows`), Join tables on a key (`join-tables`), Append tables (`append-rows`) and Read a file (`read-file`). An operation added later takes a title on the same pattern: plain words, in sentence case, saying what the analyst gets.
 - **`sentence` is the operation's one sentence**, read by the palette as the row's detail for a title match and as the text tier 6 matches. arc's own `summary` stays, as the longer text a caller of `describe` reads. Brightfield's help line for a verb stays for verbs that are not operations.
 - **`build.py` writes `operators/operations.json`**, a second, small file that arc embeds. It holds each operation's long name, title, sentence and aliases, with each alias's source already decided: present only for a tool marked `named`, or for the SQL spec. It carries no URLs, no crosswalk rows, no unpublished classes and no proprietary tool's name. It is generated, never edited, and stamped with `landscape_commit` as `catalogue.json` is. arc is public and the catalogue repository is not, so arc embeds this file and never `catalogue.json`.
 - A tool table gains a `named` flag and a display name for each tool, and a spec table holds "SQL". A hand-kept list may add or drop words, since some crosswalk names are not words an analyst types: `Table.SelectRows` stays, while a name that is only a code path or a version string is dropped. Those rules are the catalogue's to keep, and its own check runs them.
