@@ -5162,7 +5162,7 @@ pub const GRAPH_CHIP_HINT: &str =
     "Switch the canvas between the Protocol's graph and the view it held";
 
 /// One **spine row**, drawn by the design system's step row
-/// ([`meridian_egui::step_row`]): the graph's edges in its gutter with the
+/// ([`meridian_egui::step_row()`]): the graph's edges in its gutter with the
 /// row's state mark on its lane, an optional fold control, the name, what the
 /// row produced, and for a step its timeline bar and duration.
 ///
