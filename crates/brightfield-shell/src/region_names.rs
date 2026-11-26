@@ -161,7 +161,7 @@ pub struct ShownColumn {
 }
 
 /// One name per region, `0..regions`, read from `summary`, the batches the label query over
-/// `columns` returned, by the default [`NamingRules`]. Every number is written in the plain form
+/// `columns` returned, by the default [`NamingRules`]. Numbers are written in the plain form
 /// an unformatted axis writes its ticks in; [`name_regions_shown`] writes each in its column's
 /// own format.
 #[must_use]
@@ -173,7 +173,7 @@ pub fn name_regions(
     name_regions_with(&NamingRules::default(), columns, summary, regions)
 }
 
-/// [`name_regions`] by `rules`, with every number in the plain form, as there.
+/// [`name_regions`] by `rules`, with numbers in the plain form, as there.
 #[must_use]
 pub fn name_regions_with(
     rules: &NamingRules,
