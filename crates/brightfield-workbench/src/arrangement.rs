@@ -739,8 +739,9 @@ pub const fn default_arrangement() -> &'static Arrangement {
 /// - a collapsed extent on a region that is not a rail, since the control that
 ///   collapses one is drawn in a rail's own strip and nothing would read the
 ///   declaration;
-/// - [`Collapse::Away`] on anything but a band, since a rail put away whole
-///   would take with it the strip it is reopened from;
+/// - [`Collapse::Away`] on a region that is not a band
+///   (`the_audit_refuses_away_on_anything_but_a_band`), since a rail put away
+///   whole would take with it the strip it is reopened from;
 /// - a region declaring [`RegionFrame::Unstyled`], which is a region with no
 ///   style: it draws, and it draws in nothing anybody chose —
 ///   `an_undeclared_frame_paints_nothing` is what that comes to on screen.

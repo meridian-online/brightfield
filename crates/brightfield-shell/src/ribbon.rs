@@ -44,8 +44,9 @@ pub struct CommandView {
     pub label: &'static str,
     /// Its Tabler icon's name.
     pub icon: &'static str,
-    /// The key that performs it where the keys are now, or `None` when none
-    /// of its bindings fires there.
+    /// The key that performs it where the keys are now, or `None` when its
+    /// bindings fire elsewhere
+    /// (`a_command_whose_key_does_not_fire_here_shows_no_keycap`).
     pub keycap: Option<String>,
     /// The sentence it says when it cannot act, or `None` when it can.
     pub unavailable: Option<String>,

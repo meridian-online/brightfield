@@ -9818,8 +9818,9 @@ impl MeridianApp {
     /// `longname`'s declared needs are not met, and then its sentence is shown:
     /// under the command when the window drew it (on the ribbon's row, or Run
     /// in the title band), under its stage's tab when only that is drawn, and
-    /// in an Info toast when neither is. A handler that is refused acts on
-    /// nothing and notes nothing in [`Self::keys_answered`].
+    /// in an Info toast when neither is. A handler that is refused leaves its
+    /// verb out of [`Self::keys_answered`]
+    /// (`every_global_key_of_a_greyed_command_says_its_sentence`).
     fn refuse_key(&mut self, ctx: &egui::Context, longname: &'static str) -> bool {
         let Some(brightfield_keys::Availability::Missing(sentence)) =
             self.availability_of(longname)
