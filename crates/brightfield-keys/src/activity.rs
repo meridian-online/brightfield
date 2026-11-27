@@ -12,6 +12,10 @@ pub const SHOW_CHART: &str = "show-chart";
 /// The verb that shows the model that relates the Protocol's sources.
 pub const RELATE: &str = "relate";
 
+/// The verb that splits the canvas in two, the node in focus in one pane and
+/// its other activity in the pane beside it, or closes the pane without focus.
+pub const SPLIT_CANVAS: &str = "split-canvas";
+
 /// The three activity verbs, in the order an activity switcher lists them.
 pub const ACTIVITY_VERBS: [&str; 3] = [SHOW_GRID, SHOW_CHART, RELATE];
 
@@ -37,6 +41,7 @@ mod tests {
         assert_eq!(key(SHOW_GRID), "⌥⌘G");
         assert_eq!(key(SHOW_CHART), "⌥⌘C");
         assert_eq!(key(RELATE), "⌥⌘M");
+        assert_eq!(key(SPLIT_CANVAS), "⌘\\");
     }
 
     #[test]

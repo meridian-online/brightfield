@@ -1744,6 +1744,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Hide the inspector, or bring it back",
             scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 4, motor_note: "cmd-b is the left rail, so cmd-alt-b is the right one, as VS Code's secondary side bar is" }),
         },
+        // The canvas splits in two: the node in focus in one pane, its other
+        // activity in the pane beside it. Pressed again it closes the pane
+        // without focus. It writes nothing.
+        VerbEntry {
+            longname: "split-canvas",
+            label: "Split",
+            needs: &[A_PROTOCOL],
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-\\")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Split the canvas in two, or close the pane without focus",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "cmd-backslash splits an editor in two in VS Code and Zed" }),
+        },
         // The ledger rail's Versions panel: a centre tab in the chart view's item
         // registry, so it carries a show verb the item audit requires, reserved
         // and unbound as the Log's and the Quality panel's are; the panel's own
@@ -2637,6 +2653,7 @@ mod tests {
             "relate",
             "quick-open",
             "toggle-inspector-rail",
+            "split-canvas",
             "open-chart-versions",
             "open-run-log",
             "open-run-quality",
