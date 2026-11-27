@@ -195,8 +195,9 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
 /// [`load_sql`], for a session whose extensions come from `extensions`.
 ///
 /// With [`Extensions::BuiltIn`] the step names no extension
-/// (`a_built_in_load_step_names_no_extension`), because `INSTALL` would go to
-/// the network even for an extension that is compiled in. Its reader is then found by DuckDB:
+/// (`a_built_in_load_step_names_no_extension`), because the managed edition's DuckDB is built
+/// without its extension installer and refuses any `INSTALL`, even of an extension that is
+/// compiled in. Its reader is then found by DuckDB:
 /// compiled in, in the managed edition's DuckDB, and installed and loaded on first use by DuckDB's
 /// release command line, whose automatic install and load are on. So a Protocol made in the
 /// managed edition runs in the full one. A step that says only `LOAD excel` would not: on a
@@ -340,7 +341,7 @@ impl Probe {
     }
 
     fn extension(&mut self, ext: &'static str) -> Result<(), String> {
-        // Compiled in, and already loaded: an `INSTALL` would go to the network to no purpose.
+        // Compiled in, and already loaded: the managed edition's DuckDB refuses any `INSTALL`.
         if self.loaded.contains(ext) || !Extensions::linked().installs() {
             return Ok(());
         }

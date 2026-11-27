@@ -14,8 +14,10 @@
 //! - an operator that starts a program from outside the app, such as `uv` for the operators that
 //!   run a pinned Python script, with one exception: FineType's CLI, which the managed edition
 //!   ships as a helper of its own, so arc's FineType operators run;
-//! - a step that installs or loads a DuckDB extension the app does not have built in, or loads one
-//!   from a file.
+//! - a step that installs a DuckDB extension, whatever its name, since the managed edition's DuckDB
+//!   is built without its extension installer and refuses it (`docs/managed-duckdb.md`), or that
+//!   updates extensions, which the engine's rule refuses as it would download code;
+//! - a step that loads a DuckDB extension the app does not have built in, or loads one from a file.
 //!
 //! The lifecycle hooks are steps too, and are asked about the same way, after the steps.
 //!
@@ -51,10 +53,15 @@ pub enum Reason {
     /// A DuckDB extension the app does not have built in, as the step names it: a name, or the
     /// path of a file the step loads one from.
     Extension(String),
+    /// A DuckDB extension the step installs, as it names it, which the app's DuckDB refuses even
+    /// for one it has built in.
+    Install(String),
+    /// An `UPDATE EXTENSIONS`, which would download every installed extension again.
+    UpdateExtensions,
 }
 
-/// The DuckDB extensions built into the managed edition, which a step may install and load: the
-/// engine's list, since the engine reads with the same library.
+/// The DuckDB extensions built into the managed edition, which a step may load but not install:
+/// the engine's list, since the engine reads with the same library.
 pub use brightfield_engine::extensions::BUILT_IN as BUILT_IN_EXTENSIONS;
 
 /// The program FineType's operators start, which the managed edition ships as a helper.
@@ -119,16 +126,17 @@ pub fn every_step_beyond(dir: &Path, manifest: &Manifest, edition: Edition) -> V
         .collect()
 }
 
-/// Whether a SQL statement recorded as the step `name` is beyond `edition`: whether it installs or
-/// loads an extension the app does not have built in. What the window asks as a statement is added.
+/// Whether a SQL statement recorded as the step `name` is beyond `edition`: whether it installs an
+/// extension, updates extensions, or loads an extension the app does not have built in. What the
+/// window asks as a statement is added.
 #[must_use]
 pub fn statement(name: &str, sql: &str, edition: Edition) -> Option<BeyondEdition> {
     if edition.allows(Capability::ExtensionInstall) {
         return None;
     }
-    sql_extension_beyond(sql).map(|ext| BeyondEdition {
+    sql_extension_beyond(sql).map(|reason| BeyondEdition {
         step: name.to_string(),
-        reason: Reason::Extension(ext),
+        reason,
     })
 }
 
@@ -147,6 +155,14 @@ pub fn sentence(b: &BeyondEdition) -> String {
         Reason::Extension(ext) => {
             format!("Step {step} loads the DuckDB extension {ext}, which this edition can't load.")
         }
+        Reason::Install(ext) => format!(
+            "Step {step} installs the DuckDB extension {ext}, and this edition installs no \
+             extensions: it runs only the ones built into it."
+        ),
+        Reason::UpdateExtensions => format!(
+            "Step {step} updates DuckDB extensions, and this edition installs no extensions: it \
+             runs only the ones built into it."
+        ),
     }
 }
 
@@ -182,8 +198,8 @@ fn step_beyond(dir: &Path, step: &Step, edition: Edition) -> Option<Reason> {
         }
         if let Some(sql) = &step.sql {
             if let Ok(text) = std::fs::read_to_string(dir.join(sql)) {
-                if let Some(ext) = sql_extension_beyond(&text) {
-                    return Some(Reason::Extension(ext));
+                if let Some(reason) = sql_extension_beyond(&text) {
+                    return Some(reason);
                 }
             }
         }
@@ -221,15 +237,18 @@ fn is_assignment(word: &str) -> bool {
     })
 }
 
-/// The first extension `sql` installs or loads that the managed edition does not have built in,
-/// as written: a bare name not in [`BUILT_IN_EXTENSIONS`], or any file path, since the managed
-/// edition loads no extension from a file. Comments are not read.
-fn sql_extension_beyond(sql: &str) -> Option<String> {
-    use brightfield_engine::extensions::{statements, Verb};
-    statements(sql)
-        .into_iter()
-        .find(|s| s.verb != Verb::Update && !s.names_a_built_in())
-        .map(|s| s.target)
+/// Why the managed edition cannot run `sql`, from its first statement the engine's rule for a
+/// source's SQL refuses: any `INSTALL`, which the edition's DuckDB, built without its installer,
+/// refuses too; an `UPDATE EXTENSIONS`, which would download code; and a `LOAD` of a bare name not
+/// in [`BUILT_IN_EXTENSIONS`] or of any file path, since that DuckDB loads no extension from a
+/// file. Comments are not read.
+fn sql_extension_beyond(sql: &str) -> Option<Reason> {
+    use brightfield_engine::extensions::{refused_when_built_in, Verb};
+    refused_when_built_in(sql).map(|s| match s.verb {
+        Verb::Install => Reason::Install(s.target),
+        Verb::Update => Reason::UpdateExtensions,
+        Verb::Load => Reason::Extension(s.target),
+    })
 }
 
 #[cfg(test)]
@@ -248,12 +267,30 @@ mod tests {
         assert_eq!(sql_extension_beyond("/* INSTALL h3; */ SELECT 1"), None);
         assert_eq!(
             sql_extension_beyond("LOAD '/x/finetype.duckdb_extension';"),
-            Some("/x/finetype.duckdb_extension".to_string())
+            Some(Reason::Extension(
+                "/x/finetype.duckdb_extension".to_string()
+            ))
         );
         assert_eq!(
             sql_extension_beyond("FORCE INSTALL h3 FROM community;"),
-            Some("h3".to_string())
+            Some(Reason::Install("h3".to_string()))
         );
-        assert_eq!(sql_extension_beyond("INSTALL Spatial; LOAD spatial;"), None);
+        assert_eq!(sql_extension_beyond("LOAD Spatial; LOAD excel;"), None);
+    }
+
+    #[test]
+    fn any_install_or_update_is_beyond_it_and_a_built_in_load_is_not() {
+        assert_eq!(
+            sql_extension_beyond("INSTALL Spatial; LOAD spatial;"),
+            Some(Reason::Install("Spatial".to_string()))
+        );
+        assert_eq!(
+            sql_extension_beyond("LOAD excel; INSTALL json FROM core;"),
+            Some(Reason::Install("json".to_string()))
+        );
+        assert_eq!(
+            sql_extension_beyond("update extensions;"),
+            Some(Reason::UpdateExtensions)
+        );
     }
 }

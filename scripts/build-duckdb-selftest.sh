@@ -16,10 +16,14 @@
 #      the database holds neither afterwards;
 #   3. no `.duckdb_extension` file is anywhere in the output, and nothing is
 #      written to an empty extension directory and HOME while the shell runs;
-#   4. an extension outside the seven cannot be installed with the network
-#      denied. (The release shell refuses it too, for want of the network; the
-#      managed edition's refusal of INSTALL and LOAD whatever the network is
-#      the engine's, not the build's.)
+#   4. with the network available, the shell installs nothing and loads no
+#      file: INSTALL of an extension outside the built-ins, of one compiled in,
+#      and of one FROM core, FORCE INSTALL and a LOAD of a file path each fail
+#      with DuckDB's refusal for a build without its extension loader, and
+#      nothing is written (UPDATE EXTENSIONS reinstalls only the files in the
+#      extension directory, so with none installed it has nothing to fetch);
+#      a LOAD of a built-in still succeeds, and httpfs still reads a file
+#      over HTTP, from a server on this machine;
 #   5. the shell links exactly one DuckDB, @rpath/libduckdb.dylib, binds
 #      DuckDB's symbols from it rather than carrying its own, and at run time loads that library and no other, both
 #      from the output layout (bin/ beside lib/) and from an app bundle's
@@ -43,7 +47,6 @@ CLI="${DIR}/bin/duckdb"
 
 EXPECTED_VERSION="v2.0.0 (Cyanoptera) d54cbbe3df"
 BUILT_IN="autocomplete excel sqlite_scanner httpfs ducklake spatial finetype"
-NETWORK_DENIED="(version 1)(allow default)(deny network*)"
 
 failures=0
 pass() { echo "ok   $*"; }
@@ -139,12 +142,59 @@ else
   fail "extension files: ${files} ${written}"
 fi
 
-# 4. Nothing else installs.
-if out=$(HOME="${SCRATCH}/home" DUCKDB_AGENT_MODE=0 sandbox-exec -p "$NETWORK_DENIED" "$CLI" -no-init -batch \
-    -c "SET extension_directories = ['${SCRATCH}/extensions'];" -c "INSTALL h3 FROM community;" 2>&1); then
-  fail "INSTALL h3 succeeded with the network denied: ${out}"
+# 4. Nothing installs and no file loads, with the network available. The
+# refusal is the one DuckDB gives when the build leaves its extension loader
+# out (ENABLE_EXTENSION_LOAD=OFF in scripts/build-duckdb.sh), which it raises
+# before it looks at the network or the disk, so a refusal for want of the
+# network, as DuckDB's release gives offline, does not pass here.
+REFUSED="external extensions is not supported: this build does not link the loadable_extensions library"
+printf 'not an extension' > "${SCRATCH}/h3.duckdb_extension"
+for statement in "INSTALL h3 FROM community;" "INSTALL h3;" "INSTALL excel;" "INSTALL json FROM core;" \
+    "FORCE INSTALL spatial;" "LOAD '${SCRATCH}/h3.duckdb_extension';"; do
+  status=0
+  out=$(duck -c "$statement" 2>&1) || status=$?
+  if [ "$status" != 0 ] && printf '%s' "$out" | grep -qF "$REFUSED"; then
+    pass "${statement} is refused, by a build with no extension loader"
+  else
+    fail "${statement}: exit ${status}, output: ${out}"
+  fi
+done
+written=$(find "${SCRATCH}/home" "${SCRATCH}/extensions" -type f 2>/dev/null)
+if [ -z "$written" ]; then
+  pass "the refused statements wrote nothing to HOME or the extension directory"
 else
-  pass "INSTALL h3 is refused"
+  fail "the refused statements wrote: ${written}"
+fi
+loaded=$(duck -c "LOAD excel; LOAD spatial; SELECT 'loaded';" 2>&1) || true
+if [ "$loaded" = "loaded" ]; then
+  pass "a LOAD of a built-in extension succeeds"
+else
+  fail "a LOAD of a built-in extension: ${loaded}"
+fi
+# httpfs reads a URL with its own HTTP client, which the build keeps when it
+# leaves DuckDB's built-in one out with the extension loader.
+mkdir -p "${SCRATCH}/served"
+printf 'answer\n42\n' > "${SCRATCH}/served/answer.csv"
+port_file="${SCRATCH}/port"
+python3 -I -c '
+import http.server, socketserver, sys, functools
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+handler = functools.partial(Quiet, directory=sys.argv[1])
+with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+    open(sys.argv[2], "w").write(str(httpd.server_address[1]))
+    httpd.serve_forever()
+' "${SCRATCH}/served" "$port_file" &
+server=$!
+for _ in $(seq 50); do [ -s "$port_file" ] && break; sleep 0.1; done
+served=$(duck -c "SELECT answer FROM read_csv('http://127.0.0.1:$(cat "$port_file" 2>/dev/null)/answer.csv');" 2>&1) || true
+kill "$server" 2>/dev/null || true
+wait "$server" 2>/dev/null || true
+if [ "$served" = "42" ]; then
+  pass "httpfs reads a CSV over HTTP"
+else
+  fail "httpfs reading a CSV over HTTP: ${served}"
 fi
 
 # 5. One DuckDB, by rpath.
