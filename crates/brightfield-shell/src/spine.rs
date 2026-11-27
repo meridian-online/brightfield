@@ -352,8 +352,8 @@ impl OpenPlaces {
         &self.places
     }
 
-    /// Where the current place is in [`Self::places`]: `None` while none is
-    /// open.
+    /// Where the current place is in [`Self::places`]: `None` while the
+    /// list is empty.
     #[must_use]
     pub fn current(&self) -> Option<usize> {
         (!self.places.is_empty()).then_some(self.current)
@@ -376,8 +376,8 @@ impl OpenPlaces {
         }
     }
 
-    /// Make the place at `index` current, and answer it. `None`, and nothing
-    /// moves, for an index past the list.
+    /// Make the place at `index` current, and answer it. An index past the
+    /// list answers `None` and leaves the current place as it was.
     pub fn go(&mut self, index: usize) -> Option<&Place> {
         if index < self.places.len() {
             self.current = index;
@@ -388,9 +388,9 @@ impl OpenPlaces {
     /// Close the place at `index`, and answer it.
     ///
     /// Closing the current place makes the one above it current, or the one
-    /// that moves up into its slot when it was the top. The last place is
-    /// never closed, since the canvas always shows something: `None`, and the
-    /// list is left as it was.
+    /// that moves up into its slot when it was the top. Closing the last place
+    /// answers `None` and leaves the list as it was, since the canvas always
+    /// shows something (`the_last_place_is_never_closed`).
     pub fn close(&mut self, index: usize) -> Option<Place> {
         if self.places.len() <= 1 || index >= self.places.len() {
             return None;
