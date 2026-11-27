@@ -3232,6 +3232,10 @@ fn statlib_still_serves_the_housing_archive_the_fixture_is() {
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
 /// A [`starts::Start::remote`] start is composed over [`remote_stand_in`]
 /// rather than fetched.
+/// The instant the thumbnails are drawn at, three days after the crosswalk's recorded run. Noon
+/// UTC is the same date in every time zone within eleven hours of it.
+const THUMBNAIL_CLOCK: &str = "2026-07-28T12:00:00Z";
+
 fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
@@ -3272,9 +3276,24 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size();
+        // The title band says when the Protocol last ran, and how long ago, so the capture reads
+        // both from a clock that stands still: the crosswalk's recorded run reads three days old,
+        // and a run the start takes as it opens reads as finishing at the clock.
+        let run_clock = chrono::DateTime::parse_from_rfc3339(THUMBNAIL_CLOCK)
+            .expect("the thumbnails' clock")
+            .with_timezone(&chrono::Local);
         let out = scratch(&format!("thumb-{}-{mode:?}", start.id));
-        let (w, h) = capture_png_at(boot, mode, 1.0, size, &out, Vec::new())
-            .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
+        let (w, h) = brightfield_shell::capture::capture_png_prepared(
+            boot,
+            brightfield_shell::startup::default_layout(),
+            mode,
+            1.0,
+            size,
+            &out,
+            Vec::new(),
+            |app| app.set_run_clock(run_clock),
+        )
+        .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
         assert!(w > 0 && h > 0, "{}: empty capture", start.id);
         let thumb = thumbnail(&read_rgba(&out), 480, 300);
         let name = match mode {
