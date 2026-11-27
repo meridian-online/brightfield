@@ -350,6 +350,18 @@ impl MeridianApp {
         }
     }
 
+    /// The window's situation with what `cx` holds for an operation started on
+    /// `column`, from a context already gathered.
+    fn situation_of(
+        &self,
+        cx: &OperationContext,
+        column: Option<&str>,
+    ) -> brightfield_keys::Situation {
+        let mut situation = self.window_situation();
+        crate::operation_ui::open::hold(&mut situation, cx, column);
+        situation
+    }
+
     /// Each column of the table in front as SQL spells it: bare when it is a
     /// plain name DuckDB does not read as a word, and quoted otherwise. A
     /// column this cannot ask the session about is quoted, which costs looks
@@ -450,8 +462,8 @@ impl MeridianApp {
     ///
     /// An operation that asks in the foot row opens its field there once the
     /// window meets its needs. For any other, in order, saying the first that
-    /// fails: the window has arc; arc's description of the operation has come;
-    /// the window meets the operation's needs; the operation begins its draft.
+    /// fails: the window meets the operation's needs; the window has arc; arc's
+    /// description of the operation has come; the operation begins its draft.
     /// It then becomes the operation being made, with its first edit sent to
     /// be read.
     ///
@@ -494,8 +506,9 @@ impl MeridianApp {
         // panel beside it says what arc gave, or that it gave no description.
         if let Start::FootField(field) = start {
             let cx = self.operation_context();
-            let situation = self.operation_situation(column.as_deref());
-            if let Availability::Missing(why) = availability(spec, &situation) {
+            if let Availability::Missing(why) =
+                availability(spec, &self.situation_of(&cx, column.as_deref()))
+            {
                 // Over a step's preview the foot row has its own line for the offer, which
                 // the ask below raises; said here too it would stand on the band twice.
                 let the_previews = cx
@@ -519,6 +532,15 @@ impl MeridianApp {
             ctx.request_repaint();
             return asked;
         }
+        // What the window lacks is said before arc's description is waited on,
+        // so a key says what the palette row and the menus say.
+        let cx = self.operation_context();
+        if let Availability::Missing(why) =
+            availability(spec, &self.situation_of(&cx, column.as_deref()))
+        {
+            self.say_operation(ctx, why);
+            return false;
+        }
         let description = match self.description_of(spec.long_name) {
             Ok(description) => description,
             Err(why) => {
@@ -526,13 +548,6 @@ impl MeridianApp {
                 return false;
             }
         };
-        let cx = self.operation_context();
-        if let Availability::Missing(why) =
-            availability(spec, &self.operation_situation(column.as_deref()))
-        {
-            self.say_operation(ctx, why);
-            return false;
-        }
         let front = cx.in_front.clone().unwrap_or_default();
         let column = column.or_else(|| front.cursor_column.clone());
 

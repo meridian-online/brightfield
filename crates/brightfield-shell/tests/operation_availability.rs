@@ -13,7 +13,7 @@ use brightfield_keys::{Condition, Need, Selected, Situation};
 use brightfield_shell::operation;
 use brightfield_shell::operation_ui::header::Gesture;
 use brightfield_shell::operation_ui::open::{self, InFront, OperationContext};
-use brightfield_shell::operation_ui::{self, HeaderPart, Start};
+use brightfield_shell::operation_ui::{self, HeaderPart, Keeps, Start};
 use operations::OpWindow;
 
 const WITH_NULLS: &str = "with_nulls.csv";
@@ -70,6 +70,16 @@ fn each_operations_declared_needs_match_what_arc_says_it_reads() {
             "{} and tables to append",
             ui.long_name
         );
+        // A Data-menu item ends in "…" exactly when its operation asks before
+        // it keeps a step.
+        if brightfield_keys::operations::is_operation_verb(ui.verb) {
+            assert_eq!(
+                brightfield_keys::operations::operation_asks(ui.verb),
+                ui.keeps == Keeps::OnEnter,
+                "{} on the Data menu",
+                ui.long_name
+            );
+        }
         // The ribbon's and the menus' stage is the operation's own.
         if let Some(stage) = brightfield_keys::operations::operation_stage(ui.verb) {
             assert_eq!(stage, ui.stage, "{}'s stage", ui.long_name);

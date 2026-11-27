@@ -30,7 +30,7 @@ Two rules follow from arc holding the catalogue. Brightfield writes no operation
 
 ## From a start to a Save
 
-1. **A start.** A key in the grid, a palette row, a gesture on a part of a column's header, or a menu item comes to `MeridianApp::start_operation`. It says the first thing in its way on the status band: the window has no arc, arc's description has not come, a need is unmet, or the operation's own `begin` refuses. The sentence stays until the next key or pointer press.
+1. **A start.** A key in the grid, a palette row, a gesture on a part of a column's header, or a menu item comes to `MeridianApp::start_operation`. It says the first thing in its way on the status band: a need is unmet, the window has no arc, arc's description has not come, or the operation's own `begin` refuses. A need comes first so that a key says what the palette row and the menus say for it, without waiting on arc. The sentence stays until the next key or pointer press.
    An operation that starts from the spine (`Start::Spine`) opens the spine's pick here, in place of its draft, and its draft begins once a table is taken. See "The spine's pick" below.
 2. **The draft.** `begin` makes the draft with its defaults filled from what Brightfield knows of the column. A column given to a value is spelled for that value: bare for a value arc takes as a name, and as SQL spells it (quoted when it needs quotes) for a value arc takes as SQL.
 3. **The preview.** The draft is read at each edit. The grid shows the answer's page under the preview label with the missing-value counts of the preview's own columns. While arc or DuckDB refuses the draft as it stands, the last good rows stay on screen, faded, and the reason is on the status band.
