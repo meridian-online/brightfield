@@ -191,8 +191,8 @@ pub fn root_now() -> PathBuf {
 
 /// The Protocols folder the Preferences sheet shows, which it asks on each frame it draws: the
 /// folder [`root_now`] answers once this edition may use one, else the folder Preferences holds
-/// though it is out of reach this launch, else `None`, since the managed edition has none until
-/// the analyst chooses one. Like [`root_now`], it does not try again a grant that did not open.
+/// though it is out of reach this launch, else `None`: the managed edition before the analyst
+/// chooses a folder (`an_open_that_makes_a_protocol_asks_for_the_folder_first`). Like [`root_now`], it does not try again a grant that did not open.
 #[must_use]
 pub fn shown_now() -> Option<PathBuf> {
     granted_with(|dir| crate::grants::store().covers_now(dir)).or_else(chosen)

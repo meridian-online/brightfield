@@ -92,8 +92,8 @@ pub(crate) fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: 
 /// What the sheet shows in the managed edition before a Protocols folder is chosen.
 pub const NONE_CHOSEN: &str = "None chosen yet";
 
-/// Draw the sheet's body: the Protocols folder `folder`, or that none is chosen yet, the offer while one waits, the default-app
-/// button where `default_app` says there is one (`Err` with why it cannot be pressed in this
+/// Draw the sheet's body: the Protocols folder `folder`, or [`NONE_CHOSEN`] when it is `None`,
+/// the offer while one waits, the default-app button where `default_app` says there is one (`Err` with why it cannot be pressed in this
 /// launch), and the folders in `trusted` when there are any. `overridden` is the variable that
 /// sets the folder for this launch, when it is set.
 pub fn body(
