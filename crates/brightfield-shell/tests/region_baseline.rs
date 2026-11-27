@@ -8,7 +8,8 @@
 //! what moved instead: one line per region, with its peak, its size, its share
 //! of the rows, its bounding box, its name and where the name is written. Each
 //! is compared with its file under `tests/regions/`, so a run whose regions
-//! moved fails here, before a snapshot of the same plot is drawn.
+//! moved fails here and names what moved. Run it before redrawing a snapshot
+//! of these plots; nothing orders it before the snapshot targets.
 //!
 //! Regenerate the tables with `UPDATE_REGION_TABLES=1 cargo test -p
 //! brightfield-shell --test region_baseline`, then read every line of the
