@@ -95,7 +95,8 @@ use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{
-    CommandsHandle, InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle,
+    CommandsHandle, InspectedHandle, InspectedTable, InspectorPane, SectionHandle, Selection,
+    TableHandle,
 };
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
@@ -3330,6 +3331,9 @@ struct ChartView {
     /// window holds said of each: written by [`MeridianApp::draw`] beside
     /// [`Self::inspector_selection`] while a column is selected.
     inspector_commands: CommandsHandle,
+    /// Which of the inspector's sections the chart's inspector draws, and what
+    /// the chart's sections drew.
+    inspector_sections: SectionHandle,
     /// The column profiles of the tables the inspector has been asked about;
     /// see [`MeridianApp::column_facts_for`].
     column_profiles: ColumnProfiles,
@@ -4475,13 +4479,15 @@ impl MeridianApp {
         let inspector_table = TableHandle::default();
         let inspector_inspected = InspectedHandle::default();
         let inspector_commands = CommandsHandle::default();
+        let inspector_sections = SectionHandle::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
             Box::new(
                 InspectorPane::new(inspector_selection.clone(), inspector_table.clone())
                     .with_inspected(inspector_inspected.clone())
-                    .with_commands(inspector_commands.clone()),
+                    .with_commands(inspector_commands.clone())
+                    .with_sections(inspector_sections.clone()),
             ),
         );
         // The two documents' one join: what each tile is of. Done here rather
@@ -4500,6 +4506,7 @@ impl MeridianApp {
                 inspector_table,
                 inspector_inspected,
                 inspector_commands,
+                inspector_sections,
                 column_profiles: ColumnProfiles::default(),
                 shelf: ShelfHold::new(),
             },
@@ -7022,6 +7029,31 @@ impl MeridianApp {
         &self.inspector_drawn
     }
 
+    /// The rows the inspector's Encoding section drew on the last frame.
+    #[must_use]
+    pub fn inspector_encoding(&self) -> Vec<crate::inspector::EncodingRow> {
+        self.charts.inspector_sections.encoding()
+    }
+
+    /// The columns the inspector's Fields section listed on the last frame.
+    #[must_use]
+    pub fn inspector_fields(&self) -> Vec<String> {
+        self.charts.inspector_sections.fields()
+    }
+
+    /// The line the inspector's Reads section drew on the last frame.
+    #[must_use]
+    pub fn inspector_reads(&self) -> Option<String> {
+        self.charts.inspector_sections.reads()
+    }
+
+    /// The count `section`'s header carried on the last frame, for a section
+    /// whose header carries one.
+    #[must_use]
+    pub fn inspector_section_count(&self, section: crate::inspector::Section) -> Option<usize> {
+        self.charts.inspector_sections.count(section)
+    }
+
     /// Hand the operation panel the state of arc's description of the
     /// operation in hand, asking for it on the first frame that has one in
     /// hand. A window with no runner has none to ask, and the panel says so.
@@ -9033,6 +9065,13 @@ impl MeridianApp {
         // the frame's own requests.
         self.take_menu_verbs(&mut requests);
         self.apply(&ctx, graph_on_canvas, requests);
+        // An Encoding row clicked: the shelf's cell for its channel opens, as
+        // the cell's own key opens it. After the frame's requests, because the
+        // click also asked to focus the inspector, and the cell needs the
+        // chart's pane focused.
+        if let Some(channel) = self.charts.inspector_sections.take_go_to() {
+            self.shelf_go_to(channel);
+        }
         // Cmd+S, after the panes have drawn: the YAML editor takes the chord while its text holds
         // the keyboard, saves its buffer and raises the window's Save, applied just above, so
         // what reaches here is a press from anywhere else.
@@ -10232,16 +10271,26 @@ impl MeridianApp {
             crate::pipeline::AxisPart::Labels => crate::shelf::FORMAT_ROW,
             crate::pipeline::AxisPart::Line => crate::shelf::RANGE_ROW,
         };
-        let Some(band) = self.charts.shelf.band.as_mut() else {
+        if !self.shelf_go_to(channel) {
             return;
+        }
+        if self.protocol.doc.model.open_column_list_on_row(row) {
+            self.charts.doc.drop_shelf_preview();
+        }
+    }
+
+    /// **Open `channel`'s cell on the shelf**, as its key does from the band:
+    /// the hero pane is focused, the band holds the keys, and the cell's list
+    /// opens. `false` when no band has been drawn to open it on.
+    fn shelf_go_to(&mut self, channel: ShelfChannel) -> bool {
+        let Some(band) = self.charts.shelf.band.as_mut() else {
+            return false;
         };
         band.activate(channel);
         self.ws_mut().set_focus(PaneKey::new(CHART));
         self.charts.shelf.holds = true;
         self.shelf_sync_list();
-        if self.protocol.doc.model.open_column_list_on_row(row) {
-            self.charts.doc.drop_shelf_preview();
-        }
+        true
     }
 
     /// A bare key while the band has the keys and no list is open.
@@ -21545,8 +21594,9 @@ struct InspectorDocs<'a> {
 /// it. Returns the section whose header was clicked, for the caller to flip.
 ///
 /// A section's body is the pane that drew it when the rail held three panes,
-/// drawn without its frame: Operation is the operation panel, Column and
-/// Parameters the chart's inspector, and Step the operator's facts. Each open
+/// drawn without its frame: Operation is the operation panel, Column,
+/// Encoding, Reads, Fields and Parameters the chart's inspector, told which
+/// it draws through [`SectionHandle`], and Step the operator's facts. Each open
 /// body scrolls within the room the headers below it leave, so those headers
 /// stay in the rail where a click can reach them.
 #[allow(clippy::too_many_arguments)]
@@ -21585,66 +21635,76 @@ fn draw_inspector_sections(
     let body = column.max_rect();
     let mut toggled = None;
     // What one closed section below takes: its header and the gap the column
-    // leaves before it.
+    // leaves before it. An open one also keeps its body's inset above and
+    // below, however little room its body is left.
     let header_step = meridian_design::control::HEIGHT_MD + column.spacing().item_spacing.y;
+    let body_inset = spacing::SPACE_2 + spacing::SPACE_5;
+    charts.inspector_sections.begin();
     for (index, (section, open)) in sections.iter().enumerate() {
-        let headers_below = (sections.len() - 1 - index) as f32 * header_step;
-        let drawn = meridian_egui::section(
-            &mut column,
-            meridian_egui::Section::new(section.title(), *open),
-            |ui| {
-                // The body scrolls within the room the headers below leave
-                // it, so a tall body cannot push them out of the rail.
-                let room =
-                    (body.bottom() - headers_below - spacing::SPACE_5 - ui.cursor().min.y).max(0.0);
-                egui::ScrollArea::vertical()
-                    .id_salt(("inspector-section", *section))
-                    .max_height(room)
-                    // egui keeps a scroll area at least 64 tall by default,
-                    // which a body given less room would push the headers
-                    // below it out of the rail with.
-                    .min_scrolled_height(0.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        let item = match section {
-                            Section::Operation => crate::operation_panel::OPERATION,
-                            Section::Step => PROTOCOL_INSPECTOR,
-                            _ => CONTROLS,
-                        };
-                        let key = PaneKey::new(item);
-                        let Some(tile) = ws.tile_of(key) else {
-                            return;
-                        };
-                        if *section == Section::Step {
-                            PaneChrome::new(
-                                &mut protocol.doc,
-                                &mut protocol.items,
-                                mode,
-                                focused,
-                                headed,
-                                requests,
-                                affordances,
-                            )
-                            .body_ui(ui, tile, key);
-                        } else {
-                            PaneChrome::new(
-                                &mut charts.doc,
-                                &mut charts.items,
-                                mode,
-                                focused,
-                                headed,
-                                requests,
-                                affordances,
-                            )
-                            .body_ui(ui, tile, key);
-                        }
-                    });
-            },
-        );
+        let headers_below: f32 = sections[index + 1..]
+            .iter()
+            .map(|(_, open)| header_step + if *open { body_inset } else { 0.0 })
+            .sum();
+        let mut header = meridian_egui::Section::new(section.title(), *open);
+        if *section == Section::Fields {
+            let count = charts.doc.column_facts().len();
+            charts.inspector_sections.counted(*section, count);
+            header = header.count(count);
+        }
+        charts.inspector_sections.drawing(Some(*section));
+        let drawn = meridian_egui::section(&mut column, header, |ui| {
+            // The body scrolls within the room the headers below leave
+            // it, so a tall body cannot push them out of the rail.
+            let room =
+                (body.bottom() - headers_below - spacing::SPACE_5 - ui.cursor().min.y).max(0.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("inspector-section", *section))
+                .max_height(room)
+                // egui keeps a scroll area at least 64 tall by default,
+                // which a body given less room would push the headers
+                // below it out of the rail with.
+                .min_scrolled_height(0.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let item = match section {
+                        Section::Operation => crate::operation_panel::OPERATION,
+                        Section::Step => PROTOCOL_INSPECTOR,
+                        _ => CONTROLS,
+                    };
+                    let key = PaneKey::new(item);
+                    let Some(tile) = ws.tile_of(key) else {
+                        return;
+                    };
+                    if *section == Section::Step {
+                        PaneChrome::new(
+                            &mut protocol.doc,
+                            &mut protocol.items,
+                            mode,
+                            focused,
+                            headed,
+                            requests,
+                            affordances,
+                        )
+                        .body_ui(ui, tile, key);
+                    } else {
+                        PaneChrome::new(
+                            &mut charts.doc,
+                            &mut charts.items,
+                            mode,
+                            focused,
+                            headed,
+                            requests,
+                            affordances,
+                        )
+                        .body_ui(ui, tile, key);
+                    }
+                });
+        });
         if drawn.toggled {
             toggled = Some(*section);
         }
     }
+    charts.inspector_sections.drawing(None);
     toggled
 }
 
@@ -22565,7 +22625,7 @@ fn carve_shelf_band(
 /// column the shelf's list previews or keeps is put on.
 pub(crate) const HERO_PLOT: usize = 0;
 
-fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
+pub(crate) fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
     let path = &doc.composed.plots.get(HERO_PLOT)?.path;
     let spec = doc.live_dashboard()?.spec();
     let plot = brightfield_spec::edit::plot_at_path(spec, path)?;

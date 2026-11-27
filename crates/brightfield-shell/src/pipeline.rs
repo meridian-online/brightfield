@@ -3601,6 +3601,17 @@ pub fn presenting_rows_mark(spec: &Spec) -> usize {
     ghost_subset_marks(spec).map_or(0, |(_ghost, subset)| subset)
 }
 
+/// The data source the mark at [`presenting_rows_mark`] reads from, by its
+/// `data:` name. `None` when that mark has inline data or no mark exists.
+#[must_use]
+pub fn presenting_source(spec: &Spec) -> Option<String> {
+    let marks = collect_marks(spec);
+    match marks.get(presenting_rows_mark(spec))?.data.as_ref()? {
+        MarkData::From { source, .. } => Some(source.clone()),
+        _ => None,
+    }
+}
+
 /// The status band's row count, read off `session` under its CURRENT
 /// interaction state — the one query this seam owes, at the ghost/subset
 /// device [`ghost_subset_marks`] finds.

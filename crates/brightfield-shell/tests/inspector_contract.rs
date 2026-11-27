@@ -125,6 +125,16 @@ fn press_cmd_alt_b(app: &mut MeridianApp, ctx: &egui::Context) {
     frame(app, ctx);
 }
 
+/// The sections a chart with nothing selected draws, each open but Step,
+/// which is folded while a section above it is open.
+const CHART_SECTIONS_OPEN: [(Section, bool); 5] = [
+    (Section::Encoding, true),
+    (Section::Reads, true),
+    (Section::Fields, true),
+    (Section::Parameters, true),
+    (Section::Step, false),
+];
+
 /// The chart window with its inspector rail open.
 fn settled_open() -> (MeridianApp, egui::Context) {
     let (mut app, ctx) = settled();
@@ -160,27 +170,36 @@ fn the_inspector_rail_draws_one_pane_and_no_tab_strip() {
 }
 
 /// **Step is last, and folded while a section above it is open.** A chart
-/// with nothing selected is described by its Parameters, which open over the
-/// Step section; opening Step folds Parameters, and opening Parameters again
-/// folds Step.
+/// with nothing selected is described by its Encoding, Reads, Fields and
+/// Parameters, which open over the Step section; opening Step folds them, and
+/// opening Parameters again folds Step.
 #[test]
 fn the_step_section_is_last_and_collapsed_while_another_is_open() {
     let (mut app, ctx) = settled_open();
-    assert_eq!(
-        app.inspector_sections(),
-        [(Section::Parameters, true), (Section::Step, false)]
-    );
+    assert_eq!(app.inspector_sections(), CHART_SECTIONS_OPEN);
     app.toggle_inspector_section(Section::Step);
     frame(&mut app, &ctx);
     assert_eq!(
         app.inspector_sections(),
-        [(Section::Parameters, false), (Section::Step, true)]
+        [
+            (Section::Encoding, false),
+            (Section::Reads, false),
+            (Section::Fields, false),
+            (Section::Parameters, false),
+            (Section::Step, true)
+        ]
     );
     app.toggle_inspector_section(Section::Parameters);
     frame(&mut app, &ctx);
     assert_eq!(
         app.inspector_sections(),
-        [(Section::Parameters, true), (Section::Step, false)]
+        [
+            (Section::Encoding, false),
+            (Section::Reads, false),
+            (Section::Fields, false),
+            (Section::Parameters, true),
+            (Section::Step, false)
+        ]
     );
 }
 
@@ -202,7 +221,7 @@ fn cmd_alt_b_hides_and_brings_back_the_inspector() {
     );
     assert_eq!(
         app.inspector_sections(),
-        [(Section::Parameters, true), (Section::Step, false)],
+        CHART_SECTIONS_OPEN,
         "the rail came back without its sections"
     );
 }
@@ -245,10 +264,7 @@ fn a_layout_saved_with_three_inspector_panes_opens_on_the_one_inspector() {
     if app.rail_is_collapsed(INSPECTOR_RAIL) {
         press_cmd_alt_b(&mut app, &ctx);
     }
-    assert_eq!(
-        app.inspector_sections(),
-        [(Section::Parameters, true), (Section::Step, false)]
-    );
+    assert_eq!(app.inspector_sections(), CHART_SECTIONS_OPEN);
 }
 
 /// AC2: before the user has clicked on a pane, the inspector reports `None`
@@ -968,22 +984,58 @@ fn what_can_be_done_lists_the_columns_commands_with_their_keys() {
         rename.unavailable, None,
         "a column of the loaded table can be renamed"
     );
-    let at = win
-        .text_rects
-        .iter()
-        .find(|(t, _)| *t == rename.label)
-        .map(|(_, rect)| rect.center())
-        .expect("rename's row is drawn");
-    win.click(at);
+    // The chart's sections sit below Column, so its body scrolls within the
+    // room they leave it, and rename's row starts out below what it shows.
+    // Scroll the body until the row clears the Encoding header, as a reader
+    // would, before clicking it.
+    let rect_of = |win: &OpWindow, text: &str| {
+        win.text_rects
+            .iter()
+            .find(|(t, _)| t == text)
+            .map(|(_, rect)| *rect)
+    };
+    let over = rect_of(&win, "WHAT CAN BE DONE")
+        .expect("the column's commands are headed")
+        .center();
+    win.run(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..64 {
+        let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
+        let below = rect_of(&win, "ENCODING").expect("the Encoding section is headed");
+        if row.max.y < below.min.y - 8.0 {
+            break;
+        }
+        win.run(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -24.0),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+        win.settle();
+    }
+    let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
+    assert!(
+        row.max.y < rect_of(&win, "ENCODING").expect("Encoding is headed").min.y,
+        "the Column section's body never scrolled rename's row into view"
+    );
+    // A start waits on arc's description of the operation, which the window
+    // asks for once it opens and which may not have come by the first click:
+    // the status band then says it is being read, and the reader clicks again.
     let deadline = Instant::now() + Duration::from_secs(60);
+    win.click(row.center());
     while win.app.making().is_none() {
         assert!(
             Instant::now() < deadline,
             "the click never started rename: {}",
             win.banners()
         );
-        std::thread::sleep(Duration::from_millis(5));
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(
+            said.starts_with("Reading arc's description"),
+            "the click did not start rename: {said:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
         win.run(Vec::new());
+        win.click(row.center());
     }
     let making = win.app.making().expect("an operation is being made");
     assert_eq!(making.spec.long_name, "rename-column");
@@ -1153,5 +1205,174 @@ fn an_operation_on_a_column_the_grid_does_not_show_says_so() {
         rename.unavailable,
         Some(not_shown(&rename.label, INCOME)),
         "rename is offered on a column slim does not have"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The chart's sections
+// ---------------------------------------------------------------------------
+
+/// A window over the chart spec `examples/<fixture>` with a live session,
+/// its inspector rail open.
+fn live_open(fixture: &str) -> OpWindow {
+    let mut win = OpWindow::on_live_chart(fixture);
+    open_rail(&mut win);
+    win
+}
+
+/// Open `win`'s inspector rail with ⌘⌥B, where it is shut.
+fn open_rail(win: &mut OpWindow) {
+    if win.app.rail_is_collapsed(INSPECTOR_RAIL) {
+        let modifiers = egui::Modifiers {
+            alt: true,
+            command: true,
+            mac_cmd: cfg!(target_os = "macos"),
+            ctrl: !cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        win.key_with(egui::Key::B, modifiers);
+        win.settle();
+    }
+    assert!(
+        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
+        "the rail did not open"
+    );
+}
+
+/// **The Encoding section lists each channel and what is on it**, each row
+/// carrying the key that goes to the shelf's cell, and a click on a row opens
+/// that cell: the band holds the keys with the cell open, as the key leaves it.
+/// The rows are read over the example dashboard, whose channels are known, and
+/// the click is made over a data file's chart, which draws the shelf.
+#[test]
+fn the_encoding_section_lists_each_channel_and_its_field() {
+    use brightfield_workbench::channel::ShelfChannel;
+    let win = live_open("dashboard.yaml");
+    let rows = win.app.inspector_encoding();
+    let drawn: Vec<(ShelfChannel, &str, &str)> = rows
+        .iter()
+        .map(|r| (r.channel, r.label.as_str(), r.keystroke))
+        .collect();
+    assert_eq!(
+        drawn,
+        [
+            (ShelfChannel::Mark, "mark \u{b7} dot", "m"),
+            (ShelfChannel::X, "x axis \u{b7} x", "x"),
+            (ShelfChannel::Y, "y axis \u{b7} y", "y"),
+            (ShelfChannel::Colour, "colour \u{b7} g", "c"),
+        ]
+    );
+    for row in &rows {
+        assert_eq!(
+            row.keystroke,
+            brightfield_shell::shelf::cell_key(row.channel),
+            "the {} row's key is not the shelf's",
+            row.label
+        );
+    }
+    // A chart spec with no Protocol behind it draws no shelf band, so the
+    // click is made where the band is drawn: over a data file's chart.
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    open_rail(&mut win);
+    assert!(
+        win.app.shelf_band().is_some_and(|b| b.active().is_none()),
+        "no shelf band was drawn, or a cell was open before the click"
+    );
+    let rows = win.app.inspector_encoding();
+    let y = rows
+        .iter()
+        .find(|r| r.channel == ShelfChannel::Y)
+        .expect("a y row");
+    win.click(y.rect.center());
+    win.settle();
+    assert_eq!(
+        win.app.shelf_band().and_then(|b| b.active()),
+        Some(ShelfChannel::Y),
+        "clicking the y row did not open the shelf's y cell"
+    );
+    assert!(
+        win.app.shelf_holds_keys(),
+        "the shelf did not take the keys"
+    );
+}
+
+/// **The Reads section names the table and the rows the chart draws.** The
+/// slider's spec draws the points whose x is over the threshold, 6 of its 8 at
+/// the default of 2; the data file's chart draws a faded layer of every row
+/// under the selected ones, so its line says how many of the table's rows are
+/// drawn, which with nothing selected is all of them.
+#[test]
+fn the_reads_section_names_the_table_and_the_rows_drawn() {
+    let win = live_open("param-slider.yaml");
+    assert_eq!(
+        win.app.inspector_reads().as_deref(),
+        Some("points \u{b7} 6 rows")
+    );
+
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    open_rail(&mut win);
+    let csv = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(SAMPLE),
+    )
+    .expect("the sample reads");
+    let rows = brightfield_shell::column_header::thousands(csv.lines().count() as u64 - 1);
+    assert_eq!(
+        win.app.inspector_reads(),
+        Some(format!("{ROOT} \u{b7} {rows} of {rows} rows"))
+    );
+}
+
+/// **The Fields section counts the fields the chart can use**: the table's
+/// columns, which the shelf's list offers, one per column of the file, listed
+/// in the file's order under a header that counts them.
+#[test]
+fn the_fields_section_counts_the_fields_available() {
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    open_rail(&mut win);
+    let csv = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(SAMPLE),
+    )
+    .expect("the sample reads");
+    let header: Vec<&str> = csv.lines().next().expect("a header").split(',').collect();
+    assert_eq!(
+        win.app.inspector_section_count(Section::Fields),
+        Some(header.len())
+    );
+    assert_eq!(
+        win.app.inspector_fields(),
+        header,
+        "the Fields section did not list the file's columns in its order"
+    );
+}
+
+/// **The Parameters section holds the sliders**: the spec's slider is drawn
+/// while the section is open, and not while it is folded.
+#[test]
+fn the_parameters_section_holds_the_sliders() {
+    let mut win = live_open("param-slider.yaml");
+    let named = |win: &OpWindow| win.texts.iter().filter(|t| *t == "threshold").count();
+    let open = named(&win);
+    assert!(
+        open > 0,
+        "no slider named threshold was drawn: {:?}",
+        win.texts
+    );
+    win.app.toggle_inspector_section(Section::Parameters);
+    win.settle();
+    assert_eq!(
+        win.app
+            .inspector_sections()
+            .iter()
+            .find(|(s, _)| *s == Section::Parameters),
+        Some(&(Section::Parameters, false))
+    );
+    assert_eq!(
+        named(&win),
+        open - 1,
+        "folding Parameters left its slider drawn"
     );
 }

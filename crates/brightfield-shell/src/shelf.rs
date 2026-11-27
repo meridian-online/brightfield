@@ -217,6 +217,20 @@ impl ShelfChannels {
         })
     }
 
+    /// What `channel`'s cell names, as the band words it with no preview up:
+    /// the mark's kind, the column, [`AN_EXPRESSION`], or [`ADD_A_COLUMN`] for
+    /// a channel the mark leaves unbound. The second value says the channel is
+    /// empty.
+    #[must_use]
+    pub fn says(&self, channel: ShelfChannel) -> (String, bool) {
+        match self.binding(channel) {
+            None => (self.mark.clone(), false),
+            Some(Binding::Column(name)) => (name.clone(), false),
+            Some(Binding::Expression) => (AN_EXPRESSION.to_string(), false),
+            Some(Binding::Unset) => (ADD_A_COLUMN.to_string(), true),
+        }
+    }
+
     /// What `channel` is bound to. The mark's cell holds the mark's kind and
     /// not a column, so it has no binding.
     fn binding(&self, channel: ShelfChannel) -> Option<&Binding> {
@@ -448,12 +462,7 @@ impl ShelfBand {
                 };
             }
         }
-        let (value, empty) = match self.channels.binding(channel) {
-            None => (self.channels.mark.clone(), false),
-            Some(Binding::Column(name)) => (name.clone(), false),
-            Some(Binding::Expression) => (AN_EXPRESSION.to_string(), false),
-            Some(Binding::Unset) => (ADD_A_COLUMN.to_string(), true),
-        };
+        let (value, empty) = self.channels.says(channel);
         CellWords {
             word,
             value,
