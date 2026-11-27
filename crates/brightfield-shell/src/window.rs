@@ -10634,8 +10634,9 @@ impl MeridianApp {
         situation
     }
 
-    /// What the window holds, as [`Self::situation`] says, short of what only
-    /// an operation asks after: a header's menu adds that for each column.
+    /// What the window holds, as [`Self::situation`] says, short of the facts
+    /// [`crate::operation_ui::open::hold`] adds for an operation: a header's
+    /// menu adds those for each column.
     #[must_use]
     pub(crate) fn window_situation(&self) -> brightfield_keys::Situation {
         use brightfield_keys::{ColumnKind, Condition, Grant, Selected};

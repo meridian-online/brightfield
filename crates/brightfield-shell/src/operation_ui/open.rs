@@ -2,8 +2,8 @@
 //! an operation can start.
 //!
 //! An operation declares what it needs to start in the key registry, on the
-//! entry of the verb that starts it (`brightfield_keys::operations`), as every
-//! other command does. [`hold`] adds what [`OperationContext`] gathers to the
+//! entry of the verb that starts it (`brightfield_keys::operations`), as a
+//! command of the registry does. [`hold`] adds what [`OperationContext`] gathers to the
 //! window's [`Situation`], and [`availability`] reads the operation's verb
 //! against it. So a key press, a palette row, a header's menu row and a menu
 //! item read one declaration through one evaluator, and say one sentence
@@ -91,7 +91,7 @@ pub fn sentence(spec: &OperationUi, need: Need) -> String {
 
 /// **Add to `situation` what `cx` holds**, for an operation started on
 /// `column`, or on the grid cursor's column when `column` is `None`: the
-/// grid's rows and column, and the conditions only an operation asks after.
+/// grid's rows and column, and the conditions an operation asks after.
 pub fn hold(situation: &mut Situation, cx: &OperationContext, column: Option<&str>) {
     let front = cx.in_front.as_ref();
     let column = column.or_else(|| front.and_then(|f| f.cursor_column.as_deref()));

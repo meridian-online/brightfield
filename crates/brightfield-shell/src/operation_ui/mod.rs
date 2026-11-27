@@ -9,9 +9,8 @@
 //!
 //! - where it starts ([`Start`]): the grid's cursor, a part of a column's
 //!   header, the spine, a field of the grid's foot row, or the sources browser;
-//! - nothing of what the window must hold for it to start: that is declared
-//!   on its verb's entry in the key registry, as for any command, and read
-//!   by [`open::availability`];
+//! - the verb that starts it, whose entry in the key registry declares what
+//!   the window must hold for it to start, read by [`open::availability`];
 //! - the draft it starts as ([`OperationUi::begin`]), its values already filled
 //!   from what Brightfield knows of the column;
 //! - whether it is kept at once or on Enter ([`Keeps`]);
