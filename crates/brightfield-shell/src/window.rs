@@ -2636,9 +2636,10 @@ enum ProtocolsFolderThen {
     /// An open of data that makes a Protocol of it in the Protocols folder, opened again once the
     /// folder is granted ([`MeridianApp::open_paths_knowing`]).
     Paths(Vec<PathBuf>),
-    /// The same, held before anything is left, so the close question over a draft is asked only
-    /// once the open will go ahead: once the folder is granted it leaves as the open would have
-    /// ([`MeridianApp::leave`]).
+    /// The same, held before the window leaves what it shows, so the close question over a draft
+    /// is asked only once the open will go ahead
+    /// (`a_draft_is_not_asked_about_for_an_open_the_folder_ask_drops`): once the folder is
+    /// granted it leaves as the open would have ([`MeridianApp::leave`]).
     Open(crate::open_queue::OpenRequest),
     /// A Protocol archive chosen on this Mac, unpacked into the Protocols folder once it is
     /// granted, with the count of the files handed over beside it ([`MeridianApp::begin_archive`]).
