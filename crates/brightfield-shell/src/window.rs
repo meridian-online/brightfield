@@ -13675,6 +13675,15 @@ impl MeridianApp {
                 }
                 Request::Verb(verb) if verb.as_str() == SPLIT_CANVAS => {
                     taken = self.split_canvas(ctx);
+                    // Available but with nothing to split: say why, as the key does.
+                    if !taken
+                        && matches!(
+                            self.availability_of(SPLIT_CANVAS),
+                            Some(brightfield_keys::Availability::Available)
+                        )
+                    {
+                        self.say_activity_refused(ctx, SPLIT_NEEDS.to_owned());
+                    }
                 }
                 // reload-data is the window's verb for the same reason
                 // open-home is: the notice that raises it lives on the chart

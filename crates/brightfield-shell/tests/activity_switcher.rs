@@ -809,6 +809,22 @@ fn split_over_the_graph_changes_nothing_and_says_why() {
 }
 
 #[test]
+fn the_menus_split_over_the_graph_says_why_as_the_key_does() {
+    let mut win = scenes::data_file();
+    assert!(
+        win.graph_to_canvas(),
+        "the graph could not be put on the canvas"
+    );
+    let before = win.app.canvas_holds().clone();
+    win.choose(SPLIT_CANVAS);
+    assert_eq!(win.app.canvas_holds(), &before);
+    assert_eq!(
+        win.app.menu_said(),
+        Some(brightfield_shell::window::SPLIT_NEEDS)
+    );
+}
+
+#[test]
 fn the_grid_moved_back_to_the_canvas_is_drawn_beside_the_chart() {
     let mut win = scenes::data_file();
     // The rows close beside the chart, and the grid's spot is still the
