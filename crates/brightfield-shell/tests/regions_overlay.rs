@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use brightfield_engine::{ColumnProfile, SemanticType};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::ViewExtent;
 use brightfield_shell::app::ChartDoc;
@@ -377,4 +378,51 @@ fn old_regions_are_hidden_while_a_zoom_is_answered() {
 
     settle_regions(&mut doc);
     assert!(worker(&doc).drawn_on(&doc.composed.plots[0]).is_some());
+}
+
+/// Two square clusters of a hundred points each, as [`FILTERED`] draws them,
+/// with a `kind` column that says which cluster a row is in.
+const KINDS: &str = "data:\n  t:\n    query: |\n      \
+SELECT 20 + i % 10 AS x, 20 + (i // 10) % 10 AS y, 'low' AS kind FROM range(100) r(i)\n      \
+UNION ALL SELECT 75 + i % 10, 75 + (i // 10) % 10, 'high' FROM range(100) r(i)\n\
+plot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: y\n\
+xDomain: [0, 100]\nyDomain: [0, 100]\n";
+
+/// A text column's profile over the fixture's two hundred rows.
+fn text_profile(name: &str) -> ColumnProfile {
+    ColumnProfile {
+        name: name.to_string(),
+        type_name: "VARCHAR".to_string(),
+        non_null: 200,
+        nulls: 0,
+        distinct: 2,
+        min: None,
+        max: None,
+        semantic: SemanticType::NotAsked,
+        moments: None,
+    }
+}
+
+#[test]
+fn a_profile_column_the_rows_lack_leaves_the_outlines() {
+    let doc = doc_over(KINDS);
+    let mut job = doc.region_job(0).expect("the plot has a job");
+    // The profiles carried from an earlier open name a column the rows no
+    // longer have, beside one they do.
+    job.profiles = Some(vec![text_profile("gone"), text_profile("kind")]);
+    let regions = job.run().expect("the regions are found all the same");
+    assert_eq!(regions.regions.len(), 2, "both clusters are regions");
+    assert_eq!(regions.outlines.len(), 2, "and both are outlined");
+    assert!(regions.outlines.iter().all(|rings| !rings.is_empty()));
+    assert_eq!(regions.names.len(), 2);
+    assert!(
+        regions.names.iter().flatten().all(|n| !n.contains("gone")),
+        "no name reads the missing column: {:?}",
+        regions.names
+    );
+    assert!(
+        regions.names.iter().any(Option::is_some),
+        "the column the rows have still names them: {:?}",
+        regions.names
+    );
 }

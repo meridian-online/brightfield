@@ -412,28 +412,14 @@ impl RegionJob {
         let names = if regions.is_empty() {
             Vec::new()
         } else {
-            let profiles = match &self.profiles {
-                Some(profiles) => profiles.clone(),
-                None => profile_rows(&read, &self.rows_sql)?,
-            };
-            let columns = label_columns(&profiles, &self.x, &self.y);
-            let cells = cell_regions(&regions);
-            match region_label_sql(
-                &self.rows_sql,
-                &self.x,
-                &self.y,
-                &self.extent,
-                &cells,
-                &columns,
-            ) {
-                Some(sql) => {
-                    let summary = read(&sql)?;
-                    let shown = self.shown(&columns);
-                    name_regions_shown(&self.naming, &shown, &summary, regions.len())
-                }
-                None => vec![None; regions.len()],
-            }
+            // A failed naming query leaves the regions unnamed, not undrawn:
+            // the outlines are found by now, and they are the picture.
+            self.names(&read, &regions)
+                .unwrap_or_else(|| vec![None; regions.len()])
         };
+        if stopped() {
+            return None;
+        }
         Some(PlotRegions {
             x: self.x,
             y: self.y,
@@ -445,6 +431,52 @@ impl RegionJob {
             names,
             anchors,
         })
+    }
+
+    /// Each region's name, read from the rows by the label query, or `None`
+    /// when a query fails.
+    ///
+    /// The profiles the shell carries are the table's as it was opened, and
+    /// a rebuild can leave the plot's rows without a column they name, which
+    /// the label query would fail on. So they are cut to the columns the
+    /// rows have (`a_profile_column_the_rows_lack_leaves_the_outlines` in
+    /// `tests/regions_overlay.rs`).
+    fn names(
+        &self,
+        read: &dyn Fn(&str) -> Option<Vec<RecordBatch>>,
+        regions: &[Region],
+    ) -> Option<Vec<Option<String>>> {
+        let profiles = match &self.profiles {
+            Some(profiles) => {
+                let present = describe_rows(read, &self.rows_sql)?;
+                profiles
+                    .iter()
+                    .filter(|p| present.iter().any(|(name, _)| *name == p.name))
+                    .cloned()
+                    .collect()
+            }
+            None => profile_rows(read, &self.rows_sql)?,
+        };
+        let columns = label_columns(&profiles, &self.x, &self.y);
+        let cells = cell_regions(regions);
+        let Some(sql) = region_label_sql(
+            &self.rows_sql,
+            &self.x,
+            &self.y,
+            &self.extent,
+            &cells,
+            &columns,
+        ) else {
+            return Some(vec![None; regions.len()]);
+        };
+        let summary = read(&sql)?;
+        let shown = self.shown(&columns);
+        Some(name_regions_shown(
+            &self.naming,
+            &shown,
+            &summary,
+            regions.len(),
+        ))
     }
 
     /// `columns` as a name writes them. A range is written after the shown
@@ -571,12 +603,12 @@ fn density_grid(batches: &[RecordBatch], extent: &GridExtent, scale: f64) -> Den
     }
 }
 
-/// The rows' columns profiled by storage type and distinct count, the way the
-/// open profiles a table with no FineType: one `DESCRIBE` and one aggregate.
-fn profile_rows(
+/// The rows' own columns, as `(name, storage type)`, without the shell's
+/// `__bf` columns: one `DESCRIBE`.
+fn describe_rows(
     read: &dyn Fn(&str) -> Option<Vec<RecordBatch>>,
     rows_sql: &str,
-) -> Option<Vec<ColumnProfile>> {
+) -> Option<Vec<(String, String)>> {
     let described = read(&format!("DESCRIBE SELECT * FROM ({rows_sql}) AS __bf_rows"))?;
     let mut columns: Vec<(String, String)> = Vec::new();
     for batch in &described {
@@ -595,6 +627,16 @@ fn profile_rows(
         }
     }
     columns.retain(|(name, _)| !name.starts_with("__bf"));
+    Some(columns)
+}
+
+/// The rows' columns profiled by storage type and distinct count, the way the
+/// open profiles a table with no FineType: one `DESCRIBE` and one aggregate.
+fn profile_rows(
+    read: &dyn Fn(&str) -> Option<Vec<RecordBatch>>,
+    rows_sql: &str,
+) -> Option<Vec<ColumnProfile>> {
+    let columns = describe_rows(read, rows_sql)?;
     if columns.is_empty() {
         return Some(Vec::new());
     }
