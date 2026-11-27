@@ -130,6 +130,25 @@ fn an_unbundled_extension_is_beyond_it() {
     );
     let b = found(&dir, Edition::Managed).expect("an unbundled extension is found");
     assert_eq!(b.step, "cells");
+    assert_eq!(b.reason, Reason::Install("h3".into()));
+    assert_eq!(
+        sentence(&b),
+        "Step cells installs the DuckDB extension h3, and this edition installs no extensions: it \
+         runs only the ones built into it."
+    );
+}
+
+#[test]
+fn an_unbundled_extension_loaded_without_an_install_is_beyond_it() {
+    let dir = protocol(
+        "unbundled_load",
+        UNBUNDLED,
+        &[(
+            "models/cells.sql",
+            "LOAD h3;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
+        )],
+    );
+    let b = found(&dir, Edition::Managed).expect("an unbundled extension is found");
     assert_eq!(b.reason, Reason::Extension("h3".into()));
     assert_eq!(
         sentence(&b),
@@ -138,16 +157,45 @@ fn an_unbundled_extension_is_beyond_it() {
 }
 
 #[test]
-fn spatial_and_excel_are_not() {
+fn loading_spatial_and_excel_is_not() {
     let dir = protocol(
         "built_in_extensions",
         UNBUNDLED,
         &[(
             "models/cells.sql",
-            "-- LOAD h3 is not used here\nINSTALL spatial;\nLOAD spatial;\nINSTALL excel; LOAD excel;\nLOAD json; LOAD parquet; LOAD icu; LOAD sqlite_scanner;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
+            "-- LOAD h3 is not used here\nLOAD spatial;\nLOAD excel;\nLOAD json; LOAD parquet; LOAD icu; LOAD sqlite_scanner;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
         )],
     );
     assert_eq!(found(&dir, Edition::Managed), None);
+}
+
+/// The managed edition's DuckDB is built without its extension installer, so an `INSTALL` fails
+/// there even for an extension it has built in, and would otherwise fail part way through a run.
+#[test]
+fn installing_a_built_in_extension_is_beyond_it() {
+    let dir = protocol(
+        "install_built_in",
+        UNBUNDLED,
+        &[(
+            "models/cells.sql",
+            "INSTALL spatial;\nLOAD spatial;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
+        )],
+    );
+    let b = found(&dir, Edition::Managed).expect("the install is found");
+    assert_eq!(b.reason, Reason::Install("spatial".into()));
+    let dir = protocol(
+        "update_extensions",
+        UNBUNDLED,
+        &[("models/cells.sql", "UPDATE EXTENSIONS;\nSELECT 1;\n")],
+    );
+    let b = found(&dir, Edition::Managed).expect("the update is found");
+    assert_eq!(b.reason, Reason::UpdateExtensions);
+    assert_eq!(
+        sentence(&b),
+        "Step cells updates DuckDB extensions, and this edition installs no extensions: it runs \
+         only the ones built into it."
+    );
+    assert_eq!(found(&dir, Edition::Full), None);
 }
 
 /// An extension loaded from a file is beyond the managed edition even when one of that name is

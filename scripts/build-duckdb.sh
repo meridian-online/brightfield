@@ -261,7 +261,17 @@ say "building DuckDB ${DUCKDB_VERSION_PIN} with its extensions (${JOBS} jobs)"
   # Some of vcpkg's ports at this commit still declare a CMake minimum below 3.5,
   # which CMake 4 refuses without this.
   export CMAKE_POLICY_VERSION_MINIMUM=3.5
-  export EXTRA_CMAKE_VARIABLES="-DBRIGHTFIELD_FINETYPE_STATICLIB=${FINETYPE_LIB} -DBRIGHTFIELD_FINETYPE_VERSION=${FINETYPE_TAG} -DBRIGHTFIELD_FINETYPE_GENERATED_DIR=${FINETYPE_GENERATED} -DBUILD_UNITTESTS=0 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DVCPKG_HOST_TRIPLET=arm64-osx-brightfield -DVCPKG_OVERLAY_TRIPLETS=${CONFIG_DIR}/triplets"
+  # ENABLE_EXTENSION_LOAD=OFF leaves DuckDB's extension installer and file
+  # loader out of the library. Every INSTALL, FORCE INSTALL and UPDATE
+  # EXTENSIONS, and every LOAD of a file, then fails before it reaches the
+  # network or the disk, whatever the name, the FROM repository or the
+  # settings; a LOAD of an extension compiled in still succeeds. No DuckDB
+  # setting refuses `INSTALL json FROM core` and keeps file reads open, and a
+  # Mac App Store app may not download code, so the refusal is compiled in, for
+  # the shell arc runs a Protocol's steps with as well as for the engine.
+  # httpfs carries its own HTTP clients, so DuckDB's built-in one, which this
+  # also leaves out, is not needed to read a URL.
+  export EXTRA_CMAKE_VARIABLES="-DENABLE_EXTENSION_LOAD=OFF -DBRIGHTFIELD_FINETYPE_STATICLIB=${FINETYPE_LIB} -DBRIGHTFIELD_FINETYPE_VERSION=${FINETYPE_TAG} -DBRIGHTFIELD_FINETYPE_GENERATED_DIR=${FINETYPE_GENERATED} -DBUILD_UNITTESTS=0 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DVCPKG_HOST_TRIPLET=arm64-osx-brightfield -DVCPKG_OVERLAY_TRIPLETS=${CONFIG_DIR}/triplets"
   make release >&2
 )
 
