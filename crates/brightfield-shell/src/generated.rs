@@ -992,7 +992,12 @@ pub fn generated_protocol_of_one_source(
 ///
 /// A step recorded from another table's grid, and a step whose model is not one brightfield can
 /// read, are another chain's and are left out: they are the Protocol's all the same, and the
-/// grid of this table shows the steps that start at it.
+/// grid of this table shows the steps that start at it. A step one listed here reads, directly or
+/// through another, back to a table of the model, is listed too: a join of another table's filter
+/// to this table is listed, so the filter is too, or a read of the join from this grid would read a
+/// table no step of the chain makes
+/// (`a_step_reading_a_step_of_another_table_reads_from_the_second_tables_grid` in
+/// `tests/cmd_s_saves_the_protocol.rs`).
 #[must_use]
 pub fn generated_protocol_of_folder_table(
     manifest_text: &str,
@@ -1002,7 +1007,8 @@ pub fn generated_protocol_of_folder_table(
 ) -> Option<GeneratedProtocol> {
     let manifest = brightfield_protocol::parse_manifest_str(manifest_text).ok()?;
     let mut chain: BTreeSet<String> = [source.name.to_lowercase()].into_iter().collect();
-    let mut steps = Vec::new();
+    let mut read = Vec::new();
+    let mut listed = Vec::new();
     for step in manifest
         .steps
         .iter()
@@ -1029,9 +1035,17 @@ pub fn generated_protocol_of_folder_table(
             .any(|table| chain.contains(&table.to_lowercase()))
         {
             chain.insert(step.name.to_lowercase());
-            steps.push(parsed);
+            listed.push(read.len());
         }
+        read.push(parsed);
     }
+    let needed = with_what_they_read(&read, listed);
+    let steps = read
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| needed.contains(i))
+        .map(|(_, step)| step)
+        .collect();
     Some(GeneratedProtocol {
         data: source.data.clone(),
         dir: dir.to_path_buf(),

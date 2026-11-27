@@ -1123,6 +1123,127 @@ fn a_join_named_as_a_table_takes_none_of_the_tables_steps() {
     );
 }
 
+/// A step saved from one table's grid that reads a second table, on a step saved from the
+/// first: the second table's grid lists it, and a read of it there makes the step it stands on
+/// too, so the read has rows rather than DuckDB's word that no such table exists. A statement
+/// over it, kept and saved on that grid, previews the same.
+#[test]
+fn a_step_reading_a_step_of_another_table_reads_from_the_second_tables_grid() {
+    use brightfield_render::model_scene::Selection;
+    let mut win = orders_and_stores("cmd_s_join_reads_a_filter", "orders");
+
+    // A filter saved on the orders table's grid, and a join of it to the stores table.
+    open_in_grid(&mut win, Selection::Dataset("orders".into()));
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("amount > 30".to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.cmd_s();
+    let filter = "orders_filtered_by_amount";
+    assert!(
+        win.manifest().contains(filter),
+        "the filter was saved: {}",
+        win.said()
+    );
+    let join = brightfield_shell::operation::StepRequest {
+        long_name: "join-tables".to_owned(),
+        on: Some(filter.to_owned()),
+        reads: vec![("other".to_owned(), "stores".to_owned())],
+        args: [("using".to_owned(), "store_id".to_owned())]
+            .into_iter()
+            .collect(),
+    };
+    brightfield_shell::operation::record_step(
+        &Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")),
+        &win.dir(),
+        "joined",
+        &join,
+    )
+    .unwrap_or_else(|e| panic!("arc records the join: {e}"));
+
+    // The stores table's grid, whose chain, read as the window reads it, holds the filter the
+    // join stands on, though the filter is the orders table's.
+    assert!(win.app.back_to_model(), "{}", win.said());
+    win.settle();
+    open_in_grid(&mut win, Selection::Dataset("stores".into()));
+    let rows = std::path::absolute(win.dir().join(".grid").join("stores.parquet"))
+        .expect("an absolute path");
+    let mut opened =
+        brightfield_shell::data_file::open(&rows.to_string_lossy()).expect("the stores rows open");
+    opened.protocol.dir = win.dir();
+    opened.protocol.model_grid = Some(brightfield_shell::one_step::ModelGrid::Table);
+    let chain = opened
+        .protocol
+        .inputs_with_last_run()
+        .expect("the grid's Protocol builds")
+        .generated
+        .map(|g| g.steps.into_iter().map(|s| s.name).collect::<Vec<_>>());
+    assert_eq!(
+        chain,
+        Some(vec![filter.to_owned(), "joined".to_owned()]),
+        "the stores grid's chain"
+    );
+
+    // A statement over the join, read on that grid, then kept and saved.
+    win.run(vec![press(egui::Key::Space, egui::Modifiers::NONE)]);
+    win.settle();
+    win.type_text("SELECT * FROM joined");
+    assert!(
+        win.app.finish_typed_reads(Duration::from_secs(60)),
+        "the statement's read did not finish"
+    );
+    assert_eq!(
+        win.app.typed_said().as_deref(),
+        Some("a SQL step"),
+        "the statement's read was refused"
+    );
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+    let kept: Vec<String> = win
+        .app
+        .chart_doc()
+        .typed_steps()
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    assert_eq!(kept.len(), 1, "the statement was not kept: {}", win.said());
+    win.cmd_s();
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty() && win.manifest().contains(&kept[0]),
+        "the statement was saved: {}",
+        win.said()
+    );
+
+    // The Save leaves the saved statement in front, previewed through the join and the filter.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while win
+        .app
+        .chart_doc()
+        .grid_preview()
+        .is_none_or(|p| p.is_reading())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the saved statement's preview never arrived: {}",
+            win.said()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+    let preview = win.app.chart_doc().grid_preview().expect("a preview");
+    assert_eq!(
+        preview.refusal().map(ToString::to_string),
+        None,
+        "the saved statement's preview was refused"
+    );
+    let page = preview.page().expect("the preview has a page");
+    // Each order over 30 has its store, so the join keeps every row the filter keeps.
+    assert_eq!(page.rows.len(), 50, "the page holds the filtered orders");
+}
+
 #[test]
 fn a_saved_chart_that_will_not_read_opens_the_rows_on_their_dashboard_and_warns() {
     use brightfield_render::model_scene::Selection;
