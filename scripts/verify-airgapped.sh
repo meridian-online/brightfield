@@ -15,23 +15,30 @@
 #      lets curl through proves nothing about anything run inside it.
 #   2. The artifact is opened where a stranger would open it — the tarball
 #      unpacked into a fresh temp directory, the image attached read-only — and
-#      the PACKAGED binary, not a repo build, opens, renders and screenshots
-#      (a) a chart spec, (b) a Protocol manifest and (c) a Parquet data file,
-#      which needs DuckDB's Parquet reader linked in, entirely inside the jail,
-#      with HOME and BRIGHTFIELD_CONFIG_DIR pointed into the temp directory so
-#      nothing leaks in from this machine's config or out of the run.
-#   3. Both screenshots are verified to be real PNGs of non-trivial size —
-#      "it exited 0" is not "it rendered".
+#      every run below is of the PACKAGED binary, not a repo build, entirely
+#      inside the jail, with HOME and BRIGHTFIELD_CONFIG_DIR pointed into the
+#      temp directory so nothing leaks in from this machine's config or out of
+#      the run.
+#   3. NO WINDOW OPENS. Every leg is a headless mode of the binary that exits
+#      with a verdict, so the check runs unattended and cannot hang on a window
+#      that stops drawing. An earlier version opened a chart spec, a Protocol
+#      manifest and a Parquet file in the window and screenshotted each; on the
+#      Developer-ID-signed app those windows intermittently stopped producing
+#      frames and the run died on its deadline. What they showed — that the
+#      binary loads local data, reads Parquet with no extension download, and
+#      draws charts with the network denied — leg 6 now shows with the
+#      binary's own export commands. What is no longer run under the jail is
+#      the window itself: the event loop and the surface it presents to.
 #   4. THE NEGATIVE CASE, which is the half a green run used to be silent
 #      about. The artifact also carries specs that DO fetch (examples/remote/),
 #      and the promise about those is not "they work" — it is that they fail
-#      loudly, naming the network and the URL, and take nothing else down with
-#      them. So one is run in the same jail and REQUIRED to fail: non-zero,
-#      no PNG, and a message carrying both the word "network" and the URL. A
-#      spec that needs the network and comes back quiet is the silent-degrade
-#      defect this file exists to keep out of the artifact, and it would
-#      otherwise be invisible here — the two positive legs above pass whether
-#      or not it is present.
+#      loudly, naming the network and the URL. So one is run in the same jail
+#      and REQUIRED to fail: non-zero, no PNG, and a message carrying both the
+#      word "network" and the URL. It fails while the spec is loaded, before
+#      any window is built. A spec that needs the network and comes back quiet
+#      is the silent-degrade defect this file exists to keep out of the
+#      artifact, and it would otherwise be invisible here — the positive legs
+#      pass whether or not it is present.
 #   5. THE SEMANTIC TYPE SOURCE, when the artifact carries one. First the
 #      bundle is read off disk by scripts/check-bundled-extension.sh — shape,
 #      ABI, and a symlink count, because a model copied with `cp -R` instead of
@@ -71,8 +78,12 @@
 #      failure.
 #   6. THE HEADLESS EXPORT. The packaged binary runs an agent-written Protocol
 #      with arc (through its runner mode and the DuckDB CLI the artifact
-#      stages) and writes its report with `export-pdf`, all inside the jail,
-#      and must leave a PDF. The Protocol is the repository's committed
+#      stages), writes its report with `export-pdf` and draws one panel with
+#      `export-png`, all inside the jail, and must leave a PDF and a PNG. The
+#      export reads the run's tables through the binary's in-process DuckDB as
+#      Parquet, and must install no DuckDB extension into the sealed HOME doing
+#      it: a build without the Parquet reader linked in fails here, reaching
+#      for the download. The Protocol is the repository's committed
 #      fixture with its fetch step dropped from a copy, since arc would
 #      download the data again; scripts/check-export-airgapped.sh holds the
 #      leg and names what it checks. The DuckDB CLI the run needs is the one
@@ -80,10 +91,9 @@
 #      this leg, saying so.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
-# (a network namespace with no interfaces). Both windows open briefly on a
-# desktop machine — the runs are real, that is the point. Leg 5 runs under a
-# stricter jail on macOS, which also refuses reads outside the artifact: see
-# scripts/airgap-jail.sh. The window-opening legs do not, yet.
+# (a network namespace with no interfaces). Leg 5 runs under a stricter jail
+# on macOS, which also refuses reads outside the artifact: see
+# scripts/airgap-jail.sh. The other legs do not, yet.
 #
 # The image leg runs the bundle's executable directly. It does NOT use `open`:
 # `open` was measured returning exit 0 while the application never started, and
@@ -94,9 +104,8 @@
 # assesses a signature, a notarization ticket or the quarantine attribute, and a
 # green run says nothing about them.
 #
-# Every SPEC the test opens ships inside the artifact, so the render legs are
-# about the artifact rather than the artifact-plus-repo. That is a statement
-# about the specs. The type-source leg's claim is about the artifact on macOS,
+# The remote spec leg 4 opens ships inside the artifact, so that leg is about
+# the artifact rather than the artifact-plus-repo. The type-source leg's claim is about the artifact on macOS,
 # where its jail refuses reads outside it, and is not on Linux: see leg 5,
 # which names precisely what it does and does not establish. The export leg,
 # 6, takes its Protocol from this checkout: the artifact ships no fixtures, and
@@ -132,30 +141,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# A window that never exits must be a FAILED check, not a stuck terminal.
+# A run that never exits must be a FAILED check, not a stuck terminal.
 DEADLINE=180
-
-# smoke OUT.png [ENV=VAL ...] -- SPEC ARGS...
-# Runs the packaged binary inside the jail, from the package directory, with a
-# sealed HOME/config, a screenshot countdown, and the deadline watchdog.
-# $PKG and $EXE are set by the leg that opened the artifact.
-smoke() {
-  local out="$1"; shift
-  local extra_env=()
-  while [ "$1" != "--" ]; do extra_env+=("$1"); shift; done
-  shift
-  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
-      ${extra_env[@]+"${extra_env[@]}"} \
-      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) &
-  local pid=$!
-  ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
-  local wd=$!
-  local status=0
-  wait "$pid" || status=$?
-  kill "$wd" 2>/dev/null || true
-  wait "$wd" 2>/dev/null || true
-  [ "$status" -eq 0 ] || { echo "   FAILED: exit $status"; return 1; }
-}
 
 # refuses OUT.png LOG -- SPEC ARGS...
 # The negative leg. Runs the packaged binary inside the same jail on a spec
@@ -171,7 +158,10 @@ refuses() {
   shift
   rm -f "$out"
   local status=0
-  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
+  # `exec`, so the pid the watchdog holds is the binary's: env and the jail
+  # each exec in turn. bash usually execs a subshell's last command anyway, but
+  # a binary the watchdog missed would keep the image attached after cleanup.
+  ( cd "$PKG" && exec env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
       "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) > "$log" 2>&1 &
   local pid=$!
   ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
@@ -202,17 +192,6 @@ refuses() {
   echo "   ok: refused (exit ${status}), naming the network and ${REMOTE_URL}"
 }
 
-is_png() {
-  local f="$1" min_bytes="$2"
-  [ -f "$f" ] || { echo "   MISSING: $f"; return 1; }
-  local magic size
-  magic=$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')
-  size=$(wc -c < "$f" | tr -d ' ')
-  [ "$magic" = "89504e47" ] || { echo "   NOT A PNG: $f"; return 1; }
-  [ "$size" -ge "$min_bytes" ] || { echo "   SUSPICIOUSLY SMALL (${size}B): $f"; return 1; }
-  echo "   ok: $f (${size}B)"
-}
-
 echo "== negative control: the jail must deny the network"
 command -v curl >/dev/null || { echo "curl is required (for the control, not the binary)"; exit 1; }
 if "${JAIL[@]}" curl -sS --max-time 10 https://example.com -o /dev/null 2>/dev/null; then
@@ -222,8 +201,8 @@ fi
 echo "   ok: curl cannot reach the network in the jail"
 
 # Each leg sets these and nothing else: PKG (the directory to run from), EXE
-# (the executable, relative to PKG), EXAMPLES (where the specs live, relative
-# to PKG), REMOTE_SPEC (the negative case's spec, likewise relative to PKG),
+# (the executable, relative to PKG), REMOTE_SPEC (the negative case's spec,
+# relative to PKG),
 # FTBUNDLE (the FineType bundle, likewise) and APP (the application bundle
 # that seals FTBUNDLE, relative to PKG, or empty when nothing seals it).
 # Everything below is common.
@@ -240,7 +219,6 @@ case "$ARTIFACT" in
     PKG=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
     mkdir -p "$TMP/home" "$TMP/config"
     EXE="./brightfield"
-    EXAMPLES="examples"
     REMOTE_SPEC="examples/remote/edgar-gleif-crosswalk.yaml"
     FTBUNDLE="finetype"
     APP=""
@@ -256,7 +234,6 @@ case "$ARTIFACT" in
     MOUNT="$TMP/volume"
     PKG="$MOUNT"
     EXE="./Brightfield.app/Contents/MacOS/brightfield"
-    EXAMPLES="Brightfield.app/Contents/Resources/examples"
     REMOTE_SPEC="Brightfield.app/Contents/Resources/examples/remote/edgar-gleif-crosswalk.yaml"
     FTBUNDLE="Brightfield.app/Contents/Resources/finetype"
     APP="Brightfield.app"
@@ -273,7 +250,7 @@ esac
 # dangling symlinks would otherwise show up only as a column with no label —
 # which is also what a build packaged deliberately without one looks like.
 #
-# HAS_TYPE_SOURCE is what run 1 below asserts against. It is set to 0 for an
+# HAS_TYPE_SOURCE is what runs 0 and 0b below assert against. It is set to 0 for an
 # artifact with no bundle, which is a supported build (see scripts/package.sh);
 # a bundle that is present and broken is a FAILURE, not an absence.
 HAS_TYPE_SOURCE=0
@@ -317,9 +294,9 @@ fi
 # for any bundle at all. A check whose failing case cannot be reached is not a
 # check; so is one whose inputs it cannot account for.
 #
-# `--check-type-source` opens no window: it is the one leg here that can be run
-# unattended, and the one that can be made to fail on demand by planting a
-# broken bundle in the artifact.
+# `--check-type-source` can be made to fail on demand by planting a broken
+# bundle in the artifact, which run 0b does.
+#
 # THE READ JAIL, and where the flag's sealed directory goes. --check-type-source
 # makes its sealed HOME, TMPDIR and working directory under the temp directory
 # it inherits, at a name it picks at run time, so no profile could grant that
@@ -444,21 +421,17 @@ json.dump(c, open(p, "w"), indent=2)' "$ESC_MODEL/config.json" "$OUTSIDE/$ENCODE
   rm -rf "$TMP/escape"
 fi
 
-echo "== run 1: chart spec, jailed (a window opens briefly)"
-smoke "$TMP/chart.png" -- "$EXAMPLES/bars.yaml"
-is_png "$TMP/chart.png" 20000
+echo "== run 1: a spec that needs the network, jailed — it must REFUSE"
+[ -f "$PKG/$REMOTE_SPEC" ] || {
+  echo "   FAILED: the artifact carries no $REMOTE_SPEC, so the negative case"
+  echo "   cannot be run against it. See scripts/package.sh."
+  exit 1
+}
+refuses "$TMP/remote.png" "$TMP/remote.log" -- "$REMOTE_SPEC"
 
-echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
-smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"
-is_png "$TMP/protocol.png" 20000
-
-echo "== run 2b: a Parquet data file, jailed (a window opens briefly)"
-# DuckDB reads Parquet through an extension it autoinstalls on first use unless
-# the reader is linked into the binary. HOME is sealed above, so the extension
-# cache is cold, and the jail denies the network: a build without the reader
-# fails here downloading it, where every chart-spec leg stays green.
-smoke "$TMP/parquet.png" -- "$EXAMPLES/data/edgar_gleif_reduced.parquet"
-is_png "$TMP/parquet.png" 20000
+# Nothing run so far may have installed a DuckDB extension: the type source
+# loads the bundled one, and the refusal must not reach for one either.
+#
 # One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
 # match can leave find dying of SIGPIPE, and the pipeline's 141 would read as
 # "nothing installed".
@@ -469,7 +442,7 @@ is_png "$TMP/parquet.png" 20000
 # before LOAD; it comes from the artifact, not the network.
 FT_CACHE="$TMP/home/Library/Caches/online.meridian.brightfield/finetype"
 if [ -n "$(find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null)" ]; then
-  echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
+  echo "   FAILED: a run installed a DuckDB extension into the sealed HOME"
   find "$TMP/home" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null | sed 's/^/     /'
   exit 1
 fi
@@ -477,19 +450,7 @@ if [ -d "$FT_CACHE" ]; then
   echo "   ok: FineType joined from the artifact into ${FT_CACHE#"$TMP"/}, offline"
 fi
 
-echo "== run 3: a spec that needs the network, jailed — it must REFUSE"
-[ -f "$PKG/$REMOTE_SPEC" ] || {
-  echo "   FAILED: the artifact carries no $REMOTE_SPEC, so the negative case"
-  echo "   cannot be run against it. See scripts/package.sh."
-  exit 1
-}
-refuses "$TMP/remote.png" "$TMP/remote.log" -- "$REMOTE_SPEC"
-
-echo "== run 4: the local chart again, AFTER the refusal — the jail is unchanged"
-smoke "$TMP/chart-again.png" -- "$EXAMPLES/bars.yaml"
-is_png "$TMP/chart-again.png" 20000
-
-echo "== run 5: an agent-written Protocol run and exported to PDF, jailed (no window)"
+echo "== run 2: an agent-written Protocol run, exported to PDF and a panel to PNG, jailed"
 # The packaged binary, its staged DuckDB CLI and the committed fixture: see
 # scripts/check-export-airgapped.sh, which can also be pointed at a repo build.
 # --packaged: the engine comes only from the artifact (never the caller's
@@ -499,6 +460,7 @@ echo "== run 5: an agent-written Protocol run and exported to PDF, jailed (no wi
   exit 1
 }
 
-echo "== PASS: the packaged binary starts, renders and opens a local protocol with the"
-echo "         network denied, runs and exports an agent-written Protocol to PDF the same way"
-echo "         (unless run 5 said it was skipped), and refuses a remote spec by name"
+echo "== PASS: with the network denied, the packaged binary types a column with its own"
+echo "         type source (unless run 0 was skipped), refuses a remote spec by name, and runs"
+echo "         an agent-written Protocol, drawing its charts into a PDF and a PNG (unless run 2"
+echo "         said it was skipped). No window was opened."

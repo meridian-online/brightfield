@@ -329,9 +329,9 @@ A release built with Meridian's Developer ID is published as a full GitHub relea
 scripts/package.sh
 
 # Prove the air-gapped claim against the artifact itself: a negative control
-# (curl must FAIL inside the jail), then the *packaged* binary renders a chart
-# and a Protocol manifest, and runs an agent-written Protocol and exports its
-# report to PDF, with the network denied (sandbox-exec / unshare -rn)
+# (curl must FAIL inside the jail), then the *packaged* binary refuses a remote
+# spec by name, and runs an agent-written Protocol and draws its charts to a PDF
+# and a PNG, with the network denied (sandbox-exec / unshare -rn) and no window
 scripts/verify-airgapped.sh dist/brightfield-*.tar.gz
 ```
 

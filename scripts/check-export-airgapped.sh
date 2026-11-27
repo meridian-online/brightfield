@@ -28,6 +28,12 @@
 #      beside the binary. The data file must be byte-identical afterwards.
 #   4. `export-pdf` writes the report, and it must exit 0 and leave a PDF of
 #      non-trivial size.
+#   5. `export-png` draws one panel, and it must exit 0 and leave a PNG of
+#      non-trivial size. Both exports read the run's tables through the
+#      binary's in-process DuckDB, as Parquet.
+#   6. Nothing above installed a DuckDB extension into the sealed HOME. DuckDB
+#      autoinstalls the Parquet reader on first use unless it is linked in, and
+#      the jail denies the download, so a build without it fails here.
 #
 # HOME, BRIGHTFIELD_CONFIG_DIR and arc's database and history stores are all
 # pointed into a temp directory, so nothing is read from or written to this
@@ -139,3 +145,33 @@ size=$(wc -c < "$PDF" | tr -d ' ')
 [ "$size" -ge 50000 ] || { echo "   FAILED: $PDF is suspiciously small (${size}B)"; exit 1; }
 sed -e '/^[[:space:]]*$/d' -e 's/^/   /' "$TMP/export.log"
 echo "   ok: report.pdf (${size}B), exported with the network denied"
+
+echo "== export-png, jailed (no window)"
+PANEL="co2_per_capita_since_1990"
+PNG="$TMP/${PANEL}.png"
+status=0
+"${JAIL[@]}" "$EXE" export-png "$COPY" "$PANEL" --out "$PNG" > "$TMP/export-png.log" 2>&1 || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "   FAILED: export-png exited $status with the network denied:"
+  sed 's/^/     /' "$TMP/export-png.log"
+  exit 1
+fi
+[ -f "$PNG" ] || { echo "   FAILED: export-png exited 0 and wrote no $PNG"; exit 1; }
+magic=$(head -c 4 "$PNG" | od -An -tx1 | tr -d ' \n')
+[ "$magic" = "89504e47" ] || { echo "   FAILED: $PNG is not a PNG"; exit 1; }
+size=$(wc -c < "$PNG" | tr -d ' ')
+[ "$size" -ge 20000 ] || { echo "   FAILED: $PNG is suspiciously small (${size}B)"; exit 1; }
+echo "   ok: ${PANEL}.png (${size}B), drawn with the network denied"
+
+echo "== no DuckDB extension was installed into the sealed HOME"
+# One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
+# match can leave find dying of SIGPIPE. FineType's cache copy, joined from the
+# artifact's own parts, is not an install and is left out.
+FT_CACHE="$HOME/Library/Caches/online.meridian.brightfield/finetype"
+installed=$(find "$HOME" -path "$FT_CACHE" -prune -o -name '*.duckdb_extension' -print 2>/dev/null)
+if [ -n "$installed" ]; then
+  echo "   FAILED: the run or an export installed a DuckDB extension:"
+  echo "$installed" | sed 's/^/     /'
+  exit 1
+fi
+echo "   ok: none"
