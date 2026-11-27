@@ -200,6 +200,9 @@ pub struct InspectorPane {
     /// and its columns as far as they have been read. Written by the window
     /// each frame before the dock draws, as [`Selection`] is.
     inspected: InspectedHandle,
+    /// The verb rows the Column section lists, with what the window says of
+    /// each. Written by the window each frame before the dock draws.
+    commands: CommandsHandle,
 }
 
 /// The window's handle on the table the canvas holds, when a step after the
@@ -306,7 +309,16 @@ impl InspectorPane {
             selection,
             table,
             inspected: InspectedHandle::default(),
+            commands: CommandsHandle::default(),
         }
+    }
+
+    /// This inspector, listing the verb rows the window declares through
+    /// `commands` under a selected column.
+    #[must_use]
+    pub fn with_commands(mut self, commands: CommandsHandle) -> Self {
+        self.commands = commands;
+        self
     }
 
     /// This inspector, describing the table the window declares through
@@ -318,25 +330,243 @@ impl InspectorPane {
     }
 }
 
-/// The selected column, as the inspector draws it: what it is called, what it
-/// belongs to, what it means as opposed to what DuckDB stored it as, the
-/// picture it was given and why, what the engine measured, and the step that
-/// produced it.
+/// One command the Column section lists under what can be done with the
+/// column: its words, its key and, when it cannot act now, the sentence that
+/// says what it needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnCommand {
+    /// The verb it runs.
+    pub verb: &'static str,
+    /// Its words, as the row draws them.
+    pub label: String,
+    /// Its key, as a keycap draws it (`⇧H`).
+    pub key: Option<String>,
+    /// What it needs, when it cannot act now.
+    pub unavailable: Option<String>,
+    /// Whether it is an operation, started on the column as a choice from its
+    /// header's menu is, rather than a verb the window applies.
+    pub operation: bool,
+}
+
+/// The commands a column offers that are not operations: putting it on a
+/// channel of the chart, and giving it another FineType type. Each acts on the
+/// selected column, because a column selected on the dashboard puts the
+/// Outline's cursor on its row, which is where these verbs read it.
+pub const COLUMN_VERBS: [&str; 4] = [
+    "put-column-on-x",
+    "put-column-on-y",
+    "put-column-on-colour",
+    "retype-column",
+];
+
+/// A registry keystroke string (`shift-h`) as a keycap draws it on this host.
+#[must_use]
+pub fn key_label(keystrokes: &'static str) -> String {
+    brightfield_keys::keys_label(keystrokes, brightfield_keys::KeyPlatform::host())
+}
+
+/// [`COLUMN_VERBS`] as rows, each greyed with the sentence `availability`
+/// gives for it. A verb the registry lacks is left out.
+pub fn verb_commands(
+    availability: impl Fn(&str) -> Option<brightfield_keys::Availability>,
+) -> Vec<ColumnCommand> {
+    let registry = brightfield_keys::registry();
+    COLUMN_VERBS
+        .iter()
+        .filter_map(|verb| {
+            let entry = registry.iter().find(|entry| entry.longname == *verb)?;
+            let unavailable = match availability(verb)? {
+                brightfield_keys::Availability::Available => None,
+                brightfield_keys::Availability::Missing(why) => Some(why),
+            };
+            Some(ColumnCommand {
+                verb: entry.longname,
+                label: entry.label.to_string(),
+                key: entry.primary_key().map(key_label),
+                unavailable,
+                operation: false,
+            })
+        })
+        .collect()
+}
+
+/// The window's handle on the verb rows the Column section lists, written each
+/// frame a column is selected, before the dock draws: their availability is
+/// the window's to say, from what it holds.
+#[derive(Clone, Default)]
+pub struct CommandsHandle(Rc<RefCell<Vec<ColumnCommand>>>);
+
+impl CommandsHandle {
+    /// Declare this frame's rows.
+    pub fn set(&self, rows: Vec<ColumnCommand>) {
+        *self.0.borrow_mut() = rows;
+    }
+
+    /// What was last declared.
+    #[must_use]
+    pub fn get(&self) -> Vec<ColumnCommand> {
+        self.0.borrow().clone()
+    }
+}
+
+/// How many of a category's values the distribution bar draws on their own,
+/// most frequent first. The others are drawn as one bar after them.
+pub const TOP_VALUES: usize = 10;
+
+/// What a column's distribution bar draws, built from its counted shape.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnBars {
+    /// Equal-width bins of a number, low to high: each bin's row count.
+    Bins(Vec<u64>),
+    /// The values of a column with few of them, most frequent first, each
+    /// with its row count, and every value after [`TOP_VALUES`] as `rest`.
+    Top {
+        /// Each value as the column prints it, and its row count.
+        values: Vec<(String, u64)>,
+        /// The rows of the values not drawn on their own.
+        rest: u64,
+    },
+}
+
+/// The bars of `column`: equal bins for a number with many values, its top
+/// values for one with few, and `None` for a column the engine counts no shape
+/// of (a text or a date column).
+#[must_use]
+pub fn column_bars(column: &ColumnFacts) -> Option<ColumnBars> {
+    use brightfield_engine::Distribution;
+    let moments = column.moments.as_ref()?;
+    Some(match &moments.distribution {
+        Distribution::Values(values) => {
+            let mut sorted: Vec<(f64, u64)> = values.clone();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)));
+            let rest = sorted.iter().skip(TOP_VALUES).map(|(_, n)| n).sum();
+            ColumnBars::Top {
+                values: sorted
+                    .iter()
+                    .take(TOP_VALUES)
+                    .map(|(v, n)| (crate::column_header::format_value(*v), *n))
+                    .collect(),
+                rest,
+            }
+        }
+        Distribution::Bins(_) => match moments.bars() {
+            brightfield_engine::Bars::Binned(bins) => ColumnBars::Bins(bins),
+            brightfield_engine::Bars::PerValue(_) => return None,
+        },
+    })
+}
+
+/// `n` rows, in words.
+fn rows_of(n: u64) -> String {
+    let count = crate::column_header::thousands(n);
+    if n == 1 {
+        format!("{count} row")
+    } else {
+        format!("{count} rows")
+    }
+}
+
+/// What the line under the distribution bar says while the bar at `index` is
+/// pointed at: a bin's range and its count, a value and its count, the rest's
+/// count, or the missing count. The bar reports its bars in that order, the
+/// missing one last.
+#[must_use]
+pub fn bar_line(column: &ColumnFacts, bars: &ColumnBars, index: usize) -> Option<String> {
+    use crate::column_header::format_value;
+    match bars {
+        ColumnBars::Bins(bins) => {
+            if index == bins.len() {
+                return Some(format!("Missing · {}", rows_of(column.nulls)));
+            }
+            let count = *bins.get(index)?;
+            let moments = column.moments.as_ref()?;
+            #[allow(clippy::cast_precision_loss)]
+            let width = moments.span() / bins.len() as f64;
+            #[allow(clippy::cast_precision_loss)]
+            let low = moments.min + width * index as f64;
+            let high = if index + 1 == bins.len() {
+                moments.max
+            } else {
+                low + width
+            };
+            Some(format!(
+                "{} to {} · {}",
+                format_value(low),
+                format_value(high),
+                rows_of(count)
+            ))
+        }
+        ColumnBars::Top { values, rest } => match index {
+            i if i < values.len() => {
+                let (value, count) = &values[i];
+                Some(format!("{value} · {}", rows_of(*count)))
+            }
+            i if i == values.len() => Some(format!("Other values · {}", rows_of(*rest))),
+            i if i == values.len() + 1 => Some(format!("Missing · {}", rows_of(column.nulls))),
+            _ => None,
+        },
+    }
+}
+
+/// The figures the Column section states under the bar: the rows, then for a
+/// number its minimum, median, upper quartile and maximum, or for any other
+/// column the bounds the engine printed, then the missing count. Each is a
+/// label and its value.
+#[must_use]
+pub fn column_figures(column: &ColumnFacts) -> Vec<(&'static str, String)> {
+    use crate::column_header::{format_statistic, thousands};
+    let mut figures = vec![("rows", thousands(column.rows))];
+    if let Some(min) = &column.min {
+        figures.push(("minimum", min.clone()));
+    }
+    if let Some(moments) = &column.moments {
+        figures.push(("median", format_statistic(moments.median)));
+        if let Some(upper) = moments.upper_quartile {
+            figures.push(("upper quartile", format_statistic(upper)));
+        }
+    }
+    if let Some(max) = &column.max {
+        figures.push(("maximum", max.clone()));
+    }
+    figures.push(("missing", thousands(column.nulls)));
+    figures
+}
+
+/// What the Column section did on a frame: the command chosen from it, and
+/// where its distribution bar was drawn.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ColumnDrawn {
+    /// The command a click chose.
+    pub chosen: Option<ColumnCommand>,
+    /// The distribution bar's box, while one is drawn.
+    pub bar: Option<egui::Rect>,
+}
+
+/// **The Column section**: what the selected column is, its values, and what
+/// can be done with it.
 ///
-/// The **whole** semantic label is here, not its leaf. The navigator rail
-/// draws the leaf because 240 logical points do not hold
-/// `representation.numeric.decimal_number` beside an eighteen-character column
-/// name; this rail is the place the reader can read the rest.
+/// What it is: its name and the table it is in, then its FineType type, the
+/// type DuckDB stores it as, the step that made the table and where that step
+/// stands, and the tile it was given and why. The **whole** semantic label is
+/// here, not its leaf: the navigator draws the leaf because 240 points do not
+/// hold `representation.numeric.decimal_number` beside a long column name.
 ///
-/// The `VALUES` block below reads the rows, the bounds and the null count that
-/// the grid pane's column header band now also draws, and it stays. The band
-/// answers *what shape is this column* for every column at once, on sight; this
-/// answers *tell me about this one column* for the column a click selected, and
-/// it is the surface carrying the whole label, the tile and the reason the tile
-/// was chosen. Neither is the other's abbreviation, so removing this would take
-/// the answer to a question the band does not ask.
-fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTable>, mode: Mode) {
+/// Its values: the distribution bar, with a line under it saying what the bar
+/// under the pointer counts, then the figures [`column_figures`] gives. The
+/// grid's header band answers *what shape is this column* for every column at
+/// once; this answers it at length for the one a click selected.
+///
+/// What can be done with it: `commands`, each a menu row with its key, greyed
+/// with its sentence when it cannot act now.
+fn column_body(
+    ui: &mut egui::Ui,
+    column: &ColumnFacts,
+    table: Option<&ColumnTable>,
+    commands: &[ColumnCommand],
+    mode: Mode,
+) -> ColumnDrawn {
     let sem = semantic(mode.is_dark());
+    let mut drawn = ColumnDrawn::default();
     ui.label(
         egui::RichText::new(&column.column)
             .font(ui_font())
@@ -349,50 +579,124 @@ fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTab
             .color(chrome::colour(sem.text.secondary)),
     );
 
-    column_field(ui, mode, "finetype", column.full_type());
-    column_field(ui, mode, "storage", &column.storage);
-    match &column.tile {
-        Some(kind) => {
-            column_field(ui, mode, "tile", kind);
-            column_field(ui, mode, "chosen by", &column.because);
-            if let Some(other) = &column.paired {
-                // A point map is one picture of two columns, so the rail says
-                // which other column is in it — without this the reader is
-                // looking at a map and told about one axis of it.
-                column_field(ui, mode, "drawn with", other);
-            }
+    meridian_egui::align::align_scope(ui, "inspector-column", |ui| {
+        let field = |ui: &mut egui::Ui, label: &str, value: &str| {
+            meridian_egui::widgets::field_row(ui, label, value, None, false);
+        };
+        field(ui, "finetype", column.full_type());
+        field(ui, "storage", &column.storage);
+        if let Some(t) = table {
+            field(ui, "step", &format!("{} · {}", t.step, t.kind));
+            // The run record's word for the step, which is `not run` until arc
+            // records a run: a state derived from anything else would be a
+            // claim about a run that did not happen.
+            field(ui, "status", t.state);
         }
-        None => column_field(ui, mode, "tile", &column.because),
-    }
+        match &column.tile {
+            Some(kind) => {
+                field(ui, "tile", kind);
+                field(ui, "chosen by", &column.because);
+                if let Some(other) = &column.paired {
+                    // A point map is one picture of two columns, so the rail
+                    // says which other column is in it.
+                    field(ui, "drawn with", other);
+                }
+            }
+            None => field(ui, "tile", &column.because),
+        }
+    });
 
     ui.add_space(spacing::SPACE_4);
+    subheading(ui, "Values", mode);
+    if let Some(bars) = column_bars(column) {
+        let top: Vec<(&str, u64)>;
+        let shape = match &bars {
+            ColumnBars::Bins(bins) => meridian_egui::Bars::Bins(bins),
+            ColumnBars::Top { values, rest } => {
+                top = values.iter().map(|(v, n)| (v.as_str(), *n)).collect();
+                meridian_egui::Bars::Top {
+                    values: &top,
+                    rest: *rest,
+                }
+            }
+        };
+        let bar = meridian_egui::distribution_bar(
+            ui,
+            meridian_egui::DistributionBar::new(shape, column.nulls, column.rows),
+        );
+        drawn.bar = Some(bar.response.rect);
+        // The line is drawn whether or not a bar is pointed at, so pointing at
+        // one does not move the figures under it.
+        let line = bar
+            .hovered
+            .and_then(|i| bar_line(column, &bars, i))
+            .unwrap_or_default();
+        ui.label(
+            egui::RichText::new(line)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.secondary)),
+        );
+    }
+    meridian_egui::align::align_scope(ui, "inspector-values", |ui| {
+        for (label, value) in column_figures(column) {
+            meridian_egui::widgets::field_row(ui, label, &value, None, false);
+        }
+    });
+
+    if !commands.is_empty() {
+        ui.add_space(spacing::SPACE_4);
+        subheading(ui, "What can be done", mode);
+        for command in commands {
+            let mut row = meridian_egui::MenuItem::new(&command.label);
+            if let Some(key) = &command.key {
+                row = row.keystroke(key);
+            }
+            if let Some(why) = &command.unavailable {
+                row = row.unavailable(why);
+            }
+            let response = meridian_egui::menu_item(ui, row);
+            if let Some(why) = &command.unavailable {
+                response.response.clone().on_hover_text(why);
+            }
+            if response.clicked {
+                drawn.chosen = Some(command.clone());
+            }
+        }
+    }
+    drawn
+}
+
+/// What the Column section lists for `column` of `doc`: the operations started
+/// on it from the grid, then `verbs`, the rows the window declared.
+#[must_use]
+pub fn column_commands(
+    doc: &ChartDoc,
+    column: &str,
+    verbs: Vec<ColumnCommand>,
+) -> Vec<ColumnCommand> {
+    let mut commands: Vec<ColumnCommand> = doc
+        .column_operations(column)
+        .into_iter()
+        .map(|(op, row)| ColumnCommand {
+            verb: op.verb,
+            label: row.words,
+            key: crate::operation_ui::header::primary_key_of(op.verb).map(key_label),
+            unavailable: row.sentence,
+            operation: true,
+        })
+        .collect();
+    commands.extend(verbs);
+    commands
+}
+
+/// A muted heading over one part of a section.
+fn subheading(ui: &mut egui::Ui, text: &str, mode: Mode) {
+    let sem = semantic(mode.is_dark());
     ui.label(
-        egui::RichText::new("VALUES · FROM THE ENGINE")
+        egui::RichText::new(text.to_uppercase())
             .font(ui_font())
             .color(chrome::colour(sem.text.muted)),
     );
-    column_field(ui, mode, "rows", &column.rows.to_string());
-    if let Some(min) = &column.min {
-        column_field(ui, mode, "min", min);
-    }
-    if let Some(max) = &column.max {
-        column_field(ui, mode, "max", max);
-    }
-    column_field(ui, mode, "nulls", &column.nulls.to_string());
-
-    if let Some(t) = table {
-        ui.add_space(spacing::SPACE_4);
-        ui.label(
-            egui::RichText::new("PRODUCED BY")
-                .font(ui_font())
-                .color(chrome::colour(sem.text.muted)),
-        );
-        column_field(ui, mode, "step", &format!("{} · {}", t.step, t.kind));
-        // The run record's word for the step, which is `not run` until arc
-        // records a run: a state derived from anything else would be a claim
-        // about a run that did not happen.
-        column_field(ui, mode, "status", t.state);
-    }
 }
 
 /// A table a later step makes, as the inspector draws it: its name, the step
@@ -513,7 +817,16 @@ impl Item<ChartDoc> for InspectorPane {
         // its own; the pane subject is what the rail falls back to when nobody
         // has pointed at anything in the picture yet.
         if let Some(column) = doc.selected_column().cloned() {
-            column_body(ui, &column, self.table.get().as_ref(), cx.mode);
+            let commands = column_commands(doc, &column.column, self.commands.get());
+            let drawn = column_body(ui, &column, self.table.get().as_ref(), &commands, cx.mode);
+            doc.column_bar = drawn.bar;
+            match drawn.chosen {
+                Some(command) if command.operation => {
+                    doc.choose_column_operation(&column.column, command.verb);
+                }
+                Some(command) => cx.request(Verb::new(command.verb)),
+                None => {}
+            }
             ui.add_space(spacing::SECTION_GAP);
         } else if let Some(inspected) = self.inspected.get() {
             // A table a later step makes, on the canvas: the dashboard's tiles

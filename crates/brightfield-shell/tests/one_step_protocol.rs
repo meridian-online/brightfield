@@ -709,7 +709,7 @@ fn both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot() {
     win.reopen_if_collapsed(brightfield_workbench::arrangement::INSPECTOR_RAIL);
     let after = win.drawn_text();
     assert!(
-        after.iter().any(|t| t == "drawn with"),
+        after.iter().any(|t| t == "DRAWN WITH"),
         "the inspector says nothing about the other half of the pair, so a \
          reader looking at a map is told about one axis of it: {after:?}"
     );
@@ -919,7 +919,7 @@ fn clicking_a_tile_selects_the_column_that_plot_draws_and_the_inspector_shows_it
 
     // …and the rail drew it.
     let after = win.drawn_text();
-    for expected in [picked.column.as_str(), "finetype", "storage", "tile"] {
+    for expected in [picked.column.as_str(), "FINETYPE", "STORAGE", "TILE"] {
         assert!(
             after.iter().any(|t| t == expected),
             "the inspector rail drew no `{expected}` after the click, so the \

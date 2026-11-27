@@ -1080,11 +1080,14 @@ impl MeridianApp {
             return;
         };
         // An operation chosen from the menu starts from the part it names, when it names one.
+        // One chosen by name that starts from no header, as the inspector's Column section
+        // offers the foot row's, starts from the first place it names.
         let start = spec
             .starts
             .iter()
             .copied()
             .find(|s| matches!(s, Start::Header(part) if *part == hit.part || hit.verb.is_some()))
+            .or_else(|| hit.verb.and(spec.starts.first().copied()))
             .unwrap_or(Start::Header(hit.part));
         self.start_operation(ctx, spec, start, hit.column.clone());
     }

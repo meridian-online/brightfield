@@ -165,6 +165,36 @@ impl ChartDoc {
     pub(crate) fn set_header_context(&mut self, context: Option<OperationContext>) {
         self.header.context = context;
     }
+
+    /// **The operations the inspector's Column section offers on `column`**:
+    /// each operation a header offers that starts somewhere on the grid (a
+    /// header, a cell or the foot row), with its key and, when it cannot start
+    /// on this column, the sentence the header's menu says.
+    ///
+    /// Read from the same operations and the same context as the header's
+    /// menu, so the two places cannot disagree about what a column can do, and
+    /// an operation joins the section when its slot is filled.
+    #[must_use]
+    pub fn column_operations(&self, column: &str) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
+        rows_for(
+            &self.header.ops(),
+            self.header.context.as_ref(),
+            column,
+            |start| matches!(start, Start::Header(_) | Start::Cell | Start::FootField(_)),
+        )
+    }
+
+    /// Start the operation `verb` on `column` as a choice from that column's
+    /// header menu does, for the window to take with the frame's other header
+    /// gestures.
+    pub fn choose_column_operation(&mut self, column: &str, verb: &'static str) {
+        self.header.hit = Some(HeaderHit {
+            column: Some(column.to_string()),
+            part: HeaderPart::Menu,
+            gesture: Gesture::Click,
+            verb: Some(verb),
+        });
+    }
 }
 
 /// The width of the new-column cell, and of the gutter the grid leaves for it.
@@ -208,16 +238,22 @@ pub fn the_one_from(
 
 /// The key the registry gives the verb `verb`, built or not.
 fn key_of(verb: &str) -> Option<String> {
+    primary_key_of(verb).map(str::to_string)
+}
+
+/// The keystrokes of the first binding the registry gives the verb `verb`,
+/// built or not, as the registry spells them (`shift-h`).
+#[must_use]
+pub fn primary_key_of(verb: &str) -> Option<&'static str> {
     brightfield_keys::registry()
         .iter()
         .find(|entry| entry.longname == verb)
         .and_then(|entry| entry.primary_key())
-        .map(str::to_string)
         .or_else(|| {
             brightfield_keys::operations::all_operation_entries()
                 .into_iter()
                 .find(|(_, entry)| entry.longname == verb)
-                .and_then(|(_, entry)| entry.primary_key().map(str::to_string))
+                .and_then(|(_, entry)| entry.primary_key())
         })
 }
 
@@ -228,9 +264,22 @@ fn menu_rows(
     context: Option<&OperationContext>,
     column: &str,
 ) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
+    rows_for(ops, context, column, |start| {
+        matches!(start, Start::Header(_))
+    })
+}
+
+/// The rows of `ops` that start from a place `from` admits, for `column`, as
+/// [`menu_rows`] draws them.
+fn rows_for(
+    ops: &[&'static OperationUi],
+    context: Option<&OperationContext>,
+    column: &str,
+    from: impl Fn(&Start) -> bool,
+) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
     ops.iter()
         .copied()
-        .filter(|op| op.starts.iter().any(|s| matches!(s, Start::Header(_))))
+        .filter(|op| op.starts.iter().any(&from))
         .map(|op| {
             let sentence = context.and_then(|cx| {
                 availability(op, cx, Some(column))
