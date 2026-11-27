@@ -545,3 +545,75 @@ fn a_held_region_keeps_its_cells_after_a_zoom() {
         "the regions at the new view are new regions, none of them held"
     );
 }
+
+/// The columns a clause filters on, unquoted, in the order it names them: a
+/// region's two, or each interval's of a brush.
+fn clause_columns(clause: &SqlPredicate) -> Vec<String> {
+    match clause {
+        SqlPredicate::Cells { x, y, .. } => vec![x.clone(), y.clone()],
+        SqlPredicate::Interval { column, .. } => vec![column.trim_matches('"').to_string()],
+        SqlPredicate::And(parts) => parts.iter().flat_map(clause_columns).collect(),
+        other => panic!("not a region or a brush clause: {other}"),
+    }
+}
+
+/// Two square clusters drawn as dots over `x` and `y`, under a first layer
+/// that draws the same rows over `u` and `v`, which the plot's brush takes its
+/// columns from.
+const OTHER_FIRST_LAYER: &str = r"params:
+  sel: { select: crossfilter }
+data:
+  t:
+    query: |
+      SELECT 20 + i % 10 AS x, 20 + (i // 10) % 10 AS y, 20 + i % 10 AS u, 20 + (i // 10) % 10 AS v FROM range(100) r(i)
+      UNION ALL SELECT 75 + i % 10, 75 + (i // 10) % 10, 75 + i % 10, 75 + (i // 10) % 10 FROM range(100) r(i)
+plot:
+  - mark: line
+    data: { from: t }
+    x: u
+    y: v
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+  - select: intervalXY
+    as: $sel
+xDomain: [0, 100]
+yDomain: [0, 100]
+width: 500
+height: 400
+";
+
+#[test]
+fn a_click_names_the_columns_the_brush_does() {
+    // On the earthquake map the brush and the regions read the same layer.
+    let mut live = Live::open("same-columns", &earthquake_spec());
+    let at = live.region_point(0, 0);
+    live.click(at);
+    let clicked = live.held().expect("the click selected the region");
+    live.drag(at, at + egui::vec2(60.0, 40.0));
+    let brushed = live.held().expect("the drag committed a brush");
+    assert_eq!(
+        clause_columns(&clicked),
+        clause_columns(&brushed),
+        "the click and the brush filter the same columns"
+    );
+
+    // Where the brush takes its columns from another layer than the regions,
+    // a click selects no cells of columns the brush does not name.
+    let mut live = Live::open("other-columns", OTHER_FIRST_LAYER);
+    let at = live.region_point(0, 0);
+    live.drag(at, at + egui::vec2(40.0, 30.0));
+    let brushed = live.held().expect("the drag committed a brush");
+    assert_eq!(clause_columns(&brushed), vec!["u", "v"]);
+    live.key(egui::Key::Escape);
+    assert_eq!(live.held(), None);
+    live.click(at);
+    if let Some(clicked) = live.held() {
+        assert_eq!(
+            clause_columns(&clicked),
+            clause_columns(&brushed),
+            "a click's clause names the brush's columns"
+        );
+    }
+}

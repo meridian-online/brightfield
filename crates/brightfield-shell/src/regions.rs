@@ -48,6 +48,7 @@ use brightfield_render::regions::{
 };
 use brightfield_render::scale::Scale;
 use brightfield_render::text::{draw_text, measure_width, TextAnchor, LABEL_SIZE};
+use brightfield_spec::analysis::ChannelField;
 use brightfield_spec::ast::{Mark, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::collect_plot_nodes;
 use brightfield_spec::parse::REGIONS_KEY;
@@ -1022,6 +1023,13 @@ impl Drop for RegionsWorker {
 /// the cells of the region drawn under it, over the extent that region was
 /// found on, or `None` where no region is drawn.
 ///
+/// The clause names the columns the plot's brush names, which are the
+/// columns of the plot's first layer, so a click and a sweep on one plot
+/// filter the same columns (`a_click_names_the_columns_the_brush_does` in
+/// `tests/regions_select.rs`). A plot whose brush names other columns than
+/// its regions layer reads, or an expression, has no click: the cells are
+/// cells of the regions layer's columns, and say nothing about others.
+///
 /// The answer read is the one drawn now ([`RegionsWorker::drawn_on`]), so a click
 /// made while a zoom's regions are still being found is a plain click, not a
 /// choice of cells from a view no longer shown. The point is inverted through the
@@ -1034,6 +1042,15 @@ pub fn region_clause_at(
     local: (f64, f64),
 ) -> Option<Predicate> {
     let answer = worker.drawn_on(plot)?;
+    let binding = plot.gesture.as_ref()?;
+    let brushed = |field: Option<&ChannelField>| field?.column().map(str::to_owned);
+    let (bx, by) = (
+        brushed(binding.x_field.as_ref())?,
+        brushed(binding.y_field.as_ref())?,
+    );
+    if (bx.as_str(), by.as_str()) != (answer.x.as_str(), answer.y.as_str()) {
+        return None;
+    }
     let x = plot.scales.get(Channel::X)?.inverse_f64(local.0)?;
     let y = plot.scales.get(Channel::Y)?.inverse_f64(local.1)?;
     let region = &answer.regions[region_at(&answer.grid, &answer.regions, x, y)?];
@@ -1042,7 +1059,7 @@ pub fn region_clause_at(
         .iter()
         .map(|&c| u32::try_from(c).ok())
         .collect::<Option<Vec<u32>>>()?;
-    Predicate::cells(&answer.x, &answer.y, answer.extent.clone(), cells)
+    Predicate::cells(&bx, &by, answer.extent.clone(), cells)
 }
 
 /// The region of `regions` that `held` selects: the one whose cells it holds,
