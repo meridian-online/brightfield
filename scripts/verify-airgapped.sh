@@ -77,8 +77,7 @@
 #      scripts/package.sh); a bundle that is present and does not work is a
 #      failure.
 #   6. THE HEADLESS EXPORT. The packaged binary runs an agent-written Protocol
-#      with arc (through its runner mode and the DuckDB CLI the artifact
-#      stages), writes its report with `export-pdf` and draws one panel with
+#      with arc (through its runner mode and a DuckDB CLI, below), writes its report with `export-pdf` and draws one panel with
 #      `export-png`, all inside the jail, and must leave a PDF and a PNG. The
 #      export reads the run's tables through the binary's in-process DuckDB as
 #      Parquet, and must install no DuckDB extension into the sealed HOME doing
@@ -89,8 +88,9 @@
 #      leg and names what it checks. It runs after the refusal, in the same
 #      sealed HOME and config. The DuckDB CLI the run needs is the one the
 #      artifact stages and no other; for an artifact that stages none, the run
-#      takes this checkout's pinned CLI and says so, since this is the one leg
-#      that reads Parquet and draws, and it is never skipped.
+#      takes ARC_DUCKDB_BIN, or else this checkout's target/duckdb-cli/duckdb,
+#      and says so, since this is the one leg that reads Parquet and draws, and
+#      it is never skipped.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Leg 5 runs under a stricter jail
