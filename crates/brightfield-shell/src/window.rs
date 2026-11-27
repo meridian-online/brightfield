@@ -10138,7 +10138,8 @@ impl MeridianApp {
     /// The open places as their tabs name them, top to bottom: the node's
     /// name and its activity, which is current, and whether it holds an
     /// unsaved draft. Empty while the model pane holds the canvas, whose
-    /// spine is its own.
+    /// spine is its own, and while the Protocol's panel tiles do, since a
+    /// place there could not be put back.
     fn place_tabs(&self) -> Vec<crate::protocol::PlaceTab> {
         if self.model.as_ref().is_some_and(ModelDoc::shown) || self.tiles.is_some() {
             return Vec::new();
