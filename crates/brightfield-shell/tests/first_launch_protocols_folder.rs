@@ -489,3 +489,84 @@ fn an_open_at_first_launch_asks_once_and_goes_ahead() {
         "the Protocol is made in the folder chosen"
     );
 }
+
+#[test]
+fn a_draft_is_not_asked_about_for_an_open_the_folder_ask_drops() {
+    let _first = first_launch();
+    if !managed() {
+        return;
+    }
+    let input = scratch().join("input").join("drafted");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let first = input.join("drafted.csv");
+    let second = input.join("waiting.csv");
+    for csv in [&first, &second] {
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data/california_housing_sample.csv"),
+            csv,
+        )
+        .expect("the housing sample copies");
+    }
+    let chosen = scratch().join("chosen").join("drafted").join("Protocols");
+    let unreached = scratch().join("chosen").join("unreached").join("Protocols");
+    std::fs::create_dir_all(&unreached).expect("the folder");
+    let panel = Panel::default();
+    panel.answer(Some(chosen.clone()));
+    let ctx = egui::Context::default();
+    let runner = brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    // Every folder is granted as it is asked for, but the one Preferences is pointed at below.
+    let refused = unreached.clone();
+    let mut app = launch(&panel)
+        .running_with(Some(runner))
+        .asking_grants_with(Box::new(move |folder: &Path, _why: &str| {
+            (folder != refused).then(|| folder.to_path_buf())
+        }));
+    let open = |app: &mut MeridianApp, path: PathBuf| {
+        app.open_queue()
+            .push(brightfield_shell::open_queue::OpenRequest::Path(path));
+        for _ in 0..3 {
+            frame(app, &ctx);
+        }
+    };
+    open(&mut app, first);
+    assert!(app.held_protocol_dir().is_some(), "the first file opens");
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.carries_unsaved_mark(), "the filter is a draft");
+
+    // The Protocols folder is now one this launch cannot reach.
+    std::fs::write(
+        scratch()
+            .join("config")
+            .join(protocols_dir::PREFERENCES_FILE),
+        serde_json::json!({ "protocols_dir": unreached.to_string_lossy() }).to_string(),
+    )
+    .expect("the Preferences file");
+    assert_eq!(protocols_dir::out_of_reach(), Some(unreached.clone()));
+
+    // The open asks for the folder before the draft is asked about; refused, the draft stays,
+    // nothing was asked about it, and the banner names the file.
+    open(&mut app, second);
+    assert_eq!(
+        app.open_overlay(),
+        None,
+        "no close question for an open that was dropped"
+    );
+    assert!(app.carries_unsaved_mark(), "the draft is kept");
+    let said = app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER))
+        .and_then(|n| n.body.clone())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        said.contains("waiting.csv was not opened"),
+        "the banner names the open: {said}"
+    );
+}

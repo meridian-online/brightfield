@@ -2636,6 +2636,10 @@ enum ProtocolsFolderThen {
     /// An open of data that makes a Protocol of it in the Protocols folder, opened again once the
     /// folder is granted ([`MeridianApp::open_paths_knowing`]).
     Paths(Vec<PathBuf>),
+    /// The same, held before anything is left, so the close question over a draft is asked only
+    /// once the open will go ahead: once the folder is granted it leaves as the open would have
+    /// ([`MeridianApp::leave`]).
+    Open(crate::open_queue::OpenRequest),
     /// A Protocol archive chosen on this Mac, unpacked into the Protocols folder once it is
     /// granted, with the count of the files handed over beside it ([`MeridianApp::begin_archive`]).
     Archive(PathBuf, usize),
@@ -2651,6 +2655,7 @@ impl ProtocolsFolderThen {
         match self {
             Self::Door | Self::NewProtocol => None,
             Self::Paths(paths) => paths.first().map(|p| display_name(p)),
+            Self::Open(request) => request_paths(request).first().map(|p| display_name(p)),
             Self::Archive(archive, _) => Some(display_name(archive)),
             Self::Link(_) => Some("The link".to_string()),
         }
@@ -6662,6 +6667,7 @@ impl MeridianApp {
                     .unwrap_or_else(crate::data_file::installed_extensions);
                 self.open_paths_knowing(ctx, paths, &installed);
             }
+            ProtocolsFolderThen::Open(request) => self.leave(ctx, Leaving::Open(request)),
             ProtocolsFolderThen::Archive(archive, others) => {
                 self.begin_archive(ctx, &archive, others);
             }
@@ -11311,10 +11317,7 @@ impl MeridianApp {
             if path.is_dir() {
                 self.open_known(ctx, path);
             } else {
-                self.leave(
-                    ctx,
-                    Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
-                );
+                self.leave_to_make_a_protocol(ctx, crate::open_queue::OpenRequest::Path(path));
             }
         }
         match make_in {
@@ -15137,7 +15140,7 @@ impl MeridianApp {
                 let recents = self.recent_protocol_dirs();
                 match crate::file_protocols::decide(&path, &recents) {
                     crate::file_protocols::FileOpen::New => {
-                        self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                        self.leave_to_make_a_protocol(ctx, OpenRequest::Path(path));
                     }
                     crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
                     crate::file_protocols::FileOpen::Ask(choices) => {
@@ -15153,6 +15156,17 @@ impl MeridianApp {
             }
             // Adding a source keeps the Protocol open, but replaces what the canvas shows, so a
             // draft is asked about first, as before a rename.
+            // Data with no Protocol of its own has one made of it in the Protocols folder.
+            OpenRequest::Path(_) | OpenRequest::Paths(_)
+                if paths.iter().all(|p| {
+                    matches!(
+                        crate::open_queue::route(p),
+                        crate::open_queue::Route::New(_)
+                    )
+                }) =>
+            {
+                self.leave_to_make_a_protocol(ctx, request);
+            }
             OpenRequest::Path(_)
             | OpenRequest::Paths(_)
             | OpenRequest::AddSource(_)
@@ -15164,6 +15178,22 @@ impl MeridianApp {
                 self.take_open_request(ctx, request);
             }
         }
+    }
+
+    /// **Leave for `request`, an open that makes a Protocol in the Protocols folder**, once that
+    /// folder is granted: before then the Protocols-folder ask is taken first, before the close
+    /// question over a draft, so a cancel leaves the draft as it was.
+    fn leave_to_make_a_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        request: crate::open_queue::OpenRequest,
+    ) {
+        if !self.close_after_runs
+            && self.hold_for_protocols_folder(ctx, ProtocolsFolderThen::Open(request.clone()))
+        {
+            return;
+        }
+        self.leave(ctx, Leaving::Open(request));
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
