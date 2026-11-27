@@ -24,8 +24,7 @@
 //! as it was.
 
 use super::{
-    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
-    Start,
+    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, OperationUi, Stage, Start,
 };
 use crate::one_step::ColumnFacts;
 use crate::protocol::ui_font;
@@ -488,12 +487,6 @@ static UI: OperationUi = OperationUi {
     icon: "sum",
     starts: &[Start::Cell, Start::Header(HeaderPart::Menu)],
     menu_words: "Summarise by this column",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ViewRecorded,
-    ],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

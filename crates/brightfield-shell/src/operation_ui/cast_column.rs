@@ -19,9 +19,7 @@
 //! running the step would. The step is named for the column it cast
 //! (`<table>_cast_<column>`).
 
-use super::{
-    Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi, Stage, Start,
-};
+use super::{Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, OperationUi, Stage, Start};
 
 /// The types offered after FineType's, in the order they are listed.
 const COMMON: &[&str] = &[
@@ -133,12 +131,6 @@ static UI: OperationUi = OperationUi {
         Start::Header(HeaderPart::Menu),
     ],
     menu_words: "Change type",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ViewRecorded,
-    ],
     begin,
     keeps: Keeps::OnEnter,
     field: Some(InPlace {

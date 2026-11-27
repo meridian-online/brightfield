@@ -8,7 +8,9 @@
 //! its longname. A motion (a cursor step, a pan) is not a menu item: it is in
 //! the help sheet and the palette.
 
+use crate::operations::{operation_asks, operation_stage, operation_verbs};
 use crate::registry::registry;
+use crate::ribbon::Stage;
 
 /// One menu of the bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,20 @@ const fn asks(longname: &'static str) -> MenuItem {
         longname,
         asks: true,
     }
+}
+
+/// The built operations of `stage`, in arc's order, each an item that asks
+/// unless it keeps its step at once. An operation joins the Data menu when it
+/// is built, with no edit here.
+fn operations(stage: Stage) -> Vec<MenuItem> {
+    operation_verbs()
+        .into_iter()
+        .filter(|v| operation_stage(v.longname) == Some(stage))
+        .map(|v| MenuItem::Command {
+            longname: v.longname,
+            asks: operation_asks(v.longname),
+        })
+        .collect()
 }
 
 /// The menu bar: Brightfield, File, Edit, View, Protocol, Data, Window, Help.
@@ -135,10 +151,16 @@ pub fn menu_bar() -> Vec<Menu> {
         },
         Menu {
             title: "Data",
-            items: vec![
-                asks("filter-rows-at-cursor"),
-                asks("sort-rows-at-cursor"),
-                Separator,
+            items: [
+                vec![asks("filter-rows-at-cursor"), asks("sort-rows-at-cursor")],
+                operations(Stage::Shape),
+                vec![Separator],
+                operations(Stage::Model),
+                vec![Separator],
+            ]
+            .concat()
+            .into_iter()
+            .chain([
                 acts("set-channel"),
                 acts("put-column-on-x"),
                 acts("put-column-on-y"),
@@ -157,7 +179,8 @@ pub fn menu_bar() -> Vec<Menu> {
                 asks("retype-column"),
                 Separator,
                 acts("rediscover-model"),
-            ],
+            ])
+            .collect(),
         },
         Menu {
             title: "Window",

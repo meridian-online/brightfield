@@ -811,6 +811,24 @@ fn every_chart_palette_candidate_actually_dispatches() {
                 win.app.chart_doc_mut().grid_cursor =
                     Some(brightfield_shell::data_grid::GridCursor { row: 0, col: 0 });
                 win.settle();
+                // An operation this one-table file cannot start (a fill with
+                // no missing values, a join with no second table) is greyed
+                // with the sentence its key says, and refuses to run, as a
+                // greyed row does.
+                if let Some(brightfield_keys::Availability::Missing(sentence)) =
+                    win.app.availability_of(verb)
+                {
+                    win.key(egui::Key::Space);
+                    win.settle();
+                    assert!(
+                        win.app
+                            .open_palette_missing()
+                            .contains(&(verb, sentence.clone())),
+                        "{verb} cannot start here and its row is not greyed with {sentence:?}"
+                    );
+                    let _ = std::fs::remove_dir_all(&dir);
+                    continue;
+                }
                 confirm_chart_verb(&mut win, verb);
                 win.settle();
                 let doc = win.app.chart_doc();

@@ -330,7 +330,12 @@ const NEEDS_COLUMN_FOR_SHELF: &[Requirement] = &[
     THE_SHELF,
     Requirement::of(Need::Column(ColumnKind::Any)),
 ];
-const NEEDS_GRID_CELL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::GridCell))];
+// The foot row's fields ask at the cursor's cell, of a table whose rows are
+// held: a step's preview says how to load its table in its own words.
+const NEEDS_GRID_CELL: &[Requirement] = &[
+    Requirement::of(Need::Selected(Selected::GridCell)),
+    Requirement::of(Need::Condition(Condition::LoadedTable)),
+];
 const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Model))];
 // The ribbon is drawn only over an open Protocol: the front door has none.
 const NEEDS_RIBBON: &[Requirement] = &[A_PROTOCOL];

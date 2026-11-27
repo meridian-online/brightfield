@@ -13,9 +13,7 @@
 //! is one arc and DuckDB take. The step is named for the column it renamed
 //! (`<table>_renamed_<column>`).
 
-use super::{
-    Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi, Stage, Start,
-};
+use super::{Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, OperationUi, Stage, Start};
 
 fn begin(b: &Begin<'_>) -> Result<Draft, String> {
     let column = b
@@ -45,12 +43,6 @@ static UI: OperationUi = OperationUi {
         Start::Header(HeaderPart::Menu),
     ],
     menu_words: "Rename column",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ViewRecorded,
-    ],
     begin,
     keeps: Keeps::OnEnter,
     field: Some(InPlace {

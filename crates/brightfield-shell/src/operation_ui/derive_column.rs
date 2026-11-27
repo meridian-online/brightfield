@@ -19,9 +19,7 @@
 //!
 //! It needs no column of its own, since the new-column cell starts it on none.
 
-use super::{
-    Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi, Stage, Start,
-};
+use super::{Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, OperationUi, Stage, Start};
 
 /// The longest name the expression gives the column, in characters.
 const NAME_LENGTH: usize = 30;
@@ -174,7 +172,6 @@ static UI: OperationUi = OperationUi {
         Start::Header(HeaderPart::NewColumn),
     ],
     menu_words: "Add a column from this one",
-    needs: &[Need::ProtocolSource, Need::Rows, Need::ViewRecorded],
     begin,
     keeps: Keeps::OnEnter,
     field: Some(InPlace {

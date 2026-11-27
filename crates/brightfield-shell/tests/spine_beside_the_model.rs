@@ -646,7 +646,7 @@ mod pick {
     use std::cell::RefCell;
 
     use brightfield_shell::operation_ui::{
-        Begin, By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start,
+        Begin, By, Draft, Keeps, NameRule, OperationUi, Stage, Start,
     };
 
     thread_local! {
@@ -681,7 +681,6 @@ mod pick {
         icon: "row-insert-bottom",
         starts: &[Start::Spine { role: "other" }],
         menu_words: "Append rows",
-        needs: &[Need::AnotherTable],
         begin: begin_append,
         keeps: Keeps::OnEnter,
         field: None,
@@ -701,9 +700,6 @@ mod pick {
         icon: "arrows-join",
         starts: &[Start::Spine { role: "other" }],
         menu_words: "Join tables",
-        // What a built join declares: the pick's tables are the ones this need is checked
-        // against, so it is met by the model's other tables.
-        needs: &[Need::Rows, Need::AnotherTable],
         begin: begin_join,
         keeps: Keeps::OnEnter,
         field: None,

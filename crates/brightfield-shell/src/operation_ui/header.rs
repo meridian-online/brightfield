@@ -29,7 +29,7 @@
 
 use meridian_design::{semantic, spacing};
 
-use super::open::{availability, OperationContext};
+use super::open::{availability, hold, OperationContext};
 use super::{label, HeaderPart, InPlace, OperationUi, Start};
 use crate::app::ChartDoc;
 use crate::data_grid::TableDrawn;
@@ -108,8 +108,9 @@ pub struct HeaderState {
     /// The operations that start from a header, when a test has given its own
     /// in place of the built ones.
     ops: Option<Vec<&'static OperationUi>>,
-    /// What the window holds, as the availability of a menu row asks.
-    context: Option<OperationContext>,
+    /// What the window holds, as the availability of a menu row asks: the
+    /// window's situation, and what each column's operations add to it.
+    context: Option<(brightfield_keys::Situation, OperationContext)>,
     /// A gesture not yet taken by the window.
     hit: Option<HeaderHit>,
     /// What the last pass sensed and drew.
@@ -162,7 +163,10 @@ impl ChartDoc {
     }
 
     /// Tell the header what the window holds, for its menu's rows.
-    pub(crate) fn set_header_context(&mut self, context: Option<OperationContext>) {
+    pub(crate) fn set_header_context(
+        &mut self,
+        context: Option<(brightfield_keys::Situation, OperationContext)>,
+    ) {
         self.header.context = context;
     }
 }
@@ -225,17 +229,17 @@ fn key_of(verb: &str) -> Option<String> {
 /// header, with its key and, when it cannot start on this column, why.
 fn menu_rows(
     ops: &[&'static OperationUi],
-    context: Option<&OperationContext>,
+    context: Option<&(brightfield_keys::Situation, OperationContext)>,
     column: &str,
 ) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
     ops.iter()
         .copied()
         .filter(|op| op.starts.iter().any(|s| matches!(s, Start::Header(_))))
         .map(|op| {
-            let sentence = context.and_then(|cx| {
-                availability(op, cx, Some(column))
-                    .sentence()
-                    .map(str::to_string)
+            let sentence = context.and_then(|(window, cx)| {
+                let mut situation = window.clone();
+                hold(&mut situation, cx, Some(column));
+                availability(op, &situation).missing().map(str::to_string)
             });
             (
                 op,

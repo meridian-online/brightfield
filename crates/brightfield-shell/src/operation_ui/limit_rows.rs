@@ -23,8 +23,7 @@ use meridian_design::{semantic, spacing};
 
 use super::scan::Scan;
 use super::{
-    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
-    Start,
+    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, OperationUi, Stage, Start,
 };
 
 /// How many rows a limit opens on.
@@ -270,12 +269,6 @@ static UI: OperationUi = OperationUi {
     icon: "list-numbers",
     starts: &[Start::Cell, Start::Header(HeaderPart::Menu)],
     menu_words: "Top rows by this column",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ViewRecorded,
-    ],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

@@ -32,4 +32,6 @@ Keep private planning identifiers out of code, commit messages, pull request tex
 
 ## Docs
 
+`docs/operation-forms.md` says how arc's operations are started, made, previewed, kept and saved in the window, what each needs and why; read it before changing an operation, its slot or key, the shared preview and keep path, or adding one.
+
 `docs/map-regions.md` says how a plot's dense regions are found, named, drawn and selected, and why; read it before changing the region pipeline, its thresholds, its naming rules or the regions switch.

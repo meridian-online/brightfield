@@ -14,7 +14,7 @@
 //! opens as a step of the Protocol and previews its file
 //! (`an_agents_read_file_step_opens_and_previews_its_file`).
 
-use super::{Begin, By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start};
+use super::{Begin, By, Draft, Keeps, NameRule, OperationUi, Stage, Start};
 
 /// No draft: the browser adds the file, and the window opens the browser for
 /// this operation before a draft would begin.
@@ -30,7 +30,6 @@ static UI: OperationUi = OperationUi {
     icon: "database",
     starts: &[Start::SourcesBrowser],
     menu_words: "Add sources",
-    needs: &[Need::TakesSources],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

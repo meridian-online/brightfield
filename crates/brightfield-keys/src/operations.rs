@@ -26,6 +26,7 @@ use crate::availability::{Condition, Need, Requirement, Selected};
 use crate::registry::{
     BindingContext, BindingSpec, CommandTier, Drives, Scores, VerbEntry, VerbStatus,
 };
+use crate::ribbon::Stage;
 
 /// A key in the grid's context.
 fn grid(keystrokes: &'static str) -> BindingSpec {
@@ -35,18 +36,25 @@ fn grid(keystrokes: &'static str) -> BindingSpec {
     }
 }
 
-/// What an operation started from the grid needs: a Protocol its step is
-/// saved into, and the grid's cursor on a cell.
-const NEEDS_OPERATION: &[Requirement] = &[
-    Requirement::of(Need::Condition(Condition::ProtocolToSave)),
-    Requirement::of(Need::Selected(Selected::GridCell)),
-];
+// What an operation needs before it can start, in the order its sentences are
+// said. Every operation records into a Protocol of the analyst's own and reads
+// the table in front as recorded; the rest is each operation's own.
+const SOURCE: Requirement = Requirement::of(Need::Condition(Condition::ProtocolSource));
+const ROWS: Requirement = Requirement::of(Need::Selected(Selected::GridRows));
+const COLUMN: Requirement = Requirement::of(Need::Selected(Selected::GridColumn));
+const RECORDED: Requirement = Requirement::of(Need::Condition(Condition::ViewRecorded));
 
-/// An operation's entry: its long name as the verb, one key in the grid's
-/// context, its help line, and the scores that defend the key.
+/// An operation on the table in front as a whole.
+const NEEDS_TABLE: &[Requirement] = &[SOURCE, ROWS, RECORDED];
+/// An operation on one of its columns.
+const NEEDS_COLUMN: &[Requirement] = &[SOURCE, ROWS, COLUMN, RECORDED];
+
+/// An operation's entry: its long name as the verb, what it needs to start,
+/// one key in the grid's context, its help line, and the scores that defend the key.
 fn entry(
     longname: &'static str,
     label: &'static str,
+    needs: &'static [Requirement],
     key: &'static str,
     help: &'static str,
     (frequency, mnemonic, convention): (u8, u8, u8),
@@ -55,7 +63,7 @@ fn entry(
     VerbEntry {
         longname,
         label,
-        needs: NEEDS_OPERATION,
+        needs,
         tier: CommandTier::View,
         binding_specs: vec![grid(key)],
         scope_applicability: vec![Altitude::View],
@@ -78,6 +86,7 @@ fn hide_column() -> VerbEntry {
     entry(
         "hide-column",
         "Hide column",
+        NEEDS_COLUMN,
         "-",
         "Hide the cursor's column; its header's menu does the same",
         (3, 4, 4),
@@ -91,6 +100,7 @@ fn rename_column() -> VerbEntry {
     entry(
         "rename-column",
         "Rename column",
+        NEEDS_COLUMN,
         "shift-r",
         "Rename the cursor's column in its header; a double-click on the name does the same",
         (3, 4, 2),
@@ -104,6 +114,7 @@ fn derive_column() -> VerbEntry {
     entry(
         "derive-column",
         "Derive column",
+        NEEDS_TABLE,
         "=",
         "Add a column from an expression, typed in a new header at the table's end",
         (3, 4, 4),
@@ -117,6 +128,7 @@ fn cast_column() -> VerbEntry {
     entry(
         "cast-column",
         "Cast column",
+        NEEDS_COLUMN,
         "shift-t",
         "Change the cursor's column's type, starting from the type FineType reads",
         (2, 4, 2),
@@ -130,6 +142,7 @@ fn summarise_rows() -> VerbEntry {
     entry(
         "summarise-rows",
         "Summarise rows",
+        NEEDS_COLUMN,
         "shift-f",
         "Summarise the rows by the cursor's column: a count of each value, then the values to add",
         (3, 3, 5),
@@ -143,6 +156,7 @@ fn dedupe_rows() -> VerbEntry {
     entry(
         "dedupe-rows",
         "Remove duplicate rows",
+        NEEDS_TABLE,
         "shift-u",
         "Remove the table's duplicate rows",
         (2, 3, 2),
@@ -156,6 +170,7 @@ fn limit_rows() -> VerbEntry {
     entry(
         "limit-rows",
         "Limit rows",
+        NEEDS_COLUMN,
         "shift-l",
         "Keep the top rows by the cursor's column: ten, largest first, until changed",
         (2, 4, 2),
@@ -165,10 +180,18 @@ fn limit_rows() -> VerbEntry {
 
 // ---- fill-nulls ----
 const FILL_NULLS_BUILT: bool = true;
+const NEEDS_FILL_NULLS: &[Requirement] = &[
+    SOURCE,
+    ROWS,
+    COLUMN,
+    Requirement::of(Need::Condition(Condition::ColumnHasNulls)),
+    RECORDED,
+];
 fn fill_nulls() -> VerbEntry {
     entry(
         "fill-nulls",
         "Fill missing values",
+        NEEDS_FILL_NULLS,
         "f",
         "Fill the cursor's column's missing values, starting from a suggested value",
         (2, 4, 3),
@@ -178,10 +201,17 @@ fn fill_nulls() -> VerbEntry {
 
 // ---- join-tables ----
 const JOIN_TABLES_BUILT: bool = true;
+const NEEDS_JOIN_TABLES: &[Requirement] = &[
+    SOURCE,
+    ROWS,
+    RECORDED,
+    Requirement::of(Need::Condition(Condition::AnotherTable)),
+];
 fn join_tables() -> VerbEntry {
     entry(
         "join-tables",
         "Join tables",
+        NEEDS_JOIN_TABLES,
         "&",
         "Join the table in front to one picked in the spine, on keys proposed from the model or the cursor's column",
         (2, 4, 5),
@@ -191,10 +221,17 @@ fn join_tables() -> VerbEntry {
 
 // ---- append-rows ----
 const APPEND_ROWS_BUILT: bool = true;
+const NEEDS_APPEND_ROWS: &[Requirement] = &[
+    SOURCE,
+    ROWS,
+    RECORDED,
+    Requirement::of(Need::Condition(Condition::AnotherTableSharingAColumn)),
+];
 fn append_rows() -> VerbEntry {
     entry(
         "append-rows",
         "Append rows",
+        NEEDS_APPEND_ROWS,
         "shift-a",
         "Append the rows of tables picked in the spine, matching columns by name",
         (2, 4, 3),
@@ -229,6 +266,25 @@ pub fn operation_verbs() -> Vec<VerbEntry> {
         .into_iter()
         .filter_map(|(built, entry)| built.then_some(entry))
         .collect()
+}
+
+/// The stage of the work the operation `longname` belongs to, as the ribbon
+/// and the menus file it: joining and appending relate tables, and the rest
+/// shape one. `None` for a verb that is no operation here.
+#[must_use]
+pub fn operation_stage(longname: &str) -> Option<Stage> {
+    match longname {
+        "join-tables" | "append-rows" => Some(Stage::Model),
+        other => is_operation_verb(other).then_some(Stage::Shape),
+    }
+}
+
+/// Whether choosing the operation `longname` asks for something more before
+/// it keeps a step: every one but the two that ask nothing, hiding a column
+/// and removing duplicate rows, which keep their step at once.
+#[must_use]
+pub fn operation_asks(longname: &str) -> bool {
+    !matches!(longname, "hide-column" | "dedupe-rows")
 }
 
 /// Whether `longname` is one of the operation verbs here, built or not.
