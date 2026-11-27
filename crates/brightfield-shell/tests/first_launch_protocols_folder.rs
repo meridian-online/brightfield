@@ -449,3 +449,43 @@ fn an_open_that_makes_a_protocol_asks_for_the_folder_first() {
     open(&mut app);
     assert_eq!(panel.asked(), asked_on_documents(3));
 }
+
+#[test]
+fn an_open_at_first_launch_asks_once_and_goes_ahead() {
+    let _first = first_launch();
+    // The file the app was launched to open, on the queue before the first frame.
+    let input = scratch().join("input").join("launched");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let csv = input.join("launched.csv");
+    std::fs::write(&csv, "id,value\n1,10\n2,20\n").expect("the CSV");
+    let chosen = scratch().join("chosen").join("launched").join("Protocols");
+    let panel = Panel::default();
+    panel.answer(Some(chosen.clone()));
+    let ctx = egui::Context::default();
+    let runner = brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    let mut app = launch(&panel)
+        .running_with(Some(runner))
+        .asking_grants_with(Box::new(|folder: &Path, _why: &str| {
+            Some(folder.to_path_buf())
+        }));
+    app.open_queue()
+        .push(brightfield_shell::open_queue::OpenRequest::Path(csv));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    let made = app.held_protocol_dir().expect("the file opens");
+    if !managed() {
+        assert!(panel.asked().is_empty(), "the full edition asked");
+        return;
+    }
+    assert_eq!(
+        panel.asked(),
+        asked_on_documents(1),
+        "the panel is asked once"
+    );
+    assert_eq!(
+        made.parent(),
+        Some(chosen.as_path()),
+        "the Protocol is made in the folder chosen"
+    );
+}

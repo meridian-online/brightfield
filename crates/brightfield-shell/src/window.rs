@@ -6625,7 +6625,7 @@ impl MeridianApp {
     ) {
         let granted = self.ask_one_grant(dir, &crate::ask_grant::why_protocols_again(dir));
         let Some(granted) = granted else {
-            self.raise_protocols_out_of_reach(dir);
+            self.raise_protocols_out_of_reach(dir, then.opening().as_deref());
             ctx.request_repaint();
             return;
         };
@@ -6687,8 +6687,9 @@ impl MeridianApp {
         true
     }
 
-    /// Say that the Protocols folder chosen before, `dir`, is out of reach, and why.
-    fn raise_protocols_out_of_reach(&mut self, dir: &std::path::Path) {
+    /// Say that the Protocols folder chosen before, `dir`, is out of reach, and why, naming the
+    /// open that waited on it, `opening`, when one did.
+    fn raise_protocols_out_of_reach(&mut self, dir: &std::path::Path, opening: Option<&str>) {
         let why = crate::grants::store()
             .unreachable(dir)
             .map_or_else(|| "it is not granted".to_string(), |e| e.to_string());
@@ -6698,11 +6699,18 @@ impl MeridianApp {
                 Severity::Warning,
                 "The Protocols folder is out of reach",
             )
-            .body(format!(
-                "{}: {why}. It is still the Protocols folder: New Protocol asks for access to it \
-                 again, and Preferences can choose another.",
-                dir.display()
-            )),
+            .body(match opening {
+                Some(what) => format!(
+                    "{what} was not opened: {} is the Protocols folder, and {why}. Opening it \
+                     again asks for access to the folder, and Preferences can choose another.",
+                    dir.display()
+                ),
+                None => format!(
+                    "{}: {why}. It is still the Protocols folder: New Protocol asks for access \
+                     to it again, and Preferences can choose another.",
+                    dir.display()
+                ),
+            }),
         );
     }
 
@@ -19147,9 +19155,13 @@ impl MeridianApp {
             self.protocols_folder_asked = true;
             if crate::protocols_dir::granted_root().is_none() {
                 match crate::protocols_dir::out_of_reach() {
-                    Some(dir) => self.raise_protocols_out_of_reach(&dir),
+                    Some(dir) => self.raise_protocols_out_of_reach(&dir, None),
+                    // An open taken off the queue earlier this frame, such as the file the app
+                    // was launched to open, may already wait on the ask: it is kept, and asks
+                    // the one time (`an_open_at_first_launch_asks_once_and_goes_ahead`).
                     None if self.can_ask_protocols_folder() => {
-                        self.protocols_folder_ask = Some(ProtocolsFolderThen::Door);
+                        self.protocols_folder_ask
+                            .get_or_insert(ProtocolsFolderThen::Door);
                     }
                     None => {}
                 }
