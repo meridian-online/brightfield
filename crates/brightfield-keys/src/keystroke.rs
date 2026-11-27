@@ -111,6 +111,8 @@ pub const KEY_NAMES: &[&str] = &[
     ",",
     "&",
     "\\",
+    "[",
+    "]",
 ];
 
 /// Parse a binding's space-separated keystrokes into strokes.

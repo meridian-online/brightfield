@@ -136,7 +136,17 @@ fn keys_read_ctrl_on_a_host_with_no_menu_bar() {
         .filter(|row| row.menu == "Window")
         .filter_map(|row| row.longname)
         .collect();
-    assert_eq!(window, ["toggle-outline-rail", "move-grid"]);
+    assert_eq!(
+        window,
+        [
+            "toggle-outline-rail",
+            "toggle-inspector-rail",
+            "move-grid",
+            "next-place",
+            "prev-place",
+            "close-place"
+        ]
+    );
 }
 
 #[test]

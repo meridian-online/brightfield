@@ -3938,6 +3938,15 @@ pub struct ProtocolDoc {
     /// Whether a reader clicked the graph chip in the spine's head this frame.
     /// Taken by the window for the same reason [`ProtocolDoc::canvas_pick`] is.
     graph_pick: bool,
+    /// The open places, as the list above the spine names them. Written by the
+    /// window before the pane draws, as [`ProtocolDoc::canvas_holds`] is.
+    pub places: Vec<PlaceTab>,
+    /// Where each open place was drawn in the last frame, top to bottom,
+    /// recorded for the reason [`ProtocolDoc::spine_drawn`] is.
+    pub places_drawn: Vec<PlaceDrawn>,
+    /// What a reader asked of an open place this frame. Taken by the window,
+    /// for the reason [`ProtocolDoc::canvas_pick`] is.
+    place_ask: Option<PlaceAsk>,
     /// The Protocol's spine, to draw in place of this document's own while another document
     /// holds the canvas. Set by the window each frame.
     pub spine_override: Option<SpineOverride>,
@@ -4298,6 +4307,9 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            places: Vec::new(),
+            places_drawn: Vec::new(),
+            place_ask: None,
             spine_override: None,
             spine_ask: None,
             spine_pick: None,
@@ -4321,6 +4333,9 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            places: Vec::new(),
+            places_drawn: Vec::new(),
+            place_ask: None,
             spine_override: None,
             spine_ask: None,
             spine_pick: None,
@@ -4348,6 +4363,12 @@ impl ProtocolDoc {
     /// which is the same shape for the inspector's column.
     pub fn take_canvas_pick(&mut self) -> Option<crate::window::CanvasHolds> {
         self.canvas_pick.take()
+    }
+
+    /// Take what a reader asked of an open place this frame: a click on its
+    /// row, or on its close control.
+    pub fn take_place_ask(&mut self) -> Option<PlaceAsk> {
+        self.place_ask.take()
     }
 
     /// Take the graph chip's click, if the spine's head was clicked this frame.
@@ -4683,7 +4704,41 @@ impl Item<ProtocolDoc> for OutlinePane {
         let holds_graph =
             overridden.is_none() && matches!(holds, crate::window::CanvasHolds::Graph);
         let mut ask: Option<SpineAsk> = None;
-        doc.spine_body = Some(ui.max_rect());
+        // The open places stand above the spine, at their own height, and do
+        // not scroll with it. The model's spine, drawn in this pane's place,
+        // has none.
+        let mut place_ask: Option<PlaceAsk> = None;
+        let mut places_drawn: Vec<PlaceDrawn> = Vec::new();
+        if overridden.is_none() && !doc.places.is_empty() {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (index, place) in doc.places.iter().enumerate() {
+                    let tab = meridian_egui::VerticalTab::new(&place.node, place.activity)
+                        .current(place.current)
+                        .dirty(place.dirty);
+                    let drawn = meridian_egui::vertical_tab(ui, tab);
+                    places_drawn.push(PlaceDrawn {
+                        rect: drawn.response.rect,
+                        label: format!("{} \u{b7} {}", place.node, place.activity),
+                        current: place.current,
+                    });
+                    if drawn.close_clicked {
+                        place_ask = Some(PlaceAsk::Close(index));
+                    } else if drawn.clicked {
+                        place_ask = Some(PlaceAsk::Go(index));
+                    }
+                }
+            });
+            ui.add_space(spacing::SPACE_2);
+            doc.spine_body = Some(ui.available_rect_before_wrap());
+        } else {
+            doc.spine_body = Some(ui.max_rect());
+        }
+        doc.places_drawn = places_drawn;
+        if place_ask.is_some() {
+            doc.place_ask = place_ask;
+            cx.request_repaint();
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -4847,6 +4902,39 @@ impl Item<ProtocolDoc> for OutlinePane {
             cx.request_repaint();
         }
     }
+}
+
+/// One open place, as the list above the spine names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaceTab {
+    /// The node's name, or "Protocol" for the graph.
+    pub node: String,
+    /// The activity the node is shown in: Grid, Chart or Graph.
+    pub activity: &'static str,
+    /// Whether this is the current place.
+    pub current: bool,
+    /// Whether it holds an unsaved draft.
+    pub dirty: bool,
+}
+
+/// Where an open place was drawn, as a test reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaceDrawn {
+    /// The row.
+    pub rect: egui::Rect,
+    /// The tab's accessible name: the node, then its activity.
+    pub label: String,
+    /// Whether it was drawn as the current place.
+    pub current: bool,
+}
+
+/// What a reader asked of an open place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceAsk {
+    /// Bring the place at this index back.
+    Go(usize),
+    /// Close the place at this index.
+    Close(usize),
 }
 
 /// What `spine_list_ui` drew: the rows and curves as a test or a later pass

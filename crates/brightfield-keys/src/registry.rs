@@ -1765,6 +1765,48 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Split the canvas in two, or close the pane without focus",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "cmd-backslash splits an editor in two in VS Code and Zed" }),
         },
+        // The open places above the spine. A browser's keys for its tabs: the
+        // brackets walk the list, and cmd-w closes the current place, never
+        // the window, since the last place is kept.
+        VerbEntry {
+            longname: "next-place",
+            label: "Next place",
+            needs: &[A_PROTOCOL],
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-]")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the open place below this one",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "cmd-shift-], a browser's next tab" }),
+        },
+        VerbEntry {
+            longname: "prev-place",
+            label: "Previous place",
+            needs: &[A_PROTOCOL],
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-[")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the open place above this one",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "cmd-shift-[, a browser's previous tab" }),
+        },
+        VerbEntry {
+            longname: "close-place",
+            label: "Close place",
+            needs: &[A_PROTOCOL],
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-w")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Close the current place, keeping the last one open",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "cmd-w, a browser's close tab" }),
+        },
         // The ledger rail's Versions panel: a centre tab in the chart view's item
         // registry, so it carries a show verb the item audit requires, reserved
         // and unbound as the Log's and the Quality panel's are; the panel's own
@@ -2659,6 +2701,9 @@ mod tests {
             "quick-open",
             "toggle-inspector-rail",
             "split-canvas",
+            "next-place",
+            "prev-place",
+            "close-place",
             "open-chart-versions",
             "open-run-log",
             "open-run-quality",

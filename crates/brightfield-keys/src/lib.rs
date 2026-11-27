@@ -26,6 +26,7 @@ pub mod keystroke;
 pub mod menus;
 pub mod operations;
 pub mod palette;
+pub mod places;
 pub mod registry;
 pub mod ribbon;
 pub mod scope;

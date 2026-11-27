@@ -36,4 +36,6 @@ Keep private planning identifiers out of code, commit messages, pull request tex
 
 `docs/ribbon.md` says what the ribbon's tabs list, how a command reads against the window, and how a greyed command or its refused key says why; read it before changing the ribbon or a Global key handler's refusal.
 
+`docs/open-places.md` says what a place above the spine is, when one is added or closed, and its keys; read it before changing the navigator's place list.
+
 `docs/map-regions.md` says how a plot's dense regions are found, named, drawn and selected, and why; read it before changing the region pipeline, its thresholds, its naming rules or the regions switch.

@@ -65,6 +65,9 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `show-chart` | `cmd-alt-c` | 4 / 5 / 3 | ⌘⌥ and C for chart, since a bare c is the chart grammar's and ⌥C the Connect tab: shows the chart that reads the table or view in focus |
 | `relate` | `cmd-alt-m` | 3 / 4 / 3 | ⌘⌥ and M for model, since ⌥M alone is the Model tab: shows the model that relates the Protocol's sources |
 | `quick-open` | `cmd-p` | 4 / 4 / 5 | ⌘P, the quick open of code editors and browsers' address bars: opens any table or view of the Protocol by its DuckDB name, from whatever holds the canvas |
+| `next-place` | `cmd-shift-]` | 3 / 4 / 5 | ⇧⌘], a browser's next tab: makes the open place below the current one current |
+| `prev-place` | `cmd-shift-[` | 3 / 4 / 5 | ⇧⌘[, a browser's previous tab: makes the open place above the current one current |
+| `close-place` | `cmd-w` | 3 / 4 / 5 | ⌘W, a browser's close tab: closes the current place, and never the last one, so the window stays |
 | `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
 
 ### Navigating the frame — pan, zoom, axis lock, reset

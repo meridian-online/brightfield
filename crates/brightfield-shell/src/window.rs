@@ -3031,6 +3031,23 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-\\" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Backslash)),
+        // The open places. A US layout's Shift turns a bracket into a brace,
+        // and egui reports the logical key, so either spelling is the chord.
+        "cmd-shift-]" => ctx.input_mut(|i| {
+            i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::CloseBracket)
+                || i.consume_key(
+                    Modifiers::COMMAND | Modifiers::SHIFT,
+                    Key::CloseCurlyBracket,
+                )
+        }),
+        "cmd-shift-[" => ctx.input_mut(|i| {
+            i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::OpenBracket)
+                || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::OpenCurlyBracket)
+        }),
+        // egui's key match lets a Shift or an ⌥ the pattern leaves out through.
+        "cmd-w" => ctx.input_mut(|i| {
+            !i.modifiers.shift && !i.modifiers.alt && i.consume_key(Modifiers::COMMAND, Key::W)
+        }),
         // Quick open. egui's key match ignores a Shift or an ⌥ the pattern
         // leaves out, so without the guard ⌘P would also take the palette's
         // ⇧⌘P.
@@ -4162,6 +4179,11 @@ pub struct MeridianApp {
     /// The node's activity verbs' keystroke tokens, read off the registry at
     /// boot, each with its verb.
     activity_bindings: [(Option<&'static str>, &'static str); 3],
+    /// The place verbs' keystroke tokens, read off the registry at boot, each
+    /// with its verb.
+    place_bindings: [(Option<&'static str>, &'static str); 3],
+    /// The places the canvas has shown, listed above the spine.
+    places: crate::spine::OpenPlaces,
     /// A picture the export verb drew, waiting for the save dialog after the
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
     /// where [`Self::dialogs_allowed`] says a person is there to answer it.
@@ -4732,6 +4754,14 @@ impl MeridianApp {
                     .and_then(brightfield_keys::VerbEntry::primary_key);
                 (key, longname)
             }),
+            place_bindings: brightfield_keys::places::PLACE_VERBS.map(|longname| {
+                let key = brightfield_keys::registry()
+                    .iter()
+                    .find(|v| v.longname == longname)
+                    .and_then(brightfield_keys::VerbEntry::primary_key);
+                (key, longname)
+            }),
+            places: crate::spine::OpenPlaces::default(),
             picture_to_save: None,
             hovered_plot: None,
             pictures_dir: None,
@@ -7503,6 +7533,11 @@ impl MeridianApp {
         self.reconcile_canvas_holds();
         self.protocol.doc.canvas_holds = self.canvas_holds.clone();
         self.protocol.doc.returns_to = self.graph_reached_from.clone();
+        // …and the open places, from the latch just reconciled: the place the
+        // canvas shows is added once and made current.
+        self.sync_places();
+        self.protocol.doc.places = self.place_tabs();
+        self.protocol.doc.places_drawn.clear();
         let graph_on_canvas = self.graph_on_canvas();
         let canvas_holds = self.canvas_holds.clone();
         // …and the rail's record of what it drew, cleared here so the pane can
@@ -7591,6 +7626,8 @@ impl MeridianApp {
         self.activity_keys(&ctx);
         // The canvas's split, on the same gate.
         self.split_key(&ctx);
+        // The open places' keys, on the same gate.
+        self.place_keys(&ctx);
         // The picture verbs, on the same gate, where a chart holds the canvas.
         self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
@@ -9970,6 +10007,168 @@ impl MeridianApp {
                 self.perform_activity(ctx, longname);
             }
         }
+    }
+
+    /// Perform the place verb whose key was pressed this frame, as
+    /// [`Self::activity_keys`] does the activities'.
+    fn place_keys(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.place_bindings {
+            if token.is_some_and(|t| consume_token(ctx, t)) && !self.refuse_key(ctx, longname) {
+                self.answered(longname);
+                self.perform_place_verb(ctx, longname);
+            }
+        }
+    }
+
+    /// **Walk or close the open places** by the verb `verb` names. Answers
+    /// whether the verb was the window's to take: it is wherever it is
+    /// available, even where closing the last place, or walking a list of one,
+    /// leaves the list as it was.
+    fn perform_place_verb(&mut self, ctx: &egui::Context, verb: &str) -> bool {
+        use brightfield_keys::places::{CLOSE_PLACE, NEXT_PLACE, PREV_PLACE};
+        if !matches!(
+            self.availability_of(verb),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        match verb {
+            NEXT_PLACE => {
+                self.places.go_next();
+                self.show_current_place();
+            }
+            PREV_PLACE => {
+                self.places.go_prev();
+                self.show_current_place();
+            }
+            CLOSE_PLACE => {
+                if let Some(current) = self.places.current() {
+                    self.close_place(current);
+                }
+            }
+            _ => return false,
+        }
+        // Taken even when the list did not move, as ⌘W on the last place is:
+        // the key is the window's, and passing it on would close the window.
+        ctx.request_repaint();
+        true
+    }
+
+    /// **Bring the open place at `index` back**: its node, in its activity.
+    fn go_to_place(&mut self, index: usize) {
+        if self.places.go(index).is_some() {
+            self.show_current_place();
+        }
+    }
+
+    /// Close the open place at `index`; the canvas shows the place that is
+    /// current after it. The last place is kept.
+    fn close_place(&mut self, index: usize) {
+        if self.places.close(index).is_some() {
+            self.show_current_place();
+        }
+    }
+
+    /// Put the current place on the canvas, as a click on its spine row
+    /// would: a grid of the held table leaves the ledger, and the graph
+    /// records what it was reached from, so its chip still leads back.
+    fn show_current_place(&mut self) {
+        let Some(place) = self.places.current_place().cloned() else {
+            return;
+        };
+        let holds = place.holds();
+        if holds == self.canvas_holds {
+            return;
+        }
+        match &holds {
+            CanvasHolds::Graph => {
+                if matches!(
+                    self.canvas_holds,
+                    CanvasHolds::View { .. } | CanvasHolds::Dashboard { .. }
+                ) {
+                    self.graph_reached_from = Some(self.canvas_holds.clone());
+                }
+            }
+            CanvasHolds::View { node, .. } => {
+                if self.protocol.doc.model.table() == Some(node) {
+                    self.grid_spot = crate::app::GridSpot::Canvas;
+                }
+                self.graph_reached_from = None;
+            }
+            CanvasHolds::Dashboard { .. } | CanvasHolds::Chart => {
+                self.graph_reached_from = None;
+            }
+        }
+        self.canvas_holds = holds;
+    }
+
+    /// **Bring the open places into line with the documents and the canvas.**
+    ///
+    /// Run at the head of each frame, after the canvas's latch. Leaving the
+    /// Protocol closes every place, and a place whose node the documents no
+    /// longer have is closed. Then the place the canvas shows is opened, which
+    /// adds it once and makes it current. The model pane and the Protocol's
+    /// panel tiles show no place, and leave the list as it stands.
+    fn sync_places(&mut self) {
+        if self.front_door_is_live() {
+            self.places.clear();
+            return;
+        }
+        let model = &self.protocol.doc.model;
+        self.places.retain(|place| match place {
+            crate::spine::Place::Graph => model.has_assets(),
+            crate::spine::Place::Grid(node) => model.is_viewable(node),
+            crate::spine::Place::Chart { node, .. } => model.dashboard() == Some(node),
+        });
+        if self.model.as_ref().is_some_and(ModelDoc::shown) || self.tiles.is_some() {
+            return;
+        }
+        if let Some(place) = crate::spine::Place::of(&self.canvas_holds) {
+            self.places.open(place);
+        }
+    }
+
+    /// The open places as their tabs name them, top to bottom: the node's
+    /// name and its activity, which is current, and whether it holds an
+    /// unsaved draft. Empty while the model pane holds the canvas, whose
+    /// spine is its own.
+    fn place_tabs(&self) -> Vec<crate::protocol::PlaceTab> {
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return Vec::new();
+        }
+        let model = &self.protocol.doc.model;
+        let current = self.places.current();
+        let unsaved = self.charts.doc.has_unsaved_work();
+        self.places
+            .places()
+            .iter()
+            .enumerate()
+            .map(|(i, place)| crate::protocol::PlaceTab {
+                node: match place.node() {
+                    Some(node) => model.label_of(node).unwrap_or(node.as_str()).to_owned(),
+                    None => "Protocol".to_owned(),
+                },
+                activity: place.activity(),
+                current: current == Some(i),
+                dirty: unsaved && matches!(place, crate::spine::Place::Chart { .. }),
+            })
+            .collect()
+    }
+
+    /// Where the open places were drawn on the last frame, top to bottom — a
+    /// test hook, for the reason [`Self::spine_rows`] is.
+    #[must_use]
+    pub fn places_drawn(&self) -> &[crate::protocol::PlaceDrawn] {
+        &self.protocol.doc.places_drawn
+    }
+
+    /// The open places, top to bottom, and which is current — a test hook.
+    #[must_use]
+    pub const fn open_places(&self) -> &crate::spine::OpenPlaces {
+        &self.places
     }
 
     /// **The node whose activities the window offers**: the model step while
@@ -14003,6 +14202,11 @@ impl MeridianApp {
         for (_, strip) in &self.strips {
             controls.extend(strip.controls.iter().cloned());
         }
+        // An open place's tab senses a click on its whole cell, the close
+        // control inside it included, so the cell is named by the place.
+        for place in &self.protocol.doc.places_drawn {
+            controls.push(chrome::NamedControl::labelled(place.rect, &place.label));
+        }
         for row in &self.protocol.doc.spine_drawn {
             // A spine row is drawn by the step row, which senses a click on the
             // whole row whether or not the row answers one, and on its fold
@@ -14248,6 +14452,12 @@ impl MeridianApp {
                 {
                     taken = self.perform_activity(ctx, verb.as_str());
                 }
+                // The open places are the window's for the same reason.
+                Request::Verb(verb)
+                    if brightfield_keys::places::PLACE_VERBS.contains(&verb.as_str()) =>
+                {
+                    taken = self.perform_place_verb(ctx, verb.as_str());
+                }
                 // save-protocol is the window's for the same reason: the editor raises it after
                 // saving its buffer, and what it writes is the Protocol's, not either document's.
                 Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
@@ -14388,6 +14598,15 @@ impl MeridianApp {
                 }
             }
             self.canvas_holds = pick;
+            ctx.request_repaint();
+        }
+        // …and a click on an open place, or on its close control: the rail
+        // reports which, and the window moves the canvas.
+        if let Some(ask) = self.protocol.doc.take_place_ask() {
+            match ask {
+                crate::protocol::PlaceAsk::Go(index) => self.go_to_place(index),
+                crate::protocol::PlaceAsk::Close(index) => self.close_place(index),
+            }
             ctx.request_repaint();
         }
         // …and the graph chip, which is the same shape again: the rail reports
