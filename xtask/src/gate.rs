@@ -793,11 +793,24 @@ pub const MANAGED_DUCKDB_PATHS: &[&str] = &[
     ".github/workflows/managed-duckdb.yml",
 ];
 
+/// The paths whose change `store.yml` checks: what decides the Mac App Store
+/// package's layout, entitlements and signing. It runs by hand and on a Store
+/// tag, so the gate names it when a pull request touches one.
+pub const STORE_PATHS: &[&str] = &[
+    "scripts/package-store.sh",
+    "scripts/package-store-selftest.sh",
+    "scripts/store-signing.sh",
+    "packaging/store/**",
+    "packaging/Info.plist",
+    ".github/workflows/store.yml",
+];
+
 /// The by-hand macOS checks, by workflow file, with the paths each checks.
 const PACKAGING_CHECKS: &[(&str, &[&str])] = &[
     ("brew-install-branch.yml", BREW_INSTALL_BRANCH_PATHS),
     ("signing-rehearsal.yml", SIGNING_REHEARSAL_PATHS),
     ("managed-duckdb.yml", MANAGED_DUCKDB_PATHS),
+    ("store.yml", STORE_PATHS),
 ];
 
 /// True when `file` is `pattern`, or sits under the directory a pattern
@@ -1158,13 +1171,20 @@ mod tests {
             "scripts/write-brightfield-cask.sh",
             "scripts/check-cask-layout.sh",
             "scripts/check-brew-install-branch.sh",
-            "packaging/Info.plist",
         ] {
             assert_eq!(
                 packaging_hints(&[file], "b"),
                 [format!("this pull request touches {file}; run gh workflow run brew-install-branch.yml --ref b for its macOS check")]
             );
         }
+        // The property list is the Store bundle's too.
+        assert_eq!(
+            packaging_hints(&["packaging/Info.plist"], "b"),
+            [
+                "this pull request touches packaging/Info.plist; run gh workflow run brew-install-branch.yml --ref b for its macOS check",
+                "this pull request touches packaging/Info.plist; run gh workflow run store.yml --ref b for its macOS check",
+            ]
+        );
         // The release's installed-copy check, which the branch check no
         // longer runs, and the formula generator the cask replaced.
         for file in [
@@ -1172,6 +1192,22 @@ mod tests {
             "scripts/write-brightfield-formula.sh",
         ] {
             assert!(packaging_hints(&[file], "b").is_empty(), "{file}");
+        }
+    }
+
+    #[test]
+    fn a_change_to_the_store_packaging_names_the_store_workflow() {
+        for file in [
+            "scripts/package-store.sh",
+            "scripts/package-store-selftest.sh",
+            "scripts/store-signing.sh",
+            "packaging/store/Helper.entitlements",
+            ".github/workflows/store.yml",
+        ] {
+            assert_eq!(
+                packaging_hints(&[file], "b"),
+                [format!("this pull request touches {file}; run gh workflow run store.yml --ref b for its macOS check")]
+            );
         }
     }
 

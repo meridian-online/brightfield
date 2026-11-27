@@ -196,6 +196,67 @@ pub struct InspectorPane {
     /// file into a window that already exists has to move this too, and by
     /// then the pane is boxed behind `dyn Item`.
     table: TableHandle,
+    /// The table a later step makes, while the canvas holds it: what makes it
+    /// and its columns as far as they have been read. Written by the window
+    /// each frame before the dock draws, as [`Selection`] is.
+    inspected: InspectedHandle,
+}
+
+/// The window's handle on the table the canvas holds, when a step after the
+/// load makes it — written each frame before the dock draws, read by
+/// [`InspectorPane::ui`].
+///
+/// It also carries the inspector's ask back: the pane notes when it drew the
+/// table, and the window starts reading the table's columns only then, so a
+/// table on the canvas with the inspector shut or on another pane is not read
+/// for nobody.
+#[derive(Clone, Default)]
+pub struct InspectedHandle {
+    table: Rc<RefCell<Option<InspectedTable>>>,
+    asked: Rc<std::cell::Cell<bool>>,
+}
+
+impl InspectedHandle {
+    /// Declare this frame's table. `None` when the canvas holds no such table.
+    pub fn set(&self, table: Option<InspectedTable>) {
+        *self.table.borrow_mut() = table;
+    }
+
+    /// What was last declared.
+    #[must_use]
+    pub fn get(&self) -> Option<InspectedTable> {
+        self.table.borrow().clone()
+    }
+
+    /// Note that the inspector drew the declared table this frame.
+    pub fn ask(&self) {
+        self.asked.set(true);
+    }
+
+    /// Whether the inspector drew the declared table since this was last
+    /// taken.
+    pub fn take_asked(&self) -> bool {
+        self.asked.replace(false)
+    }
+}
+
+/// A table a later step makes, as the inspector describes it: what makes it,
+/// and its columns as far as they have been read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectedTable {
+    /// The table, the step that makes it, and where that step stands.
+    pub table: ColumnTable,
+    /// The table's columns, or that they are being read, or why they could
+    /// not be.
+    pub columns: crate::column_profiles::ProfileRead,
+}
+
+/// What the inspector says while a table's columns are being read: a line of
+/// its own, so a read that takes a moment is not taken for a table with
+/// nothing in it.
+#[must_use]
+pub fn reading_line(table: &str) -> String {
+    format!("Reading the columns of {table}…")
 }
 
 /// The window's handle on which table a selected column belongs to — written
@@ -217,15 +278,22 @@ impl TableHandle {
     }
 }
 
-/// What a column belongs to: the table's name, and the step that built it.
+/// What a column belongs to: the table's name, the step that makes it, and
+/// where that step stands. Read from the Protocol's model
+/// ([`crate::protocol::ProtocolModel::column_table`]), so a table a later step
+/// makes names that step and not the load.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnTable {
     /// The table the column is in.
     pub table: String,
     /// The step that produces it.
     pub step: String,
-    /// That step's transform class — `sql` for a one-step Protocol.
+    /// That step's transform class, in the steps sheet's words: `sql`, `op`
+    /// or `command`.
     pub kind: &'static str,
+    /// The state the run record gives the step, in the steps sheet's words:
+    /// [`NOT_RUN`] until a run records it.
+    pub state: &'static str,
 }
 
 impl InspectorPane {
@@ -234,7 +302,19 @@ impl InspectorPane {
     /// shared cell rather than a field `Item::ui` is handed directly.
     #[must_use]
     pub fn new(selection: Selection, table: TableHandle) -> Self {
-        Self { selection, table }
+        Self {
+            selection,
+            table,
+            inspected: InspectedHandle::default(),
+        }
+    }
+
+    /// This inspector, describing the table the window declares through
+    /// `inspected` while the canvas holds one a later step makes.
+    #[must_use]
+    pub fn with_inspected(mut self, inspected: InspectedHandle) -> Self {
+        self.inspected = inspected;
+        self
     }
 }
 
@@ -308,18 +388,80 @@ fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTab
                 .color(chrome::colour(sem.text.muted)),
         );
         column_field(ui, mode, "step", &format!("{} · {}", t.step, t.kind));
-        // Brightfield writes the spec and never a run record, so the honest
-        // answer here is always the same one and it is stated rather than
-        // computed — a status derived from nothing would be a claim about a
-        // run that did not happen.
-        column_field(ui, mode, "status", NOT_RUN);
+        // The run record's word for the step, which is `not run` until arc
+        // records a run: a state derived from anything else would be a claim
+        // about a run that did not happen.
+        column_field(ui, mode, "status", t.state);
     }
 }
 
-/// What a step brightfield declared and nobody ran reads as. The word the
-/// protocol view's own `status_word` uses for `SeamStatus::NotRun`, spelled
-/// once so the two rails cannot disagree about it.
-pub const NOT_RUN: &str = "not run";
+/// A table a later step makes, as the inspector draws it: its name, the step
+/// that makes it and where that step stands, then its columns, each with what
+/// it is, once they have been read.
+///
+/// While the columns are being read the block says so, in [`reading_line`]'s
+/// words, rather than drawing an empty list a reader would take for a table
+/// with no columns.
+fn table_body(ui: &mut egui::Ui, inspected: &InspectedTable, mode: Mode) {
+    use crate::column_profiles::ProfileRead;
+    let sem = semantic(mode.is_dark());
+    let t = &inspected.table;
+    ui.label(
+        egui::RichText::new(&t.table)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    ui.label(
+        egui::RichText::new("table")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new("PRODUCED BY")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    column_field(ui, mode, "step", &format!("{} · {}", t.step, t.kind));
+    column_field(ui, mode, "status", t.state);
+
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new("COLUMNS · FROM THE ENGINE")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    match &inspected.columns {
+        ProfileRead::Reading => {
+            ui.label(
+                egui::RichText::new(reading_line(&t.table))
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.secondary)),
+            );
+            // The worker wakes no one, so the rail looks again until the
+            // answer is in.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        ProfileRead::Failed(reason) => {
+            ui.label(
+                egui::RichText::new(reason)
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.secondary)),
+            );
+        }
+        ProfileRead::Read(columns) => {
+            for column in columns.iter() {
+                column_field(ui, mode, &column.column, column.full_type());
+            }
+        }
+    }
+}
+
+/// What a step brightfield declared and nobody ran reads as: the protocol
+/// view's own word for `SeamStatus::NotRun`, so the two rails cannot disagree
+/// about it.
+pub const NOT_RUN: &str = crate::protocol::NOT_RUN;
 
 /// One caption-and-value line of the column block.
 fn column_field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str) {
@@ -372,6 +514,13 @@ impl Item<ChartDoc> for InspectorPane {
         // has pointed at anything in the picture yet.
         if let Some(column) = doc.selected_column().cloned() {
             column_body(ui, &column, self.table.get().as_ref(), cx.mode);
+            ui.add_space(spacing::SECTION_GAP);
+        } else if let Some(inspected) = self.inspected.get() {
+            // A table a later step makes, on the canvas: the dashboard's tiles
+            // are of the file's table, so no tile can be selected for it, and
+            // the table is what there is to describe.
+            self.inspected.ask();
+            table_body(ui, &inspected, cx.mode);
             ui.add_space(spacing::SECTION_GAP);
         } else {
             let subject = self.selection.get();
@@ -465,6 +614,137 @@ impl Item<ChartDoc> for InspectorPane {
 }
 
 // ---------------------------------------------------------------------------
+// The one inspector's sections
+// ---------------------------------------------------------------------------
+
+/// A section of the one inspector: a titled, collapsible part of the right
+/// rail that describes one aspect of the selection.
+///
+/// The rail draws the sections [`sections_for`] gives, most specific first,
+/// each with the design system's section header over its body. The chart's
+/// Encoding, Reads and Fields have no body yet: they are named here so their
+/// order is fixed in one place, and [`sections_for`] does not list them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Section {
+    /// The operation a foot field or an operation form is asking.
+    Operation,
+    /// The selected column: what it is, its values, and what can be done
+    /// with it.
+    Column,
+    /// A chart's channels and the fields on them.
+    Encoding,
+    /// The table a chart reads and the rows it draws.
+    Reads,
+    /// The fields a chart can use.
+    Fields,
+    /// A chart's live controls: its sliders.
+    Parameters,
+    /// The focused node's facts. Always last.
+    Step,
+}
+
+impl Section {
+    /// The section's title, as its header names it. The header draws it in
+    /// capitals; the accessible name is this, as written.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Operation => "Operation",
+            Self::Column => "Column",
+            Self::Encoding => "Encoding",
+            Self::Reads => "Reads",
+            Self::Fields => "Fields",
+            Self::Parameters => "Parameters",
+            Self::Step => "Step",
+        }
+    }
+}
+
+/// What the window holds that decides which sections the inspector draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InspectorSelection {
+    /// An operation is being asked: a foot field or an operation form is open.
+    pub operation: bool,
+    /// A column is selected, or a table a later step makes is on the canvas.
+    pub column: bool,
+    /// A chart document is open.
+    pub chart: bool,
+}
+
+/// The sections the inspector draws for `selection`, in the order they stack:
+/// Operation, then the column's, then the chart's, then Step, which is always
+/// there and always last.
+///
+/// The chart's pane body draws its live controls under whatever it describes,
+/// so a chart with a column selected is described by the Column section, and
+/// one with nothing selected by Parameters.
+#[must_use]
+pub fn sections_for(selection: &InspectorSelection) -> Vec<Section> {
+    let mut sections = Vec::new();
+    if selection.operation {
+        sections.push(Section::Operation);
+    }
+    if selection.chart {
+        sections.push(if selection.column {
+            Section::Column
+        } else {
+            Section::Parameters
+        });
+    }
+    sections.push(Section::Step);
+    sections
+}
+
+/// Whether each of `sections` is open, from what the reader set in `open`.
+///
+/// Every section is open until the reader closes it, except Step: it is open
+/// only while no section above it is, so the focused node's facts give way to
+/// whatever is more specific about the selection.
+#[must_use]
+pub fn sections_open(
+    sections: &[Section],
+    open: &std::collections::BTreeMap<Section, bool>,
+) -> Vec<(Section, bool)> {
+    let set = |s: Section| open.get(&s).copied().unwrap_or(true);
+    let above_open = sections.iter().any(|s| *s != Section::Step && set(*s));
+    sections
+        .iter()
+        .map(|s| {
+            let is_open = if *s == Section::Step {
+                set(Section::Step) && !above_open
+            } else {
+                set(*s)
+            };
+            (*s, is_open)
+        })
+        .collect()
+}
+
+/// Flip `section`, as a click or Enter on its header does, given how the
+/// sections stood when it was drawn.
+///
+/// Opening Step closes the sections above it, since Step is open only while
+/// none of them is.
+pub fn toggle_section(
+    section: Section,
+    drawn: &[(Section, bool)],
+    open: &mut std::collections::BTreeMap<Section, bool>,
+) {
+    let was_open = drawn
+        .iter()
+        .find(|(s, _)| *s == section)
+        .is_some_and(|(_, o)| *o);
+    open.insert(section, !was_open);
+    if section == Section::Step && !was_open {
+        for (s, _) in drawn {
+            if *s != Section::Step {
+                open.insert(*s, false);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -525,6 +805,54 @@ mod tests {
             "the rail drew a Save button; the entry is the editor's and the \
              dispatch is the Protocol's, so whichever the reader meant, one of \
              the two silently does not happen"
+        );
+    }
+
+    #[test]
+    fn the_sections_stack_most_specific_first_with_step_last() {
+        let all = InspectorSelection {
+            operation: true,
+            column: true,
+            chart: true,
+        };
+        assert_eq!(
+            sections_for(&all),
+            [Section::Operation, Section::Column, Section::Step]
+        );
+        assert_eq!(
+            sections_for(&InspectorSelection {
+                chart: true,
+                ..Default::default()
+            }),
+            [Section::Parameters, Section::Step]
+        );
+        assert_eq!(
+            sections_for(&InspectorSelection::default()),
+            [Section::Step]
+        );
+    }
+
+    #[test]
+    fn step_is_open_only_while_no_section_above_it_is() {
+        let mut open = std::collections::BTreeMap::new();
+        let sections = [Section::Parameters, Section::Step];
+        let drawn = sections_open(&sections, &open);
+        assert_eq!(drawn, [(Section::Parameters, true), (Section::Step, false)]);
+        assert_eq!(
+            sections_open(&[Section::Step], &open),
+            [(Section::Step, true)]
+        );
+
+        // Opening Step closes the section above it.
+        toggle_section(Section::Step, &drawn, &mut open);
+        let drawn = sections_open(&sections, &open);
+        assert_eq!(drawn, [(Section::Parameters, false), (Section::Step, true)]);
+
+        // Opening the section above again folds Step away.
+        toggle_section(Section::Parameters, &drawn, &mut open);
+        assert_eq!(
+            sections_open(&sections, &open),
+            [(Section::Parameters, true), (Section::Step, false)]
         );
     }
 

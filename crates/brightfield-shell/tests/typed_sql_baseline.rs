@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use brightfield_shell::design::Mode;
-use brightfield_shell::protocol::SpineMarker;
+use brightfield_shell::protocol::NOT_RECORDED;
 use brightfield_shell::starts;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -85,7 +85,8 @@ fn script(keep: bool) -> Vec<Vec<egui::Event>> {
 
 /// Whether the window has nothing on a worker that the picture waits for:
 /// the statement on the form has been answered, each kept statement's rows
-/// have been counted, and the grid's preview has been read.
+/// have been counted, the grid's preview has been read, and the columns of
+/// the table the inspector describes have been read.
 fn settled(app: &MeridianApp) -> bool {
     if app.typed_statement().is_some() {
         return app.typed_said().is_some();
@@ -98,6 +99,11 @@ fn settled(app: &MeridianApp) -> bool {
             .chart_doc()
             .grid_preview()
             .is_none_or(|p| !p.is_reading())
+        // Once the canvas holds the kept step's table, the inspector
+        // describes it and asks for its columns as it draws it: the picture
+        // waits for them, not for whichever of the reading line or the
+        // columns a frame drew.
+        && !app.inspector_awaits_columns()
 }
 
 /// What the last frame drew, noted for the guards.
@@ -134,10 +140,7 @@ fn capture(mode: Mode, name: &str, keep: bool) -> (image::RgbaImage, Seen) {
             seen = Seen {
                 card: app.typed_card_rect(),
                 grid: app.canvas_panes().pane("grid").map(|p| p.rect),
-                unrecorded: app
-                    .spine_rows()
-                    .iter()
-                    .any(|r| r.marker == SpineMarker::Unrecorded),
+                unrecorded: app.spine_rows().iter().any(|r| r.kind == NOT_RECORDED),
                 statement: app.typed_statement().map(str::to_owned),
             };
             settled(app)
@@ -179,7 +182,7 @@ fn spine_surface(mode: Mode, name: &str) {
     assert_eq!(seen.statement, None, "{name}: the statement was not kept");
     assert!(
         seen.unrecorded,
-        "{name}: no spine row carries the not-recorded mark"
+        "{name}: no spine row says it is not recorded"
     );
     egui_kittest::image_snapshot(&image, name);
 }

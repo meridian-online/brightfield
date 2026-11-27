@@ -1040,6 +1040,36 @@ fn build_facts(
     }
 }
 
+/// The [`ColumnFacts`] of `profile`, a column of a table the dashboard does
+/// not draw: a table a later step makes. It has no tile, so its reason says
+/// so, and it is shown as an unlabelled column is.
+#[must_use]
+pub fn facts_of_column(profile: &ColumnProfile) -> ColumnFacts {
+    let label = profile.semantic.label().map(str::to_string);
+    let leaf = label.as_deref().map_or_else(
+        || profile.type_name.clone(),
+        |l| l.rsplit('.').next().unwrap_or(l).to_string(),
+    );
+    ColumnFacts {
+        column: profile.name.clone(),
+        label,
+        leaf,
+        storage: profile.type_name.clone(),
+        tile: None,
+        because: "no tile — the dashboard draws the table the file opened as".to_string(),
+        paired: None,
+        coordinate: false,
+        rows: profile.non_null.saturating_add(profile.nulls),
+        nulls: profile.nulls,
+        min: profile.min.clone(),
+        max: profile.max.clone(),
+        moments: profile.moments.clone(),
+        title: None,
+        icon: None,
+        representation: crate::representation::Representation::default(),
+    }
+}
+
 /// `name` with ` · ` and `unit` after it, where there is a unit.
 #[must_use]
 pub fn header_name(name: &str, unit: Option<&str>) -> String {

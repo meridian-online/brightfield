@@ -1,6 +1,6 @@
 # packaging
 
-What `scripts/package.sh` needs to assemble `Brightfield.app` and the disk image it ships in. Nothing here is compiled, and no test reads it.
+What `scripts/package.sh` needs to assemble `Brightfield.app` and the disk image it ships in, and what `scripts/package-store.sh` needs to assemble the managed edition's sandboxed bundle and the installer package the Mac App Store takes. Nothing here is compiled, and no test reads it.
 
 | File | What it is |
 |---|---|
@@ -9,7 +9,9 @@ What `scripts/package.sh` needs to assemble `Brightfield.app` and the disk image
 | `Brightfield.svg` | The 1024×1024 master the `.icns` is rasterised from. **Not MIT** — see `LICENSE-BRAND.md`. |
 | `make-icns.sh` | Regenerates the `.icns` from the `.svg`. A developer-machine tool; the build does not run it. |
 | `LICENSE-BRAND.md` | The carve-out taking the two brand artefacts out of the repository's MIT grant. |
-| `Brightfield.entitlements` | The one entitlement the app and the signed tarball binary are signed with. See below. |
+| `Brightfield.entitlements` | The one entitlement the full edition's app and the signed tarball binary are signed with. See below. |
+| `store/Brightfield.entitlements` | The Mac App Store bundle's five entitlements. See "The Mac App Store package". |
+| `store/Helper.entitlements` | The two entitlements every program inside the Store bundle is signed with. |
 
 ## Where the icon comes from
 
@@ -49,7 +51,7 @@ FineType itself loads without the entitlement when its library and the host proc
 
 ## Two things this bundle deliberately does not carry
 
-**No App Sandbox.** The sandbox is initialised from the signature's entitlements, and a Developer ID build has no reason to declare its key, so the entitlements file above leaves it out. Declaring it would take file access away from a program whose whole job is to open the files a specification names.
+**No App Sandbox.** The sandbox is initialised from the signature's entitlements, and a Developer ID build has no reason to declare its key, so the entitlements file above leaves it out. Declaring it would take file access away from a program whose whole job is to open the files a specification names. This holds for the full edition, the signed download and Homebrew. The managed edition is the sandboxed build, packaged on its own path below.
 
 **No signature on the disk image.** The notarisation ticket is stapled to `Brightfield.app`, and the image is neither signed nor stapled: the ticket rides on the bundle inside it, which is what a downloading Mac reads at launch.
 
@@ -73,3 +75,34 @@ The checks that guard the cask:
 - `scripts/check-cask-asset.sh` proves the cask's urls resolve and its checksums match the release's disk images.
 - `scripts/check-brew-install.sh` installs the published cask on a clean Mac, in `release.yml`'s `brew-install` job.
 - `scripts/check-brew-install-branch.sh` does the same for a branch build, by hand (`gh workflow run brew-install-branch.yml --ref <branch>`).
+
+## The Mac App Store package
+
+The managed edition is the build for the Mac App Store, which requires App Sandbox. `scripts/package-store.sh` packages it, beside `scripts/package.sh` and without changing it. `docs/app-sandbox.md` has the measurements behind it, and `docs/managed-duckdb.md` describes the DuckDB it runs on.
+
+The bundle holds:
+
+| Path | What it is |
+|---|---|
+| `Contents/MacOS/brightfield` | Brightfield, built with `--features managed-duckdb` |
+| `Contents/Helpers/brightfield-helper` | A copy of the same executable. The window starts it as arc for a run and as dovetail for join proposals (`Runner::for_executable`, `crates/brightfield-shell/src/run.rs`) |
+| `Contents/Helpers/duckdb` | DuckDB's shell from Meridian's build, which arc runs a Protocol's SQL steps with |
+| `Contents/Helpers/finetype` | FineType's command line, at the pinned tag, which arc's FineType operators run |
+| `Contents/Frameworks/` | `libduckdb.dylib`, with the extensions compiled in, and GEOS beside it |
+| `Contents/Resources/finetype/` | FineType's model and taxonomy catalogue, with `bundle-manifest.sha256` over them. No extension file: FineType is compiled into the library |
+| `Contents/Resources/` | The icon, `LICENSE` and the examples, as in the full edition |
+| `Contents/Resources/licenses/` | The third-party licence notices: GEOS's LGPL-2.1 text and the offer of its source, the C libraries', DuckDB's and FineType's licences, and the Rust crates compiled into each executable and the library (`docs/managed-duckdb.md`) |
+
+No `.duckdb_extension` file is in the bundle, because `codesign` cannot sign one, and every piece of code in a Store bundle is signed.
+
+**The entitlements.** The app carries exactly five: `app-sandbox`, `files.user-selected.read-write`, `files.bookmarks.app-scope`, `files.downloads.read-write` and `network.client`. Each program in `Contents/Helpers/` carries exactly `app-sandbox` and `inherit`, as Apple documents for a sandboxed app's helpers, so it runs inside the app's sandbox with the folders the analyst granted. The main executable never carries `inherit`. When the bundle is signed for the Store, the app's signature also carries the application and team identifiers, read from the provisioning profile, since App Store Connect requires them to match it.
+
+**Why a helper copy of Brightfield.** arc and dovetail run in child processes of Brightfield's own executable, as in the full edition. The re-measure found that the main executable started as its own child works under the sandbox (`docs/app-sandbox.md`, row self-child-nobm). The Store bundle still starts a helper copy, signed as a helper, because that is the route Apple documents and App Review checks a bundle against it. The copy finds the DuckDB CLI, FineType's CLI and FineType's model from its own path as the main executable does, since `Contents/Helpers/` and `Contents/MacOS/` sit at the same depth.
+
+**Signing** runs inside out: the libraries in `Contents/Frameworks/`, then each helper with its own identifier, then the app with the provisioning profile embedded. The hardened runtime is not turned on, since the Store does not require it. `productbuild` then wraps the app in an installer package, signed with the Mac Installer Distribution identity. With no Store identities set, every signature is ad-hoc and the package is unsigned. App Store Connect refuses that package, but the kernel applies App Sandbox from the entitlements in a signature whoever signed it, so an ad-hoc bundle runs under the same sandbox as a signed one and every local check reads it.
+
+**Info.plist.** The same file as the full edition's, with two more keys App Store Connect asks every upload: `ITSAppUsesNonExemptEncryption` is false, since the app uses only the encryption the OS provides, and `LSApplicationCategoryType` is developer tools. The category shown on the listing is set in App Store Connect, separately.
+
+**What checks it.** `scripts/package-store-selftest.sh`, the `package-store-selftest` step, builds the package ad-hoc, or reads one `BRIGHTFIELD_STORE_APP` names, and requires the entitlements above exactly, the pinned DuckDB shell, Meridian's DuckDB loaded from `Contents/Frameworks/`, no extension file, a FineType manifest that names files and verifies, the encryption answer and a strict deep signature check. It then shows a bundle with a helper signed as the app, and one carrying an extension file, are both refused. The step runs at night, after the `duckdb-managed` step, and by hand. `scripts/sandbox-measure.sh baseline --package dist/store/Brightfield.app dist/store/brightfield-shot` measures the package's sandboxed behaviour.
+
+**In CI.** `.github/workflows/store.yml` runs by hand and on a `store-v*` tag. It builds the managed DuckDB, sets up the Store identities and the profile from four repository secrets (`scripts/store-signing.sh` names them), packages the bundle, runs the self-test on it and uploads the `.pkg` as an artifact. With the secrets absent it builds ad-hoc. Uploading the package to App Store Connect is done by hand. `cargo xtask gate` names the workflow when a pull request touches the Store packaging.

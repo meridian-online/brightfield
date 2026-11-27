@@ -118,7 +118,9 @@ fn an_operation_is_built_exactly_when_its_command_is_in_the_key_registry() {
 
 #[test]
 fn each_built_operations_draft_names_only_what_arc_describes() {
-    for ui in operation_ui::built() {
+    // `read-file` begins no draft: its command opens the sources browser, which
+    // adds the file itself.
+    for ui in operation_ui::built().filter(|ui| ui.starts != [Start::SourcesBrowser]) {
         let description = described(ui.long_name);
         let draft = begun(ui, &description);
         assert_eq!(draft.long_name, ui.long_name);

@@ -23,6 +23,11 @@ pub struct Ctx {
     /// When set, the test runs of the step this context is handed to write
     /// their output to this file instead of the terminal.
     pub log: Option<PathBuf>,
+    /// True when the test steps run the whole suite, as the nightly and a
+    /// hosted run do. A pull request's gate leaves it false, and its test steps
+    /// leave out the targets only `brightfield-shell` has, which the nightly
+    /// runs (`shard`'s module comment says why).
+    pub whole_suite: bool,
 }
 
 impl Ctx {
@@ -362,21 +367,21 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "warm-cache",
-        runs: "cargo test --locked --workspace --no-run; the conformance and managed-edition builds",
+        runs: "cargo test --locked --workspace --no-run over the test steps' targets; the conformance build, and at night the managed-edition build",
         only_in_ci: None,
         only_at_night: None,
         run: warm_cache,
     },
     Step {
         name: "test-one-thread",
-        runs: "cargo test --locked --workspace over the one-thread group, -- --test-threads=1",
+        runs: "cargo test --locked --workspace over the one-thread group, -- --test-threads=1; brightfield-shell's own targets only at night",
         only_in_ci: None,
         only_at_night: None,
         run: test_one_thread,
     },
     Step {
         name: "test-default",
-        runs: "cargo nextest run --locked --workspace over every other target, then cargo test --doc",
+        runs: "cargo nextest run --locked --workspace over every other target, then cargo test --doc; brightfield-shell's own targets only at night",
         only_in_ci: None,
         only_at_night: None,
         run: test_default,
@@ -396,13 +401,6 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-vendored-libduckdb-sys.sh", &[]),
     },
     Step {
-        name: "managed-edition",
-        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
-        only_in_ci: None,
-        only_at_night: None,
-        run: managed_edition,
-    },
-    Step {
         name: "artifact-type-source-selftest",
         runs: "./scripts/check-artifact-type-source-selftest.sh",
         only_in_ci: None,
@@ -415,6 +413,16 @@ pub static STEPS: &[Step] = &[
         only_in_ci: None,
         only_at_night: None,
         run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
+    },
+    Step {
+        name: "managed-edition",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it runs brightfield-shell's integration tests, which a pull request's gate \
+             leaves to the nightly; the nightly runs it, and --step runs it here",
+        ),
+        run: managed_edition,
     },
     Step {
         name: "sibling-manifests",
@@ -491,6 +499,17 @@ pub static STEPS: &[Step] = &[
         ),
         run: |c| c.script("scripts/check-duckdb-parity.sh", &[]),
     },
+    Step {
+        name: "package-store-selftest",
+        runs: "./scripts/package-store-selftest.sh: the Mac App Store package, built ad-hoc by ./scripts/package-store.sh unless BRIGHTFIELD_STORE_APP names one, has exactly its entitlements, its helpers, the pinned DuckDB and a valid signature",
+        only_in_ci: None,
+        only_at_night: Some(
+            "it makes a release build of the managed edition on the library the duckdb-managed \
+             step builds, 30 to 60 minutes cold; the nightly runs it after that step, and \
+             --step runs it here once the library is built",
+        ),
+        run: |c| c.script("scripts/package-store-selftest.sh", &[]),
+    },
 ];
 
 /// Where the managed DuckDB build is kept: `BRIGHTFIELD_DUCKDB_MANAGED_DIR`
@@ -532,10 +551,22 @@ fn duckdb_managed(ctx: &Ctx) -> Result<(), String> {
 /// graph that differs. The report on open-analytics builds its own at night.
 /// A full
 /// local run uses it too, as the row that builds every test binary before the
-/// two test steps start together.
+/// two test steps start together. A pull request's gate builds only the
+/// targets its test steps run, and not the managed edition's, whose step runs
+/// only at night.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
-    build_tests(ctx)?;
+    if ctx.whole_suite {
+        build_tests(ctx)?;
+    } else {
+        let mut args = vec!["test", "--locked", "--workspace", "--no-run"];
+        let targets = selection(ctx)?.build_args();
+        args.extend(targets.iter().map(String::as_str));
+        ctx.run_cargo(&args)?;
+    }
     ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])?;
+    if !ctx.whole_suite {
+        return Ok(());
+    }
     ctx.run_cargo(&[
         "test",
         "--locked",
@@ -644,7 +675,18 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
     }
     let targets = shard::test_targets(&String::from_utf8_lossy(&output.stdout))?;
     let shard = shard::shard_from_env(|var| std::env::var(var).ok())?;
-    shard::select(&serial, &seconds, &targets, shard.as_ref())
+    let whole = shard::select(&serial, &seconds, &targets, shard.as_ref())?;
+    if ctx.whole_suite {
+        return Ok(whole);
+    }
+    let shell = shard::targets_only_in(
+        &String::from_utf8_lossy(&output.stdout),
+        "brightfield-shell",
+    )?;
+    Ok(whole.without(
+        &shell,
+        "brightfield-shell's own, which the nightly runs; `--step <name> --nightly` runs them here",
+    ))
 }
 
 /// Where the DuckDB CLI is: `set`, ARC_DUCKDB_BIN's value, read against
@@ -1306,11 +1348,13 @@ mod tests {
         assert_eq!(
             night,
             [
+                "managed-edition",
                 "sibling-manifests",
                 "nightly-network",
                 "duckdb-managed",
                 "managed-duckdb-test",
-                "duckdb-parity"
+                "duckdb-parity",
+                "package-store-selftest"
             ]
         );
         assert!(STEPS[STEPS.len() - night.len()..]

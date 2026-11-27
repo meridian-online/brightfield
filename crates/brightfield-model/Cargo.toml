@@ -17,6 +17,8 @@ description = "Brightfield application models: framework-free state machines and
 [dependencies]
 brightfield-spec = { workspace = true }
 brightfield-engine = { workspace = true }
+# For the palette's frecency, which the history file keeps between sessions.
+brightfield-keys = { workspace = true }
 # For the framework-free chart/widget vocabulary only (menu bindings, the
 # presentation-mode machine, the framed-window formula).
 brightfield-ui = { path = "../brightfield-ui" }

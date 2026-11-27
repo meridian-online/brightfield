@@ -525,3 +525,36 @@ fn a_tile_switch_state_the_pane_clips_away_names_no_control() {
         );
     }
 }
+
+/// The front door names none of the last document's header controls: the
+/// pane header's record is the frame's own, cleared on a frame that draws
+/// no pane header.
+#[test]
+fn the_front_door_keeps_none_of_the_last_documents_header() {
+    let mut live = Live::housing();
+    let names = |live: &Live| -> Vec<String> {
+        live.app
+            .named_controls()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect()
+    };
+    assert!(
+        names(&live).iter().any(|n| n == "Chart"),
+        "the document's header named no switcher option, so this holds nothing"
+    );
+    let home = live.app.home_rect().expect("Home is drawn off the door");
+    live.run(vec![click_at(home.center()), Vec::new(), Vec::new()]);
+    assert!(
+        live.app.front_door_is_live(),
+        "Home did not open the front door"
+    );
+    assert_eq!(live.app.pane_header(), None);
+    let names = names(&live);
+    for option in ["Grid", "Chart"] {
+        assert!(
+            !names.iter().any(|n| n == option),
+            "the front door names {option:?} from the document it left: {names:?}"
+        );
+    }
+}

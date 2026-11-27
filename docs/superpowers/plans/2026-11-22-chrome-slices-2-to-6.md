@@ -171,6 +171,19 @@ A design review in `meridian-online/design` builds these in `meridian-egui`, wit
 - **§13**, `PickerRow::unavailable(reason)`, landed as proposed, with one change: Enter or a click on an unavailable row picks nothing, rather than reaching the delegate's confirm, and the reason is already drawn as the row's detail. Task 9 follows the landed behaviour.
 - The review also replaced ADR 0011's cap with an inventory, so no entry was composed away for the cap's sake.
 
+**What the review landed for slice 3.** The same design revision carries slice 3's components under general names, and Tasks 12 to 15 call these:
+
+- **§7**, the spine row, is `step_row(ui, StepRow) -> StepRowResponse { response, clicked, fold_clicked }`, with `StepRow::new(StepEntry::{Step, Table}, Gutter, StepMark, label)` and the `output`, `timeline`, `fold`, `focused` and `cursor` builders as proposed. `Gutter` gains `lanes: u8`, the list's widest row, so every row's gutter is one width; a lane at or past it is ignored. The row is `ROW_GRID` (24) tall, and its node is a `Row` named `"<name>, <state word>"`, selected while focused. The fold control is a `Button` named by the row's name.
+- **§7's thin form** is `step_mark(ui, StepMark, focused) -> egui::Response`, in a `control::STEP_MARK_CELL` (24) square. Its node carries no role of its own (egui reads it as `Unknown`) and is named by the state word.
+- **§7's mark data** landed as proposed, in `meridian_design::marks`: `StepMark`, `STEP_MARKS`, `glyph(mark, dark) -> MarkGlyph { shape: MarkShape, ink, fill }` and `word(mark)`. The state vocabulary stays in the design system.
+- **§8**, the open place, is `vertical_tab(ui, VerticalTab) -> VerticalTabResponse { response, clicked, close_clicked }`, with `VerticalTab::new(node, activity).current(..).dirty(..)`. Its node is a `Tab` named `"<node> · <activity>"`.
+
+**What the review landed for slice 5.** The same design revision carries slice 5's components under general names, and Brightfield draws them in the gallery from Task 22 on. Where they differ from §10 and §11, the landed form is the one to call:
+
+- **§10's section** is `section(ui, Section::new(title, open).count(n), body) -> SectionResponse<R>`, with `toggled` and `inner` as proposed. The header is a 24 (`control::HEIGHT_MD`) row whose node is a `Button` named by the title as passed, with its expanded state set; the title is drawn in capitals. `meridian_egui::Section` shares its name with the inspector's own `Section` enum that Task 23 adds, so `inspector.rs` calls the component by its path, `meridian_egui::section` and `meridian_egui::Section`.
+- **§10's distribution bar** landed as proposed, with `DistributionBar::dense()` for a 20-tall bar in a column header; it is 36 (`spacing::ROW_PREVIEW`) otherwise. `total` is accepted for the caller's readout and not divided by. The bar senses hover only and publishes no name, so Brightfield names its node, as the gallery's specimen does. `hovered` counts the values in order, then the rest (for `Top`), then the missing bar.
+- **§11's menu row** is `menu_item(ui, MenuItem::new(label) …) -> MenuItemResponse`, with `keystroke`, `unavailable`, `checked`, `submenu` and a new `cursor`, and `menu_separator(ui)` between groups. A menu is `Popover::show_menu` with `menu_item`s in it. An item takes no keyboard focus: the caller holds a cursor and reads the keys, and an unavailable item still takes the cursor so its reason can be read. Its node has the `MenuItem` role. The response carries `clicked` and `pointed_unavailable` as proposed.
+
 ### Rules the components share
 
 These follow `meridian-egui`'s existing style (`line_tabs`, `list_row`, `key_chip`, `overlay_frame`):
@@ -1206,35 +1219,35 @@ The slice is finished when the left rail shows the spine thin, as a list or as a
 
 ### Task 12: Adopt slice 3's components
 
-**Blocked by:** `spine_row`, `spine_mark`, `open_place`, `meridian_design::marks` and `control::SPINE_MARK_CELL`.
+**Blocked by:** `step_row`, `step_mark`, `vertical_tab`, `meridian_design::marks` and `control::STEP_MARK_CELL`.
 
-Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `open-place`. Bump the pin, add Draft demos, draw the goldens on the Mac Studio, promote the entries, and commit with the message "Take the spine's components from the design system".
+Do the same as Task 2, with the gallery entries `step-row`, `step-mark` and `vertical-tab`, named for the components the review landed. The pin Task 2 took already carries them, so there is no bump. The gallery's probe roles gain `Row`, and `Unknown` for the step mark. Add Draft demos, draw the goldens on the Mac Studio, promote the entries, and commit with the message "Take the spine's components from the design system".
 
 ### Task 13: The list width, drawn with the spine row
 
-**Blocked by:** `spine_row` (Task 12). It also needs Task 11.
+**Blocked by:** `step_row` (Task 12). It also needs Task 11.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/protocol.rs` (`spine_list_ui`; the private `spine_row` is removed; `SpineRowDrawn`)
 - Test: `crates/brightfield-shell/tests/navigator_spine.rs`, `spine_beside_the_model.rs`, `outline_list.rs`
 
 **Interfaces:**
-- Consumes: `meridian_egui::{spine_row, SpineRow, Gutter, StepMark, Timeline, Fold, SpineEntry}`.
+- Consumes: `meridian_egui::{step_row, StepRow, Gutter, StepMark, Timeline, Fold, StepEntry}`.
 - Produces: `SpineRowDrawn` keeps `rect`, `name_rect`, `washed` and `on_canvas`, and gains `fold_rect: Option<egui::Rect>`. `spine_state_mark(SpineState) -> StepMark` maps the states one to one.
 
 - [ ] **Step 1: Write the failing tests.**
   - `a_step_row_shows_its_duration_and_a_table_row_its_row_count`
   - `the_focused_nodes_row_is_marked_apart_from_the_cursor`
   - `clicking_a_rows_fold_control_unfolds_its_family`
-  - `the_spines_measurements_hold_at_both_windows` is re-pinned to `spine_row`'s rung.
+  - `the_spines_measurements_hold_at_both_windows` is re-pinned to `step_row`'s rung.
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test navigator_spine --test spine_beside_the_model --test outline_list`.
-- [ ] **Step 3: Implement.** Replace the row drawing inside `spine_list_ui` with `spine_row`. Caption rows and head rows stay. View rows ("grid") stay as rows with `Gutter { node: None, .. }`, carrying their lanes through.
+- [ ] **Step 3: Implement.** Replace the row drawing inside `spine_list_ui` with `step_row`. Caption rows and head rows stay. View rows ("grid") stay as rows with `Gutter { node: None, .. }`, carrying their lanes through.
 - [ ] **Step 4: Run the tests, and expect them to pass.** Then redraw `workflow_graph_baseline` and `dashboard_baseline` on the Mac Studio, if their regions show the spine.
 - [ ] **Step 5: Commit.** Message: "The spine lists its steps as Flight Explainer does".
 
 ### Task 14: The three widths, by one key
 
-**Blocked by:** `spine_mark`, `marks::glyph` and `SPINE_MARK_CELL` (Task 12). It also needs Task 13.
+**Blocked by:** `step_mark`, `marks::glyph` and `STEP_MARK_CELL` (Task 12). It also needs Task 13.
 
 **Files:**
 - Modify:
@@ -1249,7 +1262,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
 **Interfaces:**
 - Produces:
   - In `arrangement.rs`:
-    - `pub const NAVIGATOR_THIN_WIDTH: f32 = SPINE_MARK_CELL + 2.0 * SPACE_2`.
+    - `pub const NAVIGATOR_THIN_WIDTH: f32 = STEP_MARK_CELL + 2.0 * SPACE_2`.
     - `pub const NAVIGATOR_GRAPH_WIDTH: f32`, a ladder sum the builder picks, about twice `NAVIGATOR_RAIL_WIDTH`.
     - The navigator collapses to `Collapse::To(NAVIGATOR_THIN_WIDTH)`.
   - `pub enum SpineWidth { Thin, List, Graph }` with `next()`.
@@ -1265,7 +1278,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
   - In `arrangement.rs`, `each_rail_collapses_to_the_measure_it_declares` is re-pinned to `NAVIGATOR_THIN_WIDTH`.
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test spine_widths --test arrangement`.
 - [ ] **Step 3: Implement.**
-  - **Thin** replaces `rail_stub` in the navigator: a column of `spine_mark`s in the collapsed extent.
+  - **Thin** replaces `rail_stub` in the navigator: a column of `step_mark`s in the collapsed extent.
   - **Graph** presents the asset graph in a second slot of `ProtocolDoc`'s canvas host, keyed apart from the canvas's, and laid out at rail width with `brightfield_protocol::layout`.
   - `toggle-outline-rail` (⌘B) keeps its focus round trip.
 - [ ] **Step 4: Run the tests, and expect them to pass.** Then redraw the asset-graph baselines on the Mac Studio, since the marks moved to `marks::glyph`.
@@ -1273,7 +1286,7 @@ Do the same as Task 2, with the gallery entries `spine-row`, `spine-mark` and `o
 
 ### Task 15: The open places, above the spine
 
-**Blocked by:** `open_place` (Task 12). It also needs Task 13.
+**Blocked by:** `vertical_tab` (Task 12). It also needs Task 13.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/spine.rs`, `crates/brightfield-shell/src/window.rs`, `crates/brightfield-keys/src/registry.rs`, `crates/brightfield-keys/src/menus.rs`, `crates/brightfield-keys/src/keystroke.rs` (`[` and `]` join `KEY_NAMES`)
@@ -1498,13 +1511,13 @@ The slice is finished when the right rail is one inspector. It describes a colum
 
 ### Task 22: Adopt slice 5's components
 
-**Blocked by:** `inspector_section`, `distribution_bar` and `menu_row`.
+**Blocked by:** `section`, `distribution_bar` and `menu_item` with `menu_separator`.
 
-Do the same as Task 2, with the gallery entries `inspector-section`, `distribution-bar` and `menu-row`. Commit with the message "Take the inspector's components from the design system".
+Do the same as Task 2, with the gallery entries `section`, `distribution-bar` and `menu-item`, named for the components the review landed. The gallery's probe roles gain `MenuItem`. The pin needs no bump: the design revision Task 2 pinned carries these components. Commit with the message "Take the inspector's components from the design system".
 
 ### Task 23: One inspector, in sections
 
-**Blocked by:** `inspector_section` (Task 22).
+**Blocked by:** `section` (Task 22).
 
 **Files:**
 - Modify:
@@ -1539,14 +1552,14 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
 
 ### Task 24: The column's sections
 
-**Blocked by:** `distribution_bar` and `menu_row` (Task 22). It also needs Tasks 21 and 23, and the operation-forms plan's phase 1 merged.
+**Blocked by:** `distribution_bar` and `menu_item` (Task 22). It also needs Tasks 21 and 23, and the operation-forms plan's phase 1 merged.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/inspector.rs` (`column_body`)
 - Test: `crates/brightfield-shell/tests/inspector_contract.rs`
 
 **Interfaces:**
-- Consumes: `meridian_egui::{distribution_bar, DistributionBar, Bars, menu_row, MenuRow, widgets::field_row}`; `ColumnMoments::bars()`; slice 1's `availability_of`, `VerbEntry::label` and `keys_label`; the forms plan's `forms::built()`.
+- Consumes: `meridian_egui::{distribution_bar, DistributionBar, Bars, menu_item, MenuItem, widgets::field_row}`; `ColumnMoments::bars()`; slice 1's `availability_of`, `VerbEntry::label` and `keys_label`; the forms plan's `forms::built()`.
 
 - [ ] **Step 1: Write the failing tests.**
   - `the_column_section_says_its_finetype_its_storage_type_and_its_step`
@@ -1556,7 +1569,7 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
     - the built forms asked from the grid, read from `forms::built()` so a form joins with no edit here, filter and sort among them;
     - `put-column-on-x`, `put-column-on-y`, `put-column-on-colour` and `retype-column`.
 
-    Each is a `meridian_egui::menu_row` with its label and `keys_label`, greyed with its `availability_of` sentence.
+    Each is a `meridian_egui::menu_item` with its label and `keys_label`, greyed with its `availability_of` sentence.
   - `hovering_a_bin_says_its_range_and_count`
 - [ ] **Step 2: Run them, and expect failure.** Run `cargo test -p brightfield-shell --test inspector_contract`.
 - [ ] **Step 3: Implement.** Show `Bars::Bins` for a number, and `Bars::Top` for a category of 64 or fewer distinct values (`Distribution::Values`). Draw each figure with `field_row` inside an `align_scope`.
@@ -1565,14 +1578,14 @@ Do the same as Task 2, with the gallery entries `inspector-section`, `distributi
 
 ### Task 25: The chart's sections
 
-**Blocked by:** `inspector_section` and `menu_row` (Task 22). It also needs Task 23.
+**Blocked by:** `section` and `menu_item` (Task 22). It also needs Task 23.
 
 **Files:**
 - Modify: `crates/brightfield-shell/src/inspector.rs`
 - Test: `crates/brightfield-shell/tests/inspector_contract.rs`
 
 - [ ] **Step 1: Write the failing tests.**
-  - `the_encoding_section_lists_each_channel_and_its_field`: each is a `menu_row` whose key is the shelf's `go-to-*-cell` key, and which focuses that shelf cell when clicked.
+  - `the_encoding_section_lists_each_channel_and_its_field`: each is a `menu_item` whose key is the shelf's `go-to-*-cell` key, and which focuses that shelf cell when clicked.
   - `the_reads_section_names_the_table_and_the_rows_drawn`: "ranking · 19,028 of 19,028 rows".
   - `the_fields_section_counts_the_fields_available`
   - `the_parameters_section_holds_the_sliders`, moved from the old Inspector pane.
@@ -1737,10 +1750,10 @@ The slice is finished when:
 | 9 Greyed palette rows drawn greyed | `PickerRow`'s disabled state | 2; slice 1 (`PaletteCandidate::missing`) |
 | 10 Palette by stage | none | 1; slice 1 (`palette_filter` with a situation); forms phase 1 (`forms::by_verb`) |
 | 11 Spine facts | none | none |
-| 12 Adopt slice 3's components | spine row, spine mark, marks data, `SPINE_MARK_CELL`, open place | none |
-| 13 List width | spine row | 11, 12 |
-| 14 Three widths | spine mark, marks data | 13; slice 1 (`menus.rs`) |
-| 15 Open places | open place | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
+| 12 Adopt slice 3's components | step row, step mark, marks data, `STEP_MARK_CELL`, vertical tab | none |
+| 13 List width | step row | 11, 12 |
+| 14 Three widths | step mark, marks data | 13; slice 1 (`menus.rs`) |
+| 15 Open places | vertical tab | 13; slice 1 (`menus.rs`, `KEY_NAMES`) |
 | 16 Quick open | none | slice 1 (`label`, `needs`, `menus.rs`) |
 | 17 Activities | none | 1; slice 1 (`availability_of`) |
 | 18 Pane header; locator band goes | activity switcher | 17 |

@@ -299,10 +299,11 @@ fn open_built_in(dir: &Path) -> String {
 
 /// **A built-in open refuses a bundle by its files before it asks DuckDB for
 /// FineType**: a catalogue that does not describe the model, a file the
-/// manifest contradicts, and a missing model. Each is refused naming its cause
-/// and not `ft_version()`; the same bundle put right gets past that check. A
-/// manifest entry for the extension file, which a built-in open neither needs
-/// nor reads, is passed over. A session whose bundle is refused still loads,
+/// manifest contradicts, a manifest naming only the extension file, and a
+/// missing model. Each is refused naming its cause and not `ft_version()`; the
+/// same bundle put right gets past that check. A manifest entry for the
+/// extension file, which a built-in open neither needs nor reads, is passed
+/// over, so a manifest that names nothing else verifies nothing. A session whose bundle is refused still loads,
 /// with the refusal remembered.
 #[test]
 fn a_built_in_open_refuses_a_bad_bundle_before_asking_for_finetype() {
@@ -340,7 +341,36 @@ fn a_built_in_open_refuses_a_bad_bundle_before_asking_for_finetype() {
     )
     .unwrap();
     let e = open_built_in(&dir);
-    assert!(!e.contains("not the file that was packaged"), "{e}");
+    assert!(
+        e.contains("names no files, so it verified nothing") && !e.contains("ft_version()"),
+        "a manifest naming only the extension verifies nothing in a built-in open: {e}"
+    );
+    let catalogue_hash: String = duckdb::Connection::open_in_memory()
+        .unwrap()
+        .query_row(
+            "SELECT lower(sha256(content)) FROM read_blob(?)",
+            duckdb::params![dir
+                .join(semantic::SCHEMA_CATALOGUE)
+                .to_string_lossy()
+                .as_ref()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    std::fs::write(
+        dir.join(semantic::MANIFEST_FILE),
+        format!(
+            "{}  {}\n{catalogue_hash}  {}\n",
+            "0".repeat(64),
+            semantic::EXTENSION_FILE,
+            semantic::SCHEMA_CATALOGUE
+        ),
+    )
+    .unwrap();
+    let e = open_built_in(&dir);
+    assert!(
+        !e.contains("not the file that was packaged") && !e.contains("verified nothing"),
+        "{e}"
+    );
 
     std::fs::remove_file(dir.join(semantic::MODEL_DIR).join("model.safetensors")).unwrap();
     let e = open_built_in(&dir);

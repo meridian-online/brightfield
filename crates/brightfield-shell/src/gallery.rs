@@ -77,7 +77,7 @@
 //! 5. carry **two goldens**, light and dark, at the `kittest.toml` floor.
 
 use brightfield_keys::ribbon::{Context as RibbonContext, Stage};
-use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
+use brightfield_keys::{Altitude, BindingContext, Frecency};
 use brightfield_workbench::arrangement::{self, Extent, Region};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
@@ -86,11 +86,14 @@ use brightfield_workbench::{
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, button, icons, key_chip, key_tip, list_row, overlay_frame, query_line, ribbon_row,
-    ribbon_tabs, run_status, tooltip_for_action, widgets, Anchor, Button, ListRow, MeridianUi,
-    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, Popover,
-    RibbonRow, RibbonTab, RibbonTabs, RowHeight, RunStatus, Severity, StepMark, TabPick, Toast,
-    ToastLayer, Weight, PROMPT_GLYPH,
+    align, button, distribution_bar, icons, key_chip, key_tip, list_row, menu_item, menu_separator,
+    overlay_frame, query_line, ribbon_row, ribbon_tabs, run_status, section,
+    segmented::{segmented, Segmented, SegmentedOption},
+    step_mark, step_row, tooltip_for_action, vertical_tab, widgets, Anchor, Bars, Button,
+    DistributionBar, Fold, Gutter, ListRow, MenuItem, MeridianUi, ModalChrome, ModalLayer,
+    Notification, NotificationId, NotificationLayer, Picker, Popover, RibbonRow, RibbonTab,
+    RibbonTabs, RowHeight, RunStatus, Section, Severity, StepEntry, StepMark, StepRow, TabPick,
+    Timeline, Toast, ToastLayer, VerticalTab, Weight, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -206,6 +209,15 @@ pub enum ProbeRole {
     Status,
     /// A floating card that explains, such as a greyed command's reason.
     Tooltip,
+    /// One row of a list read as a table, such as a spine row.
+    Row,
+    /// A node the design system gives no role of its own, such as the thin
+    /// spine's step mark, which is read by its state word alone.
+    Unknown,
+    /// One item of a menu.
+    MenuItem,
+    /// One option of a set of mutually exclusive options.
+    RadioButton,
 }
 
 /// How the gate finds the specimen: role plus label. This is the first gate
@@ -389,6 +401,13 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(ReasonPopoverDemo),
         Box::new(PopoverDemo::default()),
         Box::new(RunStatusDemo::default()),
+        Box::new(StepRowDemo::default()),
+        Box::new(StepMarkDemo::default()),
+        Box::new(VerticalTabDemo::default()),
+        Box::new(SectionDemo::default()),
+        Box::new(DistributionBarDemo),
+        Box::new(MenuItemDemo::default()),
+        Box::new(ActivitySwitcherDemo::default()),
     ]
 }
 
@@ -1274,10 +1293,7 @@ struct PickerDemo {
 impl Default for PickerDemo {
     fn default() -> Self {
         Self {
-            picker: Picker::new(CommandPalette::new(
-                Altitude::Protocol,
-                RecencyCounter::new(),
-            )),
+            picker: Picker::new(CommandPalette::new(Altitude::Protocol, Frecency::new())),
         }
     }
 }
@@ -1635,6 +1651,598 @@ impl Component for RunStatusDemo {
         }
         if self.opened {
             ui.label(RUN_STATUS_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`StepRowDemo`] shows once a row has been opened.
+const STEP_ROW_EVIDENCE: &str = "step opened";
+
+/// The evidence label [`StepRowDemo`] shows once its group has been unfolded.
+const STEP_FOLD_EVIDENCE: &str = "group unfolded";
+
+/// The label the gate reads the probe row by: its name, then the state word
+/// the component adds.
+const STEP_ROW_PROBE: &str = "by_hour, ok";
+
+/// `step_row`: the spine's list form, over a fork and its join, so the gutter
+/// shows a lane opening, passing and closing. One row is a table with its row
+/// count, one a running step under the cursor, and the last a folded family
+/// that is the node the canvas shows.
+#[derive(Default)]
+struct StepRowDemo {
+    opened: bool,
+    unfolded: bool,
+}
+
+impl Component for StepRowDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "step-row",
+            name: "Step row",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Row,
+                label: STEP_ROW_PROBE,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: STEP_ROW_EVIDENCE,
+            }),
+            solo_size: (460.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        // trips → {by_hour, by_route} → ranking: the shape `lanes` gives a
+        // fork and its join.
+        let fold = if self.unfolded {
+            Fold::Unfolded
+        } else {
+            Fold::Folded { members: 3 }
+        };
+        let rows = [
+            StepRow::new(
+                StepEntry::Table,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[],
+                    from_above: &[],
+                    to_below: &[0, 1],
+                },
+                StepMark::Ok,
+                "trips",
+            )
+            .output("19,028 rows"),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[1],
+                    from_above: &[0],
+                    to_below: &[0],
+                },
+                StepMark::Ok,
+                "by_hour",
+            )
+            .output("24 rows")
+            .timeline(
+                Timeline {
+                    start: 0.0,
+                    end: 0.35,
+                },
+                "2.3s",
+            ),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(1),
+                    through: &[0],
+                    from_above: &[1],
+                    to_below: &[1],
+                },
+                StepMark::Running,
+                "by_route",
+            )
+            .timeline(
+                Timeline {
+                    start: 0.35,
+                    end: 0.8,
+                },
+                "1m 04s",
+            )
+            .cursor(true),
+            StepRow::new(
+                StepEntry::Step,
+                Gutter {
+                    lanes: 2,
+                    node: Some(0),
+                    through: &[],
+                    from_above: &[0, 1],
+                    to_below: &[],
+                },
+                StepMark::Stale,
+                "ranking",
+            )
+            .fold(fold)
+            .focused(true),
+        ];
+        // The rows touch, so each lane runs on unbroken from row to row.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for row in rows {
+            let response = step_row(ui, row);
+            if response.clicked {
+                self.opened = true;
+            }
+            if response.fold_clicked {
+                self.unfolded = !self.unfolded;
+            }
+        }
+        if self.opened {
+            ui.label(STEP_ROW_EVIDENCE);
+        }
+        if self.unfolded {
+            ui.label(STEP_FOLD_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`StepMarkDemo`] shows once a mark has been picked.
+const STEP_MARK_EVIDENCE: &str = "mark picked";
+
+/// `step_mark`: the spine's thin form, one mark per state in a column, with
+/// the focused one in the selection wash.
+#[derive(Default)]
+struct StepMarkDemo {
+    picked: bool,
+}
+
+impl Component for StepMarkDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "step-mark",
+            name: "Step mark",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Unknown,
+                label: "failed",
+            },
+            height: GateHeight::Intrinsic(
+                "the thin mark is a square cell of control::STEP_MARK_CELL, \
+                 a cell the thin rail's width is declared from rather than a \
+                 rung of the row ladder",
+            ),
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: STEP_MARK_EVIDENCE,
+            }),
+            solo_size: (200.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let marks = [
+            StepMark::NotRun,
+            StepMark::Running,
+            StepMark::Ok,
+            StepMark::Failed,
+            StepMark::Stale,
+        ];
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for mark in marks {
+            if step_mark(ui, mark, mark == StepMark::Ok).clicked() {
+                self.picked = true;
+            }
+        }
+        if self.picked {
+            ui.label(STEP_MARK_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`VerticalTabDemo`] shows once a place has been opened.
+const VERTICAL_TAB_EVIDENCE: &str = "place opened";
+
+/// The label the gate reads the probe tab by: the node, then the activity.
+const VERTICAL_TAB_PROBE: &str = "trips · Chart";
+
+/// `vertical_tab`: the open places above the spine, one current, one holding
+/// an unsaved draft, and one at rest.
+#[derive(Default)]
+struct VerticalTabDemo {
+    opened: bool,
+}
+
+impl Component for VerticalTabDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "vertical-tab",
+            name: "Vertical tab",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Tab,
+                label: VERTICAL_TAB_PROBE,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: VERTICAL_TAB_EVIDENCE,
+            }),
+            solo_size: (300.0, 140.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let places = [
+            VerticalTab::new("ranking", "Grid").current(true),
+            VerticalTab::new("trips", "Chart").dirty(true),
+            VerticalTab::new("by_hour", "SQL"),
+        ];
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for place in places {
+            if vertical_tab(ui, place).clicked {
+                self.opened = true;
+            }
+        }
+        if self.opened {
+            ui.label(VERTICAL_TAB_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`ActivitySwitcherDemo`] shows once an activity has
+/// been chosen.
+const ACTIVITY_SWITCHER_EVIDENCE: &str = "activity switched";
+
+/// The accessible name of [`ActivitySwitcherDemo`]'s group.
+const ACTIVITY_SWITCHER_GROUP: &str = "Activity";
+
+/// `segmented`: the pane header's activity switcher, Grid and Chart with
+/// their keys and Model greyed with its reason.
+#[derive(Default)]
+struct ActivitySwitcherDemo {
+    selected: usize,
+    switched: bool,
+}
+
+impl Component for ActivitySwitcherDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "activity-switcher",
+            name: "Activity switcher",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::RadioButton,
+                label: "Chart",
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::ControlMd,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: ACTIVITY_SWITCHER_EVIDENCE,
+            }),
+            solo_size: (320.0, 100.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let options = [
+            SegmentedOption::new("Grid").keystroke("\u{2325}\u{2318}G"),
+            SegmentedOption::new("Chart").keystroke("\u{2325}\u{2318}C"),
+            SegmentedOption::new("Model")
+                .keystroke("\u{2325}\u{2318}M")
+                .unavailable("Relate needs two sources."),
+        ];
+        let drawn = segmented(
+            ui,
+            Segmented::new(&options, self.selected).accessible_name(ACTIVITY_SWITCHER_GROUP),
+        );
+        if let Some(i) = drawn.clicked {
+            self.selected = i;
+            self.switched = true;
+        }
+        if self.switched {
+            ui.label(ACTIVITY_SWITCHER_EVIDENCE);
+        }
+    }
+}
+
+/// The evidence label [`SectionDemo`] shows once a header has been toggled.
+const SECTION_EVIDENCE: &str = "section toggled";
+
+/// `section`: the inspector's collapsible group, one open over its body and
+/// one closed, each with its count.
+struct SectionDemo {
+    open: [bool; 2],
+    toggled: bool,
+}
+
+impl Default for SectionDemo {
+    fn default() -> Self {
+        Self {
+            open: [true, false],
+            toggled: false,
+        }
+    }
+}
+
+impl Component for SectionDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "section",
+            name: "Section",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Button,
+                label: "Distribution",
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::ControlMd,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: SECTION_EVIDENCE,
+            }),
+            solo_size: (320.0, 160.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let distribution = section(
+            ui,
+            Section::new("Distribution", self.open[0]).count(12),
+            |ui| {
+                ui.label("Twelve bins, low to high");
+            },
+        );
+        let fields = section(ui, Section::new("Fields", self.open[1]).count(7), |ui| {
+            ui.label("fare_amount");
+        });
+        for (open, toggled) in self
+            .open
+            .iter_mut()
+            .zip([distribution.toggled, fields.toggled])
+        {
+            if toggled {
+                *open = !*open;
+                self.toggled = true;
+            }
+        }
+        if self.toggled {
+            ui.label(SECTION_EVIDENCE);
+        }
+    }
+}
+
+/// The bins the number specimen draws, low to high.
+const FARE_BINS: [u64; 12] = [
+    180, 920, 2_410, 3_870, 4_120, 3_050, 1_940, 1_120, 610, 330, 140, 60,
+];
+
+/// The top values the category specimen draws, most frequent first.
+const PAYMENT_TOP: [(&str, u64); 4] = [
+    ("card", 3_120),
+    ("cash", 1_410),
+    ("dispute", 210),
+    ("no charge", 100),
+];
+
+/// The names Brightfield gives the two bars. The component draws no text and
+/// publishes no name, so the caller names it, as the inspector will.
+const FARE_BAR: &str = "Distribution of fare_amount";
+const PAYMENT_BAR: &str = "Distribution of payment_type";
+
+/// `distribution_bar`: a number's bins and a category's top values, each with
+/// its missing count, and the readout line the caller writes under the bar.
+struct DistributionBarDemo;
+
+impl Component for DistributionBarDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "distribution-bar",
+            name: "Distribution bar",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::Label,
+                label: FARE_BAR,
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowPreview,
+                node: None,
+            },
+            // The bar senses the pointer only: a hovered bar is reported for
+            // the caller's readout, and there is nothing to press.
+            actuation: None,
+            solo_size: (320.0, 180.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let muted = to_color32(semantic(ui.visuals().dark_mode).text.muted);
+        let bars = [
+            (
+                FARE_BAR,
+                DistributionBar::new(Bars::Bins(&FARE_BINS), 412, 19_162),
+                "fare_amount · 412 missing",
+            ),
+            (
+                PAYMENT_BAR,
+                DistributionBar::new(
+                    Bars::Top {
+                        values: &PAYMENT_TOP,
+                        rest: 570,
+                    },
+                    0,
+                    5_410,
+                ),
+                "payment_type · 4 of 9 values, the rest as one",
+            ),
+        ];
+        for (name, bar, readout) in bars {
+            let drawn = distribution_bar(ui, bar);
+            drawn
+                .response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+            ui.label(egui::RichText::new(readout).small().color(muted));
+        }
+    }
+}
+
+/// The evidence label [`MenuItemDemo`] shows once an item has been chosen.
+const MENU_EVIDENCE: &str = "menu item chosen";
+
+/// The sentence the greyed specimen item gives.
+const FILL_REASON: &str = "Fill nulls needs a column with missing values.";
+
+/// The specimen menu's items: label, keystroke, and the reason when greyed.
+const MENU_ITEMS: [(&str, Option<&str>, Option<&str>); 4] = [
+    ("Sort ascending", Some("S"), None),
+    ("Sort descending", Some("⇧S"), None),
+    ("Fill nulls", Some("F"), Some(FILL_REASON)),
+    ("Rename", Some("R"), None),
+];
+
+/// `menu_item` and `menu_separator`, in the card `Popover::show_menu` draws:
+/// keyed items, a greyed one, a toggle and a submenu, walked with the
+/// caller's cursor as a menu is. Open at rest so the goldens draw it; the
+/// button opens it again once dismissed.
+#[derive(Default)]
+struct MenuItemDemo {
+    closed: bool,
+    cursor: usize,
+    wrap: bool,
+    chosen: bool,
+}
+
+impl MenuItemDemo {
+    /// How many items the cursor walks: the keyed items, the toggle and the
+    /// submenu.
+    const ITEMS: usize = MENU_ITEMS.len() + 2;
+}
+
+impl Component for MenuItemDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "menu-item",
+            name: "Menu item",
+            status: ComponentStatus::Ready,
+            probe: Probe {
+                role: ProbeRole::MenuItem,
+                label: "Sort ascending",
+            },
+            height: GateHeight::Rung {
+                rung: NamedRung::RowGrid,
+                node: None,
+            },
+            actuation: Some(Actuation {
+                focus: FocusTarget::Probe,
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: MENU_EVIDENCE,
+            }),
+            solo_size: (320.0, 280.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let anchor = button(ui, Button::new("Column").icon(&icons::CHEVRON_DOWN));
+        if anchor.clicked {
+            self.closed = !self.closed;
+        }
+        if self.chosen {
+            ui.label(MENU_EVIDENCE);
+        }
+        // Closed, the menu draws nothing and reads no keys, so Escape, Enter
+        // and the arrows reach the rest of the window.
+        if self.closed {
+            return;
+        }
+        // A menu item takes no keyboard focus: the caller's cursor is where
+        // the keys act, so the keys are read here and not by the items. The
+        // Enter that opened the menu from its button chooses nothing.
+        let (down, up, enter) = if anchor.clicked {
+            (false, false, false)
+        } else {
+            ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowDown),
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::Enter),
+                )
+            })
+        };
+        if down {
+            self.cursor = (self.cursor + 1) % Self::ITEMS;
+        }
+        if up {
+            self.cursor = (self.cursor + Self::ITEMS - 1) % Self::ITEMS;
+        }
+        let cursor = self.cursor;
+        let wrap = self.wrap;
+        let shown = Popover::show_menu(
+            ui.ctx(),
+            "gallery-menu",
+            anchor.response.rect,
+            Anchor::Below,
+            |ui| {
+                let mut picked = None;
+                for (i, (label, key, reason)) in MENU_ITEMS.iter().enumerate() {
+                    let mut item = MenuItem::new(label).cursor(cursor == i);
+                    if let Some(key) = key {
+                        item = item.keystroke(key);
+                    }
+                    if let Some(reason) = reason {
+                        item = item.unavailable(reason);
+                    }
+                    let available = reason.is_none();
+                    if menu_item(ui, item).clicked || (enter && cursor == i && available) {
+                        picked = Some(i);
+                    }
+                    if i == 1 {
+                        menu_separator(ui);
+                    }
+                }
+                menu_separator(ui);
+                let toggle = MENU_ITEMS.len();
+                let item = MenuItem::new("Wrap text")
+                    .checked(wrap)
+                    .cursor(cursor == toggle);
+                if menu_item(ui, item).clicked || (enter && cursor == toggle) {
+                    picked = Some(toggle);
+                }
+                let submenu = toggle + 1;
+                let item = MenuItem::new("Format").submenu().cursor(cursor == submenu);
+                if menu_item(ui, item).clicked || (enter && cursor == submenu) {
+                    picked = Some(submenu);
+                }
+                picked
+            },
+        );
+        if let Some(i) = shown.inner {
+            if i == MENU_ITEMS.len() {
+                self.wrap = !self.wrap;
+            }
+            self.chosen = true;
+        }
+        if shown.dismissed {
+            self.closed = true;
         }
     }
 }

@@ -304,6 +304,10 @@ fn role_of(probe: ProbeRole) -> Role {
         ProbeRole::Tab => Role::Tab,
         ProbeRole::Status => Role::Status,
         ProbeRole::Tooltip => Role::Tooltip,
+        ProbeRole::Row => Role::Row,
+        ProbeRole::Unknown => Role::Unknown,
+        ProbeRole::MenuItem => Role::MenuItem,
+        ProbeRole::RadioButton => Role::RadioButton,
     }
 }
 

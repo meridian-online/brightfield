@@ -1209,6 +1209,18 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} did not open the Protocol again restricted"
                 );
             }
+            "quick-open" => {
+                let mut at = Window::crosswalk();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("quick-open"),
+                    "{verb} opened no quick open"
+                );
+                assert!(
+                    !at.app.quick_open_rows().is_empty(),
+                    "{verb} listed no table"
+                );
+            }
             "open-preferences" => {
                 let mut at = Window::crosswalk();
                 assert_eq!(

@@ -269,8 +269,10 @@ fn the_drawn_regions_match_the_declared_arrangement() {
         checked += 1;
     }
 
+    // The title band and the three rails: the chart view draws no hint band,
+    // and no band stands between the title band and the canvas.
     assert!(
-        checked >= 5,
+        checked >= 4,
         "only {checked} regions were compared; a frame that drew almost \
          nothing would satisfy every assertion above"
     );

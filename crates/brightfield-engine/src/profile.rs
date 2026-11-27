@@ -184,6 +184,10 @@ pub struct ColumnMoments {
     /// `median("col")` — DuckDB's interpolating median, so an even count of
     /// rows gives the mean of the middle pair rather than either of them.
     pub median: f64,
+    /// `quantile_cont("col", 0.75)` — the upper quartile, interpolated as the
+    /// median is, so 1 to 100 gives 75.25. `None` where DuckDB answers no
+    /// value.
+    pub upper_quartile: Option<f64>,
     /// `stddev_samp("col")`. `None` where the sample deviation is undefined,
     /// which is a column with one non-null row.
     pub sd: Option<f64>,

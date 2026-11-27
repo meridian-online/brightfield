@@ -55,11 +55,13 @@ pub struct RunMode {
 /// (step, the step it needs). A run that keeps going skips a step whose entry
 /// names a step that failed or was skipped. The two test steps run on the
 /// target directory the warm-cache step fills; the managed DuckDB link test
-/// links the library the duckdb-managed step builds.
+/// links the library the duckdb-managed step builds, and the Store package is
+/// built on it.
 pub const NEEDS: &[(&str, &str)] = &[
     ("test-one-thread", "warm-cache"),
     ("test-default", "warm-cache"),
     ("managed-duckdb-test", "duckdb-managed"),
+    ("package-store-selftest", "duckdb-managed"),
 ];
 
 /// True when `step` needs a step that, in `rows` so far, failed or was skipped.

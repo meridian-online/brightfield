@@ -372,10 +372,12 @@ impl Window {
             .collect()
     }
 
-    /// The markers of the spine rows labelled `label`.
+    /// The existence markers of the spine rows labelled `label`: the model's
+    /// account of them, since the list draws a state mark in their place.
     fn markers_of(&self, label: &str) -> Vec<SpineMarker> {
         self.app
-            .spine_rows()
+            .protocol_model()
+            .spine()
             .iter()
             .filter(|r| r.label == label)
             .map(|r| r.marker)

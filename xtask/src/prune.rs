@@ -97,6 +97,7 @@ pub fn workspace_of(root: &Path) -> Result<Workspace, String> {
         root: root.to_path_buf(),
         cargo: "cargo".into(),
         log: None,
+        whole_suite: false,
     };
     let output = ctx
         .command("cargo")

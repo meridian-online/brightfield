@@ -144,6 +144,7 @@ pub fn isolated_ci(
         root: invoking.to_path_buf(),
         cargo: "cargo".into(),
         log: None,
+        whole_suite: false,
     };
     let host = steps::host_triple().map_err(Unready::DuckDb)?;
     let candidate = steps::engine_path(&invoking.root, std::env::var_os("ARC_DUCKDB_BIN"));
@@ -173,6 +174,7 @@ pub fn isolated_ci(
         root: tree.to_path_buf(),
         cargo: "cargo".into(),
         log: None,
+        whole_suite: false,
     };
     let mut command = tree_ctx.command("cargo");
     command

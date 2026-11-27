@@ -53,12 +53,17 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `export-chart-picture` | `cmd-shift-e` | 2 / 5 / 4 | cmd-shift-e = export (Figma's export chord); `cmd-e` is `toggle-focus`'s; global, so it reaches the chart under the pointer from any pane |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
+| `toggle-inspector-rail` | `cmd-alt-b` | 3 / 3 / 4 | cmd-b is the left rail, so ⌘⌥B is the right one, as VS Code's secondary side bar is ⌘⌥B: hides the inspector and brings it back |
 | `show-connect-tab` | `alt-c` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Connect tab |
 | `show-shape-tab` | `alt-s` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Shape tab |
 | `show-model-tab` | `alt-m` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Model tab |
 | `show-publish-tab` | `alt-p` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Publish tab |
 | `show-context-tab` | `alt-x` | 3 / 5 / 4 | ⌥ and X, since the contextual tab's name changes with the canvas: selects the ribbon's contextual tab |
 | `toggle-ribbon` | `alt-r` | 3 / 5 / 4 | ⌥ and R, beside the tabs' keys in the Office KeyTip move: collapses the ribbon to its tabs and opens it again |
+| `show-grid` | `cmd-alt-g` | 4 / 5 / 3 | ⌘⌥ and G for grid, since a bare g is the chart grammar's broadcast: shows the rows of the table or view in focus |
+| `show-chart` | `cmd-alt-c` | 4 / 5 / 3 | ⌘⌥ and C for chart, since a bare c is the chart grammar's and ⌥C the Connect tab: shows the chart that reads the table or view in focus |
+| `relate` | `cmd-alt-m` | 3 / 4 / 3 | ⌘⌥ and M for model, since ⌥M alone is the Model tab: shows the model that relates the Protocol's sources |
+| `quick-open` | `cmd-p` | 4 / 4 / 5 | ⌘P, the quick open of code editors and browsers' address bars: opens any table or view of the Protocol by its DuckDB name, from whatever holds the canvas |
 | `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
 
 ### Navigating the frame — pan, zoom, axis lock, reset
@@ -192,6 +197,11 @@ Each of arcform's operations that reads the table in front has a key in the Grid
 | `derive-column` | `=` | 3 / 4 / 4 | `=` is VisiData's new column from an expression; the Grid context keeps it apart from the Workspace's `=` zoom-in |
 | `fill-nulls` | `f` | 2 / 4 / 3 | `f` is VisiData's fill; the grid's filter is `w`, and a click on a header's missing count does the same |
 | `cast-column` | `shift-t` | 2 / 4 / 2 | `T` = type; a click on a header's type does the same, and `retype-column` is the model's, in its own context |
+| `summarise-rows` | `shift-f` | 3 / 3 / 5 | `F` is VisiData's frequency table of the cursor's column; "Summarise by this column" on a header's menu does the same |
+| `limit-rows` | `shift-l` | 2 / 4 / 2 | `L` = limit; bare `l` stays the grid's move right, and "Top rows by this column" on a header's menu does the same |
+| `dedupe-rows` | `shift-u` | 2 / 3 / 2 | `U` = unique; bare `u` is undo elsewhere, and "Remove duplicate rows" on a header's menu does the same |
+| `append-rows` | `shift-a` | 2 / 4 / 3 | `A` = append; the tables are picked in the spine next, and "Append rows of other tables" on a header's menu does the same |
+| `join-tables` | `&` | 2 / 4 / 5 | `&` is VisiData's join; it first picks the other table in the spine, and "Join on this column" on a header's menu does the same |
 
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 

@@ -30,8 +30,9 @@ use duckdb::Connection;
 pub use extensions::Extensions;
 pub use preview::{
     preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
-    preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
-    PreviewStop, WarmPage, WarmPreview, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
+    preview_first_page_within, preview_profile_stoppable, preview_row_count_stoppable, FileReader,
+    PreviewOp, PreviewRefusal, PreviewStop, WarmPage, WarmPreview, PREVIEW_DEADLINE,
+    PREVIEW_FILE_LIMIT_BYTES,
 };
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
@@ -3761,13 +3762,17 @@ impl Session {
     /// [`ProfileOutcome::Failed`] so one bad source never takes the sidebar
     /// down with it.
     fn profile_one_source(&self, name: &str) -> ProfileOutcome {
-        let columns = match self.describe_columns(name) {
-            Ok(c) => c,
-            Err(e) => return ProfileOutcome::Failed(e),
-        };
-        match self.profile_described(name, &columns, &[]) {
-            Ok((outcome, _)) => outcome,
-            Err(e) => ProfileOutcome::Failed(e),
+        self.profiler().profile_table(name)
+    }
+
+    /// The profile pass over this session's connection, labelled by its type
+    /// source and given labels and counted by its scan tally.
+    fn profiler(&self) -> Profiler<'_> {
+        Profiler {
+            conn: &self.conn,
+            session: Some(self),
+            type_source: self.type_source.as_deref(),
+            given_labels: Some(&self.given_labels),
         }
     }
 
@@ -3790,49 +3795,17 @@ impl Session {
         columns: &[String],
         extra: &[String],
     ) -> Result<(Vec<ColumnProfile>, Vec<Option<String>>), String> {
-        let described: Vec<(String, String)> = self
+        let profiler = self.profiler();
+        let described: Vec<(String, String)> = profiler
             .describe_columns(name)?
             .into_iter()
             .filter(|(column, _)| columns.contains(column))
             .collect();
-        match self.profile_described(name, &described, extra)? {
+        match profiler.profile_described(name, &described, extra)? {
             (ProfileOutcome::Profiled { columns, .. }, extras) => Ok((columns, extras)),
             (ProfileOutcome::Failed(reason), _) => Err(reason),
             (ProfileOutcome::Unsupported, _) => Err("the source cannot be profiled".to_string()),
         }
-    }
-
-    /// The aggregate pass over `columns` of `name` with `extra` riding it, then the
-    /// distributions.
-    fn profile_described(
-        &self,
-        name: &str,
-        columns: &[(String, String)],
-        extra: &[String],
-    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
-        let (mut outcome, extras) = self.aggregate_source(name, columns, extra)?;
-        // The second pass, and the reason it is a second one: which shape a
-        // column's distribution takes is decided by the EXACT distinct count,
-        // which the aggregate above is what produces. ONE `GROUP BY` for every
-        // numeric column at once, at the resolution both the bar chart and the
-        // rug are folded out of — a statement per column read the table once
-        // per column, and a table has as many numeric columns as it likes.
-        if let ProfileOutcome::Profiled { columns, .. } = &mut outcome {
-            let asks = distribution_asks(columns);
-            if let Some(sql) = Self::distributions_sql(name, &asks) {
-                match self.query_arrow_raw(&sql) {
-                    Ok(batches) => {
-                        for (ask, counted) in asks.iter().zip(read_distributions(&batches, &asks)) {
-                            if let Some(moments) = columns[ask.at].moments.as_mut() {
-                                moments.distribution = counted;
-                            }
-                        }
-                    }
-                    Err(e) => return Err(e.to_string()),
-                }
-            }
-        }
-        Ok((outcome, extras))
     }
 
     /// A column's `min` and `max`, spelled for the bucket expression so the
@@ -3963,206 +3936,9 @@ impl Session {
         ))
     }
 
-    /// The view's `(column_name, column_type)` pairs from DESCRIBE, internal
-    /// `__bf_*` columns filtered out.
-    fn describe_columns(&self, name: &str) -> Result<Vec<(String, String)>, String> {
-        let sql = format!("DESCRIBE \"{}\"", escape_ident(name));
-        let batches = self.query_arrow_raw(&sql).map_err(|e| e.to_string())?;
-        let mut columns = Vec::new();
-        for batch in &batches {
-            // DESCRIBE's schema is fixed: column_name, column_type, null, ...
-            let names = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<duckdb::arrow::array::StringArray>();
-            let types = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<duckdb::arrow::array::StringArray>();
-            if let (Some(names), Some(types)) = (names, types) {
-                for row in 0..batch.num_rows() {
-                    let col = names.value(row);
-                    if profile::is_internal_column(col) {
-                        continue;
-                    }
-                    columns.push((col.to_string(), types.value(row).to_string()));
-                }
-            }
-        }
-        Ok(columns)
-    }
-
-    /// One aggregate SELECT over the view: `count(*)` plus, per column,
-    /// non-null count + `approx_count_distinct` (+ min/max for gated types).
-    /// Every count is cast to BIGINT and every bound to VARCHAR so the result
-    /// is uniformly `Int64`/`Utf8` to read.
-    fn aggregate_source(
-        &self,
-        name: &str,
-        columns: &[(String, String)],
-        extra: &[String],
-    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
-        let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
-        // Per column: whether it contributed min/max cells, and what the type
-        // source asked for. Both drive the read back below, which walks the
-        // one result row by position.
-        let mut gated: Vec<bool> = Vec::with_capacity(columns.len());
-        // Per column: whether it contributed the six moment cells below.
-        let mut momented: Vec<bool> = Vec::with_capacity(columns.len());
-        // `Ok(())` — this column contributed a typing cell to the SELECT.
-        // `Err(reason)` — the type source declined it, or there is none.
-        let mut typed: Vec<Result<(), SemanticType>> = Vec::with_capacity(columns.len());
-        for (col, ty) in columns {
-            let q = escape_ident(col);
-            selects.push(format!("CAST(count(\"{q}\") AS BIGINT)"));
-            selects.push(format!("CAST(approx_count_distinct(\"{q}\") AS BIGINT)"));
-            let g = profile::is_min_max_type(ty);
-            if g {
-                selects.push(format!("CAST(min(\"{q}\") AS VARCHAR)"));
-                selects.push(format!("CAST(max(\"{q}\") AS VARCHAR)"));
-            }
-            gated.push(g);
-            // The moments ride the same pass for the reason the semantic term
-            // does: six more accumulators over rows already being scanned. The
-            // exact `count(DISTINCT ...)` is deliberately a second count beside
-            // the estimate above — the tile choice reads the estimate, and the
-            // band draws a number a reader can check against the file.
-            let m = profile::is_moment_type(ty);
-            if m {
-                selects.push(format!("CAST(avg(\"{q}\") AS DOUBLE)"));
-                selects.push(format!("CAST(median(\"{q}\") AS DOUBLE)"));
-                selects.push(format!("CAST(stddev_samp(\"{q}\") AS DOUBLE)"));
-                selects.push(format!("CAST(count(DISTINCT \"{q}\") AS BIGINT)"));
-                selects.push(format!("CAST(min(\"{q}\") AS DOUBLE)"));
-                selects.push(format!("CAST(max(\"{q}\") AS DOUBLE)"));
-            }
-            momented.push(m);
-            // The semantic pass rides HERE, in the aggregate that is already
-            // being issued, rather than in a second scan beside it: FineType's
-            // `ft_profile` is a true DuckDB aggregate, so one extra term per
-            // column costs one extra accumulator on the same pass over the
-            // same rows.
-            // A label already settled is not asked again, so no typing term
-            // is issued for its column.
-            let given = self
-                .given_labels
-                .get(col)
-                .map(|label| SemanticType::Labelled {
-                    label: label.clone(),
-                    confidence: 1.0,
-                    check: ValueCheck::Given,
-                });
-            typed.push(match (given, &self.type_source) {
-                (Some(given), _) => Err(given),
-                (None, None) => Err(SemanticType::NotAsked),
-                (None, Some(src)) => match src.typing_expr(col, ty) {
-                    Ok(expr) => {
-                        selects.push(expr);
-                        Ok(())
-                    }
-                    Err(reason) => Err(SemanticType::Unanswered { reason }),
-                },
-            });
-        }
-        selects.extend(extra.iter().map(|e| format!("CAST(({e}) AS VARCHAR)")));
-        let sql = format!(
-            "SELECT {} FROM \"{}\"",
-            selects.join(", "),
-            escape_ident(name)
-        );
-        let batches = self.query_arrow_raw(&sql).map_err(|e| e.to_string())?;
-        let batch = batches
-            .into_iter()
-            .find(|b| b.num_rows() > 0)
-            .ok_or_else(|| "aggregate returned no rows".to_string())?;
-
-        let row_count = profile::read_count(&batch, 0);
-        let mut out = Vec::with_capacity(columns.len());
-        let mut idx = 1usize;
-        for ((((col, ty), &g), &m), asked) in columns
-            .iter()
-            .zip(gated.iter())
-            .zip(momented.iter())
-            .zip(typed)
-        {
-            let non_null = profile::read_count(&batch, idx);
-            idx += 1;
-            let distinct = profile::read_count(&batch, idx);
-            idx += 1;
-            let (min, max) = if g {
-                let min = profile::read_text(&batch, idx);
-                idx += 1;
-                let max = profile::read_text(&batch, idx);
-                idx += 1;
-                (min, max)
-            } else {
-                (None, None)
-            };
-            let moments = if m {
-                let mean = profile::read_double(&batch, idx);
-                let median = profile::read_double(&batch, idx + 1);
-                let sd = profile::read_double(&batch, idx + 2);
-                let distinct = profile::read_count(&batch, idx + 3);
-                let lo = profile::read_double(&batch, idx + 4);
-                let hi = profile::read_double(&batch, idx + 5);
-                idx += 6;
-                // An all-null column answers NULL to every one of them, and a
-                // band that printed `mean 0` over it would be inventing a
-                // number. The absence is the honest answer.
-                match (mean, median, lo, hi) {
-                    (Some(mean), Some(median), Some(min), Some(max)) => Some(ColumnMoments {
-                        mean,
-                        median,
-                        sd,
-                        distinct,
-                        min,
-                        max,
-                        // Filled by the second pass in `profile_one_source`,
-                        // which needs the exact distinct count above to know
-                        // which shape to ask for.
-                        distribution: profile::Distribution::Bins(Vec::new()),
-                    }),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let semantic = match (asked, &self.type_source) {
-                (Err(answer), _) => answer,
-                (Ok(()), None) => SemanticType::NotAsked,
-                (Ok(()), Some(src)) => {
-                    let cell = batch.column(idx).clone();
-                    idx += 1;
-                    src.read_and_check(&self.conn, name, col, cell.as_ref(), 0)
-                }
-            };
-            out.push(ColumnProfile {
-                name: col.clone(),
-                type_name: ty.clone(),
-                non_null,
-                nulls: row_count.saturating_sub(non_null),
-                distinct,
-                min,
-                max,
-                semantic,
-                moments,
-            });
-        }
-        let extras = (idx..idx + extra.len())
-            .map(|at| profile::read_text(&batch, at))
-            .collect();
-        Ok((
-            ProfileOutcome::Profiled {
-                row_count,
-                columns: out,
-            },
-            extras,
-        ))
-    }
-
     /// Run a raw read-only query and collect its Arrow batches — the profiling
     /// counterpart to the mark path's cached `execute_emitted`, deliberately
-    /// bypassing every cache so it never perturbs mark execution counts.
+    /// bypassing the caches so mark execution counts stay as they were.
     fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
         self.record_scan(sql);
         let mut stmt = self.conn.prepare(sql)?;
@@ -4236,15 +4012,15 @@ impl Session {
     }
 
     /// Classify a failed mark query: a mark whose `from:` source is
-    /// remote-backed re-fetches over the network on EVERY execution, so a
+    /// remote-backed re-fetches over the network on each execution, so a
     /// network-shaped failure here — mid-session, long after a successful
     /// load — is a network failure and must say so
     /// ([`EngineError::RemoteSourceFailed`] naming the source, the
-    /// location, and the network), never a bare SQL error a reader could
-    /// mistake for a local-data problem. Anything else (a local-backed
+    /// location, and the network), not a bare SQL error a reader could
+    /// mistake for a local-data problem. A failure of another kind (a local-backed
     /// mark, or a query-shape error such as a binder failure on a remote
     /// one) stays [`EngineError::QueryFailed`] with the cause intact —
-    /// the fallback direction never misattributes.
+    /// the fallback keeps the cause it was given.
     fn classify_query_failure(
         &self,
         mark_index: usize,
@@ -4329,6 +4105,294 @@ fn collect_marks_with_path(
             marks.push((path, mark.kind));
         }
         _ => {}
+    }
+}
+
+/// **What the profile pass reads through**: a connection, and what labels its
+/// columns.
+///
+/// A session profiles its own views through one, and a preview profiles the
+/// last table of a chain on its own connection through another
+/// ([`crate::preview::preview_profile_stoppable`]), so the two passes are one
+/// pass and cannot drift apart in what they measure.
+pub(crate) struct Profiler<'a> {
+    conn: &'a Connection,
+    /// The session whose scan tally counts each statement, when the pass is a
+    /// session's.
+    session: Option<&'a Session>,
+    /// What asks each column what it means. `None` leaves a column at
+    /// [`SemanticType::NotAsked`].
+    type_source: Option<&'a dyn TypeSource>,
+    /// Columns labelled without asking the type source.
+    given_labels: Option<&'a BTreeMap<String, String>>,
+}
+
+impl<'a> Profiler<'a> {
+    /// A pass over `conn` that labels nothing and counts nothing.
+    pub(crate) fn plain(conn: &'a Connection) -> Self {
+        Self {
+            conn,
+            session: None,
+            type_source: None,
+            given_labels: None,
+        }
+    }
+
+    /// Run a read-only query, charged to the session's tally when the pass is
+    /// a session's.
+    fn query(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
+        if let Some(session) = self.session {
+            return session.query_arrow_raw(sql);
+        }
+        let mut stmt = self.conn.prepare(sql)?;
+        let arrow = stmt.query_arrow(duckdb::params![])?;
+        Ok(arrow.collect())
+    }
+
+    /// The profiles of the columns of `name`, in DESCRIBE order: the pass
+    /// [`Session::profile_sources`] runs for one source.
+    pub(crate) fn profile_table(&self, name: &str) -> ProfileOutcome {
+        let columns = match self.describe_columns(name) {
+            Ok(c) => c,
+            Err(e) => return ProfileOutcome::Failed(e),
+        };
+        match self.profile_described(name, &columns, &[]) {
+            Ok((outcome, _)) => outcome,
+            Err(e) => ProfileOutcome::Failed(e),
+        }
+    }
+
+    /// The aggregate pass over `columns` of `name` with `extra` riding it, then the
+    /// distributions.
+    fn profile_described(
+        &self,
+        name: &str,
+        columns: &[(String, String)],
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
+        let (mut outcome, extras) = self.aggregate_source(name, columns, extra)?;
+        // The second pass, and the reason it is a second one: which shape a
+        // column's distribution takes is decided by the EXACT distinct count,
+        // which the aggregate above is what produces. ONE `GROUP BY` for every
+        // numeric column at once, at the resolution both the bar chart and the
+        // rug are folded out of — a statement per column read the table once
+        // per column, and a table has as many numeric columns as it likes.
+        if let ProfileOutcome::Profiled { columns, .. } = &mut outcome {
+            let asks = distribution_asks(columns);
+            if let Some(sql) = Session::distributions_sql(name, &asks) {
+                match self.query(&sql) {
+                    Ok(batches) => {
+                        for (ask, counted) in asks.iter().zip(read_distributions(&batches, &asks)) {
+                            if let Some(moments) = columns[ask.at].moments.as_mut() {
+                                moments.distribution = counted;
+                            }
+                        }
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        Ok((outcome, extras))
+    }
+
+    /// The view's `(column_name, column_type)` pairs from DESCRIBE, internal
+    /// `__bf_*` columns filtered out.
+    fn describe_columns(&self, name: &str) -> Result<Vec<(String, String)>, String> {
+        let sql = format!("DESCRIBE \"{}\"", escape_ident(name));
+        let batches = self.query(&sql).map_err(|e| e.to_string())?;
+        let mut columns = Vec::new();
+        for batch in &batches {
+            // DESCRIBE's schema is fixed: column_name, column_type, null, ...
+            let names = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::StringArray>();
+            let types = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::StringArray>();
+            if let (Some(names), Some(types)) = (names, types) {
+                for row in 0..batch.num_rows() {
+                    let col = names.value(row);
+                    if profile::is_internal_column(col) {
+                        continue;
+                    }
+                    columns.push((col.to_string(), types.value(row).to_string()));
+                }
+            }
+        }
+        Ok(columns)
+    }
+
+    /// One aggregate SELECT over the view: `count(*)` plus, per column,
+    /// non-null count + `approx_count_distinct` (+ min/max for gated types).
+    /// Every count is cast to BIGINT and every bound to VARCHAR so the result
+    /// is uniformly `Int64`/`Utf8` to read.
+    fn aggregate_source(
+        &self,
+        name: &str,
+        columns: &[(String, String)],
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
+        let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
+        // Per column: whether it contributed min/max cells, and what the type
+        // source asked for. Both drive the read back below, which walks the
+        // one result row by position.
+        let mut gated: Vec<bool> = Vec::with_capacity(columns.len());
+        // Per column: whether it contributed the seven moment cells below.
+        let mut momented: Vec<bool> = Vec::with_capacity(columns.len());
+        // `Ok(())` — this column contributed a typing cell to the SELECT.
+        // `Err(reason)` — the type source declined it, or there is none.
+        let mut typed: Vec<Result<(), SemanticType>> = Vec::with_capacity(columns.len());
+        for (col, ty) in columns {
+            let q = escape_ident(col);
+            selects.push(format!("CAST(count(\"{q}\") AS BIGINT)"));
+            selects.push(format!("CAST(approx_count_distinct(\"{q}\") AS BIGINT)"));
+            let g = profile::is_min_max_type(ty);
+            if g {
+                selects.push(format!("CAST(min(\"{q}\") AS VARCHAR)"));
+                selects.push(format!("CAST(max(\"{q}\") AS VARCHAR)"));
+            }
+            gated.push(g);
+            // The moments ride the same pass for the reason the semantic term
+            // does: seven more accumulators over rows already being scanned. The
+            // exact `count(DISTINCT ...)` is deliberately a second count beside
+            // the estimate above — the tile choice reads the estimate, and the
+            // band draws a number a reader can check against the file.
+            let m = profile::is_moment_type(ty);
+            if m {
+                selects.push(format!("CAST(avg(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(median(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(quantile_cont(\"{q}\", 0.75) AS DOUBLE)"));
+                selects.push(format!("CAST(stddev_samp(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(count(DISTINCT \"{q}\") AS BIGINT)"));
+                selects.push(format!("CAST(min(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(max(\"{q}\") AS DOUBLE)"));
+            }
+            momented.push(m);
+            // The semantic pass rides HERE, in the aggregate that is already
+            // being issued, rather than in a second scan beside it: FineType's
+            // `ft_profile` is a true DuckDB aggregate, so one extra term per
+            // column costs one extra accumulator on the same pass over the
+            // same rows.
+            // A label already settled is not asked again, so no typing term
+            // is issued for its column.
+            let given = self
+                .given_labels
+                .and_then(|labels| labels.get(col))
+                .map(|label| SemanticType::Labelled {
+                    label: label.clone(),
+                    confidence: 1.0,
+                    check: ValueCheck::Given,
+                });
+            typed.push(match (given, self.type_source) {
+                (Some(given), _) => Err(given),
+                (None, None) => Err(SemanticType::NotAsked),
+                (None, Some(src)) => match src.typing_expr(col, ty) {
+                    Ok(expr) => {
+                        selects.push(expr);
+                        Ok(())
+                    }
+                    Err(reason) => Err(SemanticType::Unanswered { reason }),
+                },
+            });
+        }
+        selects.extend(extra.iter().map(|e| format!("CAST(({e}) AS VARCHAR)")));
+        let sql = format!(
+            "SELECT {} FROM \"{}\"",
+            selects.join(", "),
+            escape_ident(name)
+        );
+        let batches = self.query(&sql).map_err(|e| e.to_string())?;
+        let batch = batches
+            .into_iter()
+            .find(|b| b.num_rows() > 0)
+            .ok_or_else(|| "aggregate returned no rows".to_string())?;
+
+        let row_count = profile::read_count(&batch, 0);
+        let mut out = Vec::with_capacity(columns.len());
+        let mut idx = 1usize;
+        for ((((col, ty), &g), &m), asked) in columns
+            .iter()
+            .zip(gated.iter())
+            .zip(momented.iter())
+            .zip(typed)
+        {
+            let non_null = profile::read_count(&batch, idx);
+            idx += 1;
+            let distinct = profile::read_count(&batch, idx);
+            idx += 1;
+            let (min, max) = if g {
+                let min = profile::read_text(&batch, idx);
+                idx += 1;
+                let max = profile::read_text(&batch, idx);
+                idx += 1;
+                (min, max)
+            } else {
+                (None, None)
+            };
+            let moments = if m {
+                let mean = profile::read_double(&batch, idx);
+                let median = profile::read_double(&batch, idx + 1);
+                let upper_quartile = profile::read_double(&batch, idx + 2);
+                let sd = profile::read_double(&batch, idx + 3);
+                let distinct = profile::read_count(&batch, idx + 4);
+                let lo = profile::read_double(&batch, idx + 5);
+                let hi = profile::read_double(&batch, idx + 6);
+                idx += 7;
+                // An all-null column answers NULL to every one of them, and a
+                // band that printed `mean 0` over it would be inventing a
+                // number. The absence is the honest answer.
+                match (mean, median, lo, hi) {
+                    (Some(mean), Some(median), Some(min), Some(max)) => Some(ColumnMoments {
+                        mean,
+                        median,
+                        upper_quartile,
+                        sd,
+                        distinct,
+                        min,
+                        max,
+                        // Filled by the second pass in `profile_one_source`,
+                        // which needs the exact distinct count above to know
+                        // which shape to ask for.
+                        distribution: profile::Distribution::Bins(Vec::new()),
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let semantic = match (asked, self.type_source) {
+                (Err(answer), _) => answer,
+                (Ok(()), None) => SemanticType::NotAsked,
+                (Ok(()), Some(src)) => {
+                    let cell = batch.column(idx).clone();
+                    idx += 1;
+                    src.read_and_check(self.conn, name, col, cell.as_ref(), 0)
+                }
+            };
+            out.push(ColumnProfile {
+                name: col.clone(),
+                type_name: ty.clone(),
+                non_null,
+                nulls: row_count.saturating_sub(non_null),
+                distinct,
+                min,
+                max,
+                semantic,
+                moments,
+            });
+        }
+        let extras = (idx..idx + extra.len())
+            .map(|at| profile::read_text(&batch, at))
+            .collect();
+        Ok((
+            ProfileOutcome::Profiled {
+                row_count,
+                columns: out,
+            },
+            extras,
+        ))
     }
 }
 
@@ -5786,6 +5850,35 @@ plot:
             ProfileOutcome::Profiled { columns, .. } => columns,
             other => panic!("expected Profiled, got {other:?}"),
         }
+    }
+
+    /// The upper quartile rides the aggregate pass and interpolates as the
+    /// median does: of 1 to 100 it is at three quarters of the way from the
+    /// first row to the last, 75 and a quarter.
+    #[test]
+    fn the_profile_carries_the_upper_quartile() {
+        let yaml = r#"
+data:
+  t: "SELECT range + 1 AS v FROM range(100)"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: v
+    y: v
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
+        let profiles = session.profile_sources();
+        let cols = profiled_columns(&profiles[0].outcome);
+        let m = cols[0]
+            .moments
+            .as_ref()
+            .expect("a numeric column has moments");
+        assert_eq!(m.upper_quartile, Some(75.25));
+        assert!((m.median - 50.5).abs() < 1e-12, "median of 1 to 100");
     }
 
     /// Mixed types, nulls, gating, __bf_ filter: a source with an

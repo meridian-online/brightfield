@@ -64,12 +64,14 @@ use std::path::{Component, Path, PathBuf};
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
-use brightfield_keys::{Altitude, RecencyCounter};
+use brightfield_keys::{Altitude, Frecency};
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
+use brightfield_workbench::behavior::NodeHeader;
 use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
+use brightfield_workbench::subject::{ActivityChoice, Crumb};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
@@ -87,13 +89,14 @@ use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::chart_item::PREDICATE_READOUT;
 use crate::column_header::GridDensity;
+use crate::column_profiles::{ColumnProfiles, ProfileRead};
 use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
-use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
+use crate::inspector::{InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
-    HelpSheet, JumpTarget, JumpToNode,
+    HelpSheet, JumpTarget, JumpToNode, QuickOpen,
 };
 use crate::panel_tiles::{PanelTiles, TilesAction};
 use crate::pipeline::Composed;
@@ -816,14 +819,12 @@ fn window_around(composed: &Composed, page_h: f32) -> (f32, f32) {
 ///   is the split the graph canvas is drawn with — one measure, read from the
 ///   function that performs the split rather than restated as a second number.
 ///   The chart canvas is drawn with no split and carries no such term: each
-///   pane of its group has its own header band, and the locator band above the
-///   canvas already carries the document's name.
+///   pane of its group has its own header band, which names its node.
 fn chrome_budget(surface: Surface) -> (f32, f32) {
     let plan = arrangement::default_arrangement();
     let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
-        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_default(plan.expect_region(arrangement::LEDGER_RAIL));
     if surface == Surface::Graph {
         down += band_extent(plan.expect_region(arrangement::HINT_BAND))
@@ -845,7 +846,6 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
     let across = rail_collapsed(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_collapsed(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
-        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
 }
@@ -1203,7 +1203,7 @@ pub enum CanvasHolds {
     /// node of the Protocol graph with a mosaic spec of its own, not a way of
     /// looking at the table. What the canvas draws for it is the pane group a
     /// generated dashboard composes to; the spine marks the dashboard's asset
-    /// row for it, and the locator band names it as the node.
+    /// row for it, and the pane header names it as the node.
     ///
     /// The table is carried because the canvas draws that table's rows and the
     /// inspector and the `y` fallback describe it — see [`CanvasHolds::node`].
@@ -2302,6 +2302,9 @@ enum Overlay {
     Help(Picker<HelpSheet>),
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
+    /// Quick open (`⌘P`): every table and view of the Protocol by its DuckDB
+    /// name, from whatever holds the canvas.
+    QuickOpen(Picker<QuickOpen>),
     /// The question a close request raises over a window that carries the
     /// unsaved mark: save and close, close without saving, or keep editing. It
     /// holds what it says — the chart file, the unsaved edits in the shelf's
@@ -2534,6 +2537,7 @@ struct OverlayKeys {
     palette: Vec<&'static str>,
     help: Option<&'static str>,
     jump: Option<&'static str>,
+    quick_open: Option<&'static str>,
 }
 
 impl OverlayKeys {
@@ -2552,6 +2556,7 @@ impl OverlayKeys {
                 .unwrap_or_default(),
             help: primary("open-help"),
             jump: primary("focus-jump"),
+            quick_open: primary(QUICK_OPEN),
         }
     }
 }
@@ -2788,6 +2793,9 @@ pub const QUIT: &str = "quit";
 /// the palette.
 pub const NEW_PROTOCOL: &str = "new-protocol";
 
+/// The registry verb that opens quick open, ⌘P.
+pub const QUICK_OPEN: &str = "quick-open";
+
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
 
@@ -2958,7 +2966,32 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "alt-c" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::C)),
         "alt-x" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::X)),
         "alt-r" => ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)),
+        // The node's activities: ⌘⌥ and the activity's initial.
+        "cmd-alt-g" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::G))
+        }
+        "cmd-alt-b" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::B))
+        }
+        "cmd-alt-m" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::M))
+        }
+        // C with the command key held arrives as `Event::Copy`, as for
+        // cmd-shift-c below, here with ⌥ held and Shift not.
+        "cmd-alt-c" => ctx.input_mut(|i| {
+            let held = i.modifiers.command && i.modifiers.alt && !i.modifiers.shift;
+            let before = i.events.len();
+            i.events
+                .retain(|e| !(held && matches!(e, egui::Event::Copy)));
+            i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::C)
+        }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        // Quick open. egui's key match ignores a Shift or an ⌥ the pattern
+        // leaves out, so without the guard ⌘P would also take the palette's
+        // ⇧⌘P.
+        "cmd-p" => ctx.input_mut(|i| {
+            !i.modifiers.shift && !i.modifiers.alt && i.consume_key(Modifiers::COMMAND, Key::P)
+        }),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
@@ -3253,6 +3286,13 @@ struct ChartView {
     /// inspector. Written whenever a document is adopted; see
     /// [`wire_columns`].
     inspector_table: TableHandle,
+    /// The table a later step makes, while the canvas holds it, as the
+    /// inspector describes it — written by [`MeridianApp::draw`] beside
+    /// [`Self::inspector_selection`].
+    inspector_inspected: InspectedHandle,
+    /// The column profiles of the tables the inspector has been asked about;
+    /// see [`MeridianApp::column_facts_for`].
+    column_profiles: ColumnProfiles,
     /// The hero pane's shelf: the band carved under its header, and who holds
     /// the keys. See [`ShelfHold`].
     shelf: ShelfHold,
@@ -3336,11 +3376,14 @@ impl ShelfHold {
 /// cannot move one without the other.
 fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle) {
     let tiles: Vec<crate::one_step::ColumnFacts> = model.tiles().to_vec();
-    table.set((!tiles.is_empty()).then(|| ColumnTable {
-        table: model.protocol.clone(),
-        step: crate::one_step::STEP_NAME.to_string(),
-        kind: "sql",
-    }));
+    // The table and the step that makes it are the model's: the load, for a
+    // table the file opened as, named and stated as the steps sheet names and
+    // states it.
+    table.set(
+        (!tiles.is_empty())
+            .then(|| model.table().and_then(|node| model.column_table(node)))
+            .flatten(),
+    );
     chart.set_column_facts(model.columns());
     chart.set_tile_columns(tiles);
     // The table the node in view makes, which the operation panel names: the
@@ -3376,13 +3419,14 @@ enum Refused {
     Recording(String),
 }
 
-/// How the Inspector rail stood before a key moved it to the operation panel.
+/// How the Inspector rail stood before a key opened its Operation section.
 #[derive(Clone, Copy, Debug)]
 struct RailBeforeAsk {
     /// Whether it was collapsed.
     collapsed: bool,
-    /// The pane it was on.
-    panel: usize,
+    /// Whether the reader had set the Operation section open or closed, or
+    /// left it at its default.
+    operation_open: Option<bool>,
 }
 
 /// The protocol half of the window: its document and its live items.
@@ -3480,6 +3524,19 @@ impl ModelDoc {
     }
 }
 
+/// How a profile of a table is asked for.
+#[derive(Clone, Copy)]
+enum ProfileAsk {
+    /// Say where it stands, and start nothing.
+    Peek,
+    /// Start its read when none is kept or under way.
+    Read {
+        /// Whether the inspector is asking, so the read stops when the canvas
+        /// leaves the table.
+        for_inspector: bool,
+    },
+}
+
 /// The window.
 pub struct MeridianApp {
     /// The live layout — the arrangement, the window geometry, and what is
@@ -3529,7 +3586,7 @@ pub struct MeridianApp {
     /// # Why this is session state and not in the saved layout
     ///
     /// It joins [`Self::projection`], [`Self::ledger_panel`] and
-    /// [`Self::inspector_panel`] rather than [`SavedLayout`], and those three
+    /// [`Self::inspector_open`] rather than [`SavedLayout`], and those three
     /// are the argument: a collapsed rail is set from the same strip, at the
     /// same granularity, by the same click as which pane that strip is
     /// showing, and the other three are dropped at the next launch. Restoring a
@@ -3562,8 +3619,13 @@ pub struct MeridianApp {
     projection: usize,
     /// Which of the ledger rail's panes is showing.
     ledger_panel: usize,
-    /// Which of the inspector rail's panes is showing.
-    inspector_panel: usize,
+    /// Which of the inspector's sections the reader has opened or closed. A
+    /// section not named here is at its default, which
+    /// [`crate::inspector::sections_open`] gives.
+    inspector_open: std::collections::BTreeMap<crate::inspector::Section, bool>,
+    /// The inspector's sections as the last frame drew them, each with whether
+    /// it was open. Read back through [`MeridianApp::inspector_sections`].
+    inspector_drawn: Vec<(crate::inspector::Section, bool)>,
     /// What the canvas's pane group drew last frame — empty on a frame the
     /// canvas drew one pane instead. Read back through
     /// [`MeridianApp::canvas_panes`]; recorded for the reason [`Self::regions`]
@@ -3984,6 +4046,9 @@ pub struct MeridianApp {
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
     navigator_binding: Option<&'static str>,
+    /// The `toggle-inspector-rail` keystroke token, read off the registry at
+    /// boot as the navigator's is.
+    inspector_binding: Option<&'static str>,
     /// The `move-grid` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     grid_binding: Option<&'static str>,
@@ -3998,6 +4063,9 @@ pub struct MeridianApp {
     /// The ribbon verbs' keystroke tokens, read off the registry at boot, each
     /// with its verb.
     ribbon_bindings: [(Option<&'static str>, &'static str); 6],
+    /// The node's activity verbs' keystroke tokens, read off the registry at
+    /// boot, each with its verb.
+    activity_bindings: [(Option<&'static str>, &'static str); 3],
     /// A picture the export verb drew, waiting for the save dialog after the
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
     /// where [`Self::dialogs_allowed`] says a person is there to answer it.
@@ -4025,10 +4093,11 @@ pub struct MeridianApp {
     /// Whether the ledger's Versions panel holds the keys: a press in it gave
     /// them to it, and no press elsewhere has taken them since.
     versions_hold: bool,
-    /// The per-session palette recency: verbs run from the palette rank
-    /// higher on its next empty-query open. Session-scoped by design (the
-    /// sanctioned v1 simplification); it resets each launch.
-    recency: RecencyCounter,
+    /// The palette's frecency: verbs run from the palette rank higher on its
+    /// next empty-query open, by how often and how lately each was run. It is
+    /// read from the config folder when the window is made and written back
+    /// after each pick, so it carries from one session to the next.
+    frecency: Frecency,
     /// Persistent, id-deduplicated banners. A source that re-fails raises
     /// under the same composite id and *replaces* its banner — never stacks.
     notifications: NotificationLayer,
@@ -4071,9 +4140,11 @@ pub struct MeridianApp {
     /// Whether [`Self::apply_rail_defaults`] shut the navigator for panel
     /// tiles, so the next document opens it again.
     rails_shut_for_tiles: bool,
-    /// Where the locator band drew the Protocol's crumb as the way back to
-    /// every panel tile, on the last frame that drew one.
+    /// Where the canvas's pane header drew its linked first crumb, the way
+    /// back to every panel tile or to the model, on the last frame that drew one.
     crumb_link_rect: Option<egui::Rect>,
+    /// What the canvas's pane header drew on the last frame.
+    pane_header: Option<chrome::HeaderDrawn>,
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
@@ -4330,13 +4401,14 @@ impl MeridianApp {
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
         let inspector_selection = Selection::default();
         let inspector_table = TableHandle::default();
+        let inspector_inspected = InspectedHandle::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
-            Box::new(InspectorPane::new(
-                inspector_selection.clone(),
-                inspector_table.clone(),
-            )),
+            Box::new(
+                InspectorPane::new(inspector_selection.clone(), inspector_table.clone())
+                    .with_inspected(inspector_inspected.clone()),
+            ),
         );
         // The two documents' one join: what each tile is of. Done here rather
         // than in each constructor because all four of them land here, and the
@@ -4345,17 +4417,6 @@ impl MeridianApp {
         // could not say what the column belongs to.
         wire_columns(&mut chart_doc, &protocol_doc.model, &inspector_table);
 
-        // The inspector rail opens on the pane belonging to whichever document
-        // is leading the window — the operator when the graph has the canvas,
-        // the chart's own controls otherwise. Derived from the documents, by
-        // the same rule the canvas is, so the rail cannot open on the chart's
-        // controls over a window with no chart in it. Read before the two
-        // documents are moved into the fields below.
-        let inspector_panel = usize::from(!graph_takes_the_canvas(
-            protocol_doc.model.has_assets(),
-            !chart_doc.is_empty(),
-        ));
-
         let mut app = Self {
             layout,
             charts: ChartView {
@@ -4363,6 +4424,8 @@ impl MeridianApp {
                 items: chart_items,
                 inspector_selection,
                 inspector_table,
+                inspector_inspected,
+                column_profiles: ColumnProfiles::default(),
                 shelf: ShelfHold::new(),
             },
             protocol: ProtocolView {
@@ -4382,7 +4445,8 @@ impl MeridianApp {
             // the canvas's own group rather than a second projection of it.
             projection: 0,
             ledger_panel: 0,
-            inspector_panel,
+            inspector_open: std::collections::BTreeMap::new(),
+            inspector_drawn: Vec::new(),
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
             canvas_split,
@@ -4513,6 +4577,10 @@ impl MeridianApp {
                 .iter()
                 .find(|v| v.longname == NAVIGATOR_TOGGLE)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
+            inspector_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == INSPECTOR_TOGGLE)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
             grid_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == crate::data_grid::MOVE_GRID)
@@ -4540,13 +4608,20 @@ impl MeridianApp {
                     .and_then(brightfield_keys::VerbEntry::primary_key);
                 (key, longname)
             }),
+            activity_bindings: brightfield_keys::activity::ACTIVITY_VERBS.map(|longname| {
+                let key = brightfield_keys::registry()
+                    .iter()
+                    .find(|v| v.longname == longname)
+                    .and_then(brightfield_keys::VerbEntry::primary_key);
+                (key, longname)
+            }),
             picture_to_save: None,
             hovered_plot: None,
             pictures_dir: None,
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
             versions_hold: false,
-            recency: RecencyCounter::new(),
+            frecency: crate::palette_history::load(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
             diagnostic_banners: Vec::new(),
@@ -4559,6 +4634,7 @@ impl MeridianApp {
             tiles,
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
+            pane_header: None,
             keyboard_held: false,
             keys_answered: Vec::new(),
             verbs_applied: Vec::new(),
@@ -4776,7 +4852,7 @@ impl MeridianApp {
     ///
     /// Everything that follows the graph reads this and therefore follows the
     /// chip: the bare-key grammar feed, the key-hint band, the status rail's
-    /// choice of which document's panes to report, the locator's drill trail,
+    /// choice of which document's panes to report, the canvas head's counts,
     /// the window title and the title band's flow toggle. That is the point —
     /// the graph on the canvas is the graph on the canvas however it got there,
     /// and a band that answered the old question would be describing the
@@ -5285,7 +5361,7 @@ impl MeridianApp {
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
     /// the places that say what the window holds rather than what state it is
-    /// in — the locator band's last crumb.
+    /// in — the last crumb of a chart's pane header.
     fn subject_title(&self) -> String {
         // The front door replaces the regions, so it has no document subject
         // to name — and the top bar draws this unconditionally. Reaching the
@@ -5298,7 +5374,7 @@ impl MeridianApp {
         }
         if self.tiles.is_some() {
             // The Protocol, and the panel open from its tile when one is: the
-            // crumbs the locator band draws, joined.
+            // crumbs of the open panel's pane header, joined.
             return self.crumb_line().join(" \u{203a} ");
         }
         // A Protocol of the analyst's own files, a folder's model or a Protocol New Protocol made
@@ -5332,6 +5408,128 @@ impl MeridianApp {
     #[must_use]
     pub fn inspector_selection(&self) -> Option<Subject> {
         self.charts.inspector_selection.get()
+    }
+
+    /// **The columns of `table`, profiled**: the file's own table's from its
+    /// profile, and any other's once it has been read.
+    ///
+    /// A table a later step makes is profiled on a worker the first time it is
+    /// asked about, and kept against its content hash and the steps it is made
+    /// through ([`crate::column_profiles::ProfileKey`]); `None` until the read
+    /// has an answer, and for a table whose columns could not be read.
+    pub fn column_facts_for(&mut self, table: &str) -> Option<&[crate::one_step::ColumnFacts]> {
+        let model = &self.protocol.doc.model;
+        if model
+            .source()
+            .is_some_and(|source| source.name.eq_ignore_ascii_case(table))
+        {
+            return Some(self.protocol.doc.model.columns());
+        }
+        match self.column_profile_for(
+            table,
+            ProfileAsk::Read {
+                for_inspector: false,
+            },
+        ) {
+            ProfileRead::Read(columns) => self.charts.column_profiles.kept(&columns),
+            ProfileRead::Reading | ProfileRead::Failed(_) => None,
+        }
+    }
+
+    /// Where the profile of `table` stands, starting its read under `ask`
+    /// unless a profile is kept for it or a read of it is under way. See [`Self::column_facts_for`].
+    fn column_profile_for(&mut self, table: &str, ask: ProfileAsk) -> ProfileRead {
+        let Some(source) = self.typed_source(None) else {
+            return ProfileRead::Failed(
+                "Brightfield reads the columns of a step's table in a Protocol made from a \
+                 data file."
+                    .to_string(),
+            );
+        };
+        let model = &self.protocol.doc.model;
+        let hash = model
+            .node_of_step_table(table)
+            .and_then(|node| model.content_hash_of(node));
+        let key = ColumnProfiles::key(table, hash, &source);
+        let profiles = &mut self.charts.column_profiles;
+        match ask {
+            // Until the inspector draws the table, nothing is read, and what
+            // it will draw first is the reading line.
+            ProfileAsk::Peek => profiles.peek(&key).unwrap_or(ProfileRead::Reading),
+            ProfileAsk::Read { for_inspector } => profiles.read(
+                key,
+                &source,
+                &self.charts.doc.preview_hooks().beside_the_grid(),
+                for_inspector,
+            ),
+        }
+    }
+
+    /// Whether the inspector is describing a step's table whose columns it
+    /// has not yet had: it draws the reading line in their place.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn inspector_awaits_columns(&self) -> bool {
+        self.charts
+            .inspector_inspected
+            .get()
+            .is_some_and(|inspected| inspected.columns == ProfileRead::Reading)
+    }
+
+    /// Whether a column profile is being read.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn column_profile_under_way(&self) -> bool {
+        self.charts.column_profiles.is_reading()
+    }
+
+    /// How many column profiles the window has started reading.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn column_profiles_started(&self) -> usize {
+        self.charts.column_profiles.started()
+    }
+
+    /// What a selected column of `table` belongs to: the step that makes it,
+    /// that step's kind and its state, read from the Protocol's model.
+    #[must_use]
+    pub fn column_table_for(&self, table: &str) -> Option<crate::inspector::ColumnTable> {
+        let model = &self.protocol.doc.model;
+        let node = model.node_of_step_table(table)?;
+        model.column_table(node)
+    }
+
+    /// The table the inspector describes this frame, when the canvas holds
+    /// one a step after the load makes: what makes it, and its columns as far
+    /// as they have been read. The file's own table is described by its
+    /// tiles, so it is not among them.
+    ///
+    /// The columns are read only once the inspector has drawn the table
+    /// (`asked`), and a read the inspector started is stopped once the canvas
+    /// no longer holds a table to describe, so the grid's own reads of the
+    /// table in view do not wait behind it.
+    fn inspected_table(&mut self, asked: bool) -> Option<InspectedTable> {
+        let model = &self.protocol.doc.model;
+        let table = self
+            .protocol
+            .doc
+            .canvas_holds
+            .node()
+            .filter(|node| model.table() != Some(*node) && model.is_viewable(node))
+            .and_then(|node| model.column_table(node));
+        let Some(table) = table else {
+            self.charts.column_profiles.stop_the_inspectors();
+            return None;
+        };
+        let ask = if asked {
+            ProfileAsk::Read {
+                for_inspector: true,
+            }
+        } else {
+            ProfileAsk::Peek
+        };
+        let columns = self.column_profile_for(&table.table, ask);
+        Some(InspectedTable { table, columns })
     }
 
     /// Move focus to `key` — the same effect the
@@ -5404,6 +5602,9 @@ impl MeridianApp {
     /// strip and a pane header saying different things about one pane is the
     /// drift the workbench exists to end.
     fn pane_title_of(&self, item: ItemId) -> String {
+        if item == arrangement::INSPECTOR {
+            return "Inspector".to_string();
+        }
         let key = PaneKey::new(item);
         if let Some(pane) = self.protocol.items.get(&key) {
             return pane.subject(&self.protocol.doc).title;
@@ -5485,14 +5686,13 @@ impl MeridianApp {
 
     /// Put the ledger AND the inspector rail at the state
     /// [`Self::ledger_opens_collapsed`] gives the document this window is now
-    /// holding, and re-derive [`Self::inspector_panel`] alongside them.
+    /// holding, and put the inspector's sections back at their defaults.
     ///
     /// One function for the three because they are one fact about the
     /// document just adopted, read at one moment: a caller that ran the
     /// ledger's half alone would leave the inspector rail open on a Protocol
-    /// of one step, and a caller that skipped `inspector_panel` would open
-    /// the caret on the Operator pane over a chart document that has since
-    /// taken the canvas. The inspector rail's own default is the ledger's,
+    /// of one step, and a caller that kept the sections the reader set would
+    /// carry them over to a document they were not set on. The inspector rail's own default is the ledger's,
     /// copied rather than re-derived from a rule of its own.
     ///
     /// These are defaults, and a saved layout's grid spot comes after them:
@@ -5512,10 +5712,7 @@ impl MeridianApp {
             self.collapsed.remove(&arrangement::LEDGER_RAIL);
             self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
         }
-        self.inspector_panel = usize::from(!graph_takes_the_canvas(
-            self.protocol.doc.model.has_assets(),
-            !self.charts.doc.is_empty(),
-        ));
+        self.inspector_open.clear();
         // **A Protocol's panel tiles take the window's width.** The ledger
         // and the inspector have nothing to say about the tiles, so they stay
         // shut while the tiles hold the canvas. The navigator lists the
@@ -5541,39 +5738,15 @@ impl MeridianApp {
         }
     }
 
-    /// Where the document on the canvas came from, for the locator band's
-    /// right-hand note — the spec file's **name**, or `None` for a document
-    /// with no file behind it (a shipped start, an opened data file, an empty
-    /// window).
-    ///
-    /// The name rather than the path, and it is not a shortening for taste: a
-    /// path is where this machine keeps the file, so a window drawn on two
-    /// machines would say two different things and every pixel baseline that
-    /// photographs this band would be a baseline of one developer's home
-    /// directory. The file name is the part the reader wrote.
-    fn document_source(&self) -> Option<String> {
-        // A Protocol's panel is named as its tile names it, without `.yaml`;
-        // its path is the tooltip ([`Self::document_source_about`]).
-        if let Some(file) = self.open_tile_file() {
-            return Some(crate::panel_tiles::panel_name(&file));
-        }
-        self.charts
-            .doc
-            .spec_path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-    }
-
-    /// The breadcrumb the locator band draws: where the subject sits, most
-    /// general first.
+    /// Where the subject sits, most general first: what the window's title
+    /// and the graph canvas's head name it by.
     ///
     /// One arm per [`CanvasHolds`] — a bool cannot tell `View` from `Chart`,
     /// and the two read differently: a view of a node names the file that fed
     /// it, the step, the node and the view (`ProtocolModel::view_crumbs`); a
     /// dashboard names the table's file, step and name, then itself as the
     /// node (`ProtocolModel::dashboard_crumbs`); the graph names itself, and the
-    /// locator band's trailing counts (`Self::locator_counts`) say the rest; a
+    /// graph canvas head's counts (`Self::header_counts`) say the rest; a
     /// chart has no drill state, so its crumb line is the window's title,
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
@@ -5612,23 +5785,122 @@ impl MeridianApp {
         }
     }
 
-    /// The locator band's crumbs, off the model rather than the frame — a
-    /// test hook, for the reason [`Self::spine_rows`] is: proving what the
-    /// band actually painted needs the galleys `crumb_line` fed to
-    /// `locator_band_ui`, not a second call to `crumb_line` compared with
-    /// itself.
-    #[must_use]
-    pub fn locator_crumbs(&self) -> Vec<String> {
-        self.crumb_line()
+    /// The crumbs the canvas's pane header names its node with, most general
+    /// first: the step that made the node, then the node (`rank › ranking`).
+    ///
+    /// A Protocol's panel open from its tile reads the Protocol, then the
+    /// panel; the model's rows open in the grid read the model, then what the
+    /// grid holds. In both the first crumb is the way back, as a link. The
+    /// graph and the tiles draw no pane header, so they have no crumbs here:
+    /// the graph's head names it and [`Self::header_counts`] says the rest.
+    fn header_crumb_line(&self) -> Vec<Crumb> {
+        if let Some(showing) = self.model.as_ref().and_then(|m| m.in_grid.clone()) {
+            return vec![
+                Crumb::new("Model").linked("Back to the model"),
+                Crumb::new(showing),
+            ];
+        }
+        if let Some(tiles) = &self.tiles {
+            let open = tiles.panels().and_then(|panels| {
+                let tile = panels.tiles.get(tiles.selected()?)?;
+                Some(crate::panel_tiles::panel_name(&tile.file))
+            });
+            return match open {
+                Some(panel) => vec![
+                    Crumb::new(format!("Protocol \u{b7} {}", tiles.name()))
+                        .linked("Back to every panel"),
+                    Crumb::new(panel),
+                ],
+                None => Vec::new(),
+            };
+        }
+        let model = &self.protocol.doc.model;
+        let labels = match self.canvas_holds() {
+            CanvasHolds::Graph => Vec::new(),
+            CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. } => model
+                .header_crumbs(node)
+                .unwrap_or_else(|| vec![self.subject_title()]),
+            CanvasHolds::Chart => vec![self.subject_title()],
+        };
+        labels.into_iter().map(Crumb::new).collect()
     }
 
-    /// The locator band's trailing counts, when the graph holds the canvas —
-    /// `None` on a view of a node or a chart, where the band has no count to
-    /// add.
+    /// The labels of the crumbs the canvas's pane header draws — a test hook,
+    /// for the reason [`Self::spine_rows`] is. A test proving what the header
+    /// painted reads the galleys inside [`Self::pane_header`]'s rects.
     #[must_use]
-    pub fn locator_counts(&self) -> Option<String> {
+    pub fn header_crumbs(&self) -> Vec<String> {
+        self.header_crumb_line()
+            .into_iter()
+            .map(|crumb| crumb.label)
+            .collect()
+    }
+
+    /// The graph's own counts, which its head draws at its right end while
+    /// the graph holds the canvas — `None` on a view of a node or a chart,
+    /// whose pane header ends with the node's kind and size instead.
+    #[must_use]
+    pub fn header_counts(&self) -> Option<String> {
         self.graph_on_canvas()
             .then(|| self.protocol.doc.model.graph_counts())
+    }
+
+    /// What the canvas's pane header says of the node on the canvas: its
+    /// crumbs, its activities with the one shown, and its kind and size.
+    #[must_use]
+    pub fn canvas_header(&self) -> NodeHeader {
+        let breadcrumb = self.header_crumb_line();
+        let shown = if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            Some(crate::node_activity::NodeActivity::Model)
+        } else {
+            match self.canvas_holds() {
+                CanvasHolds::View {
+                    view: NodeView::Grid,
+                    ..
+                } => Some(crate::node_activity::NodeActivity::Grid),
+                CanvasHolds::Dashboard { .. } => Some(crate::node_activity::NodeActivity::Chart),
+                CanvasHolds::Graph | CanvasHolds::Chart => None,
+            }
+        };
+        let offers = crate::node_activity::offers(self);
+        let activities = shown
+            .and_then(|shown| offers.iter().position(|offer| offer.activity == shown))
+            .map(|selected| {
+                let choices = offers
+                    .iter()
+                    .map(|offer| ActivityChoice {
+                        label: offer.activity.label(),
+                        verb: Verb::new(offer.verb),
+                        keystroke: activity_keycap(offer.verb),
+                        unavailable: offer.unavailable.clone(),
+                    })
+                    .collect();
+                (choices, selected)
+            });
+        let held_rows = self.charts.doc.composed.rows.map(|rows| rows.total);
+        let model = &self.protocol.doc.model;
+        let size_note = match self.canvas_holds() {
+            CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. }
+                if self.tiles.is_none() && !self.model_behind_grid() =>
+            {
+                model.size_note(node, held_rows)
+            }
+            _ => None,
+        };
+        NodeHeader {
+            breadcrumb,
+            activities,
+            size_note,
+            titled: matches!(self.canvas_holds(), CanvasHolds::Dashboard { .. }),
+        }
+    }
+
+    /// What the canvas's pane header did on the last frame this window drew:
+    /// where each crumb, the switcher and the size note landed. `None` on a
+    /// frame whose canvas drew no node's header (the graph, the tiles).
+    #[must_use]
+    pub fn pane_header(&self) -> Option<&chrome::HeaderDrawn> {
+        self.pane_header.as_ref()
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this
@@ -5752,7 +6024,6 @@ impl MeridianApp {
         };
         let index = match id {
             arrangement::LEDGER_RAIL => self.ledger_panel,
-            arrangement::INSPECTOR_RAIL => self.inspector_panel,
             _ => 0,
         };
         items
@@ -6528,47 +6799,65 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
-    /// Where the operation panel sits among the Inspector rail's panes.
-    fn operation_pane_index() -> Option<usize> {
-        region_panes(arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL))
-            .iter()
-            .position(|item| *item == crate::operation_panel::OPERATION)
+    /// **Open the Inspector rail on its Operation section**, remembering how
+    /// the rail stood so Esc, or keeping or dropping the operation, can put it
+    /// back. The section is drawn at the top of the rail while an operation is
+    /// in hand.
+    pub(super) fn open_operation_section(&mut self) {
+        self.rail_before_ask = Some(RailBeforeAsk {
+            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
+            operation_open: self
+                .inspector_open
+                .insert(crate::inspector::Section::Operation, true),
+        });
     }
 
-    /// **Open the Inspector rail on the operation panel**, for a key that has
-    /// just asked a field at the grid's foot, remembering how the rail stood
-    /// so Esc can put it back.
+    /// **Open the Inspector rail on its Operation section**, for a key that
+    /// has just asked a field at the grid's foot.
     ///
     /// Only when there is an operation in hand to explain: a grid with no
-    /// table in view asks with nothing for the panel to say, and the rail is
+    /// table in view asks with nothing for the section to say, and the rail is
     /// left as it is.
     fn open_rail_on_operation(&mut self) {
         if self.charts.doc.operation_in_hand().is_none() {
             return;
         }
-        let Some(at) = Self::operation_pane_index() else {
-            return;
-        };
-        self.rail_before_ask = Some(RailBeforeAsk {
-            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
-            panel: self.inspector_panel,
-        });
-        self.inspector_panel = at;
+        self.open_operation_section();
     }
 
-    /// **Put the Inspector rail back** as it stood before the key moved it,
-    /// for Esc from the field: the pane it was on, if it is still on the
-    /// operation panel, and collapsed, if it was.
+    /// **Close the Operation section and put the Inspector rail back** as it
+    /// stood before the key opened it, for Esc from the field: the section at
+    /// whatever the reader had set, and the rail collapsed, if it was.
     fn restore_rail_after_ask(&mut self) {
         let Some(before) = self.rail_before_ask.take() else {
             return;
         };
-        if Some(self.inspector_panel) == Self::operation_pane_index() {
-            self.inspector_panel = before.panel;
+        match before.operation_open {
+            Some(open) => {
+                self.inspector_open
+                    .insert(crate::inspector::Section::Operation, open);
+            }
+            None => {
+                self.inspector_open
+                    .remove(&crate::inspector::Section::Operation);
+            }
         }
         if before.collapsed {
             self.collapsed.insert(arrangement::INSPECTOR_RAIL);
         }
+    }
+
+    /// Open or close one of the inspector's sections, as a click or Enter on
+    /// its header does, against the sections the last frame drew.
+    pub fn toggle_inspector_section(&mut self, section: crate::inspector::Section) {
+        crate::inspector::toggle_section(section, &self.inspector_drawn, &mut self.inspector_open);
+    }
+
+    /// The inspector's sections as the last frame drew them, top to bottom,
+    /// each with whether it was open. Empty while the rail is collapsed.
+    #[must_use]
+    pub fn inspector_sections(&self) -> &[(crate::inspector::Section, bool)] {
+        &self.inspector_drawn
     }
 
     /// Hand the operation panel the state of arc's description of the
@@ -6586,7 +6875,7 @@ impl MeridianApp {
                 .charts
                 .doc
                 .making()
-                .is_none_or(|making| making.spec.form.is_none())
+                .is_none_or(|making| making.form().is_none())
             {
                 self.rail_before_ask = None;
             }
@@ -7012,6 +7301,10 @@ impl MeridianApp {
         // switches, which a frame with the graph or the front door on the
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
+        // …and the canvas's pane header, which a frame with the front door,
+        // the graph or the tiles on the canvas does not draw.
+        self.pane_header = None;
+        self.crumb_link_rect = None;
 
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
@@ -7062,6 +7355,9 @@ impl MeridianApp {
         // Cmd+O, from anywhere no overlay owns the keyboard.
         self.open_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
+        // ⌘⌥B before ⌘B: egui matches a key with an extra ⌥ held as the key
+        // without it, so the spine's ⌘B read first would take ⌘⌥B.
+        self.inspector_key(&ctx);
         self.navigator_key(&ctx);
         // The grid's move, on the same gate: a window verb, wherever focus is.
         self.grid_key(&ctx);
@@ -7069,6 +7365,8 @@ impl MeridianApp {
         self.run_key(&ctx);
         // The ribbon's tabs and collapse, on the same gate.
         self.ribbon_keys(&ctx);
+        // The node's activities, on the same gate.
+        self.activity_keys(&ctx);
         // The picture verbs, on the same gate, where a chart holds the canvas.
         self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
@@ -7431,6 +7729,7 @@ impl MeridianApp {
                                 shows: &|row| row.role == SpineRole::Model,
                                 senses_click: &|row| tables.table(row).is_some(),
                                 muted: &|_| false,
+                                folds: false,
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -7518,41 +7817,13 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
-            let locator = plan.expect_region(arrangement::LOCATOR_BAND);
+            let asked = self.charts.inspector_inspected.take_asked();
+            let inspected = self.inspected_table(asked);
+            self.charts.inspector_inspected.set(inspected);
             let crumbs = self.crumb_line();
-            let counts = self.locator_counts();
-            let source = self.document_source();
-            let source_about = self.document_source_about();
-            // With a Protocol's panel open from its tile, the Protocol's crumb
-            // is the way back to every tile; with the model's rows open in the
-            // grid, the model's crumb is the way back to the model.
-            let crumb_link = self
-                .tiles
-                .as_ref()
-                .is_some_and(|tiles| tiles.selected().is_some())
-                || self.model_behind_grid();
             let mut crumb_back = false;
-            let drawn = Panel::top(panel_id(locator, false))
-                .resizable(false)
-                .exact_size(band_extent(locator))
-                .frame(chrome::region_frame(locator.frame, ui, mode))
-                .show(ui, |ui| {
-                    locator_band_ui(
-                        ui,
-                        &crumbs,
-                        counts.as_deref(),
-                        source.as_deref(),
-                        source_about.as_deref(),
-                        crumb_link,
-                        mode,
-                    )
-                });
-            self.regions.push((locator.id, drawn.response.rect));
-            let link = drawn.inner;
-            self.crumb_link_rect = link.map(|(rect, _)| rect);
-            if link.is_some_and(|(_, clicked)| clicked) {
-                crumb_back = true;
-            }
+            let node_header = self.canvas_header();
+            let graph_counts = self.header_counts();
 
             // The key-hint band belongs to a key grammar, so it is drawn where
             // there is one. The chart projections have no bare-key grammar, and
@@ -7580,7 +7851,6 @@ impl MeridianApp {
 
             let projection = self.projection.min(projections.len() - 1);
             let ledger_panel = self.ledger_panel.min(ledger_panes.len() - 1);
-            let inspector_panel = self.inspector_panel.min(inspector_panes.len() - 1);
 
             // Read before the borrows below take this app apart field by
             // field, so each rail's block has a plain `bool` rather than a
@@ -7620,6 +7890,23 @@ impl MeridianApp {
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
+            // The inspector's sections, chosen from what the window holds and
+            // read here, before the borrows below take the documents apart.
+            let inspector_sections = {
+                let doc = &self.charts.doc;
+                let selection = crate::inspector::InspectorSelection {
+                    operation: doc.operation_in_hand().is_some()
+                        || doc.making().is_some_and(|making| making.form().is_some()),
+                    column: doc.selected_column().is_some()
+                        || self.charts.inspector_inspected.get().is_some(),
+                    chart: !doc.is_empty(),
+                };
+                crate::inspector::sections_open(
+                    &crate::inspector::sections_for(&selection),
+                    &self.inspector_open,
+                )
+            };
+            let mut inspector_toggled = None;
             // What the inspector's own collapsed stub names itself with, read
             // here for the reason `grid_title` below is: before the borrows
             // that follow take the documents apart. The word is
@@ -7637,7 +7924,7 @@ impl MeridianApp {
                     .selected_column()
                     .map(|column| column.column.clone()),
             };
-            // What the canvas is showing, which is the leaf of the locator
+            // What the canvas is showing, which is the leaf of the crumb line
             // rather than the pane's own kind: each pane of the group below
             // already carries its own title in its own header band, so a head
             // band repeating one of them would name a part and not the whole.
@@ -7646,7 +7933,7 @@ impl MeridianApp {
                 .cloned()
                 .unwrap_or_else(|| self.pane_title_of(graph));
             // What a view of a node is named after: the **table**, not the
-            // locator's leaf. The locator names the document — the file that
+            // crumb line's leaf. That names the document — the file that
             // was opened — and the grid on the canvas is a view of the relation
             // that file loaded into, which is the name the spine's own row
             // carries. Read here, before the borrows below take the documents
@@ -7674,6 +7961,10 @@ impl MeridianApp {
                 ),
             };
             let previewed = preview.is_some() || typed.is_some();
+            // A statement's rows on the statement form are of no node yet, so
+            // the grid's header keeps its title, which names whose rows they
+            // are, rather than the node's crumbs.
+            let grid_typed = typed.is_some();
             if typed.is_none() {
                 self.typed_in_grid = None;
                 self.charts.doc.show_preview(preview, ui.ctx());
@@ -7702,6 +7993,10 @@ impl MeridianApp {
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
             let mut canvas_panes = CanvasPanes::default();
+            let mut head = CanvasHeader {
+                header: &node_header,
+                drawn: None,
+            };
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
             // Any document with no tile column draws its grid as a table
@@ -8012,43 +8307,31 @@ impl MeridianApp {
                     // floor.
                     ui.set_min_width(ui.available_width());
                     let (strip, body) = chrome::rail_split(ui.max_rect());
+                    // One pane, so the strip names it and offers no choice.
                     inspector_strip = Some(chrome::rail_selector(
                         ui,
                         strip,
                         &pane_labels(&inspector_labels),
-                        inspector_panel,
+                        0,
                         Some(collapse),
                         chrome::Trailing::default(),
                         mode,
                     ));
-                    let item = inspector_panes[inspector_panel];
-                    if item == PROTOCOL_INSPECTOR {
-                        draw_protocol_pane(
-                            ui,
-                            body,
-                            protocol,
+                    inspector_toggled = draw_inspector_sections(
+                        ui,
+                        body,
+                        &inspector_sections,
+                        InspectorDocs {
+                            protocol: &mut *protocol,
+                            charts: &mut *charts,
                             ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    } else {
-                        draw_chart_pane(
-                            ui,
-                            body,
-                            charts,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    }
+                        },
+                        mode,
+                        focused,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
                 });
             if let Some(strip) = inspector_strip {
                 picks.inspector = strip.picked;
@@ -8065,14 +8348,13 @@ impl MeridianApp {
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
                     // **The chart canvas draws no band of its own.** Each pane
-                    // of the group below carries its own header band, and the
-                    // locator band above the canvas already carries the
-                    // document's name — so a head band here is that name a
+                    // of the group below carries its own header band, which
+                    // names its node — so a head band here would say it a
                     // second time, over panes that have each already said what
                     // they are. It went with the
                     // projection toggle it used to hold: with one projection
                     // declared there is nothing to toggle, and a band whose
-                    // only content repeats the locator is a rule and a fill.
+                    // only content repeats the pane headers is a rule and a fill.
                     //
                     // The graph canvas keeps it. Its occupant is one pane
                     // drawing a whole DAG, not a group of panes with headers,
@@ -8097,7 +8379,7 @@ impl MeridianApp {
                         // looks like.
                         charts.doc.grid_density = None;
                         let (head, body) = chrome::rail_split(ui.max_rect());
-                        canvas_head(ui, head, &canvas_name, mode);
+                        canvas_head(ui, head, &canvas_name, graph_counts.as_deref(), mode);
                         draw_protocol_pane(
                             ui,
                             body,
@@ -8113,7 +8395,14 @@ impl MeridianApp {
                     } else if let Some(label) = &grid_unheld {
                         charts.doc.grid_density = None;
                         canvas_scroll = 0.0;
-                        canvas_panes = draw_unheld_grid_pane(ui, ui.max_rect(), label, mode);
+                        canvas_panes = draw_unheld_grid_pane(
+                            ui,
+                            ui.max_rect(),
+                            label,
+                            &mut head,
+                            &mut requests,
+                            mode,
+                        );
                     } else if canvas_holds.view() == Some(NodeView::Grid) {
                         // **The table's grid, as the canvas.** One pane filling
                         // the canvas body, drawn through the same `pane_frame`
@@ -8141,6 +8430,7 @@ impl MeridianApp {
                             mode,
                             focused,
                             &grid_title,
+                            (!grid_typed).then_some(&mut head),
                             &mut requests,
                             affordances,
                         );
@@ -8302,6 +8592,7 @@ impl MeridianApp {
                                     focused,
                                     canvas_scroll,
                                     split,
+                                    &mut head,
                                     &mut requests,
                                     affordances,
                                 )
@@ -8319,6 +8610,7 @@ impl MeridianApp {
                                     drawn_layout,
                                     grid_here,
                                     ledger_grid_body,
+                                    &mut head,
                                     &mut requests,
                                     affordances,
                                 )
@@ -8350,7 +8642,7 @@ impl MeridianApp {
                             charts.doc.pane_views = None;
                             charts.doc.wheel_taken = false;
                             canvas_scroll = 0.0;
-                            draw_chart_pane(
+                            draw_canvas_chart_pane(
                                 ui,
                                 body,
                                 charts,
@@ -8359,6 +8651,7 @@ impl MeridianApp {
                                 mode,
                                 focused,
                                 &headed,
+                                &mut head,
                                 &mut requests,
                                 affordances,
                             );
@@ -8366,6 +8659,19 @@ impl MeridianApp {
                     }
                 });
             regions.push((canvas.id, drawn.response.rect));
+            let header_drawn = head.drawn;
+            self.crumb_link_rect = header_drawn
+                .as_ref()
+                .and_then(|drawn| drawn.crumb_link)
+                .map(|(rect, _)| rect);
+            if header_drawn
+                .as_ref()
+                .and_then(|drawn| drawn.crumb_link)
+                .is_some_and(|(_, clicked)| clicked)
+            {
+                crumb_back = true;
+            }
+            self.pane_header = header_drawn;
 
             self.regions = regions;
             self.strips = strips;
@@ -8407,9 +8713,16 @@ impl MeridianApp {
                     self.set_grid_spot(crate::app::GridSpot::Ledger);
                 }
             }
-            if let Some(next) = picks.inspector {
-                self.inspector_panel = next;
+            if picks.inspector.is_some() {
                 self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
+            }
+            self.inspector_drawn = if inspector_collapsed {
+                Vec::new()
+            } else {
+                inspector_sections
+            };
+            if let Some(section) = inspector_toggled {
+                self.toggle_inspector_section(section);
             }
             if picks.run {
                 self.run_protocol(&ctx);
@@ -8656,9 +8969,23 @@ impl MeridianApp {
                 palette |= consume_token(ctx, token);
             }
         }
+        // Quick open's chord is no field's either, so it opens from a field as
+        // the palette's does.
+        let quick_open = self
+            .overlay_keys
+            .quick_open
+            .is_some_and(|t| (!typing || t.starts_with("cmd-")) && consume_token(ctx, t));
         if palette {
             self.open_palette_for_canvas(graph_on_canvas);
             self.answered("open-palette");
+        } else if quick_open {
+            self.answered(QUICK_OPEN);
+            match self.availability_of(QUICK_OPEN) {
+                Some(brightfield_keys::Availability::Missing(sentence)) => {
+                    self.say_activity_refused(ctx, sentence);
+                }
+                _ => self.open_quick_open(),
+            }
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
             self.answered("focus-jump");
@@ -8673,7 +9000,7 @@ impl MeridianApp {
     ///
     /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
     /// a case inside it: `open-home` is a runtime dispatch, not an overlay
-    /// opener, and [`OverlayKeys`] is pinned to exactly the three that are. It
+    /// opener, and [`OverlayKeys`] holds the overlay openers. It
     /// still invents no binding — the token comes off the registry
     /// ([`Self::home_binding`]) and runs through the same
     /// [`consume_token`]. `open_home` is a no-op on the front door, so an
@@ -8702,14 +9029,17 @@ impl MeridianApp {
     }
 
     /// **What stands over the window, as the menus read it**: a sheet that
-    /// waits on an answer is an overlay that is not one of the three pickers
-    /// (the palette, the help sheet, the node jump). While one is up the
+    /// waits on an answer is an overlay that is not one of the four pickers
+    /// (the palette, the help sheet, the node jump, quick open). While one is up the
     /// menus are greyed and a command chosen from one is dropped, but for the
     /// commands [`crate::menu_bar::Sheet::stops`] leaves live.
     fn sheet(&self) -> crate::menu_bar::Sheet {
         use crate::menu_bar::Sheet;
         match self.overlay {
-            None | Some(Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_)) => Sheet::None,
+            None
+            | Some(
+                Overlay::Palette(_) | Overlay::Help(_) | Overlay::Jump(_) | Overlay::QuickOpen(_),
+            ) => Sheet::None,
             Some(Overlay::CloseQuestion(_)) => Sheet::CloseQuestion,
             Some(_) => Sheet::Up,
         }
@@ -8931,6 +9261,38 @@ impl MeridianApp {
         }
     }
 
+    /// Hide the inspector rail, or bring it back, if the registry's
+    /// `toggle-inspector-rail` keystroke is down this frame. Gated exactly as
+    /// [`Self::home_key`] is.
+    fn inspector_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self
+            .inspector_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.answered(INSPECTOR_TOGGLE);
+            self.toggle_inspector_rail(ctx);
+        }
+    }
+
+    /// Collapse the inspector rail, or open it, where its verb is available,
+    /// over an open Protocol. Answers whether the rail moved.
+    fn toggle_inspector_rail(&mut self, ctx: &egui::Context) -> bool {
+        if !matches!(
+            self.availability_of(INSPECTOR_TOGGLE),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        if !self.collapsed.remove(&arrangement::INSPECTOR_RAIL) {
+            self.collapsed.insert(arrangement::INSPECTOR_RAIL);
+        }
+        ctx.request_repaint();
+        true
+    }
+
     /// Run the open Protocol if the registry's `run-protocol` keystroke is down
     /// this frame. Gated exactly as [`Self::home_key`] is.
     fn run_key(&mut self, ctx: &egui::Context) {
@@ -8980,6 +9342,167 @@ impl MeridianApp {
     #[must_use]
     pub fn ribbon(&self) -> crate::ribbon::RibbonState {
         self.ribbon
+    }
+
+    /// Switch the node in focus to an activity if one of the activity verbs'
+    /// keystrokes is down this frame. Gated exactly as [`Self::home_key`] is.
+    /// A key whose activity cannot be taken says why in a toast, as a menu
+    /// command does.
+    fn activity_keys(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.activity_bindings {
+            if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.answered(longname);
+                match self.availability_of(longname) {
+                    Some(brightfield_keys::Availability::Available) => {
+                        self.perform_activity(ctx, longname);
+                    }
+                    Some(brightfield_keys::Availability::Missing(sentence)) => {
+                        self.say_activity_refused(ctx, sentence);
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// Say in an Info toast why an activity was not taken.
+    fn say_activity_refused(&mut self, ctx: &egui::Context, sentence: String) {
+        self.toasts
+            .push(Toast::new(Severity::Info, sentence.clone()));
+        self.menu_said = Some(sentence);
+        ctx.request_repaint();
+    }
+
+    /// **The node whose activities the window offers**: the model step while
+    /// the model pane holds the canvas, the node a grid lists, the chart on
+    /// the canvas with the table it reads, or, over the graph, the node
+    /// selected there: a viewable node, or a chart with the table it reads.
+    /// `None` on the front door and for a chart with no Protocol behind it.
+    #[must_use]
+    pub fn node_in_focus(&self) -> Option<crate::node_activity::FocusedNode> {
+        use crate::node_activity::FocusedNode;
+        if self.front_door_is_live() {
+            return None;
+        }
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return Some(FocusedNode::Model);
+        }
+        let model = &self.protocol.doc.model;
+        match &self.canvas_holds {
+            CanvasHolds::View { node, .. } => Some(FocusedNode::Table(node.clone())),
+            CanvasHolds::Dashboard { node, table } => Some(FocusedNode::Chart {
+                node: node.clone(),
+                table: table.clone(),
+            }),
+            CanvasHolds::Graph => {
+                let node = model.selected()?;
+                if model.is_viewable(node) {
+                    return Some(FocusedNode::Table(node.clone()));
+                }
+                // The held dashboard reads the held table, whichever of its
+                // tables the graph lists first.
+                let table = if model.dashboard() == Some(node) {
+                    model.table()?
+                } else {
+                    model.table_read_by(node)?
+                };
+                Some(FocusedNode::Chart {
+                    node: node.clone(),
+                    table: table.clone(),
+                })
+            }
+            CanvasHolds::Chart => None,
+        }
+    }
+
+    /// **The chart the window can draw for `table`**: of the charts that read
+    /// it ([`ProtocolModel::charts_reading`]), the one the chart document
+    /// holds. The window holds one table's rows and one chart, so that is the
+    /// held table's dashboard, and no other table has one to show.
+    #[must_use]
+    pub fn chart_reading(&self, table: &AssetId) -> Option<AssetId> {
+        let model = &self.protocol.doc.model;
+        let held = model.dashboard()?;
+        (model.table() == Some(table) && model.charts_reading(table).contains(held))
+            .then(|| held.clone())
+    }
+
+    /// **The chart Chart puts on the canvas for `node`**, with the table it
+    /// reads: for a table or view, the chart that reads it
+    /// ([`Self::chart_reading`]); for a chart, itself, when it is the one the
+    /// window holds. `None` when the window has no such chart to show.
+    #[must_use]
+    pub fn chart_for(
+        &self,
+        node: &crate::node_activity::FocusedNode,
+    ) -> Option<(AssetId, AssetId)> {
+        use crate::node_activity::FocusedNode;
+        let model = &self.protocol.doc.model;
+        match node {
+            FocusedNode::Table(table) => self
+                .chart_reading(table)
+                .map(|chart| (chart, table.clone())),
+            FocusedNode::Chart { node, table } => (model.dashboard() == Some(node)
+                && model.table() == Some(table))
+            .then(|| (node.clone(), table.clone())),
+            FocusedNode::Model => None,
+        }
+    }
+
+    /// **Switch the node in focus to the activity `verb` names**, where the
+    /// window can. Answers whether the canvas now shows it.
+    ///
+    /// Grid puts the node's rows on the canvas, or the rows a chart reads.
+    /// Chart puts on the chart that reads the node, or the chart in focus.
+    /// Relate brings the model pane back from behind a table's grid,
+    /// and is already taken while the pane holds the canvas. The node, the
+    /// selected column and the grid's cursor are left as they were, so a trip
+    /// from the chart to the grid and back comes back to the same place.
+    fn perform_activity(&mut self, ctx: &egui::Context, verb: &str) -> bool {
+        use brightfield_keys::activity::{RELATE, SHOW_CHART, SHOW_GRID};
+        if !matches!(
+            self.availability_of(verb),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        let focus = self.node_in_focus();
+        let table = focus.as_ref().and_then(|f| f.table()).cloned();
+        let taken = match verb {
+            SHOW_GRID => match table {
+                Some(node) => {
+                    // The held table's grid is the one grid, so it leaves the
+                    // ledger, as a click on its `grid` row does.
+                    if self.protocol.doc.model.table() == Some(&node) {
+                        self.grid_spot = crate::app::GridSpot::Canvas;
+                    }
+                    self.graph_reached_from = None;
+                    self.canvas_holds = CanvasHolds::View {
+                        node,
+                        view: NodeView::Grid,
+                    };
+                    true
+                }
+                None => false,
+            },
+            SHOW_CHART => match focus.as_ref().and_then(|f| self.chart_for(f)) {
+                Some((node, table)) => {
+                    self.graph_reached_from = None;
+                    self.canvas_holds = CanvasHolds::Dashboard { node, table };
+                    true
+                }
+                None => false,
+            },
+            RELATE => self.model.as_ref().is_some_and(ModelDoc::shown) || self.back_to_model(),
+            _ => false,
+        };
+        if taken {
+            ctx.request_repaint();
+        }
+        taken
     }
 
     /// Copy or export the chart under the pointer if the registry's
@@ -9907,7 +10430,7 @@ impl MeridianApp {
     fn open_model_palette(&mut self) {
         let allow = crate::model_pane::model_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::Model, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -9955,7 +10478,7 @@ impl MeridianApp {
     }
 
     /// Open the command palette at the Protocol altitude, over a snapshot of
-    /// the session's recency, over the Protocol altitude's verbs —
+    /// the session's frecency, over the Protocol altitude's verbs —
     /// [`crate::overlays::protocol_palette_verbs`] — each read against what
     /// the window holds ([`Self::situation`]).
     ///
@@ -9966,7 +10489,7 @@ impl MeridianApp {
     fn open_protocol_palette(&mut self) {
         let allow = crate::overlays::protocol_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::Protocol, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -10033,7 +10556,7 @@ impl MeridianApp {
     fn open_chart_search(&mut self) {
         let allow = crate::overlays::chart_palette_verbs();
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow)
+            CommandPalette::new_restricted(Altitude::View, self.frecency.clone(), &allow)
                 .with_situation(self.situation()),
         )));
     }
@@ -10101,6 +10624,11 @@ impl MeridianApp {
             Selected::Asset,
         );
         hold(protocol.removable_step().is_some(), Selected::Step);
+        let focus = self.node_in_focus();
+        hold(
+            focus.as_ref().and_then(|f| f.table()).is_some(),
+            Selected::NodeRows,
+        );
         if let Some(pane) = model_pane {
             use brightfield_render::model_scene::Selection;
             selected.push(Selected::Model);
@@ -10148,6 +10676,10 @@ impl MeridianApp {
             Condition::FileToReload,
         );
         when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        when(
+            focus.as_ref().and_then(|f| self.chart_for(f)).is_some(),
+            Condition::ChartReadsFocus,
+        );
         when(
             self.held_protocol_dir().is_some(),
             Condition::ProtocolFolder,
@@ -10204,6 +10736,79 @@ impl MeridianApp {
         self.overlay = Some(Overlay::Jump(Picker::new(JumpToNode::new(targets))));
     }
 
+    /// Open quick open over every table and view of the Protocol, in the
+    /// outline's order: each by its DuckDB name, with the step that makes it.
+    fn open_quick_open(&mut self) {
+        let targets = self
+            .protocol
+            .doc
+            .model
+            .tables()
+            .into_iter()
+            .map(|(id, label, step)| JumpTarget {
+                id,
+                label,
+                detail: step,
+            })
+            .collect();
+        self.overlay = Some(Overlay::QuickOpen(Picker::new(QuickOpen::new(targets))));
+    }
+
+    /// **Put `node`, chosen in quick open, in focus in the activity the canvas
+    /// is showing.** The selection moves to it whatever holds the canvas, so
+    /// the spine and the graph follow. A grid stays a grid, of the chosen
+    /// table. A chart stays a chart when one the window can draw reads the
+    /// table, and gives way to the table's grid when none does, since the
+    /// window draws one chart. The graph stays the graph, and the model pane
+    /// stays up, each with the table selected behind it.
+    fn quick_open_to(&mut self, node: AssetId) {
+        self.protocol.doc.model.select_id(node.clone());
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return;
+        }
+        let viewable = self.protocol.doc.model.is_viewable(&node);
+        let holds = match &self.canvas_holds {
+            CanvasHolds::View { view, .. } if viewable => Some(CanvasHolds::View {
+                node: node.clone(),
+                view: *view,
+            }),
+            CanvasHolds::Dashboard { .. } => match self.chart_reading(&node) {
+                Some(chart) => Some(CanvasHolds::Dashboard {
+                    node: chart,
+                    table: node.clone(),
+                }),
+                None if viewable => Some(CanvasHolds::View {
+                    node: node.clone(),
+                    view: NodeView::Grid,
+                }),
+                None => None,
+            },
+            _ => None,
+        };
+        if let Some(holds) = holds {
+            // The held table's grid is the one grid, so it leaves the ledger,
+            // as Grid does.
+            if matches!(holds, CanvasHolds::View { .. })
+                && self.protocol.doc.model.table() == Some(&node)
+            {
+                self.grid_spot = crate::app::GridSpot::Canvas;
+            }
+            self.graph_reached_from = None;
+            self.canvas_holds = holds;
+        }
+    }
+
+    /// The rows the open quick open lists, in the order it draws them: each
+    /// table's name with the step that makes it. Empty when quick open is not
+    /// open. A test hook, like [`Self::open_overlay`].
+    #[must_use]
+    pub fn quick_open_rows(&self) -> Vec<(String, Option<String>)> {
+        match self.overlay.as_ref() {
+            Some(Overlay::QuickOpen(picker)) => picker.delegate.listed(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Draw the open overlay, if any, and act on what it reports.
     ///
     /// Dismissal arrives two ways and both mean close: a [`Picker`] inside a
@@ -10237,7 +10842,9 @@ impl MeridianApp {
                 match shown.inner.event {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(name) = picker.delegate.take_picked() {
-                            self.recency.record(name);
+                            self.frecency
+                                .record(name, brightfield_keys::unix_now_secs());
+                            crate::palette_history::save(&self.frecency);
                             self.apply(ctx, graph_on_canvas, vec![Request::Verb(Verb::new(name))]);
                         }
                         close = true;
@@ -10337,6 +10944,22 @@ impl MeridianApp {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(id) = picker.delegate.take_picked() {
                             self.protocol.doc.model.select_id(id);
+                        }
+                        close = true;
+                    }
+                    Some(PickerEvent::Dismissed) => close = true,
+                    None => close = shown.dismissed,
+                }
+            }
+            Overlay::QuickOpen(picker) => {
+                let chrome = ModalChrome::new().title("Quick open").enter_hint("open");
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-quick-open", &chrome, |ui| picker.show(ui));
+                match shown.inner.event {
+                    Some(PickerEvent::Confirmed) => {
+                        if let Some(id) = picker.delegate.take_picked() {
+                            self.quick_open_to(id);
+                            ctx.request_repaint();
                         }
                         close = true;
                     }
@@ -11920,6 +12543,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
+            Overlay::QuickOpen(_) => "quick-open",
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
             Overlay::NewProtocol(_) => "new-protocol",
@@ -12057,6 +12681,10 @@ impl MeridianApp {
         // Read everything the band says before drawing it, so the closure
         // below borrows no more of `self` than the state it writes.
         let title = self.title();
+        // Where the document came from, offered on the name's hover: the
+        // band names the panel or the chart, and its file is what the name
+        // leaves out.
+        let title_about = self.document_source_about();
         let flow = self.protocol.doc.model.flow();
         let theme = match self.mode {
             Mode::Light => "light",
@@ -12165,9 +12793,12 @@ impl MeridianApp {
                 }
                 ui.add_space(spacing::SPACE_4);
             }
-            let name = ui
-                .label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)))
-                .rect;
+            let name = ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
+            let name = match title_about {
+                Some(about) => name.on_hover_text(about),
+                None => name,
+            }
+            .rect;
             // The renderer line is a developer diagnostic — a stranger's first
             // launch should not read "egui · Vello · wgpu 29". It appears only
             // under the devtools flag; the flow toggle is a real affordance and
@@ -12433,8 +13064,18 @@ impl MeridianApp {
             controls.extend(strip.controls.iter().cloned());
         }
         for row in &self.protocol.doc.spine_drawn {
-            if row.control {
+            // A spine row is drawn by the step row, which senses a click on the
+            // whole row whether or not the row answers one, and on its fold
+            // control, which it names by the row's label: so each is named.
+            let step_row = matches!(
+                row.role,
+                SpineRole::Asset | SpineRole::Step | SpineRole::View | SpineRole::Model
+            );
+            if row.control || step_row {
                 controls.push(chrome::NamedControl::labelled(row.rect, &row.label));
+            }
+            if let Some(fold) = row.fold_rect {
+                controls.push(chrome::NamedControl::labelled(fold, &row.label));
             }
             if let Some(chip) = row.chip {
                 controls.push(chrome::NamedControl::hovered(chip.rect, chip.hint));
@@ -12442,6 +13083,22 @@ impl MeridianApp {
         }
         for chip in &self.protocol.doc.canvas_chips {
             controls.push(chrome::NamedControl::labelled(chip.rect, chip.view.label()));
+        }
+        if let Some(header) = &self.pane_header {
+            controls.extend(
+                header
+                    .options
+                    .iter()
+                    .map(|(label, rect)| chrome::NamedControl::labelled(*rect, label)),
+            );
+            let link = header.crumb_link.map(|(rect, _)| rect);
+            controls.extend(
+                header
+                    .crumbs
+                    .iter()
+                    .filter(|(_, rect)| Some(*rect) == link)
+                    .map(|(label, rect)| chrome::NamedControl::labelled(*rect, label)),
+            );
         }
         let doc = &self.charts.doc;
         if let Some(switch) = &doc.grid_layout_switch {
@@ -12518,6 +13175,15 @@ impl MeridianApp {
                         self.open_jump();
                     }
                 }
+                Request::Verb(verb) if verb.as_str() == QUICK_OPEN => {
+                    taken = matches!(
+                        self.availability_of(QUICK_OPEN),
+                        Some(brightfield_keys::Availability::Available)
+                    );
+                    if taken {
+                        self.open_quick_open();
+                    }
+                }
                 // set-channel hands the hero pane's keys to the shelf band, as
                 // `e` does with the pane focused.
                 Request::Verb(verb) if verb.as_str() == "set-channel" => {
@@ -12564,7 +13230,9 @@ impl MeridianApp {
                     self.pick_requested = true;
                 }
                 // An operation's verb is the window's: chosen from a palette or a menu, it starts
-                // the operation as its key does, or says what it needs.
+                // the operation as its key does, or says what it needs. `open-sources-browser` is
+                // `read-file`'s, so it comes here too and opens the browser over the Protocol the
+                // window holds, whichever document is on the canvas.
                 Request::Verb(verb) if crate::operation_ui::by_verb(verb.as_str()).is_some() => {
                     taken = self.start_operation_verb(ctx, verb.as_str());
                 }
@@ -12579,6 +13247,10 @@ impl MeridianApp {
                 // silently no-ops an unknown verb.
                 Request::Verb(verb) if verb.as_str() == NAVIGATOR_TOGGLE => {
                     self.toggle_navigator_focus(ctx);
+                }
+                // The inspector rail is the window's, as the navigator's is.
+                Request::Verb(verb) if verb.as_str() == INSPECTOR_TOGGLE => {
+                    taken = self.toggle_inspector_rail(ctx);
                 }
                 // reload-data is the window's verb for the same reason
                 // open-home is: the notice that raises it lives on the chart
@@ -12612,6 +13284,13 @@ impl MeridianApp {
                 {
                     taken = self.perform_ribbon_verb(ctx, verb.as_str());
                 }
+                // The node's activities are the window's for the same reason:
+                // what the canvas holds is the window's latch.
+                Request::Verb(verb)
+                    if brightfield_keys::activity::ACTIVITY_VERBS.contains(&verb.as_str()) =>
+                {
+                    taken = self.perform_activity(ctx, verb.as_str());
+                }
                 // save-protocol is the window's for the same reason: the editor raises it after
                 // saving its buffer, and what it writes is the Protocol's, not either document's.
                 Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
@@ -12636,11 +13315,6 @@ impl MeridianApp {
                 // store and the reopen are the window's, not either document's.
                 Request::Verb(verb) if verb.as_str() == UNTRUST_PROTOCOL => {
                     self.untrust_open_protocol(ctx);
-                }
-                // open-sources-browser is the window's as A is: the browser adds to the Protocol
-                // the window holds, whichever document is on the canvas.
-                Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
-                    self.open_sources_browser(ctx);
                 }
                 // organise-joins is the window's too: the sheet is over the model it holds.
                 Request::Verb(verb) if verb.as_str() == crate::protocol::ORGANISE_JOINS => {
@@ -15112,7 +15786,7 @@ impl MeridianApp {
         }
     }
 
-    /// Which of the locator band's place fields is open for typing — a test hook.
+    /// Which of the title band's place fields is open for typing — a test hook.
     #[must_use]
     pub fn place_field(&self) -> Option<PlaceField> {
         self.place_edit.as_ref().map(|e| e.field)
@@ -16954,8 +17628,9 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Where the locator band drew the Protocol's crumb as a link back to
-    /// every panel tile, on the last frame that drew one — a test hook.
+    /// Where the canvas's pane header drew its linked first crumb, the way back
+    /// to every panel tile or to the model, on the last frame that drew one — a
+    /// test hook.
     #[must_use]
     pub fn crumb_link_rect(&self) -> Option<egui::Rect> {
         self.crumb_link_rect
@@ -17001,11 +17676,22 @@ impl MeridianApp {
         Some(panels.tiles.get(tiles.selected()?)?.file.clone())
     }
 
-    /// What the locator band's source says when it is hovered: the open
-    /// panel's path and kind, the tooltip its tile carries.
-    fn document_source_about(&self) -> Option<String> {
+    /// What the title band's name offers on hover: where the document came
+    /// from. A panel open from its tile names its file; a chart composed from
+    /// a spec file names that file, without its folder, so a picture of the
+    /// window does not depend on the machine that drew it.
+    #[must_use]
+    pub fn document_source_about(&self) -> Option<String> {
         self.open_tile_file()
             .map(|file| crate::panel_tiles::panel_about(&file))
+            .or_else(|| {
+                self.charts
+                    .doc
+                    .spec_path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
     }
 
     /// The panel file of the tile open as the chart document, when one is.
@@ -19407,6 +20093,9 @@ fn relative_time(now: u64, then: u64) -> String {
 /// test that presses it.
 pub const NAVIGATOR_TOGGLE: &str = "toggle-outline-rail";
 
+/// The verb that hides the inspector rail and brings it back.
+pub const INSPECTOR_TOGGLE: &str = "toggle-inspector-rail";
+
 // ---------------------------------------------------------------------------
 // Reading the arrangement
 // ---------------------------------------------------------------------------
@@ -20131,6 +20820,163 @@ fn draw_chart_pane(
     let _ = behavior.pane_ui(&mut child, tile, &mut key);
 }
 
+/// [`draw_chart_pane`] for the canvas's one chart pane, whose header names
+/// the node on the canvas: `head`'s crumbs, activities and size are folded
+/// into the item's own subject, and what the header did is kept in `head`.
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_chart_pane(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    head: &mut CanvasHeader<'_>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let mut key = PaneKey::new(item);
+    let Some(tile) = ws.tile_of(key) else {
+        return;
+    };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.shrink_clip_rect(body);
+    let mut behavior = PaneChrome::new(
+        &mut charts.doc,
+        &mut charts.items,
+        mode,
+        focused,
+        headed,
+        requests,
+        affordances,
+    )
+    .with_node_header(key, head.header.clone());
+    let _ = behavior.pane_ui(&mut child, tile, &mut key);
+    // The behaviour has already queued an activity the header was asked for.
+    head.drawn = behavior.header_drawn().cloned();
+}
+
+/// The two documents and the workspace the inspector's sections draw from.
+struct InspectorDocs<'a> {
+    protocol: &'a mut ProtocolView,
+    charts: &'a mut ChartView,
+    ws: &'a Workspace,
+}
+
+/// Draw the one inspector into `body`: each of `sections`, stacked, with the
+/// design system's section header over the body of the pane that describes
+/// it. Returns the section whose header was clicked, for the caller to flip.
+///
+/// A section's body is the pane that drew it when the rail held three panes,
+/// drawn without its frame: Operation is the operation panel, Column and
+/// Parameters the chart's inspector, and Step the operator's facts. Each open
+/// body scrolls within the room the headers below it leave, so those headers
+/// stay in the rail where a click can reach them.
+#[allow(clippy::too_many_arguments)]
+fn draw_inspector_sections(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    sections: &[(crate::inspector::Section, bool)],
+    docs: InspectorDocs<'_>,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) -> Option<crate::inspector::Section> {
+    use crate::inspector::Section;
+    let InspectorDocs {
+        protocol,
+        charts,
+        ws,
+    } = docs;
+    // One pane's frame round the whole stack, with no header band: the rail's
+    // strip names it, and the frame is the raised surface every pane stands
+    // on, as the spine's does across the window.
+    let mut outer = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    outer.shrink_clip_rect(body);
+    let subject = brightfield_workbench::Subject::new(
+        "Inspector",
+        brightfield_workbench::Icon("info-panel"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let mut column = chrome::pane_frame(&mut outer, &subject, false, mode);
+    let body = column.max_rect();
+    let mut toggled = None;
+    // What one closed section below takes: its header and the gap the column
+    // leaves before it.
+    let header_step = meridian_design::control::HEIGHT_MD + column.spacing().item_spacing.y;
+    for (index, (section, open)) in sections.iter().enumerate() {
+        let headers_below = (sections.len() - 1 - index) as f32 * header_step;
+        let drawn = meridian_egui::section(
+            &mut column,
+            meridian_egui::Section::new(section.title(), *open),
+            |ui| {
+                // The body scrolls within the room the headers below leave
+                // it, so a tall body cannot push them out of the rail.
+                let room =
+                    (body.bottom() - headers_below - spacing::SPACE_5 - ui.cursor().min.y).max(0.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("inspector-section", *section))
+                    .max_height(room)
+                    // egui keeps a scroll area at least 64 tall by default,
+                    // which a body given less room would push the headers
+                    // below it out of the rail with.
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let item = match section {
+                            Section::Operation => crate::operation_panel::OPERATION,
+                            Section::Step => PROTOCOL_INSPECTOR,
+                            _ => CONTROLS,
+                        };
+                        let key = PaneKey::new(item);
+                        let Some(tile) = ws.tile_of(key) else {
+                            return;
+                        };
+                        if *section == Section::Step {
+                            PaneChrome::new(
+                                &mut protocol.doc,
+                                &mut protocol.items,
+                                mode,
+                                focused,
+                                headed,
+                                requests,
+                                affordances,
+                            )
+                            .body_ui(ui, tile, key);
+                        } else {
+                            PaneChrome::new(
+                                &mut charts.doc,
+                                &mut charts.items,
+                                mode,
+                                focused,
+                                headed,
+                                requests,
+                                affordances,
+                            )
+                            .body_ui(ui, tile, key);
+                        }
+                    });
+            },
+        );
+        if drawn.toggled {
+            toggled = Some(*section);
+        }
+    }
+    toggled
+}
+
 // ---------------------------------------------------------------------------
 // The canvas's pane group: the map pane, and the grid pane beside it
 // ---------------------------------------------------------------------------
@@ -20142,6 +20988,31 @@ fn draw_chart_pane(
 /// the same sense, and a group drawn by the shell that seamed differently from
 /// one drawn by the dock would read as two different kinds of pane.
 pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
+
+/// The header the canvas's node pane draws, and what it did once drawn: the
+/// node's crumbs, activities and size going in, the header's clicks and rects
+/// coming out.
+struct CanvasHeader<'a> {
+    /// What the header says of the node.
+    header: &'a NodeHeader,
+    /// What it did, once the pane carrying it has drawn.
+    drawn: Option<chrome::HeaderDrawn>,
+}
+
+impl CanvasHeader<'_> {
+    /// Fold the node's header into `subject`.
+    fn apply(&self, subject: Subject) -> Subject {
+        self.header.apply(subject)
+    }
+
+    /// Keep what the header did, and queue an activity it was asked for.
+    fn keep(&mut self, drawn: chrome::HeaderDrawn, requests: &mut Vec<Request>) {
+        if let Some(verb) = drawn.activity {
+            requests.push(Request::Verb(verb));
+        }
+        self.drawn = Some(drawn);
+    }
+}
 
 /// One pane of the canvas's pane group, as it was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20484,6 +21355,7 @@ fn draw_canvas_pane_group(
     layout: crate::app::GridLayout,
     grid_here: bool,
     ledger_rect: Option<egui::Rect>,
+    head: &mut CanvasHeader<'_>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -20510,7 +21382,9 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
 
-    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_subject = head.apply(map_subject);
+    let (hero_body, hero_head) = pane_body_drawn(ui, map_rect, &map_subject, mode);
+    head.keep(hero_head, requests);
     let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
@@ -20714,6 +21588,7 @@ fn draw_transposed_pane_group(
     focused: Option<PaneKey>,
     scroll: f32,
     split: f32,
+    head: &mut CanvasHeader<'_>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -20730,7 +21605,9 @@ fn draw_transposed_pane_group(
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
-    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_subject = head.apply(map_subject);
+    let (hero_body, hero_head) = pane_body_drawn(ui, map_rect, &map_subject, mode);
+    head.keep(hero_head, requests);
     let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // Framed before the page rather than after it, which is the opposite of
     // the untransposed layout's order and for the same reason: this pane draws
@@ -20867,12 +21744,23 @@ fn draw_row_summaries(
 /// panes, in either arrangement, are drawn through this one call, so a pane
 /// cannot acquire a frame the others do not have.
 fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> egui::Rect {
+    pane_body_drawn(ui, rect, subject, mode).0
+}
+
+/// [`pane_body`], and what the pane's header did.
+fn pane_body_drawn(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    subject: &Subject,
+    mode: Mode,
+) -> (egui::Rect, chrome::HeaderDrawn) {
     let mut pane = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
+    let (body, drawn) = chrome::pane_frame_drawn(&mut pane, subject, true, mode);
+    (body.max_rect(), drawn)
 }
 
 /// **The shelf band, carved out of the head of the hero pane's body**, and the
@@ -21075,20 +21963,29 @@ fn draw_canvas_grid_pane(
     mode: Mode,
     focused: Option<PaneKey>,
     title: &str,
+    head: Option<&mut CanvasHeader<'_>>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> CanvasPanes {
-    let subject = Subject::new(
+    let mut subject = Subject::new(
         title.to_string(),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
-    let mut pane = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    if let Some(head) = head.as_ref() {
+        subject = head.apply(subject);
+    }
+    let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
+    let size_note = drawn.size_note;
+    let header_drawn_right = drawn
+        .switcher
+        .into_iter()
+        .chain(drawn.crumbs.iter().map(|(_, rect)| *rect))
+        .map(|rect| rect.right())
+        .reduce(f32::max);
+    if let Some(head) = head {
+        head.keep(drawn, requests);
+    }
     draw_chart_body(
         ui,
         body,
@@ -21102,17 +21999,23 @@ fn draw_canvas_grid_pane(
         affordances,
     );
     let header = pane_header_of(rect, body);
-    // …and what the grid could not fit, at the trailing end of its own band.
-    // Read off the cells the table drew this frame, exactly as the group's
-    // grid pane reads it.
+    // …and what the grid could not fit, at the trailing end of its own band,
+    // left of the node's size when the header drew one. Read off the cells
+    // the table drew this frame, exactly as the group's grid pane reads it.
+    let mut room = header;
+    if let Some(note) = size_note {
+        room.max.x = note.left();
+    }
+    room.min.x = header_drawn_right.map_or(room.min.x, |right| right + spacing::SPACE_4);
     let rows_note = charts
         .doc
         .grid_drawn()
         .filter(|drawn| drawn.some_column_is_off_screen())
-        .map(|drawn| {
-            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
-            (band_note(ui, header, &text, mode), text)
-        });
+        .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
+        // Left out, as the header leaves out its size note, rather than
+        // drawn over the switcher or the crumbs.
+        .filter(|text| band_note_fits(ui, room, text))
+        .map(|text| (band_note(ui, room, &text, mode), text));
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
@@ -21137,19 +22040,17 @@ fn draw_unheld_grid_pane(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     label: &str,
+    head: &mut CanvasHeader<'_>,
+    requests: &mut Vec<Request>,
     mode: Mode,
 ) -> CanvasPanes {
-    let subject = Subject::new(
+    let subject = head.apply(Subject::new(
         format!("Grid \u{b7} {label}"),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
-    );
-    let mut pane = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    ));
+    let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
+    head.keep(drawn, requests);
     let mut inside = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(body)
@@ -21207,6 +22108,17 @@ fn grid_pane_title(doc: &ChartDoc) -> String {
         Some(typed) => format!("{GRID_PANE_TITLE} \u{b7} {}", typed.step()),
         None => GRID_PANE_TITLE.to_string(),
     }
+}
+
+/// Whether [`band_note`] would draw `text` inside `band`, a `SPACE_4` in from
+/// each end.
+fn band_note_fits(ui: &egui::Ui, band: egui::Rect, text: &str) -> bool {
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), ui_font(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x;
+    width + 2.0 * spacing::SPACE_4 <= band.width()
 }
 
 /// A note at the **trailing end of a pane's header band**: muted, in the
@@ -21676,12 +22588,25 @@ fn draw_chart_body(
     }
 }
 
-/// The **graph** canvas's head band: what is on the canvas at its left, and a
-/// rule under it.
+/// The key an activity's switcher option draws, rendered for this platform:
+/// the verb's first binding, when that binding acts wherever the window's
+/// focus is. Every activity key is global, so a binding that is not would be
+/// a key the header could show while it does not act, and none is drawn.
+fn activity_keycap(verb: &'static str) -> Option<String> {
+    let registry = brightfield_keys::registry();
+    let entry = registry.iter().find(|entry| entry.longname == verb)?;
+    let binding = entry.binding_specs.first()?;
+    (binding.context == brightfield_keys::BindingContext::Global).then(|| {
+        brightfield_keys::keys_label(binding.keystrokes, brightfield_keys::KeyPlatform::host())
+    })
+}
+
+/// The **graph** canvas's head band: what is on the canvas at its left, the
+/// graph's own counts at its right, and a rule under it.
 ///
 /// One caller, and that is the whole of the change this is: the canvas showing
-/// a chart draws no band, because each pane of its group carries its own header
-/// and the locator band above already names the document. The graph canvas is
+/// a chart draws no band, because each pane of its group carries its own
+/// header, which names its node. The graph canvas is
 /// one pane drawing a DAG, so this is the only thing on screen naming what is
 /// on it.
 ///
@@ -21691,7 +22616,7 @@ fn draw_chart_body(
 /// there is nowhere on that surface for one to be drawn —
 /// `the_canvas_declares_one_projection_and_draws_no_head_band` in
 /// `tests/arrangement.rs` reads both halves off a laid-out frame.
-fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
+fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, counts: Option<&str>, mode: Mode) {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(head, radius::NONE, chrome::colour(sem.surfaces.header));
@@ -21706,6 +22631,21 @@ fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
         galley,
         chrome::colour(sem.text.primary),
     );
+    if let Some(counts) = counts {
+        let galley = ui.painter().layout_no_wrap(
+            counts.to_owned(),
+            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
+            chrome::colour(sem.text.muted),
+        );
+        ui.painter().galley(
+            egui::pos2(
+                head.right() - spacing::SPACE_4 - galley.size().x,
+                head.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            chrome::colour(sem.text.muted),
+        );
+    }
     ui.painter().line_segment(
         [head.left_bottom(), head.right_bottom()],
         egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
@@ -21792,111 +22732,6 @@ fn restricted_band_ui(
             });
         });
     asked
-}
-
-/// The locator band: where the subject sits, said as a breadcrumb, and where
-/// the document came from at its right.
-///
-/// The right-hand note is what stops this band repeating the title band on a
-/// window whose subject has no trail below it: a chart has no drill state, so
-/// its crumb line is one entry, and the file it was composed from is the thing
-/// a locator can say that the title cannot.
-///
-/// `counts` draws immediately after the last crumb, in the mono caption face
-/// rather than joined by `\u{203a}`: it is not one more step in the trail, it
-/// is what the trail's one entry — `Protocol` — expands to when there is no
-/// deeper crumb to draw.
-fn locator_band_ui(
-    ui: &egui::Ui,
-    crumbs: &[String],
-    counts: Option<&str>,
-    source: Option<&str>,
-    source_about: Option<&str>,
-    link_first: bool,
-    mode: Mode,
-) -> Option<(egui::Rect, bool)> {
-    let mut link = None;
-    let sem = semantic(mode.is_dark());
-    let rect = ui.max_rect();
-    if let Some(source) = source {
-        let drawn = ui.painter().text(
-            egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            source,
-            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
-            chrome::colour(sem.text.muted),
-        );
-        if let Some(about) = source_about {
-            let _ = ui
-                .interact(drawn, ui.id().with("locator-source"), egui::Sense::hover())
-                .on_hover_text(about);
-        }
-    }
-    let mut x = rect.left() + spacing::SPACE_4;
-    for (i, crumb) in crumbs.iter().enumerate() {
-        if i > 0 {
-            let sep = ui.painter().layout_no_wrap(
-                "\u{203a}".to_owned(),
-                ui_font(),
-                chrome::colour(sem.text.muted),
-            );
-            let width = sep.size().x;
-            ui.painter().galley(
-                egui::pos2(x, rect.center().y - sep.size().y / 2.0),
-                sep,
-                chrome::colour(sem.text.muted),
-            );
-            x += width + spacing::SPACE_3;
-        }
-        let linked = link_first && i == 0;
-        let ink = if linked {
-            sem.borders.focus
-        } else if i + 1 == crumbs.len() {
-            sem.text.primary
-        } else {
-            sem.text.secondary
-        };
-        let galley = ui
-            .painter()
-            .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
-        let width = galley.size().x;
-        let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
-        if linked {
-            // The crumb a reader goes back to: a link, underlined while the
-            // pointer is over it.
-            let hit = egui::Rect::from_min_size(at, galley.size());
-            let response = ui
-                .interact(
-                    hit,
-                    ui.id().with("locator-crumb-link"),
-                    egui::Sense::click(),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Back to every panel");
-            if response.hovered() {
-                ui.painter().line_segment(
-                    [hit.left_bottom(), hit.right_bottom()],
-                    egui::Stroke::new(1.0, chrome::colour(ink)),
-                );
-            }
-            link = Some((hit, response.clicked()));
-        }
-        ui.painter().galley(at, galley, chrome::colour(ink));
-        x += width + spacing::SPACE_3;
-    }
-    if let Some(counts) = counts {
-        let galley = ui.painter().layout_no_wrap(
-            counts.to_owned(),
-            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
-            chrome::colour(sem.text.muted),
-        );
-        ui.painter().galley(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            chrome::colour(sem.text.muted),
-        );
-    }
-    link
 }
 
 /// Where the title band drew the open Protocol's place on the last frame
@@ -22470,16 +23305,17 @@ mod tests {
         assert_eq!(keys.palette, ["space", "cmd-shift-p"]);
         assert_eq!(keys.help, primary("open-help"));
         assert_eq!(keys.jump, primary("focus-jump"));
+        assert_eq!(keys.quick_open, primary("quick-open"));
         // …and every token an opener binds today is one `consume_token` can
         // map to a key, so none of them is silently unwired.
-        let tokens = keys
-            .palette
-            .iter()
-            .copied()
-            .chain([keys.help, keys.jump].into_iter().flatten());
+        let tokens = keys.palette.iter().copied().chain(
+            [keys.help, keys.jump, keys.quick_open]
+                .into_iter()
+                .flatten(),
+        );
         for token in tokens {
             assert!(
-                matches!(token, "space" | "cmd-shift-p" | "/" | "?"),
+                matches!(token, "space" | "cmd-shift-p" | "/" | "?" | "cmd-p"),
                 "registry token {token:?} has no key mapping in consume_token — \
                  the opener would be dead"
             );
