@@ -5421,11 +5421,6 @@ impl Item<ChartDoc> for ControlsPane {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unit tests — the document's live seam, which only this module can drive
-// through the private fields.
-// ---------------------------------------------------------------------------
-
 /// A held clause as the selection readout writes it: as its SQL, except that a
 /// region's cells read as their columns, their count and their grid, such as
 /// `longitude, latitude in 212 of 100×100 cells`, where the SQL lists each
@@ -5456,6 +5451,12 @@ fn readable_clause(clause: &brightfield_engine::SqlPredicate) -> String {
         other => other.to_string(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — the document's live seam, which only this module can drive
+// through the private fields.
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
