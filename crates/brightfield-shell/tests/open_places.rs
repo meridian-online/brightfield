@@ -225,3 +225,28 @@ fn the_front_door_closes_every_place_and_offers_no_place_verb() {
     assert_eq!(win.answered, [CLOSE_PLACE]);
     assert!(win.app.front_door_is_live(), "⌘W on the door leaves it");
 }
+
+/// **Opening another file closes the places of the one before.** The places
+/// are one Protocol's: a file opened over the data file, with no visit to the
+/// front door between, lists its own chart alone, not the graph and grid the
+/// file before it had open.
+#[test]
+fn opening_another_file_closes_the_places_of_the_one_before() {
+    let (mut win, table, _) = three_places();
+    let other = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/california_housing_sample.csv");
+    win.open_path(&other);
+    win.settle();
+    let (other_table, other_chart) = table_and_chart(&win);
+    assert_ne!(
+        other_table, table,
+        "the second file opened the first's table"
+    );
+    assert_eq!(
+        places(&win),
+        [Place::Chart {
+            node: other_chart,
+            table: other_table
+        }]
+    );
+}

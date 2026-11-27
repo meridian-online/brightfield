@@ -16,7 +16,7 @@ A bare chart opened with no Protocol behind it, and the Protocol's panel tiles, 
 
 `MeridianApp::sync_places` runs at the head of each frame, straight after the canvas's latch is reconciled. It closes a place whose node the documents no longer have, then opens the place the canvas shows: a new place goes at the bottom of the list, and one already open becomes current again. So however the canvas moved (a spine row, an activity key, the graph chip, quick open), the place appears once.
 
-Leaving the Protocol closes every place. The places are not kept between sessions.
+Leaving the Protocol closes every place, whether for the front door or for another document opened over it (`MeridianApp::documents_changed`). The places are not kept between sessions.
 
 Closing the current place makes the one above it current, or the one below when it was the top, and puts that place on the canvas. The last place is never closed, because the canvas always shows something: ⌘W on it leaves it, and the window stays.
 

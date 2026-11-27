@@ -5129,6 +5129,10 @@ impl MeridianApp {
         self.typed_in_grid = None;
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
+        // The places were the document that left; the next frame's
+        // `sync_places` opens the arriving one's from its canvas
+        // (`opening_another_file_closes_the_places_of_the_one_before`).
+        self.places.clear();
         self.reconcile_canvas_holds();
         // Each document opens on its own page, which a data file's is the
         // split, whatever the last one was left as.
@@ -10136,7 +10140,7 @@ impl MeridianApp {
     /// unsaved draft. Empty while the model pane holds the canvas, whose
     /// spine is its own.
     fn place_tabs(&self) -> Vec<crate::protocol::PlaceTab> {
-        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+        if self.model.as_ref().is_some_and(ModelDoc::shown) || self.tiles.is_some() {
             return Vec::new();
         }
         let model = &self.protocol.doc.model;
