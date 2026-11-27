@@ -21588,8 +21588,9 @@ struct InspectorDocs<'a> {
 /// it. Returns the section whose header was clicked, for the caller to flip.
 ///
 /// A section's body is the pane that drew it when the rail held three panes,
-/// drawn without its frame: Operation is the operation panel, Column and
-/// Parameters the chart's inspector, and Step the operator's facts. Each open
+/// drawn without its frame: Operation is the operation panel, Column,
+/// Encoding, Reads, Fields and Parameters the chart's inspector, told which
+/// it draws through [`SectionHandle`], and Step the operator's facts. Each open
 /// body scrolls within the room the headers below it leave, so those headers
 /// stay in the rail where a click can reach them.
 #[allow(clippy::too_many_arguments)]
