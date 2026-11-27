@@ -3227,15 +3227,16 @@ fn statlib_still_serves_the_housing_archive_the_fixture_is() {
     );
 }
 
+/// The instant the thumbnails are drawn at, three days after the crosswalk's recorded run. The
+/// title band words a run's day in the clock's offset, UTC, so a thumbnail reads the same on a
+/// machine in any time zone.
+const THUMBNAIL_CLOCK: &str = "2026-07-28T12:00:00Z";
+
 /// Render each start at the window it asks for, thumbnail it, and diff against
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
 /// A [`starts::Start::remote`] start is composed over [`remote_stand_in`]
 /// rather than fetched.
-/// The instant the thumbnails are drawn at, three days after the crosswalk's recorded run. Noon
-/// UTC is the same date in every time zone within eleven hours of it.
-const THUMBNAIL_CLOCK: &str = "2026-07-28T12:00:00Z";
-
 fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
@@ -3278,9 +3279,8 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
         // The title band says when the Protocol last ran, and how long ago, so the capture reads
         // both from a clock that stands still: the crosswalk's recorded run reads three days old,
         // and a run the start takes as it opens reads as finishing at the clock.
-        let run_clock = chrono::DateTime::parse_from_rfc3339(THUMBNAIL_CLOCK)
-            .expect("the thumbnails' clock")
-            .with_timezone(&chrono::Local);
+        let run_clock =
+            chrono::DateTime::parse_from_rfc3339(THUMBNAIL_CLOCK).expect("the thumbnails' clock");
         let out = scratch(&format!("thumb-{}-{mode:?}", start.id));
         let (w, h) = brightfield_shell::capture::capture_png_prepared(
             boot,

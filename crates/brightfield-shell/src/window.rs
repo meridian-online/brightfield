@@ -3768,7 +3768,7 @@ pub struct MeridianApp {
     unrecorded_failures: std::collections::BTreeMap<PathBuf, chrono::DateTime<chrono::Local>>,
     /// The instant [`MeridianApp::last_run`] words a run's age from, when it is not the machine's
     /// clock: see [`MeridianApp::set_run_clock`].
-    run_clock: Option<chrono::DateTime<chrono::Local>>,
+    run_clock: Option<chrono::DateTime<chrono::FixedOffset>>,
     /// The shipped Protocol start waiting on its run in [`Self::running`] to
     /// open its first panel — see [`PendingLanding`]. Only the start on
     /// screen waits: a run whose start the reader left is settled when it
@@ -6807,11 +6807,12 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
-    /// Word the last run from `now` in place of the machine's clock, so the title band reads the
-    /// same on every day: what a picture of a window holding a run, such as a shipped start's
+    /// Word the last run from `now` in place of the machine's clock, and its day in `now`'s
+    /// offset in place of the machine's time zone, so the title band reads the same on every day
+    /// and every machine: what a picture of a window holding a run, such as a shipped start's
     /// thumbnail, is drawn under. The clock stands still, so a run recorded after `now`, as one
     /// the picture's own start took is, reads as having finished at `now`.
-    pub fn set_run_clock(&mut self, now: chrono::DateTime<chrono::Local>) {
+    pub fn set_run_clock(&mut self, now: chrono::DateTime<chrono::FixedOffset>) {
         self.run_clock = Some(now);
     }
 
@@ -18290,24 +18291,19 @@ impl MeridianApp {
     /// by [`crate::run::describe_ran`] and its state the one the window draws.
     #[must_use]
     pub fn last_run(&self) -> Option<crate::run::LastRun> {
-        let now = self.run_clock.unwrap_or_else(chrono::Local::now);
-        // Under a fixed clock, a run recorded after it finished at it.
-        let held_to_clock = |finished_at: &str| -> Option<String> {
-            let Some(clock) = self.run_clock else {
-                return Some(finished_at.to_string());
-            };
-            let at = chrono::DateTime::parse_from_rfc3339(finished_at).ok()?;
-            Some(if at > clock {
-                clock.to_rfc3339()
-            } else {
-                finished_at.to_string()
-            })
+        let describe = |finished_at: &str| match self.run_clock {
+            // Under a fixed clock, a run recorded after it finished at it.
+            Some(clock) => {
+                let at = chrono::DateTime::parse_from_rfc3339(finished_at).ok()?;
+                crate::run::describe_ran(&at.min(clock).to_rfc3339(), clock)
+            }
+            None => crate::run::describe_ran(finished_at, chrono::Local::now()),
         };
         if let Some(at) = self
             .held_protocol_dir()
             .and_then(|dir| self.unrecorded_failures.get(&dir))
         {
-            let (when, age) = crate::run::describe_ran(&held_to_clock(&at.to_rfc3339())?, now)?;
+            let (when, age) = describe(&at.to_rfc3339())?;
             return Some(crate::run::LastRun {
                 when,
                 age,
@@ -18315,7 +18311,7 @@ impl MeridianApp {
             });
         }
         let finished_at = self.protocol.doc.model.run()?.finished_at.as_deref()?;
-        let (when, age) = crate::run::describe_ran(&held_to_clock(finished_at)?, now)?;
+        let (when, age) = describe(finished_at)?;
         Some(crate::run::LastRun {
             when,
             age,
