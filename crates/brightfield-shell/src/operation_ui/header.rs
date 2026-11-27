@@ -191,7 +191,7 @@ impl ChartDoc {
             matches!(start, Start::Header(_) | Start::Cell | Start::FootField(_))
         });
         let shown = context
-            .and_then(|cx| cx.in_front.as_ref())
+            .and_then(|(_, cx)| cx.in_front.as_ref())
             .is_none_or(|front| front.columns.iter().any(|c| c == column));
         if !shown {
             for (_, row) in &mut rows {
@@ -298,7 +298,7 @@ fn menu_rows(
 /// [`menu_rows`] draws them.
 fn rows_for(
     ops: &[&'static OperationUi],
-    context: Option<&OperationContext>,
+    context: Option<&(brightfield_keys::Situation, OperationContext)>,
     column: &str,
     from: impl Fn(&Start) -> bool,
 ) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
