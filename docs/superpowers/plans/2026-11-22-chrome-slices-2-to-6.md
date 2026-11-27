@@ -19,7 +19,7 @@ Work that needs no new component gets its own task, so it can land before the co
 - arc's run record and `.jsonl` stream, through `brightfield-protocol`.
 - chrono.
 
-**Spec:** `docs/superpowers/specs/2026-11-21-brightfield-chrome-design.md`. Slice 1 (availability declarations and the native menu bar) and the operation forms are planned separately. This plan consumes slice 1 as an interface; slice 1 is built and its plan removed, so the interface is the code and the README's "Commands, menus and keys". See "What this plan needs from slice 1". It reads the operation forms from their registry (`docs/superpowers/plans/2026-11-22-operation-forms.md`), so no form task edits a file of this plan's.
+**Spec:** `docs/superpowers/specs/2026-11-21-brightfield-chrome-design.md`. Slice 1 (availability declarations and the native menu bar) and the operation forms are planned separately. This plan consumes slice 1 as an interface; slice 1 is built and its plan removed, so the interface is the code and the README's "Commands, menus and keys". See "What this plan needs from slice 1". It reads the operation forms from their registry (`docs/operation-forms.md`), so no form task edits a file of this plan's.
 
 ## Global Constraints
 

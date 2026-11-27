@@ -276,7 +276,7 @@ fn fill_nulls_is_greyed_on_a_column_with_no_missing_values() {
     assert!(win.making().is_none(), "{:?}", win.making());
     assert_eq!(
         win.said().as_deref(),
-        Some("Fill nulls needs a column with missing values.")
+        Some("Fill missing values needs a column with missing values.")
     );
 }
 
@@ -328,7 +328,7 @@ fn fill_nulls_over_a_kept_fills_grid_says_it_needs_missing_values() {
     assert!(win.making().is_none(), "{:?}", win.making());
     assert_eq!(
         win.said().as_deref(),
-        Some("Fill nulls needs a column with missing values.")
+        Some("Fill missing values needs a column with missing values.")
     );
     assert_eq!(win.kept().len(), 1);
 }

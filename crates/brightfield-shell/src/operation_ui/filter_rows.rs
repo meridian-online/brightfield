@@ -6,7 +6,7 @@
 //! condition to the grid as a view, and a Save records the view as the step
 //! ([`crate::window::MeridianApp::record_pending`]), named by the rule the grid's views are named by.
 
-use super::{By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start};
+use super::{By, Draft, Keeps, NameRule, OperationUi, Stage, Start};
 use crate::grid_foot::FootField;
 
 fn begin(_: &super::Begin<'_>) -> Result<Draft, String> {
@@ -22,7 +22,6 @@ static UI: OperationUi = OperationUi {
     menu_words: "Filter rows",
     // No Protocol is asked for: the field applies a view, which a window with no Protocol
     // of its own shows too, and a click on the field opens it there.
-    needs: &[Need::GridCell, Need::LoadedTable],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

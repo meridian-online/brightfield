@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use brightfield_shell::data_file;
 use brightfield_shell::operation::{self, StepRequest};
 use brightfield_shell::operation_ui::{
-    Begin, By, Draft, Keeps, NameRule, Need, OperationUi, Stage, Start,
+    Begin, By, Draft, Keeps, NameRule, OperationUi, Stage, Start,
 };
 use brightfield_shell::protocol::{SpineRole, SpineRowDrawn, ADDED, IN_FRONT, OUTLINE};
 use brightfield_workbench::PaneKey;
@@ -61,8 +61,6 @@ fn begin_append(b: &Begin<'_>) -> Result<Draft, String> {
     Ok(reading_taken("append-rows", b))
 }
 
-const NEEDS: &[Need] = &[Need::ProtocolSource, Need::Rows, Need::ViewRecorded];
-
 /// An operation that reads one other table, as joining two tables does.
 static JOIN_LIKE: OperationUi = OperationUi {
     long_name: "join-tables",
@@ -71,7 +69,6 @@ static JOIN_LIKE: OperationUi = OperationUi {
     icon: "arrows-join",
     starts: &[Start::Spine { role: "other" }],
     menu_words: "Join tables",
-    needs: NEEDS,
     begin: begin_join,
     keeps: Keeps::OnEnter,
     field: None,
@@ -91,7 +88,6 @@ static APPEND_LIKE: OperationUi = OperationUi {
     icon: "row-insert-bottom",
     starts: &[Start::Spine { role: "other" }],
     menu_words: "Append rows",
-    needs: NEEDS,
     begin: begin_append,
     keeps: Keeps::OnEnter,
     field: None,

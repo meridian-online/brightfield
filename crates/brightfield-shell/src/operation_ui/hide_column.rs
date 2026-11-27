@@ -8,7 +8,7 @@
 //! step's table then comes to the front without the column, and the status
 //! band says what was hidden and the key that takes it back.
 
-use super::{Begin, By, Draft, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage, Start};
+use super::{Begin, By, Draft, HeaderPart, Keeps, NameRule, OperationUi, Stage, Start};
 
 fn begin(b: &Begin<'_>) -> Result<Draft, String> {
     let column = b
@@ -27,12 +27,6 @@ static UI: OperationUi = OperationUi {
     icon: "eye-off",
     starts: &[Start::Cell, Start::Header(HeaderPart::Menu)],
     menu_words: "Hide column",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ViewRecorded,
-    ],
     begin,
     keeps: Keeps::AtOnce,
     field: None,

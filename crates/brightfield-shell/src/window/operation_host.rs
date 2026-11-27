@@ -36,7 +36,9 @@ use crate::app::Making;
 use crate::grid_foot::FootField;
 use crate::operation::{DescriptionState, Descriptions, OperationDescription};
 use crate::operation_ui::header::HeaderHit;
-use crate::operation_ui::open::{availability, Availability, InFront, OperationContext};
+use brightfield_keys::{Availability, Condition, Need};
+
+use crate::operation_ui::open::{availability, InFront, OperationContext};
 use crate::operation_ui::reads::DraftReads;
 use crate::operation_ui::{self, BegunWith, Draft, HeaderPart, Keeps, OperationUi, Start};
 use crate::spine_pick::{CandidateSource, ColumnReads, SpinePick};
@@ -138,11 +140,7 @@ type Taken = (String, Vec<String>);
 /// What an operation that matches columns by name says when no other table
 /// shares a column's name with the table in front.
 fn no_matching_table(spec: &OperationUi) -> String {
-    operation_ui::open::sentence(
-        operation_ui::Need::AnotherTableSharingAColumn,
-        &operation_ui::label(spec.long_name),
-        None,
-    )
+    operation_ui::open::sentence(spec, Need::Condition(Condition::AnotherTableSharingAColumn))
 }
 
 /// What the pick says when the table under its cursor, dimmed, is added or
@@ -352,6 +350,18 @@ impl MeridianApp {
         }
     }
 
+    /// The window's situation with what `cx` holds for an operation started on
+    /// `column`, from a context already gathered.
+    fn situation_of(
+        &self,
+        cx: &OperationContext,
+        column: Option<&str>,
+    ) -> brightfield_keys::Situation {
+        let mut situation = self.window_situation();
+        crate::operation_ui::open::hold(&mut situation, cx, column);
+        situation
+    }
+
     /// Each column of the table in front as SQL spells it: bare when it is a
     /// plain name DuckDB does not read as a word, and quoted otherwise. A
     /// column this cannot ask the session about is quoted, which costs looks
@@ -452,8 +462,8 @@ impl MeridianApp {
     ///
     /// An operation that asks in the foot row opens its field there once the
     /// window meets its needs. For any other, in order, saying the first that
-    /// fails: the window has arc; arc's description of the operation has come;
-    /// the window meets the operation's needs; the operation begins its draft.
+    /// fails: the window meets the operation's needs; the window has arc; arc's
+    /// description of the operation has come; the operation begins its draft.
     /// It then becomes the operation being made, with its first edit sent to
     /// be read.
     ///
@@ -496,7 +506,9 @@ impl MeridianApp {
         // panel beside it says what arc gave, or that it gave no description.
         if let Start::FootField(field) = start {
             let cx = self.operation_context();
-            if let Availability::Unavailable(why) = availability(spec, &cx, column.as_deref()) {
+            if let Availability::Missing(why) =
+                availability(spec, &self.situation_of(&cx, column.as_deref()))
+            {
                 // Over a step's preview the foot row has its own line for the offer, which
                 // the ask below raises; said here too it would stand on the band twice.
                 let the_previews = cx
@@ -520,6 +532,15 @@ impl MeridianApp {
             ctx.request_repaint();
             return asked;
         }
+        // What the window lacks is said before arc's description is waited on,
+        // so a key says what the palette row and the menus say.
+        let cx = self.operation_context();
+        if let Availability::Missing(why) =
+            availability(spec, &self.situation_of(&cx, column.as_deref()))
+        {
+            self.say_operation(ctx, why);
+            return false;
+        }
         let description = match self.description_of(spec.long_name) {
             Ok(description) => description,
             Err(why) => {
@@ -527,11 +548,6 @@ impl MeridianApp {
                 return false;
             }
         };
-        let cx = self.operation_context();
-        if let Availability::Unavailable(why) = availability(spec, &cx, column.as_deref()) {
-            self.say_operation(ctx, why);
-            return false;
-        }
         let front = cx.in_front.clone().unwrap_or_default();
         let column = column.or_else(|| front.cursor_column.clone());
 
@@ -631,11 +647,7 @@ impl MeridianApp {
         let Some(source) = self.typed_source(making.corrects.as_deref()) else {
             self.say_operation(
                 ctx,
-                operation_ui::open::sentence(
-                    operation_ui::Need::ProtocolSource,
-                    &operation_ui::label(spec.long_name),
-                    None,
-                ),
+                operation_ui::open::sentence(spec, Need::Condition(Condition::ProtocolSource)),
             );
             return false;
         };
@@ -941,7 +953,7 @@ impl MeridianApp {
             .charts
             .doc
             .header_has_operations()
-            .then(|| self.operation_context());
+            .then(|| (self.window_situation(), self.operation_context()));
         self.charts.doc.set_header_context(context);
         // A gesture on a part of a header, or a choice from its menu, starts its operation.
         if let Some(hit) = self.charts.doc.take_header_hit() {
@@ -1373,11 +1385,7 @@ impl MeridianApp {
         if found.is_empty() {
             self.say_operation(
                 ctx,
-                operation_ui::open::sentence(
-                    operation_ui::Need::AnotherTable,
-                    &operation_ui::label(spec.long_name),
-                    None,
-                ),
+                operation_ui::open::sentence(spec, Need::Condition(Condition::AnotherTable)),
             );
             return false;
         }
@@ -1387,9 +1395,9 @@ impl MeridianApp {
             .find(|r| r.name == role)
             .is_some_and(|r| r.list);
         let mut pick = SpinePick::new(role, list, &front.table, column.as_deref(), found);
-        if spec
-            .needs
-            .contains(&operation_ui::Need::AnotherTableSharingAColumn)
+        if operation_ui::open::needs(spec)
+            .iter()
+            .any(|r| r.need == Need::Condition(Condition::AnotherTableSharingAColumn))
         {
             pick = pick.matching_columns(&front.columns);
             if pick.none_shares_a_column() {

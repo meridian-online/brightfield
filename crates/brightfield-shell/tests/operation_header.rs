@@ -12,8 +12,8 @@ mod operations;
 
 use brightfield_shell::operation_ui::header::Gesture;
 use brightfield_shell::operation_ui::{
-    Begin, By, Draft, FormCx, FormEvent, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi,
-    Stage, Start,
+    Begin, By, Draft, FormCx, FormEvent, HeaderPart, InPlace, Keeps, NameRule, OperationUi, Stage,
+    Start,
 };
 use operations::OpWindow;
 
@@ -78,8 +78,6 @@ fn summary_form(draft: &mut Draft, ui: &mut egui::Ui, cx: &FormCx<'_>) -> FormEv
     FormEvent::None
 }
 
-const NEEDS: &[Need] = &[Need::ProtocolSource, Need::Rows, Need::Column];
-
 const fn spec(
     long_name: &'static str,
     menu_words: &'static str,
@@ -95,7 +93,6 @@ const fn spec(
         icon: "pencil",
         starts,
         menu_words,
-        needs: NEEDS,
         begin,
         keeps: Keeps::OnEnter,
         field,
@@ -170,35 +167,24 @@ static CAST: OperationUi = spec(
     "cast",
 );
 
-static FILL: OperationUi = OperationUi {
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::Column,
-        Need::ColumnHasNulls,
+static FILL: OperationUi = spec(
+    "fill-nulls",
+    "Fill nulls",
+    &[
+        Start::Header(HeaderPart::Missing),
+        Start::Header(HeaderPart::Menu),
     ],
-    ..spec(
-        "fill-nulls",
-        "Fill nulls",
-        &[
-            Start::Header(HeaderPart::Missing),
-            Start::Header(HeaderPart::Menu),
-        ],
-        begin_fill,
-        Some(InPlace {
-            part: HeaderPart::Missing,
-            keys: &["value"],
-            suggestions: none,
-            follows: None,
-        }),
-        "filled",
-    )
-};
+    begin_fill,
+    Some(InPlace {
+        part: HeaderPart::Missing,
+        keys: &["value"],
+        suggestions: none,
+        follows: None,
+    }),
+    "filled",
+);
 
-static DERIVE: OperationUi = OperationUi {
-    needs: &[Need::ProtocolSource, Need::Rows],
-    ..derive()
-};
+static DERIVE: OperationUi = derive();
 
 const fn derive() -> OperationUi {
     spec(
@@ -314,7 +300,7 @@ fn a_click_on_the_type_and_on_the_missing_count_start_theirs() {
     assert!(win.app.making().is_none());
     assert_eq!(
         win.said().as_deref(),
-        Some("Fill nulls needs a column with missing values.")
+        Some("Fill missing values needs a column with missing values.")
     );
 }
 
@@ -385,7 +371,7 @@ fn an_operation_the_column_cannot_take_is_greyed_in_the_menu_with_its_sentence()
     win.header("city", HeaderPart::Menu, Gesture::Secondary);
     assert_eq!(
         sentence(&win).as_deref(),
-        Some("Fill nulls needs a column with missing values.")
+        Some("Fill missing values needs a column with missing values.")
     );
     assert!(
         win.texts

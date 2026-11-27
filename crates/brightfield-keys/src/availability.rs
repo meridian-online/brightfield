@@ -63,6 +63,12 @@ pub enum Selected {
     ModelTable,
     /// A join is selected in the model.
     ModelJoin,
+    /// The grid in front draws a table's rows, and not the graph or a
+    /// table's columns.
+    GridRows,
+    /// A column of the grid in front: the cursor's, or the one whose header
+    /// the command starts from.
+    GridColumn,
 }
 
 /// An edition or plan that grants a command.
@@ -105,6 +111,21 @@ pub enum Condition {
     NotRunning,
     /// A chart the window can show reads the table or view in focus.
     ChartReadsFocus,
+    /// The window holds a Protocol of the analyst's own, made from a data file
+    /// or a folder, which a Save records a step into.
+    ProtocolSource,
+    /// The grid's column ([`Selected::GridColumn`]) has missing values.
+    ColumnHasNulls,
+    /// No `where` or `order by` is applied to the grid and not recorded, so
+    /// the grid's rows are the table's as recorded.
+    ViewRecorded,
+    /// The table in front has been loaded or run, so its rows can be read.
+    LoadedTable,
+    /// The Protocol holds a table other than the one in front.
+    AnotherTable,
+    /// The Protocol holds a table other than the one in front that shares a
+    /// column's name with it.
+    AnotherTableSharingAColumn,
 }
 
 impl Need {
@@ -145,6 +166,10 @@ impl Need {
                 "{command} needs a table selected in the model."
             }
             Need::Selected(Selected::ModelJoin) => "{command} needs a join selected in the model.",
+            Need::Selected(Selected::GridRows) => "{command} needs a table's rows.",
+            Need::Selected(Selected::GridColumn) => {
+                "{command} needs a column: put the grid's cursor on one, or start from its header."
+            }
             Need::Grant(Grant::FullEdition) => "{command} needs the full edition of Brightfield.",
             Need::Condition(Condition::SelectionHeld) => {
                 "{command} needs a selection on the chart."
@@ -176,6 +201,24 @@ impl Need {
             Need::Condition(Condition::NotRunning) => "{command} waits for the run under way.",
             Need::Condition(Condition::ChartReadsFocus) => {
                 "{command} needs a chart that reads the table or view in focus."
+            }
+            Need::Condition(Condition::ProtocolSource) => {
+                "{command} needs a Protocol of your own: open a data file or a folder."
+            }
+            Need::Condition(Condition::ColumnHasNulls) => {
+                "{command} needs a column with missing values."
+            }
+            Need::Condition(Condition::ViewRecorded) => {
+                "{command} reads the table as recorded: save or clear the where and order by first."
+            }
+            Need::Condition(Condition::LoadedTable) => {
+                "{command} needs a table that has been loaded or run."
+            }
+            Need::Condition(Condition::AnotherTable) => {
+                "{command} needs a second table in the Protocol."
+            }
+            Need::Condition(Condition::AnotherTableSharingAColumn) => {
+                "{command} needs a second table with matching columns."
             }
         }
     }
@@ -227,6 +270,10 @@ pub struct Situation {
     pub grants: Vec<Grant>,
     /// The conditions that hold.
     pub conditions: Vec<Condition>,
+    /// What the window says in its own words for a need it does not meet, in
+    /// place of the sentence the command declares: a step's preview, whose
+    /// table has not been loaded, says how to load it.
+    pub instead: Vec<(Need, String)>,
 }
 
 impl Situation {
@@ -291,14 +338,20 @@ impl Availability {
 
 /// Read a verb's declared needs against what the window holds. The needs are
 /// read in the order declared, and the first unmet one's sentence is the one
-/// said.
+/// said: the window's own words for it when it has some
+/// ([`Situation::instead`]), and the verb's otherwise.
 #[must_use]
 pub fn availability(verb: &VerbEntry, situation: &Situation) -> Availability {
     verb.needs
         .iter()
         .find(|requirement| !situation.meets(requirement.need))
         .map_or(Availability::Available, |requirement| {
-            Availability::Missing(requirement.sentence(verb.label))
+            let own = situation
+                .instead
+                .iter()
+                .find(|(need, _)| *need == requirement.need)
+                .map(|(_, words)| words.replace("{command}", verb.label));
+            Availability::Missing(own.unwrap_or_else(|| requirement.sentence(verb.label)))
         })
 }
 

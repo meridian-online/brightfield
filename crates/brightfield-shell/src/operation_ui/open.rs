@@ -1,18 +1,23 @@
-//! Whether an operation can start, and the sentence it says when it cannot.
+//! What the window holds, as far as starting an operation asks, and whether
+//! an operation can start.
 //!
-//! An operation declares what the window must hold for it to start
-//! ([`Need`]). [`availability`] checks those against what the window holds
-//! now ([`OperationContext`]), in the order the operation lists them, and
-//! answers with the sentence for the first one unmet. The same answer serves
-//! a key press, a palette row, a header's menu row and a menu item, so a
-//! command says one thing wherever it is asked.
+//! An operation declares what it needs to start in the key registry, on the
+//! entry of the verb that starts it (`brightfield_keys::operations`), as a
+//! command of the registry does. [`hold`] adds what [`OperationContext`] gathers to the
+//! window's [`Situation`], and [`availability`] reads the operation's verb
+//! against it. So a key press, a palette row, a header's menu row and a menu
+//! item read one declaration through one evaluator, and say one sentence
+//! (`its_key_its_menu_row_and_its_palette_row_say_the_same_sentence` in
+//! `tests/operation_availability.rs`).
 //!
 //! A command that cannot start is still listed and keeps its key: what is
 //! greyed is a missing input, and the sentence names it.
 
 use std::path::PathBuf;
 
-use super::{label, Need, OperationUi};
+use brightfield_keys::{Availability, Condition, Need, Requirement, Selected, Situation};
+
+use super::{label, OperationUi};
 use crate::one_step::ColumnFacts;
 
 /// What the window holds, as far as starting an operation asks.
@@ -56,86 +61,82 @@ pub struct InFront {
     pub step_offer: Option<String>,
 }
 
-/// Whether an operation can start.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Availability {
-    /// It can.
-    Available,
-    /// It cannot, and this sentence says what it needs.
-    Unavailable(String),
-}
-
-impl Availability {
-    /// The sentence, when the operation cannot start.
-    #[must_use]
-    pub fn sentence(&self) -> Option<&str> {
-        match self {
-            Self::Available => None,
-            Self::Unavailable(why) => Some(why),
-        }
-    }
-}
-
-/// The sentence the need `need` says for the command `command` when it is
-/// unmet, with `offer` in place of the loaded-table sentence when a step's
-/// preview has its own.
+/// The needs `spec` declares in the key registry, on its verb's entry, in the
+/// order their sentences are said. None for a verb the registry lacks.
 #[must_use]
-pub fn sentence(need: Need, command: &str, offer: Option<&str>) -> String {
-    match need {
-        Need::ProtocolSource => {
-            format!("{command} needs a Protocol of your own: open a data file or a folder.")
-        }
-        Need::TakesSources => {
-            "Sources are added to Protocols Brightfield made, and this one was not.".to_string()
-        }
-        Need::Rows => format!("{command} needs a table's rows."),
-        Need::GridCell => format!("{command} needs the grid's cursor on a cell."),
-        Need::Column => format!(
-            "{command} needs a column: put the grid's cursor on one, or start from its header."
-        ),
-        Need::ColumnHasNulls => format!("{command} needs a column with missing values."),
-        Need::ViewRecorded => format!(
-            "{command} reads the table as recorded: save or clear the where and order by first."
-        ),
-        Need::LoadedTable => offer.map_or_else(
-            || format!("{command} needs a table that has been loaded or run."),
-            str::to_string,
-        ),
-        Need::AnotherTable => format!("{command} needs a second table in the Protocol."),
-        Need::AnotherTableSharingAColumn => {
-            format!("{command} needs a second table with matching columns.")
-        }
-    }
+pub fn needs(spec: &OperationUi) -> &'static [Requirement] {
+    brightfield_keys::registry()
+        .iter()
+        .find(|v| v.longname == spec.verb)
+        .map_or(&[], |v| v.needs)
 }
 
-/// Whether `cx` meets `need`, for an operation started on `column`.
-fn met(need: Need, cx: &OperationContext, column: Option<&str>) -> bool {
+/// What `spec` is called where a command is listed: its verb's label in the
+/// key registry, and its long name in words for a verb the registry lacks.
+#[must_use]
+pub fn command(spec: &OperationUi) -> String {
+    brightfield_keys::registry()
+        .iter()
+        .find(|v| v.longname == spec.verb)
+        .map_or_else(|| label(spec.long_name), |v| v.label.to_string())
+}
+
+/// The sentence `spec` says when `need` is unmet: the one its verb declares,
+/// and the need's own otherwise.
+#[must_use]
+pub fn sentence(spec: &OperationUi, need: Need) -> String {
+    brightfield_keys::sentence(spec.verb, need)
+        .unwrap_or_else(|| need.default_sentence().replace("{command}", &command(spec)))
+}
+
+/// **Add to `situation` what `cx` holds**, for an operation started on
+/// `column`, or on the grid cursor's column when `column` is `None`: the
+/// grid's rows and column, and the conditions an operation asks after.
+pub fn hold(situation: &mut Situation, cx: &OperationContext, column: Option<&str>) {
     let front = cx.in_front.as_ref();
-    let on_column = || column.or_else(|| front.and_then(|f| f.cursor_column.as_deref()));
-    match need {
-        Need::ProtocolSource => cx.protocol.is_some(),
-        Need::TakesSources => cx.takes_sources,
-        Need::Rows => front.is_some_and(|f| f.rows),
-        Need::GridCell => front.is_some_and(|f| f.cell),
-        Need::Column => on_column().is_some(),
-        Need::ColumnHasNulls => on_column().is_some_and(|name| {
+    let column = column.or_else(|| front.and_then(|f| f.cursor_column.as_deref()));
+    if front.is_some_and(|f| f.rows) {
+        situation.selected.push(Selected::GridRows);
+    }
+    if column.is_some() {
+        situation.selected.push(Selected::GridColumn);
+    }
+    let mut when = |holds: bool, condition: Condition| {
+        if holds {
+            situation.conditions.push(condition);
+        }
+    };
+    when(cx.protocol.is_some(), Condition::ProtocolSource);
+    when(
+        column.is_some_and(|name| {
             front.is_some_and(|f| f.facts.iter().any(|c| c.column == name && c.nulls > 0))
         }),
-        Need::ViewRecorded => !front.is_some_and(|f| f.view_unrecorded),
-        Need::LoadedTable => front.is_some_and(|f| f.loaded),
-        Need::AnotherTable => others(cx).next().is_some(),
-        Need::AnotherTableSharingAColumn => {
-            let mine: Vec<String> = front
-                .map(|f| f.columns.iter().map(|c| c.to_lowercase()).collect())
-                .unwrap_or_default();
-            // A table whose columns are not known yet is not ruled out: arc and
-            // DuckDB say whether it matches once it is picked.
-            others(cx).any(|(_, columns)| {
-                columns
-                    .as_ref()
-                    .is_none_or(|theirs| theirs.iter().any(|c| mine.contains(&c.to_lowercase())))
-            })
-        }
+        Condition::ColumnHasNulls,
+    );
+    when(
+        !front.is_some_and(|f| f.view_unrecorded),
+        Condition::ViewRecorded,
+    );
+    when(front.is_some_and(|f| f.loaded), Condition::LoadedTable);
+    when(others(cx).next().is_some(), Condition::AnotherTable);
+    let mine: Vec<String> = front
+        .map(|f| f.columns.iter().map(|c| c.to_lowercase()).collect())
+        .unwrap_or_default();
+    // A table whose columns are not known yet is not ruled out: arc and DuckDB
+    // say whether it matches once it is picked.
+    when(
+        others(cx).any(|(_, columns)| {
+            columns
+                .as_ref()
+                .is_none_or(|theirs| theirs.iter().any(|c| mine.contains(&c.to_lowercase())))
+        }),
+        Condition::AnotherTableSharingAColumn,
+    );
+    // A step's preview says how to load its table in its own words.
+    if let Some(offer) = front.and_then(|f| f.step_offer.as_deref()) {
+        situation
+            .instead
+            .push((Need::Condition(Condition::LoadedTable), offer.to_string()));
     }
 }
 
@@ -147,22 +148,17 @@ fn others(cx: &OperationContext) -> impl Iterator<Item = &(String, Option<Vec<St
         .filter(move |(table, _)| Some(table.to_lowercase()) != front)
 }
 
-/// Whether `spec` can start in `cx`, on `column` when it is started on one:
-/// its needs in the order it lists them, and the sentence of the first unmet
+/// Whether `spec` can start where the window holds `situation`: its verb's
+/// declared needs in their order, and the sentence of the first unmet
 /// (`availability_names_the_first_need_it_lacks` in
-/// `tests/operation_start.rs`).
+/// `tests/operation_availability.rs`). An operation whose verb the registry
+/// lacks needs nothing.
 #[must_use]
-pub fn availability(
-    spec: &OperationUi,
-    cx: &OperationContext,
-    column: Option<&str>,
-) -> Availability {
-    let command = label(spec.long_name);
-    let offer = cx.in_front.as_ref().and_then(|f| f.step_offer.as_deref());
-    spec.needs
+pub fn availability(spec: &OperationUi, situation: &Situation) -> Availability {
+    brightfield_keys::registry()
         .iter()
-        .find(|need| !met(**need, cx, column))
-        .map_or(Availability::Available, |need| {
-            Availability::Unavailable(sentence(*need, &command, offer))
+        .find(|v| v.longname == spec.verb)
+        .map_or(Availability::Available, |verb| {
+            brightfield_keys::availability(verb, situation)
         })
 }

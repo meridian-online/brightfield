@@ -10996,8 +10996,29 @@ impl MeridianApp {
     /// the Outline's cursor, the edition's grants and the conditions that hold.
     /// The palettes, and the menus after them, read each command's
     /// availability from this one value ([`Self::availability_of`]).
+    ///
+    /// It holds what an operation asks after too, on the grid cursor's column
+    /// ([`crate::operation_ui::open::hold`]).
     #[must_use]
     pub fn situation(&self) -> brightfield_keys::Situation {
+        self.operation_situation(None)
+    }
+
+    /// [`Self::situation`] for an operation started on `column`, as from that
+    /// column's header, or on the grid cursor's column when `column` is
+    /// `None`.
+    #[must_use]
+    pub(crate) fn operation_situation(&self, column: Option<&str>) -> brightfield_keys::Situation {
+        let mut situation = self.window_situation();
+        crate::operation_ui::open::hold(&mut situation, &self.operation_context(), column);
+        situation
+    }
+
+    /// What the window holds, as [`Self::situation`] says, short of the facts
+    /// [`crate::operation_ui::open::hold`] adds for an operation: a header's
+    /// menu adds those for each column.
+    #[must_use]
+    pub(crate) fn window_situation(&self) -> brightfield_keys::Situation {
         use brightfield_keys::{ColumnKind, Condition, Grant, Selected};
         let door = self.front_door_is_live();
         let model_pane = self.model.as_ref().filter(|m| m.shown());
@@ -11118,6 +11139,7 @@ impl MeridianApp {
                 Vec::new()
             },
             conditions,
+            instead: Vec::new(),
         }
     }
 

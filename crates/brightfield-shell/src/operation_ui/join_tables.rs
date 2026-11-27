@@ -30,8 +30,7 @@ use brightfield_workbench::chrome;
 use meridian_design::{semantic, spacing};
 
 use super::{
-    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
-    Start,
+    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, OperationUi, Stage, Start,
 };
 use crate::protocol::ui_font;
 
@@ -303,12 +302,6 @@ static UI: OperationUi = OperationUi {
         Start::Header(HeaderPart::Menu),
     ],
     menu_words: "Join on this column",
-    needs: &[
-        Need::ProtocolSource,
-        Need::Rows,
-        Need::ViewRecorded,
-        Need::AnotherTable,
-    ],
     begin,
     keeps: Keeps::OnEnter,
     field: None,

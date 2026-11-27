@@ -276,8 +276,9 @@ fn collect_placed_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Rect, 
     }
 }
 
-/// The egui key a registry key token names.
-fn egui_key(token: &str) -> egui::Key {
+/// The egui key a registry key token names, when egui has one: a sign such as
+/// `&` has none, and is typed as text alone.
+fn egui_key(token: &str) -> Option<egui::Key> {
     let named = match token {
         "space" => Some(egui::Key::Space),
         "escape" => Some(egui::Key::Escape),
@@ -295,7 +296,11 @@ fn egui_key(token: &str) -> egui::Key {
         "pagedown" => Some(egui::Key::PageDown),
         _ => egui::Key::from_name(token).or_else(|| egui::Key::from_name(&token.to_uppercase())),
     };
-    named.unwrap_or_else(|| panic!("no egui key for the registry's `{token}`"))
+    assert!(
+        named.is_some() || token.chars().count() == 1,
+        "no egui key for the registry's `{token}`"
+    );
+    named
 }
 
 /// The frames a keyboard brings for a binding's keystrokes: one a stroke, each
@@ -322,7 +327,10 @@ pub fn events_for(keystrokes: &'static str) -> Vec<(egui::Modifiers, Vec<egui::E
             if stroke.shift {
                 modifiers |= egui::Modifiers::SHIFT;
             }
-            let mut events = vec![chord(modifiers, egui_key(stroke.key))];
+            let mut events: Vec<egui::Event> = egui_key(stroke.key)
+                .map(|key| chord(modifiers, key))
+                .into_iter()
+                .collect();
             let typed = !(stroke.command || stroke.control || stroke.alt);
             let text = match stroke.key {
                 "space" => Some(" ".to_owned()),
@@ -372,7 +380,7 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
                 pane.focus.selected = Some(Selection::Relationship(relationship));
                 true
             }
-            Selected::GridCell => click_a_grid_cell(win),
+            Selected::GridCell | Selected::GridColumn => click_a_grid_cell(win),
             Selected::Asset => select_an_asset(win),
             Selected::Step => select_a_removable_step(win),
             Selected::Protocol
@@ -380,7 +388,8 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Selected::Chart
             | Selected::Rows
             | Selected::NodeRows
-            | Selected::Model => true,
+            | Selected::Model
+            | Selected::GridRows => true,
         },
         Need::Condition(condition) => match condition {
             Condition::SelectionHeld => hold_a_selection(win),
@@ -393,7 +402,14 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Condition::FileToReload
             | Condition::ShelfDrawn
             | Condition::NotRunning
-            | Condition::ChartReadsFocus => true,
+            | Condition::ChartReadsFocus
+            | Condition::ProtocolSource
+            | Condition::ViewRecorded
+            | Condition::LoadedTable => true,
+            Condition::ColumnHasNulls => click_a_cell_with_nulls(win),
+            Condition::AnotherTable | Condition::AnotherTableSharingAColumn => {
+                keep_a_second_table(win)
+            }
         },
     }
 }
@@ -437,6 +453,77 @@ fn click_a_grid_cell(win: &mut Window) -> bool {
     );
     win.click(at);
     win.app.chart_doc().grid_cursor_on_cell()
+}
+
+/// Click a cell of the first column with missing values, in a scene whose
+/// loaded table has one, which puts the grid's cursor on that column.
+fn click_a_cell_with_nulls(win: &mut Window) -> bool {
+    let Some(col) = win
+        .app
+        .protocol_model()
+        .columns()
+        .iter()
+        .position(|c| c.nulls > 0)
+    else {
+        return false;
+    };
+    let Some(drawn) = win.app.chart_doc().grid_drawn().cloned() else {
+        return false;
+    };
+    let (Some((_, head, head_clip)), Some((_, line, line_clip))) = (
+        drawn.header_cells.iter().find(|(at, _, _)| *at == col),
+        drawn.row_cells.first(),
+    ) else {
+        return false;
+    };
+    let at = egui::pos2(
+        head.intersect(*head_clip).center().x,
+        line.intersect(*line_clip).center().y,
+    );
+    win.click(at);
+    win.app.chart_doc().grid_cursor_on_cell()
+}
+
+/// Keep a step of the data file's table, its first ten rows, as an operation
+/// keeps its draft, so the Protocol holds a second table, then put the loaded
+/// table's grid back in front.
+fn keep_a_second_table(win: &mut Window) -> bool {
+    let Some(table) = win.table.clone() else {
+        return false;
+    };
+    let request = brightfield_shell::operation::StepRequest {
+        long_name: "limit-rows".to_string(),
+        on: Some(table.clone()),
+        reads: Vec::new(),
+        args: vec![("count".to_string(), "10".to_string())],
+    };
+    let ctx = win.ctx.clone();
+    let model = format!("SELECT * FROM {table} LIMIT 10");
+    if !win
+        .app
+        .keep_draft(&ctx, format!("{table}_first_10"), request, model)
+    {
+        return false;
+    }
+    // The kept step's grid is in front; the loaded table's grid goes back in
+    // front of it, its rows held, with the step as the second table.
+    win.settle();
+    let rows = win.app.spine_rows().to_vec();
+    let Some(at) = rows
+        .iter()
+        .position(|row| row.role == SpineRole::Asset && row.label == table)
+    else {
+        return false;
+    };
+    let Some(grid) = rows
+        .get(at + 1)
+        .filter(|row| row.role == SpineRole::View && row.label == "grid")
+    else {
+        return false;
+    };
+    win.click(grid.rect.center());
+    win.settle();
+    win.app.chart_doc().grid_drawn().is_some()
 }
 
 /// Select an asset on the spine by a click on its row.
@@ -573,9 +660,14 @@ pub fn scene_for(longname: &'static str, context: BindingContext) -> Window {
         .iter()
         .find(|v| v.longname == longname)
         .unwrap_or_else(|| panic!("{longname} is not in the registry"));
-    let mut scenes: Vec<fn() -> Window> = vec![door, data_file, crosswalk, own_files, || {
-        live_chart("crossfilter.yaml")
-    }];
+    let mut scenes: Vec<fn() -> Window> = vec![
+        door,
+        data_file,
+        crosswalk,
+        own_files,
+        || live_chart("crossfilter.yaml"),
+        data_file_with_nulls,
+    ];
     // The scene a need names is tried first, which saves opening the ones
     // before it; the order decides nothing else, since a scene is taken on
     // what the window reads.
@@ -716,15 +808,28 @@ pub fn door() -> Window {
 
 /// A Protocol Brightfield made from one CSV, with its dashboard on the canvas.
 pub fn data_file() -> Window {
-    let name = unique("housing");
+    data_file_of("housing", "california_housing_sample.csv")
+}
+
+/// A data file whose columns have missing values, opened as `data_file` is.
+pub fn data_file_with_nulls() -> Window {
+    data_file_of("nulls", "with_nulls.csv")
+}
+
+/// A copy of the fixture `file` under `tests/data/`, named from `stem`, opened
+/// on its dashboard.
+fn data_file_of(stem: &str, file: &str) -> Window {
+    let name = unique(stem);
     let folder = scratch().join("input").join(&name);
     std::fs::create_dir_all(&folder).expect("an input folder");
     let csv = folder.join(format!("{name}.csv"));
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(file),
         &csv,
     )
-    .expect("the housing sample copies");
+    .expect("the fixture copies");
     let mut win = Window::open(Boot::empty());
     win.open_path(&csv);
     win.table = Some(name);

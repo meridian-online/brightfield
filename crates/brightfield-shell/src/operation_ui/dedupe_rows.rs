@@ -21,8 +21,7 @@ use meridian_egui::{list_row, text_field, ListRow, RowHeight, TextField};
 
 use super::scan::top_level_items;
 use super::{
-    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, Need, OperationUi, Stage,
-    Start,
+    Begin, By, Draft, FormCx, FormEvent, HeaderPart, Keeps, NameRule, OperationUi, Stage, Start,
 };
 use crate::protocol::ui_font;
 
@@ -141,7 +140,6 @@ static UI: OperationUi = OperationUi {
     icon: "copy-off",
     starts: &[Start::Cell, Start::Header(HeaderPart::Menu)],
     menu_words: "Remove duplicate rows",
-    needs: &[Need::ProtocolSource, Need::Rows, Need::ViewRecorded],
     begin,
     keeps: Keeps::AtOnce,
     field: None,

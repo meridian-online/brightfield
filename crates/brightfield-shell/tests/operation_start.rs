@@ -10,14 +10,9 @@
 #[path = "support/operations.rs"]
 mod operations;
 
-use std::path::PathBuf;
-
 use brightfield_shell::grid_foot::FootField;
-use brightfield_shell::operation_ui::open::{
-    availability, sentence, Availability, InFront, OperationContext,
-};
 use brightfield_shell::operation_ui::{
-    Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, Need, OperationUi, Stage, Start,
+    Begin, By, Draft, HeaderPart, InPlace, Keeps, NameRule, OperationUi, Stage, Start,
 };
 use brightfield_shell::overlays::chart_palette_verbs;
 use operations::OpWindow;
@@ -57,13 +52,6 @@ fn no_suggestions(_: &Begin<'_>, _: &Draft) -> Vec<String> {
     Vec::new()
 }
 
-const NEEDS: &[Need] = &[
-    Need::ProtocolSource,
-    Need::Rows,
-    Need::Column,
-    Need::ViewRecorded,
-];
-
 /// An operation that asks for no value and is kept at once, as hiding a column is.
 static HIDE_LIKE: OperationUi = OperationUi {
     long_name: "hide-column",
@@ -72,7 +60,6 @@ static HIDE_LIKE: OperationUi = OperationUi {
     icon: "eye-off",
     starts: &[Start::Cell],
     menu_words: "Hide column",
-    needs: NEEDS,
     begin: begin_hide,
     keeps: Keeps::AtOnce,
     field: None,
@@ -92,7 +79,6 @@ static RENAME_LIKE: OperationUi = OperationUi {
     icon: "pencil",
     starts: &[Start::Cell],
     menu_words: "Rename column",
-    needs: NEEDS,
     begin: begin_rename,
     keeps: Keeps::OnEnter,
     field: Some(InPlace {
@@ -117,7 +103,6 @@ static DERIVE_LIKE: OperationUi = OperationUi {
     icon: "plus",
     starts: &[Start::Cell],
     menu_words: "Derive column",
-    needs: NEEDS,
     begin: begin_derive,
     keeps: Keeps::OnEnter,
     field: Some(InPlace {
@@ -158,35 +143,6 @@ fn start(win: &mut OpWindow, spec: &'static OperationUi, column: &str) -> bool {
         win.run(Vec::new());
     }
     panic!("arc never described {}", spec.long_name);
-}
-
-/// The table in front of `cx`.
-fn front(cx: &mut OperationContext) -> &mut InFront {
-    cx.in_front.as_mut().expect("a table")
-}
-
-/// A context that meets each need of [`NEEDS`], with a second table.
-fn full_context() -> OperationContext {
-    OperationContext {
-        runner: true,
-        protocol: Some(PathBuf::from("protocols/p")),
-        takes_sources: true,
-        in_front: Some(InFront {
-            table: "housing".to_string(),
-            loaded: true,
-            rows: true,
-            cell: true,
-            view_unrecorded: false,
-            columns: vec!["house_age".to_string(), "rooms".to_string()],
-            facts: Vec::new(),
-            cursor_column: Some("house_age".to_string()),
-            step_offer: None,
-        }),
-        tables: vec![
-            ("housing".to_string(), Some(vec!["house_age".to_string()])),
-            ("by_age".to_string(), Some(vec!["house_age".to_string()])),
-        ],
-    }
 }
 
 #[test]
@@ -287,96 +243,21 @@ fn filter_rows_on_a_steps_grid_says_the_steps_offer() {
         .grid_preview()
         .expect("the step's grid is a preview")
         .offer();
-    win.palette("filter-rows-at-cursor");
+    // The palette greys its row with the step's offer, and the key says it.
+    win.key(egui::Key::Space);
+    win.settle();
+    assert!(
+        win.app
+            .open_palette_missing()
+            .contains(&("filter-rows-at-cursor", offer.clone())),
+        "{:?}",
+        win.app.open_palette_missing()
+    );
+    win.key(egui::Key::Escape);
+    win.focus_grid();
+    win.press("w");
     assert_eq!(win.app.chart_doc().foot_asking(), None);
     assert_eq!(win.said(), Some(offer));
-}
-
-#[test]
-fn an_operation_over_an_unrecorded_view_says_save_or_clear_it_first() {
-    let mut cx = full_context();
-    cx.in_front.as_mut().expect("a table").view_unrecorded = true;
-    assert_eq!(
-        availability(&HIDE_LIKE, &cx, Some("house_age")),
-        Availability::Unavailable(
-            "Hide column reads the table as recorded: save or clear the where and order by first."
-                .to_string()
-        )
-    );
-}
-
-#[test]
-fn availability_names_the_first_need_it_lacks() {
-    static EACH: OperationUi = OperationUi {
-        long_name: "append-rows",
-        verb: "append-rows",
-        stage: Stage::Model,
-        icon: "stack",
-        starts: &[Start::Cell],
-        menu_words: "Append rows",
-        needs: &[
-            Need::ProtocolSource,
-            Need::TakesSources,
-            Need::Rows,
-            Need::GridCell,
-            Need::Column,
-            Need::ColumnHasNulls,
-            Need::ViewRecorded,
-            Need::LoadedTable,
-            Need::AnotherTable,
-            Need::AnotherTableSharingAColumn,
-        ],
-        begin: begin_hide,
-        keeps: Keeps::OnEnter,
-        field: None,
-        form: None,
-        name: NameRule {
-            word: "appended",
-            from: By::Nothing,
-            with_by: false,
-        },
-    };
-    let mut met = full_context();
-    let mut facts = OpWindow::on_copy_of(WITH_NULLS)
-        .app
-        .protocol_model()
-        .columns()
-        .to_vec();
-    facts.retain(|c| c.column == "house_age");
-    assert_eq!(facts[0].nulls, 1, "the fixture's house_age has one missing");
-    front(&mut met).facts = facts;
-    assert_eq!(availability(&EACH, &met, None), Availability::Available);
-
-    let unmet = |change: &dyn Fn(&mut OperationContext), need: Need| {
-        let mut cx = met.clone();
-        change(&mut cx);
-        assert_eq!(
-            availability(&EACH, &cx, None),
-            Availability::Unavailable(sentence(need, "Append rows", None)),
-            "{need:?}"
-        );
-    };
-    unmet(&|cx| cx.protocol = None, Need::ProtocolSource);
-    unmet(&|cx| cx.takes_sources = false, Need::TakesSources);
-    unmet(&|cx| front(cx).rows = false, Need::Rows);
-    unmet(&|cx| front(cx).cell = false, Need::GridCell);
-    unmet(&|cx| front(cx).cursor_column = None, Need::Column);
-    unmet(&|cx| front(cx).facts.clear(), Need::ColumnHasNulls);
-    unmet(&|cx| front(cx).view_unrecorded = true, Need::ViewRecorded);
-    unmet(&|cx| front(cx).loaded = false, Need::LoadedTable);
-    unmet(&|cx| cx.tables.truncate(1), Need::AnotherTable);
-    unmet(
-        &|cx| cx.tables[1].1 = Some(vec!["other".to_string()]),
-        Need::AnotherTableSharingAColumn,
-    );
-    // A step's preview has its own words for a table that is not loaded.
-    let mut cx = met.clone();
-    front(&mut cx).loaded = false;
-    front(&mut cx).step_offer = Some("the step has not been run".to_string());
-    assert_eq!(
-        availability(&EACH, &cx, None).sentence(),
-        Some("the step has not been run")
-    );
 }
 
 #[test]

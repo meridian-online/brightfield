@@ -9,7 +9,8 @@
 //!
 //! - where it starts ([`Start`]): the grid's cursor, a part of a column's
 //!   header, the spine, a field of the grid's foot row, or the sources browser;
-//! - what the window must hold for it to start ([`Need`]);
+//! - the verb that starts it, whose entry in the key registry declares what
+//!   the window must hold for it to start, read by [`open::availability`];
 //! - the draft it starts as ([`OperationUi::begin`]), its values already filled
 //!   from what Brightfield knows of the column;
 //! - whether it is kept at once or on Enter ([`Keeps`]);
@@ -69,8 +70,6 @@ pub struct OperationUi {
     pub starts: &'static [Start],
     /// Its row in a column header's menu, such as "Hide column".
     pub menu_words: &'static str,
-    /// What the window must hold for it to start, in the order they are said.
-    pub needs: &'static [Need],
     /// The draft it starts as, with its defaults; an `Err` is a sentence saying
     /// why it cannot start here.
     pub begin: fn(&Begin<'_>) -> Result<Draft, String>,
@@ -152,31 +151,6 @@ pub struct InPlace {
     /// from the text given, for a value that follows another, as a derived
     /// column's name follows its expression. `None` when no value follows.
     pub follows: Option<fn(&Begin<'_>, &mut Draft, &str, &str)>,
-}
-
-/// Something the window must hold for an operation to start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Need {
-    /// A Protocol of the analyst's own, which a Save can record into.
-    ProtocolSource,
-    /// A Protocol Brightfield made, which takes new sources.
-    TakesSources,
-    /// A table's rows in front.
-    Rows,
-    /// The grid's cursor on a cell.
-    GridCell,
-    /// A column: the cursor's, or the header's the operation started from.
-    Column,
-    /// A column with missing values.
-    ColumnHasNulls,
-    /// No `where` or `order by` applied and not recorded.
-    ViewRecorded,
-    /// A table that has been loaded or run, so its rows can be read.
-    LoadedTable,
-    /// A second table in the Protocol.
-    AnotherTable,
-    /// A second table in the Protocol sharing a column's name with this one.
-    AnotherTableSharingAColumn,
 }
 
 /// An operation being made.

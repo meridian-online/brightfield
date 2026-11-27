@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use brightfield_keys::registry;
 use brightfield_protocol::silver::FinetypeTransforms;
 use brightfield_shell::operation::{self, OperationDescription, ValueShape};
-use brightfield_shell::operation_ui::{self, Begin, Need, OperationUi, Stage, Start, OPERATIONS};
+use brightfield_shell::operation_ui::{self, Begin, OperationUi, Stage, Start, OPERATIONS};
 use brightfield_shell::run::Runner;
 
 fn runner() -> Runner {
@@ -152,45 +152,6 @@ fn each_built_operations_draft_names_only_what_arc_describes() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn each_built_operations_needs_agree_with_what_arc_says_it_reads() {
-    for ui in operation_ui::built() {
-        let description = described(ui.long_name);
-        let has = |need: Need| ui.needs.contains(&need);
-        // An operation that asks in the foot row applies a view, which a
-        // window with no Protocol of its own shows too. Any other is recorded,
-        // and needs a Protocol to record into.
-        let in_the_foot_row = ui.starts.iter().any(|s| matches!(s, Start::FootField(_)));
-        assert!(
-            in_the_foot_row || has(Need::ProtocolSource) || has(Need::TakesSources),
-            "{} records into a Protocol",
-            ui.long_name
-        );
-        let role = |name: &str| description.reads.iter().find(|r| r.name == name);
-        let table = role("table").is_some_and(|r| r.required);
-        let other = role("other").filter(|r| r.required);
-        // Filter and sort ask at the cursor's cell, which is a table's rows.
-        assert_eq!(
-            has(Need::Rows) || has(Need::GridCell),
-            table,
-            "{} and a table's rows",
-            ui.long_name
-        );
-        assert_eq!(
-            has(Need::AnotherTable),
-            other.is_some_and(|r| !r.list),
-            "{} and a second table",
-            ui.long_name
-        );
-        assert_eq!(
-            has(Need::AnotherTableSharingAColumn),
-            other.is_some_and(|r| r.list),
-            "{} and tables to append",
-            ui.long_name
-        );
     }
 }
 
