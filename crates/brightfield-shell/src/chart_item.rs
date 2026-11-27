@@ -2145,10 +2145,7 @@ fn draw_regions_switches(
     page: egui::Rect,
     mode: Mode,
 ) -> (Vec<RegionsSwitchDrawn>, Option<(usize, bool)>) {
-    let Some(spec) = doc
-        .live_dashboard()
-        .map(crate::pipeline::LiveDashboard::spec)
-    else {
+    let Some(live) = doc.live_dashboard() else {
         return (Vec::new(), None);
     };
     let views = doc.pane_views;
@@ -2156,7 +2153,7 @@ fn draw_regions_switches(
     let mut drawn = Vec::new();
     let mut pick = None;
     for (i, plot) in doc.composed.plots.iter().enumerate() {
-        if !crate::regions::offers_regions_switch(spec, plot) {
+        if !live.offers_regions_switch(plot) {
             continue;
         }
         let tile = crate::app::plot_window_rect(page, views, plot);
@@ -2202,7 +2199,7 @@ fn draw_regions_switches(
             .map(|r| placed(r).bottom())
             .fold(labels_bottom, f32::max);
         let title = x_axis.and_then(|axis| axis.title).map(placed);
-        let active = !crate::regions::regions_switched_off(spec, &plot.path);
+        let active = !crate::regions::regions_switched_off(live.spec(), &plot.path);
         let subject = (i, regions_hover(plot), active);
         let Some((record, picked)) =
             draw_regions_switch(ui, tile, (below, title), clip, subject, mode)

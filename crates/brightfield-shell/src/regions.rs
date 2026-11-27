@@ -151,10 +151,15 @@ pub fn regions_switched_off(spec: &Spec, plot_path: &str) -> bool {
 /// switched off keeps the switch that turns it back on, and the drawn-scale
 /// check [`RegionJob::for_plot`] makes, so a plot over a text column, or one
 /// drawn through a projection that bends its axes, offers no switch
-/// (`the_switch_shows_only_on_qualifying_plots` holds the log-axis case).
+/// (`the_switch_shows_only_on_qualifying_plots` holds the log-axis case). A
+/// layer whose rows `session` cannot write as SQL, such as one over inline
+/// rows rather than a `from:` source, can never start a run, so its plot
+/// offers none either (`a_plot_over_inline_rows_offers_no_switch`).
 #[must_use]
-pub fn offers_regions_switch(spec: &Spec, plot: &PlotHandle) -> bool {
-    drawable_layer(spec, &plot.path).is_some() && displayed_extent(plot).is_some()
+pub fn offers_regions_switch(session: &Session, spec: &Spec, plot: &PlotHandle) -> bool {
+    drawable_layer(spec, &plot.path)
+        .is_some_and(|(mark, _, _)| session.region_rows_sql(mark).is_ok())
+        && displayed_extent(plot).is_some()
 }
 
 /// [`qualifying_layer`], whatever the plot's `regions` key says.

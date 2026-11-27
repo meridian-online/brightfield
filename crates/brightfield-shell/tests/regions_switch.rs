@@ -310,6 +310,44 @@ fn the_switch_shows_only_on_qualifying_plots() {
     );
 }
 
+/// A dot layer over rows written inline on the mark, rather than read from a
+/// `data:` source, under a line over the panel's table. The line draws the
+/// plot; the dots are the layer its regions would be found on.
+const INLINE: &str = r"data:
+  t:
+    query: |
+      SELECT i AS x, i AS y FROM range(100) r(i)
+plot:
+  - mark: dot
+    data: [{ x: 20, y: 20 }, { x: 22, y: 21 }, { x: 75, y: 75 }, { x: 76, y: 78 }]
+    x: x
+    y: y
+  - mark: line
+    data: { from: t }
+    x: x
+    y: y
+xDomain: [0, 100]
+yDomain: [0, 100]
+width: 360
+height: 300
+";
+
+#[test]
+fn a_plot_over_inline_rows_offers_no_switch() {
+    let dir = TempDir::new("inline");
+    let live = Live::open(&dir.panel(INLINE));
+    assert_eq!(
+        live.doc().composed.plots.len(),
+        1,
+        "the inline plot is drawn"
+    );
+    assert!(
+        live.switches().is_empty(),
+        "rows no region run can read offer no regions switch: {:?}",
+        live.switches()
+    );
+}
+
 /// A title long enough to run the width of the plot's head.
 const LONG_TITLE: &str = "Two square clusters of a hundred points each, one low and \
                           one high, with a title that runs the width of the plot";

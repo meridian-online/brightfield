@@ -1813,6 +1813,13 @@ impl LiveDashboard {
         crate::regions::held_region(&self.regions, self.coordinator.session(), plot)
     }
 
+    /// Whether `plot` offers the switch that turns its regions off and on:
+    /// [`crate::regions::offers_regions_switch`] over this dashboard's session.
+    #[must_use]
+    pub fn offers_regions_switch(&self, plot: &PlotHandle) -> bool {
+        crate::regions::offers_regions_switch(self.coordinator.session(), &self.spec, plot)
+    }
+
     /// The selection a click at `local` (pixels inside `plot`'s own rect)
     /// makes on a drawn region: [`crate::regions::region_clause_at`].
     #[must_use]
