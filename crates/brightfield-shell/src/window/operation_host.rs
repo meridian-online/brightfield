@@ -246,6 +246,11 @@ impl OperationHost {
             copy_due: std::cell::Cell::new(None),
         }
     }
+
+    /// Whether the spine is picking a table for the operation, which holds the keys while it is.
+    pub(super) const fn is_picking(&self) -> bool {
+        self.picking.is_some()
+    }
 }
 
 impl MeridianApp {

@@ -824,6 +824,7 @@ fn chrome_budget(surface: Surface) -> (f32, f32) {
     let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
+        + band_extent(plan.expect_region(arrangement::RIBBON_BAND))
         + rail_default(plan.expect_region(arrangement::LEDGER_RAIL));
     if surface == Surface::Graph {
         down += band_extent(plan.expect_region(arrangement::HINT_BAND))
@@ -845,6 +846,7 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
     let across = rail_collapsed(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_collapsed(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
+        + band_extent(plan.expect_region(arrangement::RIBBON_BAND))
         + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
 }
@@ -2272,6 +2274,12 @@ struct TopBar {
     /// What the activity area said and how wide it drew, on a frame that drew it, seen or only
     /// measured.
     activity_said: Option<(TitleActivity, f32)>,
+    /// The ribbon tab clicked this frame.
+    tab_clicked: Option<crate::ribbon::RibbonPick>,
+    /// Where the ribbon's tabs were drawn, on a frame that drew them.
+    tab_rects: Vec<(crate::ribbon::RibbonPick, egui::Rect)>,
+    /// What the tabs said and how wide they drew, on a frame that drew them.
+    tabs_measured: Option<(String, f32)>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -4136,6 +4144,18 @@ pub struct MeridianApp {
     picture_bindings: [(Option<&'static str>, &'static str); 2],
     /// The ribbon's tab and collapse, which its six verbs move.
     ribbon: crate::ribbon::RibbonState,
+    /// A greyed command's sentence, up because its key was refused
+    /// ([`Self::refuse_key`]), until its time runs out.
+    ribbon_reason: Option<crate::ribbon::ReasonShown>,
+    /// Where the last frame drew each ribbon tab, in the title band.
+    ribbon_tab_rects: Vec<(crate::ribbon::RibbonPick, egui::Rect)>,
+    /// Where the last frame drew each command of the ribbon's row.
+    ribbon_command_rects: Vec<(&'static str, egui::Rect)>,
+    /// What the tabs said and how wide they drew, on the frame that last drew them: the
+    /// title band lays out the rest of its controls against that width.
+    ribbon_tabs_width: Option<(String, f32)>,
+    /// Where the last frame drew a greyed command's sentence, when it drew one.
+    ribbon_reason_rect: Option<egui::Rect>,
     /// The ribbon verbs' keystroke tokens, read off the registry at boot, each
     /// with its verb.
     ribbon_bindings: [(Option<&'static str>, &'static str); 6],
@@ -4693,6 +4713,11 @@ impl MeridianApp {
                 (key, longname)
             }),
             ribbon: crate::ribbon::RibbonState::default(),
+            ribbon_reason: None,
+            ribbon_tab_rects: Vec::new(),
+            ribbon_command_rects: Vec::new(),
+            ribbon_tabs_width: None,
+            ribbon_reason_rect: None,
             ribbon_bindings: brightfield_keys::ribbon::RIBBON_VERBS.map(|longname| {
                 let key = brightfield_keys::registry()
                     .iter()
@@ -7722,6 +7747,56 @@ impl MeridianApp {
             self.activity_measured = Some((said, width));
         }
         self.activity_rect = bar.activity_rect;
+        self.ribbon_tab_rects = std::mem::take(&mut bar.tab_rects);
+        if let Some((said, width)) = bar.tabs_measured.take() {
+            if self.ribbon_tabs_width.as_ref().map(|(s, _)| s) != Some(&said) {
+                // Measured at the band's room: run the pass again with the width known, so the
+                // frame shown lays the band out against it.
+                ctx.request_discard("the ribbon's tabs were measured");
+                ctx.request_repaint();
+            }
+            self.ribbon_tabs_width = Some((said, width));
+        }
+        if let Some(pick) = bar.tab_clicked.take() {
+            let verb = match pick {
+                crate::ribbon::RibbonPick::Stage(stage) => stage.tab_verb(),
+                crate::ribbon::RibbonPick::Context => brightfield_keys::ribbon::SHOW_CONTEXT_TAB,
+            };
+            self.perform_ribbon_verb(&ctx, verb);
+        }
+        // The selected tab's commands, in a band of their own under the title band, on every
+        // Protocol whose ribbon is not collapsed.
+        self.ribbon_command_rects.clear();
+        let mut ribbon_clicked: Option<&'static str> = None;
+        let mut pointed_reason: Option<(egui::Rect, String, Option<String>)> = None;
+        if !door && !self.ribbon.collapsed {
+            let ribbon_band = plan.expect_region(arrangement::RIBBON_BAND);
+            let views = crate::ribbon::ribbon_views(
+                &self.ribbon_groups(),
+                &self.situation(),
+                self.dispatch_context(),
+                brightfield_keys::KeyPlatform::host(),
+            );
+            let mut row = RibbonRowDrawn::default();
+            let drawn = Panel::top(panel_id(ribbon_band, false))
+                .resizable(false)
+                .exact_size(band_extent(ribbon_band))
+                .frame(chrome::region_frame(ribbon_band.frame, ui, mode))
+                .show(ui, |ui| row = ribbon_row_ui(ui, &views));
+            self.regions.push((ribbon_band.id, drawn.response.rect));
+            for (longname, label, rect, live) in &row.commands {
+                // A greyed command takes no click, so it is no control a click can name; it
+                // says its sentence when the pointer is over it.
+                if *live {
+                    bar.controls
+                        .push(chrome::NamedControl::labelled(*rect, *label));
+                }
+                self.ribbon_command_rects.push((longname, *rect));
+            }
+            ribbon_clicked = row.clicked;
+            pointed_reason = row.pointed;
+        }
+        self.show_ribbon_reason(&ctx, pointed_reason);
         let placed = bar.placed.take();
         self.place_rects = placed.as_ref().map(|p| p.rects);
         self.choose_rect = placed.as_ref().and_then(|p| p.choose_rect);
@@ -9064,6 +9139,11 @@ impl MeridianApp {
         // The commands chosen from a menu since the last frame, applied with
         // the frame's own requests.
         self.take_menu_verbs(&mut requests);
+        // A command clicked on the ribbon's row goes the way one chosen from a menu goes.
+        // The row draws an unavailable command greyed and takes no click on it.
+        if let Some(longname) = ribbon_clicked {
+            requests.push(Request::Verb(Verb::new(longname)));
+        }
         self.apply(&ctx, graph_on_canvas, requests);
         // An Encoding row clicked: the shelf's cell for its channel opens, as
         // the cell's own key opens it. After the frame's requests, because the
@@ -9283,12 +9363,9 @@ impl MeridianApp {
             self.open_palette_for_canvas(graph_on_canvas);
             self.answered("open-palette");
         } else if quick_open {
-            self.answered(QUICK_OPEN);
-            match self.availability_of(QUICK_OPEN) {
-                Some(brightfield_keys::Availability::Missing(sentence)) => {
-                    self.say_activity_refused(ctx, sentence);
-                }
-                _ => self.open_quick_open(),
+            if !self.refuse_key(ctx, QUICK_OPEN) {
+                self.answered(QUICK_OPEN);
+                self.open_quick_open();
             }
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
@@ -9313,7 +9390,9 @@ impl MeridianApp {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.home_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, "open-home")
+        {
             self.answered("open-home");
             self.leave(ctx, Leaving::Home);
         }
@@ -9402,8 +9481,9 @@ impl MeridianApp {
         &self.verbs_applied
     }
 
-    /// The sentence said for the last menu command the window refused — a test
-    /// hook, since the toast layer does not give its text back.
+    /// The sentence said for the last command the window refused, chosen from
+    /// a menu or by its key — a test hook, since the toast layer does not give
+    /// its text back.
     #[must_use]
     pub fn menu_said(&self) -> Option<&str> {
         self.menu_said.as_deref()
@@ -9501,6 +9581,11 @@ impl MeridianApp {
             return;
         }
         if self.save_binding.is_some_and(|t| consume_token(ctx, t)) {
+            // An operation being made is kept by Save whatever else is left to write, so it is
+            // never refused for having nothing else to save.
+            if self.charts.doc.making().is_none() && self.refuse_key(ctx, SAVE_PROTOCOL) {
+                return;
+            }
             self.answered(SAVE_PROTOCOL);
             self.save_everything(ctx);
         }
@@ -9575,6 +9660,7 @@ impl MeridianApp {
         if self
             .inspector_binding
             .is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, INSPECTOR_TOGGLE)
         {
             self.answered(INSPECTOR_TOGGLE);
             self.toggle_inspector_rail(ctx);
@@ -9603,7 +9689,9 @@ impl MeridianApp {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if self.run_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.run_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, RUN_PROTOCOL)
+        {
             self.answered(RUN_PROTOCOL);
             self.run_protocol(ctx);
         }
@@ -9619,7 +9707,7 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.ribbon_bindings {
-            if token.is_some_and(|t| consume_token(ctx, t)) {
+            if token.is_some_and(|t| consume_token(ctx, t)) && !self.refuse_key(ctx, longname) {
                 self.answered(longname);
                 self.perform_ribbon_verb(ctx, longname);
             }
@@ -9648,6 +9736,211 @@ impl MeridianApp {
         self.ribbon
     }
 
+    /// The groups of commands the selected ribbon tab lists: a stage's, or the
+    /// contextual tab's for what the canvas holds. Nothing when the canvas
+    /// holds nothing a contextual tab is named for.
+    fn ribbon_groups(&self) -> Vec<Vec<brightfield_keys::ribbon::RibbonEntry>> {
+        match self.ribbon.selected {
+            crate::ribbon::RibbonPick::Stage(stage) => crate::ribbon::stage_commands(stage),
+            crate::ribbon::RibbonPick::Context => self
+                .ribbon_context()
+                .map(|(context, _)| crate::ribbon::context_commands(context))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// **What the contextual tab is named for**: what the canvas holds, and
+    /// the label of the node it holds, empty where it holds no one node. The
+    /// model pane gives the model, the graph the graph, a node's grid the grid,
+    /// and a dashboard or a chart the chart. `None` on the front door.
+    #[must_use]
+    pub fn ribbon_context(&self) -> Option<(brightfield_keys::ribbon::Context, String)> {
+        use brightfield_keys::ribbon::Context;
+        if self.front_door_is_live() {
+            return None;
+        }
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return Some((Context::Model, String::new()));
+        }
+        let model = &self.protocol.doc.model;
+        let context = match &self.canvas_holds {
+            CanvasHolds::Graph => {
+                let node = model
+                    .selected()
+                    .and_then(|node| model.label_of(node))
+                    .unwrap_or_default()
+                    .to_owned();
+                return Some((Context::Graph, node));
+            }
+            CanvasHolds::View { .. } => Context::Grid,
+            CanvasHolds::Dashboard { .. } | CanvasHolds::Chart => Context::Chart,
+        };
+        let node = self
+            .header_crumb_line()
+            .pop()
+            .map(|crumb| crumb.label)
+            .unwrap_or_default();
+        Some((context, node))
+    }
+
+    /// **Where the keys are**, as the registry's binding contexts resolve:
+    /// the situation a command's keycap is read in. An overlay holds them over
+    /// everything; then the spine's pick, the sources browser, the shelf, the
+    /// editor, the grid and the Versions panel, each while it holds them; then
+    /// the Protocol's panes, while the graph holds the canvas or the outline
+    /// is focused; and the canvas otherwise.
+    #[must_use]
+    pub fn dispatch_context(&self) -> brightfield_keys::DispatchContext {
+        use brightfield_keys::DispatchContext;
+        let focus = self.ws().focus();
+        if self.overlay.is_some() {
+            DispatchContext::OverlayOpen
+        } else if self.operation.is_picking() {
+            DispatchContext::SpinePickFocused
+        } else if self.sources_browser().is_some() {
+            DispatchContext::BrowserFocused
+        } else if self.shelf_holds_keys() {
+            DispatchContext::ShelfFocused
+        } else if focus == Some(PaneKey::new(EDITOR)) {
+            DispatchContext::EditorFocused
+        } else if self.grid_has_focus() {
+            DispatchContext::GridFocused
+        } else if self.versions_hold {
+            DispatchContext::VersionsFocused
+        } else if self.graph_on_canvas() || focus == Some(PaneKey::new(OUTLINE)) {
+            DispatchContext::ProtocolFocused
+        } else {
+            DispatchContext::CanvasFocused
+        }
+    }
+
+    /// **Refuse a key whose command cannot act here**, saying why. True when
+    /// `longname`'s declared needs are not met, and then its sentence is shown:
+    /// under the command when the window drew it (on the ribbon's row, or Run
+    /// in the title band), under its stage's tab when only that is drawn, and
+    /// in an Info toast when neither is. A handler that is refused acts on
+    /// nothing and notes nothing in [`Self::keys_answered`].
+    fn refuse_key(&mut self, ctx: &egui::Context, longname: &'static str) -> bool {
+        let Some(brightfield_keys::Availability::Missing(sentence)) =
+            self.availability_of(longname)
+        else {
+            return false;
+        };
+        self.menu_said = Some(sentence.clone());
+        if self.reason_anchor(longname).is_some() {
+            self.ribbon_reason = Some(crate::ribbon::ReasonShown {
+                longname,
+                sentence,
+                until: ctx.input(|i| i.time) + crate::ribbon::REASON_SHOWN_FOR,
+            });
+        } else {
+            self.ribbon_reason = None;
+            self.toasts.push(Toast::new(Severity::Info, sentence));
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    /// Where a refused command's sentence is anchored, read off what the last
+    /// frame drew: the command itself, or its stage's tab.
+    fn reason_anchor(&self, longname: &str) -> Option<egui::Rect> {
+        if longname == RUN_PROTOCOL {
+            if let Some(run) = self.run_rect {
+                return Some(run);
+            }
+        }
+        if let Some((_, rect)) = self
+            .ribbon_command_rects
+            .iter()
+            .find(|(name, _)| *name == longname)
+        {
+            return Some(*rect);
+        }
+        let stage = crate::ribbon::stage_listing(longname)?;
+        self.ribbon_tab_rects
+            .iter()
+            .find(|(pick, _)| *pick == crate::ribbon::RibbonPick::Stage(stage))
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Show a greyed command's sentence: the one the pointer is over on the
+    /// ribbon's row, or else the one a refused key put up, until its time runs
+    /// out.
+    fn show_ribbon_reason(
+        &mut self,
+        ctx: &egui::Context,
+        pointed: Option<(egui::Rect, String, Option<String>)>,
+    ) {
+        self.ribbon_reason_rect = None;
+        let now = ctx.input(|i| i.time);
+        if self.ribbon_reason.as_ref().is_some_and(|r| r.until <= now) {
+            self.ribbon_reason = None;
+        }
+        let shown = match pointed {
+            Some(pointed) => Some(pointed),
+            None => self.ribbon_reason.as_ref().and_then(|reason| {
+                let anchor = self.reason_anchor(reason.longname)?;
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                    (reason.until - now).max(0.0),
+                ));
+                Some((
+                    anchor,
+                    reason.sentence.clone(),
+                    self.keycap_of(reason.longname),
+                ))
+            }),
+        };
+        if let Some((anchor, sentence, keycap)) = shown {
+            let response = meridian_egui::Popover::show_reason(
+                ctx,
+                "ribbon-reason",
+                anchor,
+                &sentence,
+                keycap.as_deref(),
+            );
+            self.ribbon_reason_rect = Some(response.rect);
+        }
+    }
+
+    /// The key that performs `longname` where the keys are now, as its keycap
+    /// reads.
+    fn keycap_of(&self, longname: &str) -> Option<String> {
+        let dispatch = self.dispatch_context();
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == longname)?
+            .binding_specs
+            .iter()
+            .find(|b| brightfield_keys::fires(b.context, dispatch))
+            .map(|b| {
+                brightfield_keys::keys_label(b.keystrokes, brightfield_keys::KeyPlatform::host())
+            })
+    }
+
+    /// The greyed command's sentence a refused key put up, while it is up.
+    #[must_use]
+    pub fn ribbon_reason(&self) -> Option<&crate::ribbon::ReasonShown> {
+        self.ribbon_reason.as_ref()
+    }
+
+    /// Where the last frame drew a greyed command's sentence, when it drew one.
+    #[must_use]
+    pub fn ribbon_reason_rect(&self) -> Option<egui::Rect> {
+        self.ribbon_reason_rect
+    }
+
+    /// Where the last frame drew each ribbon tab, in the title band.
+    #[must_use]
+    pub fn ribbon_tab_rects(&self) -> &[(crate::ribbon::RibbonPick, egui::Rect)] {
+        &self.ribbon_tab_rects
+    }
+
+    /// Where the last frame drew each command of the ribbon's row.
+    #[must_use]
+    pub fn ribbon_command_rects(&self) -> &[(&'static str, egui::Rect)] {
+        &self.ribbon_command_rects
+    }
+
     /// Switch the node in focus to an activity if one of the activity verbs'
     /// keystrokes is down this frame. Gated exactly as [`Self::home_key`] is.
     /// A key whose activity cannot be taken says why in a toast, as a menu
@@ -9657,27 +9950,11 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.activity_bindings {
-            if token.is_some_and(|t| consume_token(ctx, t)) {
+            if token.is_some_and(|t| consume_token(ctx, t)) && !self.refuse_key(ctx, longname) {
                 self.answered(longname);
-                match self.availability_of(longname) {
-                    Some(brightfield_keys::Availability::Available) => {
-                        self.perform_activity(ctx, longname);
-                    }
-                    Some(brightfield_keys::Availability::Missing(sentence)) => {
-                        self.say_activity_refused(ctx, sentence);
-                    }
-                    None => {}
-                }
+                self.perform_activity(ctx, longname);
             }
         }
-    }
-
-    /// Say in an Info toast why an activity was not taken.
-    fn say_activity_refused(&mut self, ctx: &egui::Context, sentence: String) {
-        self.toasts
-            .push(Toast::new(Severity::Info, sentence.clone()));
-        self.menu_said = Some(sentence);
-        ctx.request_repaint();
     }
 
     /// **The node whose activities the window offers**: the model step while
@@ -9977,7 +10254,7 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.picture_bindings {
-            if token.is_some_and(|t| consume_token(ctx, t)) {
+            if token.is_some_and(|t| consume_token(ctx, t)) && !self.refuse_key(ctx, longname) {
                 self.answered(longname);
                 self.chart_picture(ctx, longname);
             }
@@ -9990,7 +10267,9 @@ impl MeridianApp {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if self.grid_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.grid_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, crate::data_grid::MOVE_GRID)
+        {
             self.answered(crate::data_grid::MOVE_GRID);
             self.move_grid();
             ctx.request_repaint();
@@ -13257,6 +13536,21 @@ impl MeridianApp {
             .as_ref()
             .filter(|(said, _)| Some(said) == activity.as_ref())
             .map(|(_, width)| *width);
+        // The ribbon's tabs, after the name, on every Protocol: the front door draws no ribbon.
+        let tabs = (!door).then(|| TitleTabs {
+            selected: self.ribbon.selected,
+            collapsed: self.ribbon.collapsed,
+            contextual: self
+                .ribbon_context()
+                .map(|(context, node)| contextual_label(context, &node)),
+        });
+        // The width the tabs drew at while they said what they say now; for tabs not yet
+        // drawn, the room the band has, so they are measured.
+        let tabs_width = self
+            .ribbon_tabs_width
+            .as_ref()
+            .filter(|(said, _)| tabs.as_ref().is_some_and(|t| t.said() == *said))
+            .map(|(_, width)| *width);
         let band = ui.max_rect();
         ui.horizontal_centered(|ui| {
             // On macOS the window's close, minimise and zoom buttons sit over this corner.
@@ -13365,12 +13659,39 @@ impl MeridianApp {
                     .push(chrome::NamedControl::labelled(drawn.rect, RUN_LABEL));
                 right = drawn.rect.left() - spacing::SPACE_4;
             }
+            // The tabs follow the name, short of Run: a tab cut at Run's edge takes no pointer.
+            // Everything else the band draws is laid out from their right end.
+            let mut lead_end = name.right();
+            if let Some(tabs) = &tabs {
+                let left = name.right() + spacing::SPACE_6;
+                // The Protocol's name field keeps its room: on a narrow window the tabs are cut
+                // before it goes. The Location field and the activity area give way first.
+                let keep = place.as_deref().map_or(0.0, |dir| {
+                    let editing = edit.as_ref().is_some_and(|e| e.field == PlaceField::Name);
+                    name_field_width(ui, dir, editing) + spacing::SPACE_6
+                });
+                let room = (right - left - keep).max(0.0);
+                let width = tabs_width.map_or(room, |w| w.min(room));
+                let drawn = title_tabs_ui(ui, band, left, width, tabs);
+                for (_, label, rect) in &drawn.tabs {
+                    bar.controls
+                        .push(chrome::NamedControl::labelled(*rect, label.clone()));
+                }
+                bar.tab_rects = drawn
+                    .tabs
+                    .iter()
+                    .map(|(pick, _, rect)| (*pick, *rect))
+                    .collect();
+                bar.tab_clicked = drawn.clicked;
+                bar.tabs_measured = Some((tabs.said(), drawn.width));
+                lead_end = left + drawn.width.min(room);
+            }
             let wanted = right_group_width(
                 ui,
                 renderer.as_deref(),
                 toggle.as_ref().map(|(t, _)| t.as_str()),
             );
-            let group = (renderer.is_some() || toggle.is_some()) && right - name.right() >= wanted;
+            let group = (renderer.is_some() || toggle.is_some()) && right - lead_end >= wanted;
             // The Protocol's place stands left of Run, and of the right-hand group when that is
             // drawn.
             let mut end = right;
@@ -13380,7 +13701,7 @@ impl MeridianApp {
             let mut stretch_end = end;
             if let Some(dir) = place.as_deref() {
                 let area = egui::Rect::from_min_max(
-                    egui::pos2(name.right() + spacing::SPACE_6, band.top()),
+                    egui::pos2(lead_end + spacing::SPACE_6, band.top()),
                     egui::pos2(end, band.bottom()),
                 );
                 let placed = place_band_ui(ui, area, dir, &mut edit, mode);
@@ -13408,9 +13729,9 @@ impl MeridianApp {
             );
             // The activity area, centred in what the name and the place leave, at the width it
             // drew last frame. It is the first thing to go when the band is narrow.
-            let gap_left = name.right() + spacing::SPACE_6;
+            let gap_left = lead_end + spacing::SPACE_6;
             let gap_right = stretch_end - spacing::SPACE_4;
-            let mut stretch_ends = vec![(name.right() + spacing::SPACE_2, stretch_end)];
+            let mut stretch_ends = vec![(lead_end + spacing::SPACE_2, stretch_end)];
             if let Some(activity) = &activity {
                 match activity_width {
                     // Words the band has not measured are drawn unseen and untouchable, for
@@ -13431,7 +13752,7 @@ impl MeridianApp {
                             ACTIVITY_CONTROL_NAME,
                         ));
                         stretch_ends = vec![
-                            (name.right() + spacing::SPACE_2, drawn.rect.left()),
+                            (lead_end + spacing::SPACE_2, drawn.rect.left()),
                             (drawn.rect.right(), stretch_end),
                         ];
                     }
@@ -16548,7 +16869,9 @@ impl MeridianApp {
         if self.overlay.is_some() {
             return;
         }
-        if self.untrust_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.untrust_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, UNTRUST_PROTOCOL)
+        {
             self.answered(UNTRUST_PROTOCOL);
             self.untrust_open_protocol(ctx);
         }
@@ -16560,7 +16883,9 @@ impl MeridianApp {
         if self.overlay.is_some() {
             return;
         }
-        if self.reload_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.reload_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, RELOAD_DATA)
+        {
             self.answered(RELOAD_DATA);
             self.reload_data_file(ctx);
         }
@@ -16947,6 +17272,11 @@ impl MeridianApp {
             return;
         }
         if !self.rename_binding.is_some_and(|t| consume_token(ctx, t)) {
+            return;
+        }
+        // On the front door F2 renames the row under the pointer, which needs no Protocol open.
+        let door_row = self.front_door_is_live() && self.door_hovered.is_some();
+        if !door_row && self.refuse_key(ctx, RENAME_PROTOCOL) {
             return;
         }
         self.answered(RENAME_PROTOCOL);
@@ -23640,7 +23970,7 @@ fn place_band_ui(
             let editing = edit.as_ref().is_some_and(|e| e.field == field);
             let value_width = if editing {
                 match field {
-                    PlaceField::Name => 200.0,
+                    PlaceField::Name => NAME_FIELD_EDIT_WIDTH,
                     PlaceField::Location => 320.0,
                 }
             } else {
@@ -23893,6 +24223,193 @@ fn title_run_ui(ui: &mut egui::Ui, band: egui::Rect, run: &TitleRun) -> TitleRun
     TitleRunDrawn {
         rect: drawn.response.rect,
         clicked: drawn.clicked,
+    }
+}
+
+/// What the title band's ribbon tabs say, read before the band draws.
+struct TitleTabs {
+    /// The tab selected.
+    selected: crate::ribbon::RibbonPick,
+    /// Whether the ribbon is collapsed to its tabs.
+    collapsed: bool,
+    /// The contextual tab's name, when the canvas holds something it is named for.
+    contextual: Option<String>,
+}
+
+impl TitleTabs {
+    /// What the tabs say, as their width depends on it: the selected tab is drawn heavier.
+    fn said(&self) -> String {
+        format!(
+            "{:?} {} {:?}",
+            self.selected, self.collapsed, self.contextual
+        )
+    }
+}
+
+/// What the title band's ribbon tabs drew.
+struct TitleTabsDrawn {
+    /// Each tab, with its name and where it was drawn.
+    tabs: Vec<(crate::ribbon::RibbonPick, String, egui::Rect)>,
+    /// The tab clicked.
+    clicked: Option<crate::ribbon::RibbonPick>,
+    /// How wide the tabs drew, from the strip's left edge past the last tab.
+    width: f32,
+}
+
+/// How wide the Protocol's name field opens while it is being edited.
+const NAME_FIELD_EDIT_WIDTH: f32 = 200.0;
+
+/// How wide the title band draws the Protocol's name field for the folder `dir`: its label and
+/// its value, or the width it opens at while it is being edited.
+fn name_field_width(ui: &egui::Ui, dir: &std::path::Path, editing: bool) -> f32 {
+    let label = ui
+        .painter()
+        .layout_no_wrap("Name".to_owned(), ui_font(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x;
+    let value = if editing {
+        NAME_FIELD_EDIT_WIDTH
+    } else {
+        ui.painter()
+            .layout_no_wrap(display_name(dir), ui_font(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    label + spacing::SPACE_2 + value
+}
+
+/// The contextual tab's name: what the canvas holds, then the node, as `Grid · ranking`.
+fn contextual_label(context: brightfield_keys::ribbon::Context, node: &str) -> String {
+    if node.is_empty() {
+        context.label().to_owned()
+    } else {
+        format!("{} \u{b7} {node}", context.label())
+    }
+}
+
+/// Draw the ribbon's tabs from `left` in the title band, `width` wide, on the band's foot so the
+/// open tab meets the command row beneath it.
+fn title_tabs_ui(
+    ui: &mut egui::Ui,
+    band: egui::Rect,
+    left: f32,
+    width: f32,
+    tabs: &TitleTabs,
+) -> TitleTabsDrawn {
+    use crate::ribbon::RibbonPick;
+    use brightfield_keys::ribbon::Stage;
+    use meridian_egui::{RibbonTab, RibbonTabs, TabPick};
+
+    let stages = Stage::ALL.map(|stage| RibbonTab::new(stage.label()));
+    let selected = match tabs.selected {
+        RibbonPick::Stage(stage) => Stage::ALL
+            .iter()
+            .position(|s| *s == stage)
+            .map(TabPick::Stage),
+        RibbonPick::Context => tabs.contextual.is_some().then_some(TabPick::Contextual),
+    };
+    let height = meridian_design::spacing::ROW_GRID;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(left, band.bottom() - height),
+        egui::vec2(width, height),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .id_salt("ribbon-tabs")
+            .layout(egui::Layout::left_to_right(egui::Align::Min)),
+    );
+    let mut strip = RibbonTabs::new(&stages, selected).collapsed(tabs.collapsed);
+    if let Some(label) = &tabs.contextual {
+        strip = strip.contextual(RibbonTab::new(label));
+    }
+    let response = meridian_egui::ribbon_tabs(&mut child, strip);
+    let pick_of = |pick: TabPick| match pick {
+        TabPick::Stage(i) => RibbonPick::Stage(Stage::ALL[i]),
+        TabPick::Contextual => RibbonPick::Context,
+    };
+    let label_of = |pick: TabPick| match pick {
+        TabPick::Stage(i) => Stage::ALL[i].label().to_owned(),
+        TabPick::Contextual => tabs.contextual.clone().unwrap_or_default(),
+    };
+    let end = response
+        .rects
+        .last()
+        .map_or(left, |(_, r)| r.right() + spacing::SPACE_4);
+    TitleTabsDrawn {
+        tabs: response
+            .rects
+            .iter()
+            .map(|(pick, rect)| (pick_of(*pick), label_of(*pick), *rect))
+            .collect(),
+        clicked: response.clicked.map(pick_of),
+        width: end - left,
+    }
+}
+
+/// What the ribbon's command row drew.
+#[derive(Default)]
+struct RibbonRowDrawn {
+    /// Each command, with its name, where it was drawn, and whether it takes a click.
+    commands: Vec<(&'static str, &'static str, egui::Rect, bool)>,
+    /// The command clicked; never a greyed one.
+    clicked: Option<&'static str>,
+    /// A greyed command under the pointer: where, its sentence and its key.
+    pointed: Option<(egui::Rect, String, Option<String>)>,
+}
+
+/// Draw the ribbon's command row: `views`' groups of quiet buttons, a greyed one carrying its
+/// sentence.
+fn ribbon_row_ui(ui: &mut egui::Ui, views: &[Vec<crate::ribbon::CommandView>]) -> RibbonRowDrawn {
+    let icons: Vec<Vec<Option<meridian_egui::Icon>>> = views
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|view| meridian_egui::Icon::by_name(view.icon))
+                .collect()
+        })
+        .collect();
+    let buttons: Vec<Vec<meridian_egui::Button<'_>>> = views
+        .iter()
+        .zip(&icons)
+        .map(|(group, icons)| {
+            group
+                .iter()
+                .zip(icons)
+                .map(|(view, icon)| {
+                    let mut button = meridian_egui::Button::new(view.label);
+                    if let Some(icon) = icon {
+                        button = button.icon(icon);
+                    }
+                    if let Some(key) = view.keycap.as_deref() {
+                        button = button.keystroke(key);
+                    }
+                    if let Some(reason) = view.unavailable.as_deref() {
+                        button = button.unavailable(reason);
+                    }
+                    button
+                })
+                .collect()
+        })
+        .collect();
+    let groups: Vec<&[meridian_egui::Button<'_>]> = buttons.iter().map(Vec::as_slice).collect();
+    let response = meridian_egui::ribbon_row(ui, meridian_egui::RibbonRow::new(&groups));
+    let view_at = |at: meridian_egui::CommandAt| &views[at.group][at.index];
+    RibbonRowDrawn {
+        commands: response
+            .rects
+            .iter()
+            .map(|(at, rect)| {
+                let view = view_at(*at);
+                (view.longname, view.label, *rect, view.unavailable.is_none())
+            })
+            .collect(),
+        clicked: response.clicked.map(|at| view_at(at).longname),
+        pointed: response.pointed_unavailable.and_then(|(at, rect)| {
+            let view = view_at(at);
+            Some((rect, view.unavailable.clone()?, view.keycap.clone()))
+        }),
     }
 }
 
