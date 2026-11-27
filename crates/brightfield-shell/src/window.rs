@@ -3658,9 +3658,9 @@ pub struct MeridianApp {
     ///
     /// Open on each document, because that pair is the page a data file opens
     /// as, and the dashboard comes back as that page wherever it is reached
-    /// from. Only `split-canvas` closes it, closing the pane without focus,
-    /// and opens it again. The pair is drawn only where
-    /// [`MeridianApp::split_partner`] finds the other half.
+    /// from. `split-canvas` closes it, closing the pane without focus, and
+    /// opens it again (`split_again_closes_the_pane_without_focus`). The pair
+    /// is drawn where [`MeridianApp::split_partner`] finds the other half.
     split_open: bool,
     /// **Which pane of the split has focus**: the chart's or the grid's. The
     /// canvas's latch holds the dashboard either way, so that what reads the
