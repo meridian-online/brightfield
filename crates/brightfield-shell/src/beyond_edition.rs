@@ -14,9 +14,9 @@
 //! - an operator that starts a program from outside the app, such as `uv` for the operators that
 //!   run a pinned Python script, with one exception: FineType's CLI, which the managed edition
 //!   ships as a helper of its own, so arc's FineType operators run;
-//! - a step that installs a DuckDB extension, whatever its name, or updates extensions, since the
-//!   managed edition's DuckDB is built without its extension installer and refuses either
-//!   (`docs/managed-duckdb.md`);
+//! - a step that installs a DuckDB extension, whatever its name, since the managed edition's DuckDB
+//!   is built without its extension installer and refuses it (`docs/managed-duckdb.md`), or that
+//!   updates extensions, which the engine's rule refuses as it would download code;
 //! - a step that loads a DuckDB extension the app does not have built in, or loads one from a file.
 //!
 //! The lifecycle hooks are steps too, and are asked about the same way, after the steps.
@@ -237,11 +237,11 @@ fn is_assignment(word: &str) -> bool {
     })
 }
 
-/// Why the managed edition cannot run `sql`, from its first statement that the edition's DuckDB
-/// refuses: any `INSTALL` or `UPDATE EXTENSIONS`, since that DuckDB is built without its
-/// installer, and a `LOAD` of a bare name not in [`BUILT_IN_EXTENSIONS`] or of any file path,
-/// since it loads no extension from a file. This is the engine's own rule for a source's SQL.
-/// Comments are not read.
+/// Why the managed edition cannot run `sql`, from its first statement the engine's rule for a
+/// source's SQL refuses: any `INSTALL`, which the edition's DuckDB, built without its installer,
+/// refuses too; an `UPDATE EXTENSIONS`, which would download code; and a `LOAD` of a bare name not
+/// in [`BUILT_IN_EXTENSIONS`] or of any file path, since that DuckDB loads no extension from a
+/// file. Comments are not read.
 fn sql_extension_beyond(sql: &str) -> Option<Reason> {
     use brightfield_engine::extensions::{refused_when_built_in, Verb};
     refused_when_built_in(sql).map(|s| match s.verb {
