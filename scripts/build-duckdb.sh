@@ -262,10 +262,12 @@ say "building DuckDB ${DUCKDB_VERSION_PIN} with its extensions (${JOBS} jobs)"
   # which CMake 4 refuses without this.
   export CMAKE_POLICY_VERSION_MINIMUM=3.5
   # ENABLE_EXTENSION_LOAD=OFF leaves DuckDB's extension installer and file
-  # loader out of the library. Every INSTALL, FORCE INSTALL and UPDATE
-  # EXTENSIONS, and every LOAD of a file, then fails before it reaches the
-  # network or the disk, whatever the name, the FROM repository or the
-  # settings; a LOAD of an extension compiled in still succeeds. No DuckDB
+  # loader out of the library. Every INSTALL and FORCE INSTALL, and every LOAD
+  # of a file, then fails before it reaches the network or the disk, whatever
+  # the name, the FROM repository or the settings; a LOAD of an extension
+  # compiled in still succeeds. UPDATE EXTENSIONS reinstalls only extension
+  # files already installed, so with none installable it has nothing to fetch,
+  # and would meet the same refusal if it had. No DuckDB
   # setting refuses `INSTALL json FROM core` and keeps file reads open, and a
   # Mac App Store app may not download code, so the refusal is compiled in, for
   # the shell arc runs a Protocol's steps with as well as for the engine.
