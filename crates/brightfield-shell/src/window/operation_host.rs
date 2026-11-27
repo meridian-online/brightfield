@@ -503,7 +503,7 @@ impl MeridianApp {
                     && !self.charts.doc.put_grid_cursor_on_column(column)
                 {
                     let words = operation_ui::label(spec.long_name);
-                    self.say_operation(ctx, format!("{words} needs the grid to show {column}."));
+                    self.say_operation(ctx, operation_ui::header::not_shown(&words, column));
                     return false;
                 }
             }

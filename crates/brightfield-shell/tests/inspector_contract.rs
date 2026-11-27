@@ -1100,3 +1100,58 @@ fn a_foot_row_operation_on_a_column_the_grid_does_not_show_opens_nothing() {
         "a field opened on the cursor's column instead"
     );
 }
+
+/// Save the sample's Protocol into `dir`, then record `slim`, the loaded table
+/// with `median_income` hidden.
+fn a_step_without_income(dir: &Path) {
+    let opened = data_file::open(&dir.join(SAMPLE).to_string_lossy()).expect("the sample opens");
+    opened.protocol.save_to(dir).expect("the Protocol saves");
+    operation::record(
+        &runner(),
+        dir,
+        "hide-column",
+        ROOT,
+        "slim",
+        &[("column", INCOME)],
+    )
+    .expect("arc records slim");
+}
+
+/// **With the grid on a table that lacks the selected column, the grid's
+/// operations are greyed with a sentence saying so**, rather than offered on a
+/// column that table does not have.
+#[test]
+fn an_operation_on_a_column_the_grid_does_not_show_says_so() {
+    use brightfield_shell::operation_ui::header::not_shown;
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, a_step_without_income);
+    if win.app.rail_is_collapsed(INSPECTOR_RAIL) {
+        win.key_with(
+            egui::Key::B,
+            egui::Modifiers {
+                alt: true,
+                command: true,
+                mac_cmd: cfg!(target_os = "macos"),
+                ctrl: !cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+        );
+    }
+    win.show_grid_of("slim");
+    win.app.chart_doc_mut().select_column(INCOME);
+    win.settle();
+    assert!(
+        win.app.chart_doc().selected_column().is_some(),
+        "the dashboard selected {INCOME}"
+    );
+    let rename = win
+        .app
+        .inspector_column_commands()
+        .into_iter()
+        .find(|c| c.verb == "rename-column")
+        .expect("rename is listed");
+    assert_eq!(
+        rename.unavailable,
+        Some(not_shown(&rename.label, INCOME)),
+        "rename is offered on a column slim does not have"
+    );
+}

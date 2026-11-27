@@ -174,14 +174,29 @@ impl ChartDoc {
     /// Read from the same operations and the same context as the header's
     /// menu, so the two places cannot disagree about what a column can do, and
     /// an operation joins the section when its slot is filled.
+    ///
+    /// The header's menu is drawn on the grid's own columns; the section's
+    /// column is the dashboard's, which the table in front may not have (a
+    /// step that renamed it, say). An operation that can otherwise start is
+    /// then greyed with a sentence saying the grid does not show the column,
+    /// since it would begin on a column that table lacks.
     #[must_use]
     pub fn column_operations(&self, column: &str) -> Vec<(&'static OperationUi, MenuRowDrawn)> {
-        rows_for(
-            &self.header.ops(),
-            self.header.context.as_ref(),
-            column,
-            |start| matches!(start, Start::Header(_) | Start::Cell | Start::FootField(_)),
-        )
+        let context = self.header.context.as_ref();
+        let mut rows = rows_for(&self.header.ops(), context, column, |start| {
+            matches!(start, Start::Header(_) | Start::Cell | Start::FootField(_))
+        });
+        let shown = context
+            .and_then(|cx| cx.in_front.as_ref())
+            .is_none_or(|front| front.columns.iter().any(|c| c == column));
+        if !shown {
+            for (_, row) in &mut rows {
+                if row.sentence.is_none() {
+                    row.sentence = Some(not_shown(&row.words, column));
+                }
+            }
+        }
+        rows
     }
 
     /// Start the operation `verb` on `column` as a choice from that column's
@@ -234,6 +249,12 @@ pub fn the_one_from(
     let mut from = starting_from(ops, part);
     let first = from.next()?;
     from.next().is_none().then_some(first)
+}
+
+/// What an operation started on `column` says when the grid does not show it.
+#[must_use]
+pub fn not_shown(words: &str, column: &str) -> String {
+    format!("{words} needs the grid to show {column}.")
 }
 
 /// The key the registry gives the verb `verb`, built or not.
