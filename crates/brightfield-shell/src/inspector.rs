@@ -419,7 +419,8 @@ pub enum ColumnBars {
     /// Equal-width bins of a number, low to high: each bin's row count.
     Bins(Vec<u64>),
     /// The values of a column with few of them, most frequent first, each
-    /// with its row count, and every value after [`TOP_VALUES`] as `rest`.
+    /// with its row count, and the rows of the values past [`TOP_VALUES`]
+    /// as `rest` (`a_categorical_column_shows_its_top_values`).
     Top {
         /// Each value as the column prints it, and its row count.
         values: Vec<(String, u64)>,
