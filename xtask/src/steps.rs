@@ -416,7 +416,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "managed-edition",
-        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants, then --test grants -- --ignored, at least 1 executed",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open --test refused_access --test child_grants --test beyond_edition, then --test grants -- --ignored, at least 1 executed",
         only_in_ci: None,
         only_at_night: Some(
             "it runs brightfield-shell's integration tests, which a pull request's gate \
@@ -584,6 +584,8 @@ fn warm_cache(ctx: &Ctx) -> Result<(), String> {
         "refused_access",
         "--test",
         "child_grants",
+        "--test",
+        "beyond_edition",
         "--no-run",
     ])
 }
@@ -1254,6 +1256,8 @@ fn managed_edition(ctx: &Ctx) -> Result<(), String> {
             "refused_access",
             "--test",
             "child_grants",
+            "--test",
+            "beyond_edition",
         ])
         .collect();
     ctx.run_cargo(&suite)?;
