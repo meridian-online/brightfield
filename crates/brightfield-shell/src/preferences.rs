@@ -89,14 +89,17 @@ pub(crate) fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: 
     }
 }
 
-/// Draw the sheet's body: the Protocols folder `folder`, the offer while one waits, the default-app
+/// What the sheet shows in the managed edition before a Protocols folder is chosen.
+pub const NONE_CHOSEN: &str = "None chosen yet";
+
+/// Draw the sheet's body: the Protocols folder `folder`, or that none is chosen yet, the offer while one waits, the default-app
 /// button where `default_app` says there is one (`Err` with why it cannot be pressed in this
 /// launch), and the folders in `trusted` when there are any. `overridden` is the variable that
 /// sets the folder for this launch, when it is set.
 pub fn body(
     ui: &mut egui::Ui,
     sheet: &PreferencesSheet,
-    folder: &Path,
+    folder: Option<&Path>,
     overridden: Option<&str>,
     default_app: Option<&Result<(), String>>,
     trusted: &[PathBuf],
@@ -119,9 +122,18 @@ pub fn body(
         } else {
             ui.available_width()
         };
-        let font = egui::TextStyle::Monospace.resolve(ui.style());
-        ui.label(egui::RichText::new(elide_path(ui, folder, &font, room)).monospace())
-            .on_hover_text(folder.display().to_string());
+        match folder {
+            Some(folder) => {
+                let font = egui::TextStyle::Monospace.resolve(ui.style());
+                ui.label(egui::RichText::new(elide_path(ui, folder, &font, room)).monospace())
+                    .on_hover_text(folder.display().to_string());
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new(NONE_CHOSEN).color(chrome::colour(sem.text.secondary)),
+                );
+            }
+        }
         // The variable is for tests and portable installs, and wins over the setting, so the
         // sheet does not offer to change a setting that would not be used.
         if overridden.is_none() && ui.button("Choose\u{2026}").clicked() {
