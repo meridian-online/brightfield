@@ -1848,7 +1848,7 @@ impl Session {
     /// **no selection at all**: what a region of dense points describes is the
     /// plot's own view, so a brush on another plot must not redraw it.
     ///
-    /// The same emitter as [`Self::step_rows_sql`], called with no selections
+    /// The same emitter as `step_rows_sql`, called with no selections
     /// where that one passes the held ones.
     ///
     /// # Errors

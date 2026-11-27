@@ -20,7 +20,7 @@
 //!    ([`name_regions_shown`]).
 //!
 //! The [`RegionsWorker`] keeps one run per plot, stops a run a newer request
-//! replaces, and hands the answers over on a later frame. [`ink_regions`] draws
+//! replaces, and hands the answers over on a later frame. `ink_regions` draws
 //! an answer while its extent and its rows are the ones the plot is drawn at,
 //! and not after a zoom moves the plot or a parameter filters its rows, so the
 //! old regions are hidden until the new ones arrive
@@ -927,7 +927,7 @@ impl RegionsWorker {
 
     /// The answer drawn on `plot`: the last one, while its extent is the one
     /// the plot is drawn at and its rows are the ones the plot was last
-    /// composed over ([`Self::note_shown`]). None once a zoom or pan has moved
+    /// composed over (`note_shown`). None once a zoom or pan has moved
     /// the plot, or a parameter has changed its rows, and the new answer has
     /// not landed.
     #[must_use]
@@ -985,7 +985,7 @@ impl RegionsWorker {
 
     /// Signal every run under way to stop, without waiting for them to end:
     /// each gives up at its next step, and a query under way is interrupted.
-    /// Their plots are asked again by the next [`Self::request_for`].
+    /// Their plots are asked again by the next `request_for`.
     pub fn stop_all(&mut self) {
         for (path, flight) in std::mem::take(&mut self.in_flight) {
             flight.stop();
@@ -998,7 +998,7 @@ impl Drop for RegionsWorker {
     /// Stop every run and wait for its thread, so no run outlives the worker:
     /// the usual end, a quit included, is every thread joined.
     ///
-    /// A run still going after [`STOP_PATIENCE`] is left to finish alone
+    /// A run still going after `STOP_PATIENCE` is left to finish alone
     /// rather than block the window. That is safe: it owns its reader and its
     /// job, its stop flag is set so it gives up at its next step, and the
     /// answer it would send has no receiver left. The one cost is the one the
@@ -1034,7 +1034,7 @@ impl Drop for RegionsWorker {
 /// made while a zoom's regions are still being found is a plain click, not a
 /// choice of cells from a view no longer shown. The point is inverted through the
 /// displayed scales without unprojecting, because the grid is laid over those
-/// scales' domains ([`displayed_extent`]).
+/// scales' domains (`displayed_extent`).
 #[must_use]
 pub fn region_clause_at(
     worker: &RegionsWorker,
@@ -1100,7 +1100,7 @@ fn held_on(session: &Session, regions: &PlotRegions, plot: &PlotHandle) -> Optio
         .find_map(|(_, predicate)| region_held(regions, predicate))
 }
 
-/// [`held_on`] for the answer drawn on `plot` now.
+/// `held_on` for the answer drawn on `plot` now.
 #[must_use]
 pub fn held_region(worker: &RegionsWorker, session: &Session, plot: &PlotHandle) -> Option<usize> {
     held_on(session, worker.drawn_on(plot)?, plot)

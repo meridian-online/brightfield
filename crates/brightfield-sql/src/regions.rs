@@ -5,7 +5,7 @@
 //!
 //! The grid's edges are the view extent the caller passes, not the table's
 //! min and max, so a zoomed plot gets a grid over what it shows. The binning is
-//! the density lowerer's own arithmetic ([`crate::lower::equiwidth_bin_index`]),
+//! the density lowerer's own arithmetic (`lower::equiwidth_bin_index`),
 //! so a region grid cell and a density cell cover the same data range.
 
 use std::collections::BTreeMap;

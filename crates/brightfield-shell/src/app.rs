@@ -4282,7 +4282,7 @@ impl ChartDoc {
     /// would be showing a string nothing executed. Shown *is* executed, or the
     /// readout is a second opinion about the filter rather than a view of it.
     ///
-    /// The one exception is a region's cells ([`readable_clause`]): the SQL
+    /// The one exception is a region's cells (`readable_clause`): the SQL
     /// lists the cells one by one, hundreds for a large region, so the readout names its
     /// two columns, how many cells it holds and the grid they are on.
     ///
