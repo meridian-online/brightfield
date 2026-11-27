@@ -19,16 +19,18 @@ use brightfield_shell::beyond_edition::{
 };
 use brightfield_shell::edition::Edition;
 
-/// A scratch folder of this test process's own, with the config folder the trust store is kept in
-/// set once, before any test reads it.
+/// A scratch folder of this test process's own, with the config folder the trust store and the
+/// grant store are kept in set once, before any test reads it. The folder the Protocols are written
+/// in is granted, so the managed edition's window opens them rather than asking for a grant first.
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-beyond-edition-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db", "protocols"] {
+        for sub in ["config", "history", "db", "protocols", "input"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
+        let root = std::fs::canonicalize(&root).expect("the scratch folder resolves");
         std::env::set_var(
             brightfield_shell::startup::CONFIG_DIR_VAR,
             root.join("config"),
@@ -39,6 +41,9 @@ fn scratch() -> &'static Path {
         );
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));
+        brightfield_shell::grants::store()
+            .grant(&root.join("input"))
+            .expect("the folder the Protocols are written in is granted");
         root
     })
 }
