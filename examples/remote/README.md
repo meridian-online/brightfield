@@ -25,7 +25,7 @@ Where that error surfaces depends on how you opened it:
 
 | how it was opened | with no network | held by |
 |---|---|---|
-| `brightfield examples/remote/<spec>.yaml` | the process exits non-zero, having printed the error | `scripts/verify-airgapped.sh`, run 3, against the packaged artifact inside a network-denying jail |
+| `brightfield examples/remote/<spec>.yaml` | the process exits non-zero, having printed the error | `scripts/verify-airgapped.sh`, run 1, against the packaged artifact inside a network-denying jail |
 | the front door's gallery card | an error banner naming the start and the cause; the window stays up and every other start still opens | `MeridianApp::open_start`'s error arm, which raises a notification and returns rather than taking the window down. Read from the code, not from a separate test — what IS tested is that the load fails this way, in `tests/crosswalk_chart.rs` |
 
 The bundled starting point that opens `edgar-gleif-crosswalk.yaml` says

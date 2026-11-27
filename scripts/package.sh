@@ -425,9 +425,7 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
-# A Parquet to open, which is what verify-airgapped.sh opens through the file
-# route with the network denied — the proof that the packaged binary reads
-# Parquet with DuckDB's reader linked in rather than downloaded. It is the
+# A Parquet to open, so the packaged examples show the file route. It is the
 # reduced copy of Meridian's own published EDGAR-GLEIF crosswalk, with the
 # provenance file that says what it keeps; no third-party dataset ships in the
 # package.

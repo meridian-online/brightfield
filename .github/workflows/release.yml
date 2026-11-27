@@ -27,16 +27,18 @@
 # validated in CI first.
 #
 # A separate `verify` job re-proves the air-gapped claim against the packaged
-# aarch64 tarball (scripts/verify-airgapped.sh: network-denial negative
-# control, then the packaged binary renders a chart and a Protocol manifest
-# inside the jail). It reports independently and does NOT gate the release —
+# aarch64 tarball and disk image (scripts/verify-airgapped.sh: network-denial
+# negative control, then the packaged binary types a column, refuses a remote
+# spec by name, and runs a Protocol and draws its charts to a PDF and a PNG,
+# all inside the jail and none of it in a window). It reports independently
+# and does NOT gate the release —
 # see the comment above the job for why. The x86_64 leg is a cross-compile
 # from the arm64 runner: its Mach-O linkage audit still runs (otool reads any
 # arch), but it cannot be executed there, so its air-gapped run is the native
 # one's by construction — same source, same packaging, different codegen
-# target. If the hosted runner turns out to have no window session for the
-# verify job, move it behind a self-hosted runner rather than deleting it; the
-# claim must stay executable somewhere.
+# target. If the verify job cannot run on the hosted runner, move it behind a
+# self-hosted runner rather than deleting it; the claim must stay executable
+# somewhere.
 #
 # The `update-homebrew` job carries the tag through to the Homebrew tap, so
 # `brew install --cask meridian-online/tap/brightfield` serves the release this
@@ -328,12 +330,13 @@ jobs:
         if: ${{ always() }}
         run: scripts/release-signing.sh cleanup
 
-  # Deliberately NOT a gate on `release`. This step needs a real window on a
-  # hosted runner, which nothing has ever proven — test.yml only renders
-  # offscreen (egui_kittest). As a step inside `build` it withheld every asset,
+  # Deliberately NOT a gate on `release`. It once needed a real window on the
+  # hosted runner, and as a step inside `build` it withheld every asset,
   # including the x86_64 ones, whenever the runner's window session was the
-  # thing at fault rather than the binary. So it runs on its own and reports
-  # red on its own: a failure here is loud and blocks nothing.
+  # thing at fault rather than the binary. It opens no window now, but the
+  # runner's sandbox-exec and disk-image attach are still the runner's, so it
+  # runs on its own and reports red on its own: a failure here is loud and
+  # blocks nothing.
   #
   # That is safe because this is a REGRESSION GUARD, not the primary proof —
   # the air-gapped claim was executed against the packaged artifact on a
@@ -360,10 +363,8 @@ jobs:
         run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
 
       # The image leg, and it runs even when the tarball leg has just failed:
-      # the two artifacts fail for different reasons, and a runner with no
-      # window session would otherwise hide whether `hdiutil attach` works here
-      # at all. That question is the one this job answers ahead of the first
-      # signed release.
+      # the two artifacts fail for different reasons, and the image's is the
+      # signed app a download hands a stranger.
       - name: Verify air-gapped (disk image)
         if: ${{ !cancelled() }}
         run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-aarch64-apple-darwin.dmg"
@@ -530,7 +531,7 @@ jobs:
 
             It reaches out only when a spec asks it to: a remote source, a DuckLake catalog, or a spatial source. In those cases DuckDB downloads the extension it needs from its own extension repository and fetches the data. A spec over local files does neither.
 
-            `scripts/verify-airgapped.sh` in the repository proves that against the packaged artifact — it denies the network, checks that the denial really bites, and only then renders a chart and a protocol graph inside the jail. Run it yourself; it takes a minute. The Intel build is the same source and packaging, cross-compiled.
+            `scripts/verify-airgapped.sh` in the repository proves that against the packaged artifact — it denies the network, checks that the denial really bites, and only then runs a local Protocol and draws its charts inside the jail. Run it yourself; it takes a minute. The Intel build is the same source and packaging, cross-compiled.
           files: |
             artifacts/brightfield-*.tar.gz
             artifacts/brightfield-*.dmg
