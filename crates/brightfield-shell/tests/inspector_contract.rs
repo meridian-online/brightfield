@@ -888,7 +888,7 @@ fn a_categorical_column_shows_its_top_values() {
 /// **What can be done with the column lists its commands with their keys.**
 /// The operations started from the grid come from the built forms, so a form
 /// joins the list with no edit to the inspector; filter and sort are among
-/// them. After them come the chart's channels and retyping. Each row says its
+/// them. After them come the chart's channels. Each row says its
 /// key, and a row that cannot act says why, in the sentence the window's
 /// availability gives. A click on an operation's row starts it on the column.
 #[test]
@@ -955,13 +955,9 @@ fn what_can_be_done_lists_the_columns_commands_with_their_keys() {
         .find(|c| c.verb == "put-column-on-x")
         .expect("put on x is listed");
     assert_eq!(put_x.key.as_deref(), Some(key_label("z x").as_str()));
-    let retype = commands
-        .iter()
-        .find(|c| c.verb == "retype-column")
-        .expect("retype is listed");
     assert!(
-        retype.unavailable.is_some(),
-        "with no model shown, retype says what it needs"
+        !verbs.contains(&"retype-column"),
+        "retype acts on the model pane's table, which this section never shows beside it"
     );
 
     let rename = commands

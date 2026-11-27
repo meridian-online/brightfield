@@ -349,15 +349,15 @@ pub struct ColumnCommand {
 }
 
 /// The commands a column offers that are not operations: putting it on a
-/// channel of the chart, and giving it another FineType type. Each acts on the
-/// selected column, because a column selected on the dashboard puts the
-/// Outline's cursor on its row, which is where these verbs read it.
-pub const COLUMN_VERBS: [&str; 4] = [
-    "put-column-on-x",
-    "put-column-on-y",
-    "put-column-on-colour",
-    "retype-column",
-];
+/// channel of the chart. Each acts on the selected column, because a column
+/// selected on the dashboard puts the Outline's cursor on its row, which is
+/// where these verbs read it.
+///
+/// `retype-column` is not here: it retypes a column of the table the model
+/// pane has selected, and this section is not drawn while the model pane is
+/// open, so its row could only ever be greyed with a sentence no reader here
+/// can act on.
+pub const COLUMN_VERBS: [&str; 3] = ["put-column-on-x", "put-column-on-y", "put-column-on-colour"];
 
 /// A registry keystroke string (`shift-h`) as a keycap draws it on this host.
 #[must_use]
