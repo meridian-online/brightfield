@@ -3666,8 +3666,8 @@ pub struct MeridianApp {
     /// canvas's latch holds the dashboard either way, so that what reads the
     /// latch (the spine's mark, the Outline's chips, the inspector) reads the
     /// page the reader is on, not the pane they last pressed in. A press in a
-    /// pane moves it, and any frame that draws no split puts it back on the
-    /// chart.
+    /// pane moves it, and a frame on the chart's page that draws no split, or
+    /// any frame off that page, puts it back on the chart.
     split_focus: crate::node_activity::NodeActivity,
     /// **Which way the grid pane draws the file** — its rows, or its columns
     /// as rows. See [`crate::app::GridLayout`].
@@ -6252,6 +6252,12 @@ impl MeridianApp {
     /// Put the grid in `spot` — see [`Self::move_grid`].
     fn set_grid_spot(&mut self, spot: crate::app::GridSpot) {
         self.grid_spot = spot;
+        // The grid brought back to the canvas is drawn there: beside the
+        // chart, as a split, even when the split was closed, since a closed
+        // split leaves the grid nowhere else on the canvas.
+        if spot == crate::app::GridSpot::Canvas {
+            self.split_open = true;
+        }
         if spot == crate::app::GridSpot::Ledger {
             if let Some(rows) = region_panes(
                 arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL),
@@ -8822,10 +8828,18 @@ impl MeridianApp {
             // that has left the chart's page leaves it on the chart, which is
             // where the split opens unless `split-canvas` opened it from the
             // grid.
+            //
+            // A frame that began on the chart's page and drew no split (the
+            // grid in the ledger, the model, a statement's preview) puts focus
+            // back too. Read off the frame's own start rather than the latch
+            // now, because a `split-canvas` from the grid moves the latch to
+            // the chart's page before its first split frame is drawn.
             if canvas_panes.headers.len() == 2 {
                 if let Some(pressed) = pane_pressed {
                     self.split_focus = pressed;
                 }
+            } else if matches!(canvas_holds, CanvasHolds::Dashboard { .. }) {
+                self.split_focus = crate::node_activity::NodeActivity::Chart;
             }
             if !matches!(self.canvas_holds, CanvasHolds::Dashboard { .. }) {
                 self.split_focus = crate::node_activity::NodeActivity::Chart;

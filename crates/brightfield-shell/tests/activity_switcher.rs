@@ -807,3 +807,35 @@ fn split_over_the_graph_changes_nothing_and_says_why() {
         "no toast said why the split was not made"
     );
 }
+
+#[test]
+fn the_grid_moved_back_to_the_canvas_is_drawn_beside_the_chart() {
+    let mut win = scenes::data_file();
+    // The rows close beside the chart, and the grid's spot is still the
+    // canvas: moving it out and back must draw it, not leave it nowhere.
+    win.press("cmd-\\");
+    assert_eq!(panes_showing(&win), [NodeActivity::Chart]);
+    win.choose("move-grid");
+    win.choose("move-grid");
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid],
+        "the grid moved back to the canvas is drawn nowhere"
+    );
+}
+
+#[test]
+fn focus_left_on_the_grid_goes_back_to_the_chart_when_the_split_is_not_drawn() {
+    let mut win = scenes::data_file();
+    focus_pane(&mut win, NodeActivity::Grid);
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Grid));
+    // The grid to the ledger: the chart's page draws no split.
+    win.choose("move-grid");
+    assert_eq!(panes_showing(&win), [NodeActivity::Chart]);
+    // …and back: the split opens with the chart in focus, so Split closes
+    // the rows, not the chart.
+    win.choose("move-grid");
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Chart));
+    win.press("cmd-\\");
+    assert_eq!(panes_showing(&win), [NodeActivity::Chart]);
+}
