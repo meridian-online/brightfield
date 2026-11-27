@@ -495,6 +495,11 @@ impl MeridianApp {
         // with no description from arc, and in a window with no arc to ask: the operation
         // panel beside it says what arc gave, or that it gave no description.
         if let Start::FootField(field) = start {
+            // Started on a column, as the inspector's Column section starts one, the field
+            // reads that column's cell in the cursor's row rather than the cursor's column.
+            if let Some(column) = &column {
+                self.charts.doc.put_grid_cursor_on_column(column);
+            }
             let cx = self.operation_context();
             if let Availability::Unavailable(why) = availability(spec, &cx, column.as_deref()) {
                 // Over a step's preview the foot row has its own line for the offer, which

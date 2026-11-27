@@ -1030,3 +1030,43 @@ fn hovering_a_bin_says_its_range_and_count() {
         win.texts
     );
 }
+
+/// **Filter rows chosen in the Column section asks on the selected column**,
+/// in the row the grid's cursor is on, whichever column the cursor was on.
+#[test]
+fn filter_rows_chosen_from_the_column_section_asks_on_that_column() {
+    use brightfield_shell::data_grid::GridCursor;
+    use brightfield_shell::grid_foot::FootField;
+    let (mut win, _) = with_column(INCOME);
+    let root = win.table();
+    win.show_grid_of(&root);
+    win.app.chart_doc_mut().grid_cursor = Some(GridCursor { row: 0, col: 1 });
+    win.app.chart_doc_mut().select_column(INCOME);
+    win.settle();
+
+    let filter = win
+        .app
+        .inspector_column_commands()
+        .into_iter()
+        .find(|c| c.verb == "filter-rows-at-cursor")
+        .expect("filter is listed");
+    assert_eq!(filter.unavailable, None, "the cursor is on a cell");
+    let at = win
+        .text_rects
+        .iter()
+        .find(|(t, _)| *t == filter.label)
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("filter's row is drawn: {:?}", win.texts));
+    win.click(at);
+    let (field, text) = win
+        .app
+        .chart_doc()
+        .foot_asking()
+        .map(|(field, text)| (field, text.to_string()))
+        .expect("the where field opened");
+    assert_eq!(field, FootField::Where);
+    assert!(
+        text.starts_with(INCOME),
+        "the field asks on {INCOME}, not the cursor's column: {text}"
+    );
+}
