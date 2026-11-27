@@ -7762,7 +7762,11 @@ impl MeridianApp {
                 crate::ribbon::RibbonPick::Stage(stage) => stage.tab_verb(),
                 crate::ribbon::RibbonPick::Context => brightfield_keys::ribbon::SHOW_CONTEXT_TAB,
             };
-            self.perform_ribbon_verb(&ctx, verb);
+            // A tab clicked while the ribbon is put away opens it on that tab, so the tabs are
+            // the way the band comes back.
+            if self.perform_ribbon_verb(&ctx, verb) && self.ribbon.collapsed {
+                self.perform_ribbon_verb(&ctx, brightfield_keys::ribbon::TOGGLE_RIBBON);
+            }
         }
         // The selected tab's commands, in a band of their own under the title band, on every
         // Protocol whose ribbon is not collapsed.
@@ -24337,11 +24341,18 @@ fn title_tabs_ui(
         .rects
         .last()
         .map_or(left, |(_, r)| r.right() + spacing::SPACE_4);
+    // The width is measured from the tabs laid out whole; what is recorded is what the strip
+    // shows of each, so a tab cut away by a narrow band is neither a control nor an anchor.
     TitleTabsDrawn {
         tabs: response
             .rects
             .iter()
-            .map(|(pick, rect)| (pick_of(*pick), label_of(*pick), *rect))
+            .filter_map(|(pick, tab)| {
+                let shown = tab.intersect(rect);
+                shown
+                    .is_positive()
+                    .then(|| (pick_of(*pick), label_of(*pick), shown))
+            })
             .collect(),
         clicked: response.clicked.map(pick_of),
         width: end - left,
@@ -24398,12 +24409,17 @@ fn ribbon_row_ui(ui: &mut egui::Ui, views: &[Vec<crate::ribbon::CommandView>]) -
     let response = meridian_egui::ribbon_row(ui, meridian_egui::RibbonRow::new(&groups));
     let view_at = |at: meridian_egui::CommandAt| &views[at.group][at.index];
     RibbonRowDrawn {
+        // What the band shows of each command: one the row clips away at its edge is not
+        // recorded.
         commands: response
             .rects
             .iter()
-            .map(|(at, rect)| {
+            .filter_map(|(at, rect)| {
+                let shown = rect.intersect(response.response.rect);
                 let view = view_at(*at);
-                (view.longname, view.label, *rect, view.unavailable.is_none())
+                shown
+                    .is_positive()
+                    .then(|| (view.longname, view.label, shown, view.unavailable.is_none()))
             })
             .collect(),
         clicked: response.clicked.map(|at| view_at(at).longname),

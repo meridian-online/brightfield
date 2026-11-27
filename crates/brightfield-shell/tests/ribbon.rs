@@ -125,6 +125,47 @@ fn clicking_a_stage_tab_shows_its_commands() {
 }
 
 #[test]
+fn clicking_a_tab_while_the_ribbon_is_put_away_brings_it_back() {
+    let mut win = scenes::data_file();
+    win.press("alt-r");
+    assert!(win.app.ribbon().collapsed);
+    assert_eq!(
+        win.app.region_rect(RIBBON_BAND),
+        None,
+        "the band is put away"
+    );
+    win.click(tab(&win, RibbonPick::Stage(Stage::Publish)).center());
+    assert!(
+        !win.app.ribbon().collapsed,
+        "the click left the ribbon away"
+    );
+    assert_eq!(win.app.ribbon().selected, RibbonPick::Stage(Stage::Publish));
+    assert!(win.app.region_rect(RIBBON_BAND).is_some());
+    assert!(command(&win, "copy-chart-picture").is_some());
+}
+
+#[test]
+fn a_tab_the_narrow_band_cuts_away_is_no_control_and_no_anchor() {
+    let mut win = scenes::data_file();
+    win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 820.0));
+    win.settle();
+    let band = win.app.region_rect(TITLE_BAND).expect("the title band");
+    let run = win.app.run_control_rect().expect("Run");
+    let tabs = win.app.ribbon_tab_rects().to_vec();
+    assert!(tabs.len() < 5, "the narrow band cut no tab: {tabs:?}");
+    for (pick, rect) in &tabs {
+        assert!(
+            band.contains_rect(*rect),
+            "{pick:?} at {rect:?} left the band"
+        );
+        assert!(
+            rect.right() <= run.left(),
+            "{pick:?} at {rect:?} reaches Run"
+        );
+    }
+}
+
+#[test]
 fn clicking_a_command_performs_it() {
     let mut win = scenes::data_file();
     win.click(tab(&win, RibbonPick::Stage(Stage::Publish)).center());
