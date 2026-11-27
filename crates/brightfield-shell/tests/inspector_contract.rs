@@ -1289,7 +1289,8 @@ fn the_reads_section_names_the_table_and_the_rows_drawn() {
 }
 
 /// **The Fields section counts the fields the chart can use**: the table's
-/// columns, which the shelf's list offers, one per column of the file.
+/// columns, which the shelf's list offers, one per column of the file, listed
+/// in the file's order under a header that counts them.
 #[test]
 fn the_fields_section_counts_the_fields_available() {
     let mut win = OpWindow::on_copy_of(SAMPLE);
@@ -1305,12 +1306,11 @@ fn the_fields_section_counts_the_fields_available() {
         win.app.inspector_section_count(Section::Fields),
         Some(header.len())
     );
-    for column in header {
-        assert!(
-            win.texts.iter().any(|t| t == column),
-            "the Fields section did not name {column}"
-        );
-    }
+    assert_eq!(
+        win.app.inspector_fields(),
+        header,
+        "the Fields section did not list the file's columns in its order"
+    );
 }
 
 /// **The Parameters section holds the sliders**: the spec's slider is drawn

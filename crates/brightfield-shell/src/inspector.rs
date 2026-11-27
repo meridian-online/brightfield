@@ -228,6 +228,7 @@ struct SectionState {
     go_to: Option<brightfield_workbench::channel::ShelfChannel>,
     encoding: Vec<EncodingRow>,
     reads: Option<String>,
+    fields: Vec<String>,
     counts: std::collections::BTreeMap<Section, usize>,
 }
 
@@ -253,6 +254,7 @@ impl SectionHandle {
         state.drawing = None;
         state.encoding.clear();
         state.reads = None;
+        state.fields.clear();
         state.counts.clear();
     }
 
@@ -286,6 +288,12 @@ impl SectionHandle {
     #[must_use]
     pub fn reads(&self) -> Option<String> {
         self.0.borrow().reads.clone()
+    }
+
+    /// The columns the Fields section listed on the last frame, in order.
+    #[must_use]
+    pub fn fields(&self) -> Vec<String> {
+        self.0.borrow().fields.clone()
     }
 
     /// The shelf cell an Encoding row's click asked for, taken once.
@@ -892,7 +900,7 @@ fn muted_line(ui: &mut egui::Ui, mode: Mode, text: &str) {
 
 /// The Fields section: the columns the chart can put on a channel, which are
 /// the columns the shelf's list offers, each with its semantic type's leaf.
-fn fields_body(ui: &mut egui::Ui, doc: &ChartDoc, mode: Mode) {
+fn fields_body(ui: &mut egui::Ui, doc: &ChartDoc, drawn: &SectionHandle, mode: Mode) {
     let facts = doc.column_facts();
     if facts.is_empty() {
         muted_line(ui, mode, NO_FIELDS);
@@ -900,6 +908,7 @@ fn fields_body(ui: &mut egui::Ui, doc: &ChartDoc, mode: Mode) {
     }
     let sem = semantic(mode.is_dark());
     for column in facts.columns() {
+        drawn.0.borrow_mut().fields.push(column.column.clone());
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(&column.column)
@@ -963,7 +972,7 @@ impl Item<ChartDoc> for InspectorPane {
             Some(Section::Column) => self.column_section(doc, ui, cx),
             Some(Section::Encoding) => self.encoding_section(doc, ui, cx.mode),
             Some(Section::Reads) => self.reads_section(doc, ui, cx.mode),
-            Some(Section::Fields) => fields_body(ui, doc, cx.mode),
+            Some(Section::Fields) => fields_body(ui, doc, &self.sections, cx.mode),
             // Parameters, and a pane drawn with no section named: its live
             // controls.
             _ => self.parameters_section(doc, ui, cx),

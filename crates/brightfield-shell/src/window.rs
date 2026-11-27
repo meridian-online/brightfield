@@ -7035,6 +7035,12 @@ impl MeridianApp {
         self.charts.inspector_sections.encoding()
     }
 
+    /// The columns the inspector's Fields section listed on the last frame.
+    #[must_use]
+    pub fn inspector_fields(&self) -> Vec<String> {
+        self.charts.inspector_sections.fields()
+    }
+
     /// The line the inspector's Reads section drew on the last frame.
     #[must_use]
     pub fn inspector_reads(&self) -> Option<String> {
