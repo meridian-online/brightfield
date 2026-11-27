@@ -866,7 +866,6 @@ fn table_body(ui: &mut egui::Ui, inspected: &InspectedTable, mode: Mode) {
 /// about it.
 pub const NOT_RUN: &str = crate::protocol::NOT_RUN;
 
-/// One caption-and-value line of the column block.
 /// What the Encoding and Reads sections say over a chart drawn with no live
 /// session behind it, as a still picture is.
 pub const NOT_LIVE: &str =
@@ -916,6 +915,7 @@ fn fields_body(ui: &mut egui::Ui, doc: &ChartDoc, mode: Mode) {
     }
 }
 
+/// One caption-and-value line of the column block.
 fn column_field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str) {
     let sem = semantic(mode.is_dark());
     ui.horizontal(|ui| {
