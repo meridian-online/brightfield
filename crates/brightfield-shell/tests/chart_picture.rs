@@ -44,6 +44,19 @@ impl Window {
             commands: Vec::new(),
         };
         win.run(vec![Vec::new(), Vec::new()]);
+        // The plot's dense regions arrive from a worker a few frames after
+        // the first; wait for them, so every picture a test copies is of the
+        // same finished chart rather than of one before and one after.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while win.app.chart_doc().regions_pending() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the region run did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            win.run(vec![Vec::new()]);
+        }
+        win.run(vec![Vec::new()]);
         win
     }
 

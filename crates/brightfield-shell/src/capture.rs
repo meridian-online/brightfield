@@ -273,7 +273,9 @@ pub const READY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(6
 /// The window's capture behind [`capture_png_staged`] and
 /// [`capture_png_awaiting`]. `after` is counted in frames, so it is only
 /// handed the window at the end of the script when `ready` never holds a
-/// frame back, which is how the first of them calls this.
+/// frame back, which is how the first of them calls this. The frames drawn
+/// while the window waits on a plot's regions are not counted, since they are
+/// no part of the script.
 #[allow(clippy::too_many_arguments)]
 fn capture_window(
     boot: Boot,
@@ -311,6 +313,7 @@ fn capture_window(
     let mut drawn = 0usize;
     let mut after = Some(after);
     let held = std::cell::Cell::new(false);
+    let mut waiting_on_regions = false;
     let full = run_ui_frames(
         &ctx,
         &egui_renderer,
@@ -321,14 +324,23 @@ fn capture_window(
         script,
         &held,
         |ui| {
-            if drawn == scripted {
-                if let Some(after) = after.take() {
-                    after(&mut app);
+            let regions_wait = waiting_on_regions;
+            if !regions_wait {
+                if drawn == scripted {
+                    if let Some(after) = after.take() {
+                        after(&mut app);
+                    }
                 }
+                drawn += 1;
             }
-            drawn += 1;
             app.draw(ui);
-            held.set(!ready(&app));
+            // A plot's regions arrive from a worker some frames after the
+            // plot is drawn, so the capture waits for them as it waits on
+            // `ready`: otherwise the picture would hold them or not by how
+            // fast the worker ran.
+            let unready = !ready(&app);
+            waiting_on_regions = !unready && app.chart_doc().regions_pending();
+            held.set(unready || waiting_on_regions);
         },
     );
     finish_capture(

@@ -29,3 +29,7 @@ Pixel baselines are drawn on the Mac Studio's Apple M5 Max, which holds every sn
 A full run needs the pinned toolchain, `cargo-deny`, `cargo-nextest`, `python3` and the pinned DuckDB CLI in `target/duckdb-cli`. A step missing one of them stops and says what to install or where to put it. The gate tests Brightfield's own Protocols only. The nightly also reports which Protocols on open-analytics' `main` the pinned arc refuses (`cargo xtask ci --step sibling-manifests`, with a clone of `open-analytics` beside this checkout), on its own status and outside the gate's verdict, since a check against another repository's `main` never blocks a merge.
 
 Keep private planning identifiers out of code, commit messages, pull request text and branch names; no CI step scans for them.
+
+## Docs
+
+`docs/map-regions.md` says how a plot's dense regions are found, named, drawn and selected, and why; read it before changing the region pipeline, its thresholds, its naming rules or the regions switch.

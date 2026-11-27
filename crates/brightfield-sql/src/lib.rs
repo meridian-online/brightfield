@@ -20,5 +20,6 @@ pub mod ir;
 pub mod lower;
 pub mod navigation_filter_pass;
 pub mod passes;
+pub mod regions;
 pub mod render;
 pub(crate) mod source;

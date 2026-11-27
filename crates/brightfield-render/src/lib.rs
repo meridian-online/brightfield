@@ -23,6 +23,7 @@ pub mod mark;
 pub mod model_scene;
 pub mod nearest;
 pub mod past_ends;
+pub mod regions;
 pub mod sample_notice;
 pub mod sample_policy;
 pub mod scale;

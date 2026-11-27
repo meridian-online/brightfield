@@ -370,6 +370,14 @@ impl NavGesture {
         self.owed
     }
 
+    /// Whether a gesture has moved the frame to an extent not yet handed out
+    /// for dispatch: it is still moving, or it has settled and its query is
+    /// still owed.
+    #[must_use]
+    pub fn is_moving(&self) -> bool {
+        self.live.is_some() && (self.owed || self.dispatched.last() != self.live.as_ref())
+    }
+
     /// The extents actually handed out for dispatch, oldest first (bounded to
     /// the most recent few).
     #[must_use]

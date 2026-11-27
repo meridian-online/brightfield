@@ -92,6 +92,16 @@ pub(crate) fn x_title_baseline(layout: &ChartLayout) -> f64 {
     layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE) + f64::from(TITLE_SIZE) + TITLE_GAP
 }
 
+/// The lower edge of a row of horizontal x tick labels, in the plot's own
+/// pixels: the bottom of the box [`AxisTargets::labels`] reports for them. A
+/// map's graticule labels sit on the same baseline, though a projected plot
+/// reports no axis parts, so a caller placing something below the labels of
+/// either reads it here.
+#[must_use]
+pub fn x_tick_labels_bottom(layout: &ChartLayout) -> f64 {
+    layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE) * (1.0 + DESCENT)
+}
+
 /// Baseline y for the plot title: the heading's own size down from the
 /// chart's top edge, so it heads the chart in the band its top margin grew by
 /// ([`crate::title::PLOT_TITLE_BAND`]), with the rest of that band and the
@@ -727,8 +737,9 @@ pub(crate) fn nice_linear_domain(min: f64, max: f64, target_count: usize) -> (f6
     (lo, hi)
 }
 
-/// Format a number for tick labels.
-pub(crate) fn format_number(value: f64) -> String {
+/// Format a number for tick labels: the text a number axis with no format
+/// prints.
+pub fn format_number(value: f64) -> String {
     let spec = if (value - value.round()).abs() < 1e-9 {
         ","
     } else {

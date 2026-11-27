@@ -14,7 +14,7 @@ use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap, LabelForm};
 use crate::ink::ChartInk;
-use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
+use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis_weighted};
 use crate::scale::{
     anchor_scale, apply_colour_override, diverging_scale, diverging_stops, merge_linear_scale,
     ColourOverride, ColourScale, Scale, ScaleSet, SequentialScheme,
@@ -2775,21 +2775,22 @@ pub(crate) fn build_kde_grid(
     }
 
     // Bandwidth: the mark's explicit attribute on both axes, else Silverman
-    // from the reconstructed (x, y) samples.
+    // from the bin counts, weighted rather than expanded to one sample per row.
     let (h_x, h_y) = match bandwidth {
         Some(h) => (h, h),
         None => {
-            let mut xs_samples: Vec<f64> = Vec::new();
-            let mut ys_samples: Vec<f64> = Vec::new();
+            let mut xs_w: Vec<(f64, f64)> = Vec::new();
+            let mut ys_w: Vec<(f64, f64)> = Vec::new();
             for r in 0..rows {
                 for c in 0..cols {
-                    for _ in 0..bins[r * cols + c] {
-                        xs_samples.push(x_centres[c]);
-                        ys_samples.push(y_centres[r]);
+                    let count = bins[r * cols + c];
+                    if count > 0 {
+                        xs_w.push((x_centres[c], count as f64));
+                        ys_w.push((y_centres[r], count as f64));
                     }
                 }
             }
-            silverman_2d_per_axis(&xs_samples, &ys_samples)
+            silverman_2d_per_axis_weighted(&xs_w, &ys_w)
         }
     };
     if h_x <= 0.0 || h_y <= 0.0 {
@@ -7737,12 +7738,12 @@ mod tests {
         );
     }
 
-    // Density marks: the shared KDE-grid helper reproduces
-    // exactly the values the inline Density2D path produced — same histogram
-    // reconstruction (row order and gaps included), same Silverman bandwidths,
-    // same kde_2d call — pinned by replaying the inline formula over the fixture
-    // and asserting bitwise equality. (The byte-identical density example PNGs
-    // are the end-to-end gate; this pins the seam headlessly.)
+    // Density marks: the shared KDE-grid helper reproduces the values the
+    // inline Density2D path produced: the same histogram reconstruction (row
+    // order and gaps included) and kde_2d call, with a bandwidth that now comes
+    // from the weighted Silverman form. Replaying the inline formula over the
+    // fixture, the grid matches to floating-point rounding, not bit for bit.
+    // The snapshot tests are what pin the drawn pixels.
     #[test]
     fn kde_grid_helper_matches_inline_path() {
         let schema = Arc::new(Schema::new(vec![
@@ -7774,7 +7775,8 @@ mod tests {
         assert_eq!((grid.rows(), grid.cols()), (3, 3));
 
         // Replay the inline path's formula: dense row-major histogram (row = y),
-        // Silverman per-axis over the expanded samples, kde_2d.
+        // Silverman per-axis over the expanded samples (the helper uses the weighted
+        // form), kde_2d.
         #[rustfmt::skip]
         let bins: Vec<u32> = vec![
             1, 4, 1,  // y = 0
@@ -7791,14 +7793,19 @@ mod tests {
                 }
             }
         }
-        let (h_x, h_y) = silverman_2d_per_axis(&xs_samples, &ys_samples);
+        let (h_x, h_y) = crate::kde::silverman_2d_per_axis(&xs_samples, &ys_samples);
         let expected = kde_2d(&bins, (3, 3), (h_x, h_y), (1.0, 1.0));
-        assert_eq!(
-            grid.density, expected,
-            "helper grid must be bitwise-identical to the inline path's kde_2d output"
-        );
+        // The helper's bandwidth comes from the weighted form, which matches the
+        // expanded samples to floating-point rounding rather than bit for bit.
+        assert_eq!(grid.density.len(), expected.len());
+        for (got, want) in grid.density.iter().zip(&expected) {
+            assert!(
+                (got - want).abs() <= 1e-12 * want.abs().max(1e-300),
+                "helper grid must match the inline path's kde_2d output: {got} vs {want}"
+            );
+        }
         let expected_max = expected.iter().cloned().fold(0.0_f64, f64::max);
-        assert_eq!(grid.max_density, expected_max);
+        assert!((grid.max_density - expected_max).abs() <= 1e-12 * expected_max);
 
         // An explicit bandwidth overrides Silverman on both axes.
         let with_bw = build_kde_grid(&batch, "x_bin", "y_bin", Some(0.5)).expect("grid builds");

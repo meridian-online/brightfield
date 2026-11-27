@@ -70,7 +70,9 @@ use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, 
 use meridian_design::semantic::{semantic, Role};
 use meridian_design::{control, radius, spacing, typography, Elevation};
 
-use crate::app::{ChartDoc, HoverReadout, NormaliseSwitchDrawn, ScaleSwitchDrawn, CHART};
+use crate::app::{
+    ChartDoc, HoverReadout, NormaliseSwitchDrawn, RegionsSwitchDrawn, ScaleSwitchDrawn, CHART,
+};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
@@ -502,7 +504,10 @@ impl ChartItem {
         // Without it, throwing one tile's switch also moved the window's
         // selected tile to that tile and renamed what the inspector was
         // describing — `a_press_on_the_switch_is_not_a_press_on_the_canvas`.
-        let on_chrome = at.is_some_and(|at| doc.scale_switches.iter().any(|s| s.rect.contains(at)));
+        let on_chrome = at.is_some_and(|at| {
+            doc.scale_switches.iter().any(|s| s.rect.contains(at))
+                || doc.regions_switches.iter().any(|s| s.rect.contains(at))
+        });
 
         // The drag state machine: press starts a brush in the plot under
         // the pointer, release commits it. Edge-triggered on the button.
@@ -702,6 +707,11 @@ impl ChartItem {
         if doc.pump_navigation() {
             repaint = true;
         }
+        // The regions are found off this thread; a frame starts the runs the
+        // page is owed and draws the answers that have landed.
+        if doc.tend_regions(Some(ctx)) {
+            repaint = true;
+        }
 
         if released {
             if let Some(drag) = self.drag.take() {
@@ -713,7 +723,14 @@ impl ChartItem {
                     // borrows the document mutably, and before the gesture
                     // that is about to replace it.
                     let held = doc.held_clause(&binding.selection, &binding.contributor);
-                    if let Some(interaction) = resolve_gesture(&binding, plot, drag, held.as_ref())
+                    // The region under the press, on a plot whose brush takes
+                    // both axes: a region's clause names both of its columns,
+                    // and only a two-axis selection is listened for that way.
+                    let region = (binding.kind == BrushKind::IntervalXY)
+                        .then(|| doc.region_clause_at(drag.plot, drag.start))
+                        .flatten();
+                    if let Some(interaction) =
+                        resolve_gesture(&binding, plot, drag, held.as_ref(), region)
                     {
                         doc.apply_interaction(interaction);
                         repaint = true;
@@ -1384,8 +1401,16 @@ impl Item<ChartDoc> for ChartItem {
                     chrome::NamedControl::labelled(rect, normalise_state_label(state))
                 })
             }));
+            // The regions switch, in the corner of each plot's frame.
+            let (regions, regions_picked) = draw_regions_switches(doc, ui, rect, mode);
+            doc.controls.extend(regions.iter().flat_map(|switch| {
+                switch.hits().map(|(state, rect)| {
+                    chrome::NamedControl::labelled(rect, regions_state_label(state))
+                })
+            }));
             doc.scale_switches = switches;
             doc.normalise_switches = normalise;
+            doc.regions_switches = regions;
 
             // Same gestures with a device and without one. The overlay is the
             // only thing a headless document loses: it has nowhere to paint.
@@ -1413,6 +1438,13 @@ impl Item<ChartDoc> for ChartItem {
             // rebuild — see [`ChartDoc::set_plot_stack_offset`].
             if let Some((plot, state)) = normalise_picked {
                 if doc.set_plot_stack_offset(plot, state) {
+                    cx.request_repaint();
+                }
+            }
+            // The regions pick, on the same footing — see
+            // [`ChartDoc::set_plot_regions`].
+            if let Some((plot, on)) = regions_picked {
+                if doc.set_plot_regions(plot, on) {
                     cx.request_repaint();
                 }
             }
@@ -1954,6 +1986,234 @@ fn draw_normalise_switches(
     (drawn, pick)
 }
 
+/// The states the regions switch offers, on and then off, in the order it
+/// draws them.
+const REGIONS_STATES: [bool; 2] = [true, false];
+
+/// The word the regions switch puts on a state: the feature's own name for
+/// on, so the switch says what it is without a hover, and `off`, the word the
+/// spec carries, for off.
+fn regions_state_label(on: bool) -> &'static str {
+    if on {
+        "regions"
+    } else {
+        "off"
+    }
+}
+
+/// The words the regions switch offers on hover, naming the plot's two columns
+/// so two plots' switches on one page read differently.
+fn regions_hover(plot: &PlotHandle) -> String {
+    match (plot.x_column.as_deref(), plot.y_column.as_deref()) {
+        (Some(x), Some(y)) => format!("regions: {x} by {y}"),
+        _ => "regions".to_string(),
+    }
+}
+
+/// **Draw one plot's regions switch and return what it drew**, plus the state
+/// the pointer picked on this frame.
+///
+/// The words are the scale switch's chrome, one kind of control wearing its
+/// own pair of words, but the switch sits at the tile's bottom-right, in the
+/// row the x axis's title is written in, below the tick labels, rather than
+/// in the tile's head: the head is where a plot's title is written, and a
+/// long title runs the width of the tile, so a switch there was painted over
+/// it. The plot's data area stays free of chrome, as the first screen's map
+/// has always kept it. `row` is that row: its top, below the frame and the
+/// tick labels, and the x title's box when the axis has one. `None` when the
+/// row has no room for the switch clear of the title.
+fn draw_regions_switch(
+    ui: &mut egui::Ui,
+    tile: egui::Rect,
+    row: (f32, Option<egui::Rect>),
+    clip: egui::Rect,
+    subject: (usize, String, bool),
+    mode: Mode,
+) -> Option<(RegionsSwitchDrawn, Option<bool>)> {
+    let (plot, hover, active) = subject;
+    let sem = semantic(mode.is_dark());
+    let font = egui::FontId::proportional(typography::CHART_LABEL_SIZE);
+    let gap = spacing::SPACE_2;
+    let painter = ui.painter().with_clip_rect(clip);
+
+    let width_of = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let labels: Vec<&str> = REGIONS_STATES
+        .iter()
+        .map(|s| regions_state_label(*s))
+        .collect();
+    let separator = width_of(SCALE_STATE_SEPARATOR);
+    let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
+    let total: f32 = widths.iter().sum::<f32>()
+        + separator * (labels.len() as f32 - 1.0)
+        + gap * (labels.len() as f32 - 1.0) * 2.0;
+    let height = control::HEIGHT_XS;
+
+    let inset = spacing::SPACE_2;
+    let (below, title) = row;
+    // Level with the x title when there is one, and never above the row's top.
+    let top = title.map_or(below + spacing::SPACE_1, |t| {
+        (t.center().y - height / 2.0).max(below)
+    });
+    // The press gate in `drive_gestures` reads this rect, so a press on the
+    // words is a press on chrome and starts no brush underneath.
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(tile.right() - inset - total, top),
+        egui::vec2(total, height),
+    );
+    let clear_of_title = title.is_none_or(|t| outer.left() >= t.right() + gap * 2.0);
+    if outer.left() < tile.left() + inset || outer.bottom() > tile.bottom() || !clear_of_title {
+        return None;
+    }
+
+    let mut states = Vec::with_capacity(labels.len());
+    let mut picked = None;
+    let mut x = outer.left();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            painter.text(
+                egui::pos2(x + gap + separator / 2.0, outer.center().y),
+                egui::Align2::CENTER_CENTER,
+                SCALE_STATE_SEPARATOR,
+                font.clone(),
+                chrome::colour(sem.text.placeholder),
+            );
+            x += gap * 2.0 + separator;
+        }
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let state = REGIONS_STATES[i];
+        let hit = seg.intersect(clip);
+        let response = ui
+            .interact(
+                hit,
+                egui::Id::new(("tile-regions-switch", plot, i)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(hover.clone());
+        if response.clicked() {
+            picked = Some(state);
+        }
+        let ink = if state == active {
+            sem.text.primary
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.text.muted
+        };
+        painter.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            chrome::colour(ink),
+        );
+        states.push((state, seg));
+    }
+
+    Some((
+        RegionsSwitchDrawn {
+            plot,
+            rect: outer,
+            states,
+            clip,
+            active,
+            hover,
+        },
+        picked,
+    ))
+}
+
+/// **Every regions switch on this page**, drawn and recorded, with the pick
+/// the pointer made on this frame.
+///
+/// Offered on each plot [`crate::regions::offers_regions_switch`] names: one
+/// whose regions could be drawn at the extent it is drawn at, whether they are
+/// on or off now. A document with no live session behind it draws none, as it
+/// has no spec to write the choice into. Each sits at its tile's foot, so it
+/// never meets the scale switch or the normalise control, which sit in the
+/// tile's head. A plot drawing a count of rows past the end of its x axis at
+/// the right writes that count in the switch's corner, and draws no switch.
+fn draw_regions_switches(
+    doc: &ChartDoc,
+    ui: &mut egui::Ui,
+    page: egui::Rect,
+    mode: Mode,
+) -> (Vec<RegionsSwitchDrawn>, Option<(usize, bool)>) {
+    let Some(live) = doc.live_dashboard() else {
+        return (Vec::new(), None);
+    };
+    let views = doc.pane_views;
+    let laid = ui.clip_rect();
+    let mut drawn = Vec::new();
+    let mut pick = None;
+    for (i, plot) in doc.composed.plots.iter().enumerate() {
+        if !live.offers_regions_switch(plot) {
+            continue;
+        }
+        let tile = crate::app::plot_window_rect(page, views, plot);
+        #[allow(clippy::cast_possible_truncation)]
+        let centre = (plot.rect.x + plot.rect.width / 2.0) as f32;
+        let clip = match views {
+            Some(view) if view.second_draws(centre) => view.second,
+            Some(view) => view.first,
+            None => laid,
+        };
+        // A count of rows past the end of x drawn at the right is written at
+        // the right of this row, where the switch would sit; one at the left
+        // leaves the corner free. The low end is at the right on an axis that
+        // runs from high to low, as `render_rows_past` draws it.
+        let at_right = plot.scales.get(Channel::X).map_or(0, |scale| {
+            if scale.range_start() <= scale.range_end() {
+                plot.rows_past.x.high
+            } else {
+                plot.rows_past.x.low
+            }
+        });
+        if at_right > 0 {
+            continue;
+        }
+        // The axes report their parts in the plot's own pixels from its
+        // top-left corner, which is where the tile's rect starts.
+        #[allow(clippy::cast_possible_truncation)]
+        let placed = |r: kurbo::Rect| {
+            egui::Rect::from_min_max(
+                tile.min + egui::vec2(r.x0 as f32, r.y0 as f32),
+                tile.min + egui::vec2(r.x1 as f32, r.y1 as f32),
+            )
+        };
+        // Below the tick labels the axis reports, or, on a map, which reports
+        // none, below its graticule labels, which sit where tick labels do.
+        #[allow(clippy::cast_possible_truncation)]
+        let labels_bottom =
+            tile.top() + brightfield_render::axis::x_tick_labels_bottom(&plot.layout) as f32;
+        let x_axis = plot.axes.x;
+        let below = x_axis
+            .iter()
+            .flat_map(|axis| axis.labels.into_iter().chain([axis.line]))
+            .map(|r| placed(r).bottom())
+            .fold(labels_bottom, f32::max);
+        let title = x_axis.and_then(|axis| axis.title).map(placed);
+        let active = !crate::regions::regions_switched_off(live.spec(), &plot.path);
+        let subject = (i, regions_hover(plot), active);
+        let Some((record, picked)) =
+            draw_regions_switch(ui, tile, (below, title), clip, subject, mode)
+        else {
+            continue;
+        };
+        if let Some(state) = picked {
+            pick = Some((i, state));
+        }
+        drawn.push(record);
+    }
+    (drawn, pick)
+}
+
 /// **Every histogram tile's switch on this page**, drawn and recorded, with
 /// the pick the pointer made on this frame.
 ///
@@ -2135,6 +2395,12 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
 ///   the hand did not carry anywhere — leaves the selection exactly as it
 ///   was: `None`, not a clear, because the press landed on a selection that
 ///   is still there to leave alone.
+/// - An interval click **inside a drawn region** — `region`, the region's
+///   [`SqlPredicate::Cells`], which the caller offers on an `intervalXY`
+///   plot and on no other kind of brush — selects the region's rows in place
+///   of whatever the plot held, and a click that would publish the clause already held clears
+///   it, the point click's toggle below. A press on a committed rectangle
+///   still leaves the rectangle alone.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
 ///   band scale places under the pointer.
 fn resolve_gesture(
@@ -2142,6 +2408,7 @@ fn resolve_gesture(
     plot: &PlotHandle,
     drag: Drag,
     held: Option<&SqlPredicate>,
+    region: Option<SqlPredicate>,
 ) -> Option<Interaction> {
     /// A drag shorter than this on both axes is a click, not a sweep.
     const CLICK_SLOP: f64 = 3.0;
@@ -2150,14 +2417,20 @@ fn resolve_gesture(
     match gesture_for(binding.kind) {
         GestureClass::Interval => {
             if !swept {
-                return if drag.move_from.is_some() {
-                    None
-                } else {
-                    Some(Interaction::ClearSelect {
+                if drag.move_from.is_some() {
+                    return None;
+                }
+                return Some(match region {
+                    Some(predicate) if held != Some(&predicate) => Interaction::Select {
                         name: binding.selection.clone(),
                         contributor: binding.contributor.clone(),
-                    })
-                };
+                        predicate,
+                    },
+                    _ => Interaction::ClearSelect {
+                        name: binding.selection.clone(),
+                        contributor: binding.contributor.clone(),
+                    },
+                });
             }
             let (a, b) = drag.corners();
             let predicate = interval_predicate(binding, plot, a, b)?;
@@ -2676,7 +2949,7 @@ mod tests {
         };
         let binding = interval.gesture.clone().expect("bound");
         assert!(matches!(
-            resolve_gesture(&binding, &interval, click, None),
+            resolve_gesture(&binding, &interval, click, None, None),
             Some(Interaction::ClearSelect { .. })
         ));
 
@@ -2689,7 +2962,62 @@ mod tests {
             move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
-        assert_eq!(resolve_gesture(&binding, &point, sweep, None), None);
+        assert_eq!(resolve_gesture(&binding, &point, sweep, None, None), None);
+    }
+
+    /// A click on a region selects its cells, a click on the region already
+    /// held clears it, and a press on a committed rectangle leaves the
+    /// rectangle alone even with a region under it.
+    #[test]
+    fn a_region_click_selects_toggles_and_spares_a_committed_rectangle() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        scales.insert(Channel::Y, linear((0.0, 100.0), (0.0, 10.0)));
+        let xy = plot(scales, BrushKind::IntervalXY);
+        let binding = xy.gesture.clone().expect("bound");
+        let extent = brightfield_sql::regions::GridExtent {
+            x: (0.0, 10.0),
+            y: (0.0, 10.0),
+            bins: 100,
+        };
+        let region = |cells| SqlPredicate::cells("x", "y", extent.clone(), cells).expect("usable");
+        let click = Drag {
+            plot: 0,
+            start: kurbo::Point::new(40.0, 40.0),
+            current: kurbo::Point::new(41.0, 41.0),
+            by: egui::Vec2::ZERO,
+            move_from: None,
+        };
+
+        let other = region(vec![1, 2]);
+        assert_eq!(
+            resolve_gesture(&binding, &xy, click, Some(&other), Some(region(vec![7, 8]))),
+            Some(Interaction::Select {
+                name: binding.selection.clone(),
+                contributor: binding.contributor.clone(),
+                predicate: region(vec![7, 8]),
+            }),
+            "a region other than the one held is selected"
+        );
+
+        let held = region(vec![7, 8]);
+        assert!(
+            matches!(
+                resolve_gesture(&binding, &xy, click, Some(&held), Some(region(vec![8, 7]))),
+                Some(Interaction::ClearSelect { .. })
+            ),
+            "the region already held is cleared"
+        );
+
+        let on_rectangle = Drag {
+            move_from: Some(kurbo::Rect::new(20.0, 20.0, 60.0, 60.0)),
+            ..click
+        };
+        assert_eq!(
+            resolve_gesture(&binding, &xy, on_rectangle, None, Some(region(vec![7, 8]))),
+            None,
+            "a press on the committed rectangle selects no region"
+        );
     }
 
     /// Two plots placed side by side on one raster, as a root `hconcat` of

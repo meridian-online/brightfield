@@ -547,6 +547,9 @@ impl Item<ChartDoc> for InspectorPane {
         // is an `Interaction::SetParam`, a pushed value and a re-query rather
         // than a Rust-side filter. A spec with no declared params draws no
         // slider.
+        // Whether any slider here is under the pointer's drag this frame,
+        // which holds the region runs until it lets go.
+        let mut dragging = false;
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -557,6 +560,7 @@ impl Item<ChartDoc> for InspectorPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 if response.changed() && (value - control.value).abs() > f64::EPSILON {
                     doc.set_param(&control.name, value);
                 }
@@ -585,6 +589,7 @@ impl Item<ChartDoc> for InspectorPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 doc.interval_slider_rects
                     .push((control.key().to_string(), response.rect));
                 if response.changed() {
@@ -598,6 +603,7 @@ impl Item<ChartDoc> for InspectorPane {
                 ui.ctx().request_repaint();
             }
         }
+        doc.set_input_dragging(dragging);
         if crate::devtools::enabled() {
             ui.add_space(spacing::CONTROL_GAP);
             let sem = semantic(cx.mode.is_dark());

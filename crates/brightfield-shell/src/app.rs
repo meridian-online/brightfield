@@ -624,6 +624,41 @@ impl NormaliseSwitchDrawn {
     }
 }
 
+/// **One plot's regions switch, as the last frame drew it.**
+///
+/// The sibling of [`NormaliseSwitchDrawn`], recorded the same way: the rects
+/// here are the ones the painter and the hit test were handed, in
+/// **window-space logical points**. A state is `true` for regions on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionsSwitchDrawn {
+    /// Which plot on the page this switch acts on — an index into
+    /// [`Composed::plots`].
+    pub plot: usize,
+    /// The control's outer rect — the box the hover text is offered over.
+    pub rect: egui::Rect,
+    /// One entry per offered state, on and then off, each with the rect it was
+    /// painted in.
+    pub states: Vec<(bool, egui::Rect)>,
+    /// The box the pane clips this control to; see
+    /// [`NormaliseSwitchDrawn::clip`].
+    pub clip: egui::Rect,
+    /// Whether the plot's regions are on: the spec carries no `regions: off`.
+    pub active: bool,
+    /// The words the control offers on hover, verbatim.
+    pub hover: String,
+}
+
+impl RegionsSwitchDrawn {
+    /// Each state with the part of its rect a pointer can land in, as
+    /// [`NormaliseSwitchDrawn::hits`] gives them.
+    pub fn hits(&self) -> impl Iterator<Item = (bool, egui::Rect)> + '_ {
+        self.states.iter().filter_map(|(state, rect)| {
+            let hit = rect.intersect(self.clip);
+            hit.is_positive().then_some((*state, hit))
+        })
+    }
+}
+
 /// **A column the shelf's list is drawing on a channel and has not kept.**
 ///
 /// The page is drawn from the previewed spec while the cursor is on the
@@ -1172,6 +1207,9 @@ pub struct ChartDoc {
     /// it** — the sibling list to [`Self::scale_switches`], written by the
     /// chart pane as it draws and read by a GPU-free test.
     pub normalise_switches: Vec<NormaliseSwitchDrawn>,
+    /// **Each regions switch, as the last frame drew it**: one on every plot
+    /// whose regions can be drawn, written by the chart pane as it draws.
+    pub regions_switches: Vec<RegionsSwitchDrawn>,
     /// **The controls the chart pane drew this frame, each with its name** —
     /// the toolbar's buttons by their labels, and each tile's scale and
     /// normalise states by their words, at what the pane's clip leaves of
@@ -1259,6 +1297,9 @@ pub struct ChartDoc {
     /// and a headless test drives it; see [`crate::interval_drag`] for why the
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
+    /// Whether an input widget is being dragged on this frame — see
+    /// [`Self::set_input_dragging`].
+    input_dragging: bool,
     /// Why the last gesture failed to change the picture, if it did — read
     /// through [`Self::chart_fault`].
     ///
@@ -1631,6 +1672,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            regions_switches: Vec::new(),
             controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
@@ -1647,6 +1689,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            input_dragging: false,
             interaction_fault: None,
             shelf_refusal: None,
             pending_edits: Vec::new(),
@@ -1716,6 +1759,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            regions_switches: Vec::new(),
             controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
@@ -1732,6 +1776,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            input_dragging: false,
             interaction_fault: None,
             shelf_refusal: None,
             pending_edits: Vec::new(),
@@ -1784,6 +1829,7 @@ impl ChartDoc {
         self.active_selections.clear();
         // The handle positions described the replaced document's sliders.
         self.interval_drags.clear();
+        self.input_dragging = false;
         // …and the fault described the replaced document's gesture. Left
         // standing it would put the outgoing spec's banner over the incoming
         // spec's chart — the defect `open_chart` exists to prevent, re-made
@@ -2923,6 +2969,50 @@ impl ChartDoc {
     /// standing, and a page rebuilt over the spec it already had is not an
     /// edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
+        let edit = |plot| ChartEdit::SetPlotAttribute {
+            plot,
+            key: key.to_string(),
+            value: SpecValue::String(value.to_string()),
+        };
+        self.edit_plot(plot, edit, refused)
+    }
+
+    /// **Turn one plot's regions off or on, and rebuild the page.** Off writes
+    /// `regions: off` on the plot through the edit the scale switch makes, so
+    /// Save keeps it; on takes the key out, so a spec turned off and on again
+    /// saves as it was, with no key that is not plain Mosaic.
+    ///
+    /// Returns whether the picture changed. `false`, with the previous page
+    /// standing, for a plot index off the end, a document with no live session
+    /// behind it, an edit [`brightfield_spec::edit::apply`] refused, and a
+    /// reload or a present the engine refused.
+    pub fn set_plot_regions(&mut self, plot: usize, on: bool) -> bool {
+        let refused = "the regions switch was refused";
+        if on {
+            let edit = |plot| ChartEdit::RemovePlotAttribute {
+                plot,
+                key: brightfield_spec::parse::REGIONS_KEY.to_string(),
+            };
+            self.edit_plot(plot, edit, refused)
+        } else {
+            self.set_plot_attribute(
+                plot,
+                brightfield_spec::parse::REGIONS_KEY,
+                brightfield_spec::parse::REGIONS_OFF,
+                refused,
+            )
+        }
+    }
+
+    /// Apply `edit`, made for one plot's node, to the LIVE spec and rebuild the
+    /// page from it: what [`Self::set_plot_attribute`] and
+    /// [`Self::set_plot_regions`] share.
+    fn edit_plot(
+        &mut self,
+        plot: usize,
+        edit: impl FnOnce(ComponentPath) -> ChartEdit,
+        refused: &str,
+    ) -> bool {
         // A switch thrown while the shelf's list draws a column it has not
         // kept is made to the kept page: the preview is put back first, so the
         // switch's edit is not made on a spec whose other edit is never saved.
@@ -2938,11 +3028,7 @@ impl ChartDoc {
             return false;
         };
         let mut spec = live.spec().clone();
-        let edit = ChartEdit::SetPlotAttribute {
-            plot: path,
-            key: key.to_string(),
-            value: SpecValue::String(value.to_string()),
-        };
+        let edit = edit(path);
         if let Err(reason) = edit::apply(&mut spec, &edit) {
             self.interaction_fault = Some(ChartFault {
                 title: refused.to_string(),
@@ -2958,6 +3044,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.forget_gestures();
                 self.publish_grid_condition();
                 if changed {
                     self.pending_edits.push(edit);
@@ -2978,8 +3065,19 @@ impl ChartDoc {
         }
     }
 
+    /// Forget the gestures this document recorded, keeping the grid's: what a
+    /// page drawn from a fresh session needs, since that session holds no
+    /// gesture's clause and the grid's is published to it again. Without it
+    /// the document would report a selection held over a session holding
+    /// none, and Escape would be spent clearing nothing.
+    fn forget_gestures(&mut self) {
+        self.active_selections
+            .retain(|(_, c)| c.0 == GRID_CONTRIBUTOR);
+    }
+
     /// **Load the page again from `spec`**, with what the window decided about
-    /// the page it replaces put back onto it: the viewport and the ink mode.
+    /// the page it replaces put back onto it: the viewport, the ink mode, and
+    /// the table's profiled columns the region names read.
     /// The engine session is the new load's, so a committed selection is not
     /// carried. `Err` with the engine's words for a spec it would not load or
     /// present. The one rebuild the tile switches and the shelf both take.
@@ -2992,6 +3090,9 @@ impl ChartDoc {
         };
         let viewport = live.viewport();
         let mode = live.mode();
+        // The open profiled the table once; the spec's edit did not change it,
+        // so the region names keep reading the columns as typed.
+        let region_columns = live.region_columns().to_vec();
         // The base the FIRST load resolved this spec's relative `file:` sources
         // against, carried on the dashboard itself — see
         // [`LiveDashboard::base_dir`]. NOT the parent of `spec_path`, which for
@@ -3004,6 +3105,7 @@ impl ChartDoc {
         let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
             live.set_viewport(viewport);
             live.set_mode(mode);
+            live.set_region_columns(region_columns);
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);
@@ -3179,6 +3281,8 @@ impl ChartDoc {
             },
         );
         self.pending_edits.extend(preview.edits);
+        // The preview's page, drawn from a fresh session, is now the kept one.
+        self.forget_gestures();
         true
     }
 
@@ -3243,6 +3347,7 @@ impl ChartDoc {
                 let now = self.setting_text(plot, live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
+                self.forget_gestures();
                 self.publish_grid_condition();
                 self.shelf_undo.push(
                     before,
@@ -3727,6 +3832,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.forget_gestures();
                 self.publish_grid_condition();
                 let KeptShelfEdit {
                     words,
@@ -3984,6 +4090,8 @@ impl ChartDoc {
         );
         self.stepped_back = Some(SteppedBack { id, text });
         self.versions.clear_cursor();
+        // The version's page, drawn from a fresh session, is now the kept one.
+        self.forget_gestures();
         true
     }
 
@@ -4143,6 +4251,21 @@ impl ChartDoc {
         self.live.as_ref()?.held_clause(name, contributor).cloned()
     }
 
+    /// The selection a click at raster-local `p` on plot `plot` makes on a
+    /// region drawn there, or `None` off the regions — see
+    /// [`crate::regions::region_clause_at`]. `None` on a document with no live
+    /// session, which draws no regions.
+    #[must_use]
+    pub fn region_clause_at(
+        &self,
+        plot: usize,
+        p: kurbo::Point,
+    ) -> Option<brightfield_engine::SqlPredicate> {
+        let handle = self.composed.plots.get(plot)?;
+        let local = (p.x - handle.rect.x, p.y - handle.rect.y);
+        self.live.as_ref()?.region_clause_at(handle, local)
+    }
+
     /// **The SQL the gestures on this chart are currently holding**, as one
     /// line — `$brush = ("temp" >= 8.6 AND "temp" <= 15.2)`, several selections
     /// joined by ` · `. `None` when nothing is held, which is what makes a
@@ -4158,6 +4281,10 @@ impl ChartDoc {
     /// `${value}` exactly the same way, and a readout that tidied the digits
     /// would be showing a string nothing executed. Shown *is* executed, or the
     /// readout is a second opinion about the filter rather than a view of it.
+    ///
+    /// The one exception is a region's cells (`readable_clause`): the SQL
+    /// lists the cells one by one, hundreds for a large region, so the readout names its
+    /// two columns, how many cells it holds and the grid they are on.
     ///
     /// # Why `$name = clause` and not "Filter:"
     ///
@@ -4191,7 +4318,7 @@ impl ChartDoc {
         }
         Some(
             held.iter()
-                .map(|(name, clause)| format!("${name} = {clause}"))
+                .map(|(name, clause)| format!("${name} = {}", readable_clause(clause)))
                 .collect::<Vec<_>>()
                 .join(" · "),
         )
@@ -4316,6 +4443,15 @@ impl ChartDoc {
     /// is the coalescing — see [`crate::interval_drag`].
     pub fn note_interval_drag(&mut self, control: &IntervalControl, value: f64) {
         self.interval_drags.note(control.key(), value);
+    }
+
+    /// Record whether an input widget, a param or interval slider, is being
+    /// dragged on this frame. The controls rail writes it each frame it draws
+    /// its sliders. While it is `true` no region run starts: each step of the
+    /// drag changes the rows the plots draw, and a run per step would be
+    /// stopped by the next. The first frame it is `false` again asks once.
+    pub fn set_input_dragging(&mut self, dragging: bool) {
+        self.input_dragging = dragging;
     }
 
     /// Dispatch at most one owed value per interval slider, newest only.
@@ -4508,6 +4644,8 @@ impl ChartDoc {
             plot: ComponentPath(path),
             extent: engine_extent,
         });
+        // The extent has settled, so the regions are found again over it.
+        self.request_regions();
         if !applied {
             // The settled frame composed nothing — a gesture that landed off
             // the data. The dashboard has rolled its query store back, so the
@@ -4537,6 +4675,74 @@ impl ChartDoc {
             });
         }
         applied
+    }
+
+    /// Start a region run for each plot not yet answered at the extent it is
+    /// drawn at, unless a gesture is still moving the frame or an input
+    /// widget is being dragged: a run per pointer step would be work thrown
+    /// away. The first frame after the gesture ends asks once, for where it
+    /// left the plot.
+    fn request_regions(&mut self) {
+        if self.nav.is_moving() || self.input_dragging {
+            return;
+        }
+        if let Some(live) = self.live.as_mut() {
+            live.request_regions(&self.composed.plots);
+        }
+    }
+
+    /// The frame's turn for the regions: start the runs the page is owed and
+    /// take the answers that have landed, redrawing the page when one has.
+    /// True when the page changed. `wake`, when given, is asked for a frame
+    /// whenever a run finishes.
+    pub fn tend_regions(&mut self, wake: Option<&egui::Context>) -> bool {
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if let Some(ctx) = wake.filter(|_| !live.regions().has_wake()) {
+            let ctx = ctx.clone();
+            live.regions_mut().set_wake(move || ctx.request_repaint());
+        }
+        // A drag ends with the pointer's button up, whether or not the pane
+        // whose slider it was is still drawn to say so.
+        if wake.is_some_and(|ctx| !ctx.input(|i| i.pointer.any_down())) {
+            self.input_dragging = false;
+        }
+        self.request_regions();
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.regions_mut().poll() {
+            return false;
+        }
+        // Served from the batches already held: only the overlay is new.
+        match live.present() {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: the regions' re-composite failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Whether a region run is under way.
+    #[must_use]
+    pub fn regions_pending(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|live| live.regions().pending())
+    }
+
+    /// The region job for the plot at `plot` at the extent it is drawn at, for
+    /// a caller that runs it itself.
+    #[must_use]
+    pub fn region_job(&self, plot: usize) -> Option<crate::regions::RegionJob> {
+        let live = self.live.as_ref()?;
+        live.region_job(self.composed.plots.get(plot)?)
     }
 
     /// Return every plot to full extent — the **explicit reset**, and the only
@@ -5143,6 +5349,9 @@ impl Item<ChartDoc> for ControlsPane {
         // is an `Interaction::SetParam`, a pushed value and a re-query, never
         // a Rust-side filter. A spec with no declared params draws no slider at
         // all.
+        // Whether any slider here is under the pointer's drag this frame,
+        // which holds the region runs until it lets go.
+        let mut dragging = false;
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -5153,6 +5362,7 @@ impl Item<ChartDoc> for ControlsPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 if response.changed() && (value - control.value).abs() > f64::EPSILON {
                     doc.set_param(&control.name, value);
                 }
@@ -5181,6 +5391,7 @@ impl Item<ChartDoc> for ControlsPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 doc.interval_slider_rects
                     .push((control.key().to_string(), response.rect));
                 if response.changed() {
@@ -5194,6 +5405,7 @@ impl Item<ChartDoc> for ControlsPane {
                 ui.ctx().request_repaint();
             }
         }
+        doc.set_input_dragging(dragging);
         if crate::devtools::enabled() {
             ui.add_space(spacing::CONTROL_GAP);
             let sem = semantic(cx.mode.is_dark());
@@ -5206,6 +5418,37 @@ impl Item<ChartDoc> for ControlsPane {
                 .color(chrome::colour(sem.text.muted)),
             );
         }
+    }
+}
+
+/// A held clause as the selection readout writes it: as its SQL, except that a
+/// region's cells read as their columns, their count and their grid, such as
+/// `longitude, latitude in 212 of 100×100 cells`, where the SQL lists each
+/// cell. An `And` or `Or` around one is written as the SQL writes it.
+fn readable_clause(clause: &brightfield_engine::SqlPredicate) -> String {
+    use brightfield_engine::SqlPredicate as P;
+    let joined = |parts: &[P], op: &str, empty: &str| {
+        if parts.is_empty() {
+            return empty.to_string();
+        }
+        let parts: Vec<String> = parts.iter().map(readable_clause).collect();
+        format!("({})", parts.join(op))
+    };
+    match clause {
+        P::Cells {
+            x,
+            y,
+            extent,
+            cells,
+        } => format!(
+            "{x}, {y} in {} of {}\u{d7}{} cells",
+            cells.len(),
+            extent.bins,
+            extent.bins
+        ),
+        P::And(parts) => joined(parts, " AND ", "TRUE"),
+        P::Or(parts) => joined(parts, " OR ", "FALSE"),
+        other => other.to_string(),
     }
 }
 
