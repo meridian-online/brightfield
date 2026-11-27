@@ -219,7 +219,7 @@ impl ShelfChannels {
 
     /// What `channel`'s cell names, as the band words it with no preview up:
     /// the mark's kind, the column, [`AN_EXPRESSION`], or [`ADD_A_COLUMN`] for
-    /// a channel with nothing on it. The second value says the channel is
+    /// a channel the mark leaves unbound. The second value says the channel is
     /// empty.
     #[must_use]
     pub fn says(&self, channel: ShelfChannel) -> (String, bool) {
