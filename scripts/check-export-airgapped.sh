@@ -37,7 +37,9 @@
 #
 # HOME, BRIGHTFIELD_CONFIG_DIR and arc's database and history stores are all
 # pointed into a temp directory, so nothing is read from or written to this
-# machine's own.
+# machine's own. BF_SEALED_HOME and BF_SEALED_CONFIG, when set, name the HOME
+# and config directories to use instead: verify-airgapped.sh passes its own, so
+# this leg runs in the state its earlier legs, the refusal among them, left.
 #
 # The DuckDB CLI: the second argument; else the one a package stages beside the
 # binary (engine/duckdb in the tarball, Contents/Helpers/duckdb in the app),
@@ -98,8 +100,10 @@ esac
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-export-airgap.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/home" "$TMP/config" "$TMP/arc-db" "$TMP/arc-history"
-export HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
+SEALED_HOME="${BF_SEALED_HOME:-$TMP/home}"
+SEALED_CONFIG="${BF_SEALED_CONFIG:-$TMP/config}"
+mkdir -p "$SEALED_HOME" "$SEALED_CONFIG" "$TMP/arc-db" "$TMP/arc-history"
+export HOME="$SEALED_HOME" BRIGHTFIELD_CONFIG_DIR="$SEALED_CONFIG" \
   ARCFORM_DB_DIR="$TMP/arc-db" ARCFORM_HISTORY_DIR="$TMP/arc-history" \
   ARC_DUCKDB_BIN="$ENGINE" NO_COLOR=1
 

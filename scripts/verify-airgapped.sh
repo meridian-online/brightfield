@@ -86,9 +86,11 @@
 #      for the download. The Protocol is the repository's committed
 #      fixture with its fetch step dropped from a copy, since arc would
 #      download the data again; scripts/check-export-airgapped.sh holds the
-#      leg and names what it checks. The DuckDB CLI the run needs is the one
-#      the artifact stages and no other; an artifact that stages none skips
-#      this leg, saying so.
+#      leg and names what it checks. It runs after the refusal, in the same
+#      sealed HOME and config. The DuckDB CLI the run needs is the one the
+#      artifact stages and no other; for an artifact that stages none, the run
+#      takes this checkout's pinned CLI and says so, since this is the one leg
+#      that reads Parquet and draws, and it is never skipped.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Leg 5 runs under a stricter jail
@@ -451,16 +453,36 @@ if [ -d "$FT_CACHE" ]; then
 fi
 
 echo "== run 2: an agent-written Protocol run, exported to PDF and a panel to PNG, jailed"
-# The packaged binary, its staged DuckDB CLI and the committed fixture: see
+# The packaged binary and the committed fixture: see
 # scripts/check-export-airgapped.sh, which can also be pointed at a repo build.
-# --packaged: the engine comes only from the artifact (never the caller's
-# ARC_DUCKDB_BIN or PATH), and an artifact that stages none skips the leg.
-"${HERE}/check-export-airgapped.sh" --packaged "$PKG/${EXE#./}" | sed 's/^/   /' || {
+# It runs in this script's sealed HOME and config, after the refusal.
+#
+# This is the only leg that reads Parquet and draws a chart, so it is never
+# skipped. The DuckDB CLI matters only to the arc run that makes the tables;
+# the exports that read them and draw are the binary's own, in-process.
+# When the artifact stages a CLI, --packaged takes that one and no other. When
+# it stages none (a supported build: scripts/package.sh stages one only when
+# BRIGHTFIELD_DUCKDB_CLI is set), the run takes ARC_DUCKDB_BIN or this
+# checkout's pinned CLI, and says so; with neither, the check fails.
+export BF_SEALED_HOME="$TMP/home" BF_SEALED_CONFIG="$TMP/config"
+EXPORT_ARGS=(--packaged "$PKG/${EXE#./}")
+if [ ! -x "$PKG/engine/duckdb" ] && [ ! -x "$PKG/${APP:-.}/Contents/Helpers/duckdb" ]; then
+  OUTSIDE_ENGINE="${ARC_DUCKDB_BIN:-${HERE}/../target/duckdb-cli/duckdb}"
+  [ -x "$OUTSIDE_ENGINE" ] || {
+    echo "   FAILED: the artifact stages no DuckDB CLI, and there is none at ARC_DUCKDB_BIN or"
+    echo "   target/duckdb-cli/duckdb to run the Protocol with, so nothing would read Parquet or"
+    echo "   draw a chart. scripts/fetch-duckdb-cli.sh writes one."
+    exit 1
+  }
+  echo "   the artifact stages no DuckDB CLI: the run uses ${OUTSIDE_ENGINE}; the exports are the artifact's"
+  EXPORT_ARGS=("$PKG/${EXE#./}" "$OUTSIDE_ENGINE")
+fi
+"${HERE}/check-export-airgapped.sh" "${EXPORT_ARGS[@]}" | sed 's/^/   /' || {
   echo "   FAILED: the packaged binary could not run and export a Protocol with the network denied"
   exit 1
 }
 
 echo "== PASS: with the network denied, the packaged binary types a column with its own"
 echo "         type source (unless run 0 was skipped), refuses a remote spec by name, and runs"
-echo "         an agent-written Protocol, drawing its charts into a PDF and a PNG (unless run 2"
-echo "         said it was skipped). No window was opened."
+echo "         an agent-written Protocol, drawing its charts into a PDF and a PNG, after the"
+echo "         refusal and in the same sealed HOME. No window was opened."
