@@ -2,7 +2,7 @@
 //!
 //! `egui_tiles` asks a `Behavior` two things about a pane: what to call it,
 //! and how to draw it. [`PaneChrome`] answers both from the same place — the
-//! pane's [`Subject`](crate::Subject) — so a tab title and a header band
+//! pane's [`Subject`] — so a tab title and a header band
 //! cannot say different things about the same pane, which is precisely what
 //! happened in the shell this replaces.
 //!
@@ -58,7 +58,7 @@ use meridian_design::semantic;
 
 use crate::chrome::{self, colour};
 use crate::item::{ItemCtx, ItemMap, PaneKey, Request};
-use crate::subject::Action;
+use crate::subject::{Action, Subject};
 use crate::Mode;
 
 /// The gap `egui_tiles` leaves between two sibling tiles, in logical points.
@@ -118,6 +118,44 @@ pub struct PaneChrome<'a, D: ?Sized> {
     /// receives, and the alternative is a test clicking a coordinate nothing
     /// derived.
     affordances: &'a mut Vec<(PaneKey, egui::Rect)>,
+    /// What the shell says about one pane's node, folded into that pane's
+    /// subject before its header is drawn: the breadcrumb, the activities and
+    /// the size note. The item cannot know which node the window has in
+    /// focus, and the shell can. `None` leaves each subject as its item
+    /// describes it.
+    header_for: Option<(PaneKey, NodeHeader)>,
+    /// What that pane's header did on this draw.
+    header_drawn: Option<chrome::HeaderDrawn>,
+}
+
+/// The parts of a pane's header that name its node, given by the shell.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeHeader {
+    /// Where the node sits, most general first.
+    pub breadcrumb: Vec<crate::subject::Crumb>,
+    /// The node's activities, and the one shown.
+    pub activities: Option<(Vec<crate::subject::ActivityChoice>, usize)>,
+    /// The node's kind and size.
+    pub size_note: Option<String>,
+    /// Whether the pane draws a part of the node, named by its own title. Its
+    /// title then follows the node's crumbs as the last one, so the header
+    /// still says which part, and which version of it, the pane shows.
+    pub titled: bool,
+}
+
+impl NodeHeader {
+    /// Fold these parts into `subject`, replacing what it said of them.
+    #[must_use]
+    pub fn apply(&self, mut subject: Subject) -> Subject {
+        subject.breadcrumb.clone_from(&self.breadcrumb);
+        if self.titled && !subject.breadcrumb.is_empty() {
+            let title = subject.title.clone();
+            subject.breadcrumb.push(crate::subject::Crumb::new(title));
+        }
+        subject.activities.clone_from(&self.activities);
+        subject.size_note.clone_from(&self.size_note);
+        subject
+    }
 }
 
 impl<'a, D: ?Sized> PaneChrome<'a, D> {
@@ -148,6 +186,65 @@ impl<'a, D: ?Sized> PaneChrome<'a, D> {
             tabbed,
             requests,
             affordances,
+            header_for: None,
+            header_drawn: None,
+        }
+    }
+
+    /// Fold `header` into `key`'s subject when that pane is drawn.
+    #[must_use]
+    pub fn with_node_header(mut self, key: PaneKey, header: NodeHeader) -> Self {
+        self.header_for = Some((key, header));
+        self
+    }
+
+    /// What the header of the pane named by [`Self::with_node_header`] did,
+    /// once it has drawn. An activity click is already queued as a
+    /// [`Request::Verb`]; a linked crumb's click is the caller's to act on.
+    #[must_use]
+    pub fn header_drawn(&self) -> Option<&chrome::HeaderDrawn> {
+        self.header_drawn.as_ref()
+    }
+
+    /// Draw one pane's body straight into `ui`, with no frame and no header
+    /// band, so the body grows `ui` as it draws and the next thing laid out in
+    /// `ui` follows it.
+    ///
+    /// This is what a section of a stacked rail holds: the section's header
+    /// names the pane, so a header band would name it twice, and a frame that
+    /// filled the rest of the rail would cover the sections below it. The
+    /// pane's empty state, its item context and focus on a press behave as in
+    /// [`egui_tiles::Behavior::pane_ui`]; the press is read over the rect the
+    /// body drew, so a press in another section focuses that section's pane.
+    pub fn body_ui(&mut self, ui: &mut egui::Ui, tile: TileId, key: PaneKey) {
+        let mode = self.mode;
+        let Some(item) = self.items.get_mut(&key) else {
+            chrome::orphan_pane(ui, key, mode);
+            return;
+        };
+        let top = ui.cursor().min;
+        let subject = item.subject(&*self.doc);
+        if let Some(empty) = &subject.empty_state {
+            let drawn = chrome::empty_state(ui, empty, mode);
+            if let Some(rect) = drawn.affordance {
+                self.affordances.push((key, rect));
+            }
+            match drawn.activated {
+                Some(Action::Verb(verb)) => self.requests.push(Request::Verb(verb)),
+                Some(Action::Open(id)) => self.requests.push(Request::Open(id)),
+                None => {}
+            }
+        } else {
+            let mut cx = ItemCtx::new(mode, key, tile, self.focused == Some(key), self.requests);
+            item.ui(self.doc, ui, &mut cx);
+        }
+        let drawn =
+            egui::Rect::from_min_max(top, egui::pos2(ui.max_rect().right(), ui.cursor().min.y));
+        if ui.rect_contains_pointer(drawn)
+            && ui.input(|i| i.pointer.any_pressed())
+            && self.focused != Some(key)
+        {
+            self.requests.push(Request::Focus(key));
         }
     }
 }
@@ -282,6 +379,8 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
             tabbed,
             requests,
             affordances,
+            header_for,
+            header_drawn,
         } = self;
         let mode = *mode;
         let key = *pane;
@@ -292,8 +391,19 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
         };
 
         let outer = ui.max_rect();
-        let subject = item.subject(&**doc);
-        let mut body = chrome::pane_frame(ui, &subject, !tabbed.contains(&tile), mode);
+        let mut subject = item.subject(&**doc);
+        let named = header_for.as_ref().filter(|(k, _)| *k == key);
+        if let Some((_, header)) = named {
+            subject = header.apply(subject);
+        }
+        let (mut body, drawn) =
+            chrome::pane_frame_drawn(ui, &subject, !tabbed.contains(&tile), mode);
+        if let Some(verb) = drawn.activity {
+            requests.push(Request::Verb(verb));
+        }
+        if named.is_some() {
+            *header_drawn = Some(drawn);
+        }
 
         if let Some(empty) = &subject.empty_state {
             // The empty state is drawn *instead of* the item, which is what

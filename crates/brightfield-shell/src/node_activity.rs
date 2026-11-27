@@ -33,6 +33,16 @@ impl NodeActivity {
             Self::Model => RELATE,
         }
     }
+
+    /// The activity's name, as the pane header's switcher draws it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Grid",
+            Self::Chart => "Chart",
+            Self::Model => "Model",
+        }
+    }
 }
 
 /// The node whose activities the window offers.

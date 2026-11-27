@@ -58,7 +58,7 @@ pub use chart_history::{
     Who, PENDING_STEPS_HEADING,
 };
 pub use chart_text::{write_chart_edit, ChartTextRefusal};
-pub use collapse::collapse_families;
+pub use collapse::{collapse_families, collapse_families_except, families, FamilyTile};
 pub use contract::{
     parse_contract, Contract, SkipReason, SUPPORTED_CONTRACT_FAMILIES, SUPPORTED_CONTRACT_VERSION,
 };

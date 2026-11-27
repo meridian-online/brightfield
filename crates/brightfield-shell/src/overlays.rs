@@ -15,7 +15,7 @@
 //! - [`CommandPalette`] — query + ranked corpus:
 //!   `brightfield_keys::palette_filter` over the registry at one altitude,
 //!   read on an empty query under the ribbon's stage headings, in the
-//!   ribbon's order, and by frequency then recency within each; a typed
+//!   ribbon's order, and by frequency then frecency within each; a typed
 //!   query ranks by match with no headings. A reserved verb the palette
 //!   lists is flagged and refuses to run, as the corpus says; the chart's
 //!   palette is an allow-list of built verbs and lists none.
@@ -23,8 +23,8 @@
 //!   argument-taking verbs, driven by `brightfield_model::arg_collector`.
 //!   Enumerable steps read as a filtered pick list; a step with no
 //!   enumerable options is the typed-value shape (the query *is* the value).
-//! - [`JumpToNode`] / [`JumpToColumn`] — flat jump lists: fuzzy filter,
-//!   rows, confirm.
+//! - [`JumpToNode`] / [`JumpToColumn`] / [`QuickOpen`] — flat jump lists:
+//!   fuzzy filter, rows, confirm.
 //! - [`HelpSheet`] — the grouped read-only sheet over
 //!   `brightfield_keys::help_sheet`; enter is another way out.
 //!
@@ -43,8 +43,8 @@
 use brightfield_keys::fuzzy::fuzzy_score;
 use brightfield_keys::ribbon::Stage;
 use brightfield_keys::{
-    keys_label, palette_filter, registry, Altitude, HelpRow, KeyPlatform, PaletteCandidate,
-    RecencyCounter, Situation, VerbEntry,
+    keys_label, palette_filter, registry, unix_now_secs, Altitude, Frecency, HelpRow, KeyPlatform,
+    PaletteCandidate, Situation, VerbEntry,
 };
 use brightfield_model::arg_collector::{ArgCollector, ArgOutcome};
 use brightfield_spec::edit::ChartEdit;
@@ -184,13 +184,16 @@ fn stage_rank(longname: &str) -> usize {
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query), or on an empty
 /// query read under the stage headings in the ribbon's order, by frequency
-/// then per-session recency within each. Reserved verbs are included, flagged,
+/// then the palette's frecency within each. Reserved verbs are included, flagged,
 /// and refuse to run — never hidden. So is a verb missing an input in the
 /// situation the palette was given, with the sentence it declares.
 pub struct CommandPalette {
     reg: Vec<VerbEntry>,
     altitude: Altitude,
-    recency: RecencyCounter,
+    frecency: Frecency,
+    /// The Unix time in seconds the palette ranks its rows at, read when it
+    /// opens.
+    now_secs: u64,
     situation: Option<Situation>,
     matches: Vec<PaletteCandidate>,
     /// Whether the rows read under stage headings: an empty query, with at
@@ -202,15 +205,16 @@ pub struct CommandPalette {
 }
 
 impl CommandPalette {
-    /// A palette over the keyboard registry at `altitude`. `recency` is the
-    /// host's per-session counter, snapshotted at open — the host records
-    /// the pick into its own copy so the *next* open ranks it.
+    /// A palette over the keyboard registry at `altitude`. `frecency` is the
+    /// host's history of picks, snapshotted at open — the host records the
+    /// pick into its own copy so the *next* open ranks it.
     #[must_use]
-    pub fn new(altitude: Altitude, recency: RecencyCounter) -> Self {
+    pub fn new(altitude: Altitude, frecency: Frecency) -> Self {
         Self {
             reg: registry(),
             altitude,
-            recency,
+            frecency,
+            now_secs: unix_now_secs(),
             situation: None,
             matches: Vec::new(),
             grouped: false,
@@ -226,14 +230,15 @@ impl CommandPalette {
     /// [`CHART_PALETTE_VERBS`] for why the chart view needs this and
     /// [`CommandPalette::new`] does not.
     #[must_use]
-    pub fn new_restricted(altitude: Altitude, recency: RecencyCounter, allow: &[&str]) -> Self {
+    pub fn new_restricted(altitude: Altitude, frecency: Frecency, allow: &[&str]) -> Self {
         Self {
             reg: registry()
                 .into_iter()
                 .filter(|v| allow.contains(&v.longname))
                 .collect(),
             altitude,
-            recency,
+            frecency,
+            now_secs: unix_now_secs(),
             situation: None,
             matches: Vec::new(),
             grouped: false,
@@ -252,7 +257,7 @@ impl CommandPalette {
     }
 
     /// The verb the user confirmed, surrendered once. The host dispatches it
-    /// and records it into its recency counter.
+    /// and records it into its frecency.
     pub fn take_picked(&mut self) -> Option<&'static str> {
         self.picked.take()
     }
@@ -289,7 +294,7 @@ pub fn chart_palette_candidates() -> Vec<&'static str> {
 /// when one is given.
 fn chart_palette_rows(situation: Option<Situation>) -> Vec<PaletteCandidate> {
     let allow = chart_palette_verbs();
-    let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+    let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow);
     if let Some(situation) = situation {
         p = p.with_situation(situation);
     }
@@ -305,10 +310,11 @@ impl PickerDelegate for CommandPalette {
             &self.reg,
             self.altitude,
             query,
-            &self.recency,
+            &self.frecency,
+            self.now_secs,
             self.situation.as_ref(),
         );
-        // The filter has ordered an empty query by frequency then recency, and
+        // The filter has ordered an empty query by frequency then frecency, and
         // a stable sort keeps that order within each stage. A greyed row keeps
         // its place among its stage's rows.
         self.grouped = query.is_empty()
@@ -329,10 +335,11 @@ impl PickerDelegate for CommandPalette {
     fn row(&self, index: usize) -> PickerRow {
         let c = &self.matches[index];
         let mut row = PickerRow::new(c.longname);
-        // The row stays drawn as a row: a greyed one reads by its detail.
+        // A row missing an input is drawn greyed, with its sentence in place of
+        // its help; a reserved row still reads by its detail.
         row = match (c.reserved_reason, &c.missing) {
             (Some(reason), _) => row.detail(format!("{} — {}", c.help, reason.reason())),
-            (None, Some(sentence)) => row.detail(format!("{} — {sentence}", c.help)),
+            (None, Some(sentence)) => row.detail(c.help).unavailable(sentence.as_str()),
             (None, None) => row.detail(c.help),
         };
         if let Some(key) = c.primary_key {
@@ -560,9 +567,14 @@ impl JumpList {
             })
             .collect();
         if !query.is_empty() {
-            // Stable, so equal scores keep the caller's order.
-            self.matches
-                .sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+            // A label that is the query exactly comes first, so typing a whole
+            // name finds that name ahead of the longer names it begins. Stable,
+            // so equal scores keep the caller's order.
+            let targets = &self.targets;
+            self.matches.sort_by_key(|&(i, score)| {
+                let exact = targets[i].label.eq_ignore_ascii_case(query);
+                (std::cmp::Reverse(exact), std::cmp::Reverse(score))
+            });
         }
     }
 
@@ -621,6 +633,61 @@ impl PickerDelegate for JumpToNode {
     }
     fn empty_text(&self) -> Option<String> {
         Some("No matching asset".to_owned())
+    }
+}
+
+/// **Quick open** (`⌘P`): find any table or view of the Protocol by its
+/// DuckDB name, from whatever holds the canvas. Each row's label is the
+/// relation's name and its detail the step that produces it. The host supplies
+/// the targets in the outline's order and puts the confirmed one in focus.
+pub struct QuickOpen(JumpList);
+
+impl QuickOpen {
+    /// A quick open list over `targets`, kept in the given order under an
+    /// empty query.
+    #[must_use]
+    pub fn new(targets: Vec<JumpTarget>) -> Self {
+        Self(JumpList::new(targets))
+    }
+
+    /// The confirmed target's id, surrendered once.
+    pub fn take_picked(&mut self) -> Option<String> {
+        self.0.picked.take()
+    }
+
+    /// The rows the current query lists, in the order they are drawn: each
+    /// label with its detail.
+    #[must_use]
+    pub fn listed(&self) -> Vec<(String, Option<String>)> {
+        self.0
+            .matches
+            .iter()
+            .map(|&(i, _)| {
+                let t = &self.0.targets[i];
+                (t.label.clone(), t.detail.clone())
+            })
+            .collect()
+    }
+}
+
+impl PickerDelegate for QuickOpen {
+    fn update_query(&mut self, query: &str) {
+        self.0.update_query(query);
+    }
+    fn match_count(&self) -> usize {
+        self.0.matches.len()
+    }
+    fn row(&self, index: usize) -> PickerRow {
+        self.0.row(index)
+    }
+    fn confirm(&mut self, index: Option<usize>, _query: &str) -> PickerOutcome {
+        self.0.confirm(index)
+    }
+    fn placeholder(&self) -> String {
+        "Open a table or view by name…".to_owned()
+    }
+    fn empty_text(&self) -> Option<String> {
+        Some("No table or view by that name".to_owned())
     }
 }
 
@@ -923,7 +990,7 @@ pub struct CloseQuestion {
     /// How many of [`Self::edits`], from the first, are edits to the chart; the rest change the
     /// Protocol: a SQL step, a grid view, a removed step or the model.
     pub chart_edits: usize,
-    /// The Protocol's name, as the locator band names it, which the headline names when the
+    /// The Protocol's name, as the title band names it, which the headline names when the
     /// Protocol holds an edit.
     pub protocol: String,
     /// Why a close without saving could not keep the chart, once one has been
@@ -1265,14 +1332,14 @@ mod tests {
     // -- CommandPalette -----------------------------------------------------
 
     fn palette_at(altitude: Altitude) -> CommandPalette {
-        let mut p = CommandPalette::new(altitude, RecencyCounter::new());
+        let mut p = CommandPalette::new(altitude, Frecency::new());
         p.update_query("");
         p
     }
 
     fn chart_palette() -> CommandPalette {
         let allow = chart_palette_verbs();
-        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
+        let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow);
         p.update_query("");
         p
     }
@@ -1299,9 +1366,10 @@ mod tests {
         drawn
     }
 
-    /// A palette lists the stages its rows have, so neither the window's
-    /// palette nor the chart's draws all four: each draws its own, in the
-    /// ribbon's order, once each, and the rows of no stage last.
+    /// A palette lists the stages its rows have: each draws its own, in the
+    /// ribbon's order, once each, and the rows of no stage last. The window's
+    /// draws no Shape or Publish; the chart's draws all four, with Connect for
+    /// Add sources, which is how a file is read in.
     #[test]
     fn the_empty_palette_reads_in_stage_order_under_each_stages_name() {
         let order: Vec<&str> = Stage::ALL
@@ -1314,7 +1382,12 @@ mod tests {
                 palette_at(Altitude::Protocol),
                 vec!["Connect", "Model", "Other"],
             ),
-            (chart_palette(), vec!["Shape", "Publish", "Other"]),
+            // Add sources reads a file in, under Connect; Append rows, a Model
+            // operation, starts from the grid's cursor.
+            (
+                chart_palette(),
+                vec!["Connect", "Shape", "Model", "Publish", "Other"],
+            ),
         ] {
             let drawn = headings(&p);
             let ranks: Vec<usize> = drawn
@@ -1410,14 +1483,14 @@ mod tests {
 
     #[test]
     fn a_reserved_verb_is_flagged_and_refuses_to_run() {
-        // The inspector rail's toggle rather than the outline rail's: the
-        // outline rail's toggle is bound and performed now that the navigator
-        // rail is a region of the window, so it is no longer an example of
-        // this. The claim is unchanged and the bucket is the same one.
+        // The run log's show verb: the outline and inspector rails' toggles
+        // are bound and performed now that each rail is a region of the
+        // window, so neither is an example of this. The claim is unchanged
+        // and the bucket is the same one.
         let mut p = palette_at(Altitude::Protocol);
-        p.update_query("inspector");
+        p.update_query("run log");
         let i = (0..p.match_count())
-            .find(|&i| p.candidate(i).unwrap().longname == "toggle-inspector-rail")
+            .find(|&i| p.candidate(i).unwrap().longname == "open-run-log")
             .expect("the reserved rail toggle is shown, not hidden");
         let row = p.row(i);
         assert!(
@@ -1529,21 +1602,22 @@ mod tests {
     }
 
     #[test]
-    fn a_row_missing_an_input_says_its_sentence_and_refuses_to_run() {
+    fn a_missing_candidate_is_a_disabled_row_with_its_sentence() {
         let allow = chart_palette_verbs();
-        let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow)
+        let mut p = CommandPalette::new_restricted(Altitude::View, Frecency::new(), &allow)
             .with_situation(Situation::default());
         p.update_query("zoom-in");
         let i = (0..p.match_count())
             .find(|&i| p.candidate(i).unwrap().longname == "zoom-in")
             .expect("zoom-in is listed with its input missing");
         let sentence = "Zoom in needs a chart on the canvas.";
+        assert_eq!(p.row(i).unavailable.as_deref(), Some(sentence));
         assert!(
             p.row(i)
                 .detail
                 .as_deref()
-                .is_some_and(|detail| detail.ends_with(sentence)),
-            "the row's detail carries the sentence: {:?}",
+                .is_some_and(|d| !d.contains(sentence)),
+            "the sentence rides on the row, not in its detail too: {:?}",
             p.row(i).detail
         );
         assert_eq!(p.confirm(Some(i), "zoom-in"), PickerOutcome::KeepOpen);
@@ -1553,11 +1627,8 @@ mod tests {
 
     #[test]
     fn new_restricted_excludes_a_view_scoped_verb_outside_the_allow_list() {
-        let mut p = CommandPalette::new_restricted(
-            Altitude::View,
-            RecencyCounter::new(),
-            &["clear-selection"],
-        );
+        let mut p =
+            CommandPalette::new_restricted(Altitude::View, Frecency::new(), &["clear-selection"]);
         p.update_query("");
         let names: Vec<&str> = (0..p.match_count())
             .map(|i| p.candidate(i).unwrap().longname)
@@ -1570,10 +1641,10 @@ mod tests {
     }
 
     #[test]
-    fn recency_lifts_a_recorded_verb_under_an_empty_query() {
-        let mut recency = RecencyCounter::new();
-        recency.record("protocol-sibling-prev");
-        let mut p = CommandPalette::new(Altitude::Protocol, recency);
+    fn frecency_lifts_a_recorded_verb_under_an_empty_query() {
+        let mut frecency = Frecency::new();
+        frecency.record("protocol-sibling-prev", unix_now_secs());
+        let mut p = CommandPalette::new(Altitude::Protocol, frecency);
         p.update_query("");
         let pos = |p: &CommandPalette, name: &str| {
             (0..p.match_count())
@@ -1693,6 +1764,32 @@ mod tests {
         assert_eq!(jump.match_count(), 0);
         assert_eq!(jump.confirm(None, "zzz"), PickerOutcome::KeepOpen);
         assert!(jump.take_picked().is_none());
+    }
+
+    #[test]
+    fn quick_open_lists_each_table_by_its_name_with_its_step() {
+        let mut open = QuickOpen::new(nodes());
+        open.update_query("");
+        assert_eq!(
+            open.listed()[0],
+            ("filings".to_owned(), Some("raw.filings".to_owned()))
+        );
+        open.update_query("gleif");
+        assert_eq!(open.listed()[0].0, "edgar_gleif");
+        assert_eq!(open.confirm(Some(0), "gleif"), PickerOutcome::Close);
+        assert_eq!(open.take_picked().as_deref(), Some("crosswalk.edgar_gleif"));
+    }
+
+    #[test]
+    fn a_whole_name_typed_lists_that_name_before_the_longer_ones_it_begins() {
+        let target = |name: &str| JumpTarget {
+            id: format!("asset.p.{name}"),
+            label: name.to_owned(),
+            detail: None,
+        };
+        let mut open = QuickOpen::new(vec![target("housing__failed"), target("housing")]);
+        open.update_query("housing");
+        assert_eq!(open.listed()[0].0, "housing");
     }
 
     #[test]

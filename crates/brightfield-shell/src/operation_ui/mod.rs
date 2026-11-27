@@ -49,6 +49,7 @@ pub mod open;
 pub mod read_file;
 pub mod reads;
 pub mod rename_column;
+mod scan;
 pub mod sort_rows;
 pub mod summarise_rows;
 
@@ -409,11 +410,14 @@ pub enum By {
     /// The draft's value of this key, a column's name given bare, as arc takes
     /// a name: the whole of it, spaces and all.
     Name(&'static str),
+    /// The table the draft reads under this role of arc's, whole, as a join
+    /// is named for the table it joins.
+    Read(&'static str),
 }
 
 impl NameRule {
-    /// The last part of the name for `draft`: the value [`By::Name`] names,
-    /// whole, or the first comma-separated item of the value [`By::Value`] names, without a surrounding `"` pair and
+    /// The last part of the name for `draft`: the value [`By::Name`] names, or
+    /// the table read under the role [`By::Read`] names, whole, or the first comma-separated item of the value [`By::Value`] names, without a surrounding `"` pair and
     /// without a trailing `asc` or `desc`. `None` when the rule is [`By::Nothing`],
     /// when the draft lacks the value, when it is empty, and when what is left holds a
     /// character other than a letter, a digit or `_`, or a space outside quotes,
@@ -427,6 +431,13 @@ impl NameRule {
                     .value(key)
                     .filter(|name| !name.trim().is_empty())
                     .map(str::to_string)
+            }
+            By::Read(role) => {
+                return draft
+                    .reads
+                    .iter()
+                    .find(|(name, table)| name == role && !table.trim().is_empty())
+                    .map(|(_, table)| table.clone())
             }
             By::Value(key) => key,
         };
@@ -614,6 +625,21 @@ mod tests {
             with_by: false,
         };
         assert_eq!(nothing.last_part(&draft(&[("order_by", "a")])), None);
+    }
+
+    #[test]
+    fn a_step_is_named_by_the_table_it_reads_under_a_role() {
+        let rule = NameRule {
+            word: "joined",
+            from: By::Read("other"),
+            with_by: false,
+        };
+        let mut join = Draft::empty("join-tables");
+        assert_eq!(rule.last_part(&join), None);
+        join.reads.push(("other".to_string(), "by_age".to_string()));
+        assert_eq!(rule.last_part(&join), Some("by_age".to_string()));
+        join.reads[0].0 = "others".to_string();
+        assert_eq!(rule.last_part(&join), None);
     }
 
     #[test]

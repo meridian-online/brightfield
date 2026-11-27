@@ -3,8 +3,9 @@
 //! front, says what each other table has in common with it, and hands the
 //! table taken, or the list of them, to the operation's draft.
 //!
-//! No operation that starts from the spine is built yet, so the two here are
-//! specs local to this file, started through the window's own entry point.
+//! The two operations here are specs local to this file, started through the
+//! window's own entry point, so the pick is tested apart from any one
+//! operation's form.
 //! They ask arc for `join-tables` and `append-rows`, so the roles, the preview
 //! and the draft are arc's. The folder is a copy of the housing sample with two
 //! steps recorded through arc: `by_age`, which counts the rows by `house_age`,
@@ -464,12 +465,19 @@ fn space_adds_to_a_list_and_enter_takes_them_in_order() {
     let added = win.app.spine_pick().expect("still open").added().to_vec();
     assert_eq!(added, ["top", "by_age"]);
     assert_eq!(win.app.open_overlay(), None, "space opened the palette");
-    // An added table is drawn selected and says it is added.
+    // An added table is drawn selected and says it is added, which is what
+    // tells it from the row under the cursor, selected too.
     let top = table_row(&win, "top");
     assert!(top.washed);
-    assert_eq!(top.kind, format!("{ADDED} \u{b7} shares house_age"));
+    assert_eq!(top.kind, ADDED);
     // Space on an added table takes it off the list, and adds it again at the end.
     win.key(egui::Key::Space);
+    // Off the list and under the cursor, by_age is drawn selected and does not
+    // say it is added: the word is what tells the two apart.
+    let by_age = table_row(&win, "by_age");
+    assert!(by_age.washed, "the cursor is on by_age");
+    assert_ne!(by_age.kind, ADDED);
+    assert_eq!(table_row(&win, "top").kind, ADDED);
     win.key(egui::Key::Space);
     assert_eq!(
         win.app.spine_pick().expect("still open").added(),

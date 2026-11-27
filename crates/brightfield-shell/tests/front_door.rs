@@ -807,7 +807,7 @@ fn a_start_declares_a_spec_or_a_data_file_and_never_both() {
 ///
 /// Four facts, because they fail differently: the declared **path**, which
 /// is the name the start writes the file under and therefore the name the
-/// locator band says and the stem the table is called after; the declared
+/// window says and the stem the table is called after; the declared
 /// **source**, which must be the URL the start fetches; the declared
 /// **columns**, read back off the file the start wrote from the committed
 /// copy of that source; and the **rows**, all of them, as the authors' own
@@ -888,7 +888,7 @@ fn the_fetched_dataset_is_described_by_its_own_descriptor() {
 /// same file must not find a different document. The two routes are the
 /// start's Protocols row on the front door and `MeridianApp::open_data_file`,
 /// which is the entry point the file dialog reaches through — and what is
-/// compared is what a reader looks at: the locator band's line, the columns
+/// compared is what a reader looks at: the pane header's crumbs, the columns
 /// the rails list, and the window's own title.
 ///
 /// It is worth a test even though the routes share a call, because sharing it
@@ -900,7 +900,7 @@ fn the_fetched_dataset_is_described_by_its_own_descriptor() {
 /// Watched redden, one mutation: `starts::load`'s data arm returning
 /// `Opened::Protocol(ProtocolInputs::empty())` instead of the path — the shape
 /// of "open the declaration rather than the file" — fails here at "the two
-/// routes drew different locator lines".
+/// routes drew different pane headers".
 #[test]
 fn the_card_and_the_picker_land_on_one_window() {
     let _config = datasets_into_scratch("the_card_and_the_picker_land_on_one_window");
@@ -923,9 +923,9 @@ fn the_card_and_the_picker_land_on_one_window() {
     picked.settle();
 
     assert_eq!(
-        clicked.app.locator_crumbs(),
-        picked.app.locator_crumbs(),
-        "the two routes drew different locator lines"
+        clicked.app.header_crumbs(),
+        picked.app.header_crumbs(),
+        "the two routes drew different pane headers"
     );
     assert_eq!(
         clicked.app.title(),
@@ -951,9 +951,9 @@ fn the_card_and_the_picker_land_on_one_window() {
          empty lists agreeing"
     );
 
-    // …and the band names the file rather than a temporary. `document_source`
-    // draws the generated spec's own name, which `crate::data_file` keys to
-    // the data file's resolved stem — so a start that wrote its bytes into
+    // …and the window names the file rather than a temporary. The table the
+    // file loads into is named after the data file's resolved stem
+    // (`crate::one_step`) — so a start that wrote its bytes into
     // `std::env::temp_dir()` under a made-up name would say so here.
     let stem = PathBuf::from(data.file_name)
         .file_stem()
@@ -1066,7 +1066,7 @@ fn a_fetched_data_start_writes_where_a_second_launch_opens_it_without_fetching()
 /// So this chains the three steps off the one window's own record. Click the
 /// card; the layout names the start as opened and heads its recents with it.
 /// Boot a second launch from **that** layout, through `opening_boot` as `main`
-/// does, and it is not the door and draws the same locator line. Open the door
+/// does, and it is not the door and draws the same pane header. Open the door
 /// over that layout instead, and its Protocols row for the start reopens the
 /// same window.
 ///
@@ -1098,7 +1098,7 @@ fn the_card_records_what_the_next_launch_restores() {
         "clicking {} put no row for it at the head of the door's recents",
         start.id
     );
-    let crumbs = first.app.locator_crumbs();
+    let crumbs = first.app.header_crumbs();
 
     // The second launch, off the first one's record.
     let boot = opening_boot(None, recorded.opened.as_deref(), Flow::Vertical, None)
@@ -1115,9 +1115,9 @@ fn the_card_records_what_the_next_launch_restores() {
         start.id
     );
     assert_eq!(
-        second.app.locator_crumbs(),
+        second.app.header_crumbs(),
         crumbs,
-        "the restored launch drew a different locator line from the click"
+        "the restored launch drew a different pane header from the click"
     );
 
     // The door over the same record, and its Protocols row.
@@ -1130,7 +1130,7 @@ fn the_card_records_what_the_next_launch_restores() {
     door.take_the_row(start.id);
     door.settle();
     assert_eq!(
-        door.app.locator_crumbs(),
+        door.app.header_crumbs(),
         crumbs,
         "the Protocols row for {} reopened a different window from the card",
         start.id
@@ -3242,10 +3242,9 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     // …and hermetic on the other axis: a start that opens a data file writes
     // it before it composes, and a thumbnail of this developer's home
-    // directory is a thumbnail of one machine. `MeridianApp::document_source`
-    // already draws the file's NAME rather than its path, which is what keeps
-    // the picture the same on two machines; this keeps the write out of the
-    // way as well.
+    // directory is a thumbnail of one machine. The window draws the file's
+    // NAME rather than its path, which is what keeps the picture the same on
+    // two machines; this keeps the write out of the way as well.
     let set = if starts.iter().any(|s| s.remote) {
         "remote"
     } else {

@@ -50,7 +50,10 @@ usage:
                                  the same, and write the summary to <path> as JSON once the run ends, whatever its verdict
   cargo xtask ci --nightly [--summary-json <path>]
                                  run every step, carrying on past a failure, including the nightly-only steps
-  cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
+  cargo xtask ci --step <name> [--nightly]
+                                 run one step by name; this is how CI's jobs call the command. A test step leaves out
+                                 brightfield-shell's own targets, as a pull request's gate does, unless --nightly is given
+                                 or the run is on GitHub's runners
   cargo xtask ci --list          name every step, in order, with what it runs
   cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status
   cargo xtask gate --prune       take the gate lock and prune the workspace's own artifacts from the gate's shared target directory, as every run does when it ends
@@ -67,7 +70,11 @@ enum Invocation {
         summary: Option<PathBuf>,
         nightly: bool,
     },
-    One(String),
+    /// One step by name; `nightly` runs a test step over the whole suite.
+    One {
+        name: String,
+        nightly: bool,
+    },
     List,
     Gate(u64),
     /// Take the gate lock and prune its shared target directory.
@@ -105,10 +112,20 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             nightly: true,
         }),
         ["ci", "--list"] => Ok(Invocation::List),
-        ["ci", "--step", name] => Ok(Invocation::One((*name).to_owned())),
-        ["ci", single] if single.starts_with("--step=") => {
-            Ok(Invocation::One(single["--step=".len()..].to_owned()))
+        ["ci", "--step", name] => Ok(Invocation::One {
+            name: (*name).to_owned(),
+            nightly: false,
+        }),
+        ["ci", "--step", name, "--nightly"] | ["ci", "--nightly", "--step", name] => {
+            Ok(Invocation::One {
+                name: (*name).to_owned(),
+                nightly: true,
+            })
         }
+        ["ci", single] if single.starts_with("--step=") => Ok(Invocation::One {
+            name: single["--step=".len()..].to_owned(),
+            nightly: false,
+        }),
         ["gate", "--prune"] => Ok(Invocation::GatePrune),
         ["gate", n] => n
             .parse()
@@ -135,10 +152,20 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A pull request's gate leaves brightfield-shell's own test targets to
+    // the nightly. A hosted run, which only a person or a release tag starts,
+    // runs the whole suite, as the nightly does.
+    let whole_suite = match &invocation {
+        Invocation::All { nightly, .. } | Invocation::One { nightly, .. } => {
+            *nightly || std::env::var_os("GITHUB_ACTIONS").is_some()
+        }
+        _ => false,
+    };
     let ctx = Ctx {
         root: repo_root(),
         cargo: std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
         log: None,
+        whole_suite,
     };
     match invocation {
         Invocation::Gate(pr) => gate::run(pr),
@@ -158,7 +185,7 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Invocation::One(name) => {
+        Invocation::One { name, .. } => {
             let Some(step) = STEPS.iter().find(|s| s.name == name) else {
                 let known: Vec<&str> = STEPS.iter().map(|s| s.name).collect();
                 let message = format!(
@@ -195,6 +222,7 @@ fn main() -> ExitCode {
                 root: ctx.root.clone(),
                 cargo: ctx.cargo.clone(),
                 log: Some(log.clone()),
+                whole_suite: ctx.whole_suite,
             };
             // The nightly carries on past a failure so one red step does not
             // hide the state of the rest, and starts the nightly-only steps.
@@ -343,13 +371,21 @@ mod tests {
                 nightly: false
             })
         );
+        let one = |name: &str, nightly| {
+            Ok(Invocation::One {
+                name: name.to_owned(),
+                nightly,
+            })
+        };
+        assert_eq!(parse(&words("ci --step fmt")), one("fmt", false));
+        assert_eq!(parse(&words("ci --step=doc")), one("doc", false));
         assert_eq!(
-            parse(&words("ci --step fmt")),
-            Ok(Invocation::One("fmt".to_owned()))
+            parse(&words("ci --step test-default --nightly")),
+            one("test-default", true)
         );
         assert_eq!(
-            parse(&words("ci --step=doc")),
-            Ok(Invocation::One("doc".to_owned()))
+            parse(&words("ci --nightly --step test-one-thread")),
+            one("test-one-thread", true)
         );
         assert_eq!(parse(&words("ci --list")), Ok(Invocation::List));
         assert!(parse(&words("ci --step")).is_err());

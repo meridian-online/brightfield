@@ -334,6 +334,8 @@ const NEEDS_GRID_CELL: &[Requirement] = &[Requirement::of(Need::Selected(Selecte
 const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::Model))];
 // The ribbon is drawn only over an open Protocol: the front door has none.
 const NEEDS_RIBBON: &[Requirement] = &[A_PROTOCOL];
+// Quick open lists the Protocol's tables: the front door has none.
+const NEEDS_QUICK_OPEN: &[Requirement] = &[A_PROTOCOL];
 const NEEDS_MODEL_TABLE: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelTable))];
 const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelJoin))];
 // The node's activities. Grid and Chart look at a table or view; Relate is the
@@ -1093,14 +1095,16 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "d d = delete the line (vim); doubled so a stray d removes nothing; d d again puts the step back" }),
         },
         // Open the sources browser over the Protocol, on its first source. Opening it writes
-        // nothing, so View; the add the browser then makes is its own Data verb.
+        // nothing, so View; the add the browser then makes is its own Data verb. It is how
+        // `read-file` is made, so it applies over a grid or a chart as well, where the chart
+        // palette lists it with the other operations.
         VerbEntry {
             longname: "open-sources-browser",
             label: "Add sources",
             needs: NEEDS_TAKES_SOURCES,
             tier: CommandTier::View,
             binding_specs: vec![proto("shift-a")],
-            scope_applicability: vec![Protocol],
+            scope_applicability: vec![Protocol, View],
             drives: D::PaletteMeta,
             status: VerbStatus::Built,
             reserved_reason: None,
@@ -1712,35 +1716,33 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show the model that relates the Protocol's sources",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "⌘⌥ and M for model; ⌥M alone is the Model tab" }),
         },
+        // Quick open finds a table or view by its DuckDB name from wherever the
+        // canvas is, where the node jump's `/` is the graph's alone.
+        VerbEntry {
+            longname: "quick-open",
+            label: "Quick open",
+            needs: NEEDS_QUICK_OPEN,
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-p")],
+            scope_applicability: vec![Dashboard, View, Protocol, Model],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open any table or view of the Protocol by its name",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "⌘P, the editors' quick open" }),
+        },
         VerbEntry {
             longname: "toggle-inspector-rail",
             label: "Inspector rail",
-            needs: &[],
+            needs: &[A_PROTOCOL],
             tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: vec![Protocol],
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the protocol inspector rail",
-            scores: None,
-        },
-        // The chart view's rail, on the same terms. It sits at Dashboard and
-        // View rather than Protocol: the controls rail belongs to the chart
-        // grammar, and a rail toggle that fired inside the protocol panel would
-        // be a verb reaching into a view that does not have the pane.
-        VerbEntry {
-            longname: "toggle-controls-rail",
-            label: "Controls rail",
-            needs: &[],
-            tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the chart controls rail",
-            scores: None,
+            binding_specs: vec![global("cmd-alt-b")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Hide the inspector, or bring it back",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 4, motor_note: "cmd-b is the left rail, so cmd-alt-b is the right one, as VS Code's secondary side bar is" }),
         },
         // The ledger rail's Versions panel: a centre tab in the chart view's item
         // registry, so it carries a show verb the item audit requires, reserved
@@ -2457,10 +2459,8 @@ mod tests {
                 "open-run-log",
                 "open-run-quality",
                 "reload-spec",
-                "toggle-controls-rail",
                 "toggle-focus",
                 "toggle-gallery",
-                "toggle-inspector-rail",
                 "toggle-presentation"
             ]
         );
@@ -2635,8 +2635,8 @@ mod tests {
             "show-grid",
             "show-chart",
             "relate",
+            "quick-open",
             "toggle-inspector-rail",
-            "toggle-controls-rail",
             "open-chart-versions",
             "open-run-log",
             "open-run-quality",
@@ -3193,11 +3193,13 @@ mod tests {
             .collect();
         assert_eq!(in_workspace, ["cycle-model-view"]);
         // The model's verbs stay at the model altitude, and h j k l are not theirs.
-        // The ribbon's verbs and the node's activities are the window's, at
-        // every altitude the ribbon is drawn over, the model's among them.
+        // The ribbon's verbs, the node's activities and quick open are the
+        // window's, at every altitude the ribbon is drawn over, the model's
+        // among them.
         for v in at_model.iter().filter(|v| {
             !crate::ribbon::RIBBON_VERBS.contains(&v.longname)
                 && !crate::activity::ACTIVITY_VERBS.contains(&v.longname)
+                && v.longname != "quick-open"
         }) {
             assert_eq!(
                 v.scope_applicability,

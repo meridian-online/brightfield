@@ -1,11 +1,10 @@
 //! The unified title band: it leaves the window's own controls their corner on macOS, where the
 //! window draws under a hidden title bar; there its empty stretch moves the window when dragged and
 //! zooms it when double-clicked, as a title bar does, and elsewhere it leaves both to the window's
-//! own title bar; it keeps the open Protocol's name and the
-//! folder it is kept in, which used to sit in the locator band below it; and it carries Run, with
-//! its key and, where it cannot act, the sentence that says why, and the activity area, which says
-//! what the Protocol's runs have done. A run under way, and the runs that land, are driven in
-//! `run_control.rs`, which has a runner to give a window.
+//! own title bar; it keeps the open Protocol's name and the folder it is kept in; and it carries
+//! Run, with its key and, where it cannot act, the sentence that says why, and the activity area,
+//! which says what the Protocol's runs have done. A run under way, and the runs that land, are
+//! driven in `run_control.rs`, which has a runner to give a window.
 
 #[path = "support/scenes.rs"]
 mod scenes;
@@ -13,7 +12,7 @@ mod scenes;
 use brightfield_keys::{keys_label, Availability, KeyPlatform};
 use brightfield_shell::menu_bar::MenuHost;
 use brightfield_shell::window::{ACTIVITY_CONTROL_NAME, RUN_LABEL, RUN_PROTOCOL};
-use brightfield_workbench::arrangement::{LEDGER_RAIL, LOCATOR_BAND, TITLE_BAND};
+use brightfield_workbench::arrangement::{LEDGER_RAIL, TITLE_BAND};
 use scenes::Window;
 
 /// A point on the title band's empty stretch: left of the Protocol's name field, clear of the
@@ -198,28 +197,35 @@ fn the_front_door_draws_no_protocols_place() {
 }
 
 #[test]
-fn the_locator_band_keeps_the_crumbs_and_counts() {
+fn the_pane_header_keeps_the_crumbs_below_the_place() {
     let win = scenes::data_file();
-    let locator = win.app.region_rect(LOCATOR_BAND).expect("the locator band");
-    // A Protocol made from a data file reads its spine as the trail: the raw table, the steps
-    // that refine it, and the dashboard last.
-    let crumbs = win.app.locator_crumbs();
-    assert!(
-        crumbs.len() > 1,
-        "the locator band kept its trail: {crumbs:?}"
-    );
+    // A Protocol made from a data file opens on its dashboard, which its pane
+    // header names after the table it reads.
+    let crumbs = win.app.header_crumbs();
+    assert!(crumbs.len() > 1, "the pane header kept a trail: {crumbs:?}");
     assert_eq!(
         crumbs.last().map(String::as_str),
         Some("dashboard"),
         "{crumbs:?}"
     );
+    let header = win
+        .app
+        .pane_header()
+        .expect("the canvas drew a pane header");
+    let title = win.app.region_rect(TITLE_BAND).expect("the title band");
+    for (crumb, rect) in &header.crumbs {
+        assert!(
+            !title.intersects(*rect),
+            "the crumb {crumb:?} at {rect:?} is in the title band {title:?}"
+        );
+    }
     let place = win.app.title_place_rects().expect("the place");
     assert!(
         [place.name, place.location]
             .into_iter()
             .flatten()
-            .all(|rect| !locator.intersects(rect)),
-        "the place fields left the locator band"
+            .all(|rect| title.contains_rect(rect)),
+        "the place fields left the title band"
     );
 }
 
@@ -450,4 +456,19 @@ fn on_a_narrow_window_the_activity_area_goes_first_and_run_stays() {
         win.app.activity_area_rect().is_some(),
         "the activity area did not come back on a wide band"
     );
+}
+
+/// The spec file a chart was composed from is offered on the hover of the
+/// title band's name, by its file name alone.
+#[test]
+fn the_title_bands_name_offers_the_spec_file_on_hover() {
+    let win = scenes::data_file();
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("a Protocol made from a data file composes a spec file");
+    let name = spec.file_name().expect("a file name").to_string_lossy();
+    assert_eq!(win.app.document_source_about().as_deref(), Some(&*name));
 }

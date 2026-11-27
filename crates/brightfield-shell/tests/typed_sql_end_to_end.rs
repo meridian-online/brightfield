@@ -389,20 +389,24 @@ impl Window {
             .collect()
     }
 
-    /// The markers of the spine rows labelled `label`.
+    /// The existence markers of the spine rows labelled `label`: the model's
+    /// account of them, since the list draws a state mark in their place.
     fn markers_of(&self, label: &str) -> Vec<SpineMarker> {
         self.app
-            .spine_rows()
+            .protocol_model()
+            .spine()
             .iter()
             .filter(|r| r.label == label)
             .map(|r| r.marker)
             .collect()
     }
 
-    /// The marker of the spine's asset row labelled `label`: the table.
+    /// The existence marker of the spine's asset row labelled `label`, the
+    /// table, as the model holds it.
     fn table_marker(&self, label: &str) -> SpineMarker {
         self.app
-            .spine_rows()
+            .protocol_model()
+            .spine()
             .iter()
             .find(|r| r.role == SpineRole::Asset && r.label == label)
             .unwrap_or_else(|| panic!("the spine drew no table {label}"))

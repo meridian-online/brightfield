@@ -16,8 +16,15 @@
 //! seconds so far, using the `target-seconds:` lines of the same file. Every
 //! shard computes the same packing, so each target runs on exactly one shard.
 //! The pin-staleness and conformance steps run on the last default shard.
+//!
+//! A local run outside the nightly is a pull request's gate, and it leaves
+//! out the test targets only `brightfield-shell` has, its end-to-end and
+//! screenshot tests: they hold nearly all of the suite's time, and the
+//! nightly runs them on `main`. A name another crate's target shares stays,
+//! since `--test <name>` runs every target of that name and would otherwise
+//! drop the other crate's too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The two groups a test step can run.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -131,6 +138,71 @@ pub fn test_targets(metadata_json: &str) -> Result<BTreeMap<String, usize>, Stri
         }
     }
     Ok(targets)
+}
+
+/// The test target names that only `package` carries, in `cargo metadata`
+/// output: a name another package's test target shares is not one of them.
+pub fn targets_only_in(metadata_json: &str, package: &str) -> Result<BTreeSet<String>, String> {
+    let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+        .map_err(|e| format!("cargo metadata did not print JSON: {e}"))?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata printed no packages array")?;
+    let mut mine = BTreeSet::new();
+    let mut others = BTreeSet::new();
+    for each in packages {
+        let into = if each["name"] == package {
+            &mut mine
+        } else {
+            &mut others
+        };
+        for target in each["targets"].as_array().into_iter().flatten() {
+            let is_test = target["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|k| k == "test"));
+            if let (true, Some(name)) = (is_test, target["name"].as_str()) {
+                into.insert(name.to_owned());
+            }
+        }
+    }
+    if mine.is_empty() {
+        return Err(format!(
+            "cargo metadata lists no test target of {package}; it was renamed or its tests moved, and the gate would leave out nothing"
+        ));
+    }
+    Ok(mine.difference(&others).cloned().collect())
+}
+
+impl Selection {
+    /// This selection without the targets named in `names`, each part's
+    /// report saying how many it left out and `why`.
+    pub fn without(self, names: &BTreeSet<String>, why: &str) -> Self {
+        let trim = |part: Option<Part>| {
+            part.map(|mut part| {
+                let before = part.items.len();
+                part.items.retain(|item| !names.contains(item));
+                part.report.push(format!(
+                    "leaves out {} target(s): {why}",
+                    before - part.items.len()
+                ));
+                part
+            })
+        };
+        Selection {
+            one_thread: trim(self.one_thread),
+            default: trim(self.default),
+            protocols: self.protocols,
+        }
+    }
+
+    /// The `cargo test` target flags that build every item of both parts.
+    pub fn build_args(&self) -> Vec<String> {
+        self.one_thread
+            .iter()
+            .chain(&self.default)
+            .flat_map(Part::cargo_args)
+            .collect()
+    }
 }
 
 /// The shard this process is, from the environment `test.yml` sets, or `None`
@@ -378,6 +450,43 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found["shared"], 2);
         assert_eq!(found["only_a"], 1);
+    }
+
+    #[test]
+    fn only_the_names_no_other_package_shares_are_the_packages_own() {
+        let json = r#"{"packages":[
+            {"name":"shell","targets":[{"kind":["lib"],"name":"shell"},{"kind":["test"],"name":"shared"},{"kind":["test"],"name":"e2e"}]},
+            {"name":"render","targets":[{"kind":["test"],"name":"shared"},{"kind":["test"],"name":"pixels"}]}]}"#;
+        let own = targets_only_in(json, "shell").unwrap();
+        assert_eq!(own.into_iter().collect::<Vec<_>>(), ["e2e"]);
+        assert!(targets_only_in(json, "absent")
+            .unwrap_err()
+            .contains("no test target of absent"));
+    }
+
+    #[test]
+    fn a_selection_without_names_keeps_the_rest_and_says_how_many_it_left_out() {
+        let (serial, seconds) = read_lists(YML).unwrap();
+        let found = targets(&["gpu_a", "gpu_b", "gpu_c", "plain_a", "plain_b"]);
+        let names: BTreeSet<String> = ["gpu_b", "plain_a"].map(str::to_owned).into();
+        let sel = select(&serial, &seconds, &found, None)
+            .unwrap()
+            .without(&names, "the nightly runs them");
+        let one = sel.one_thread.as_ref().unwrap();
+        assert_eq!(one.items, strings(&["gpu_a", "gpu_c", "@lib"]));
+        assert_eq!(
+            one.report.last().unwrap(),
+            "leaves out 1 target(s): the nightly runs them"
+        );
+        let other = sel.default.as_ref().unwrap();
+        assert_eq!(other.items, strings(&["plain_b", "@bins", "@doc"]));
+        assert!(sel.protocols);
+        assert_eq!(
+            sel.build_args(),
+            strings(&[
+                "--test", "gpu_a", "--test", "gpu_c", "--lib", "--test", "plain_b", "--bins"
+            ])
+        );
     }
 
     #[test]

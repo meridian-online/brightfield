@@ -22,10 +22,12 @@ use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
 use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{
-    GraphChipDrawn, ModelJoins, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
+    GraphChipDrawn, ModelJoins, NodeView, SpineRole, SpineRow, SpineRowDrawn,
 };
+use brightfield_shell::spine::SpineState;
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
+use meridian_egui::StepMark;
 
 /// The committed table this file's windows are opened over — its nine columns
 /// are [`HOUSING_COLUMNS`], and two of them are a coordinate pair.
@@ -406,7 +408,7 @@ fn ink(token: meridian_design::colour::Rgba) -> egui::Color32 {
 }
 
 /// [`texts`] with each galley's own colour — the fourth field neither `texts`
-/// nor [`clipped_texts`] returns, for the locator band's ink assertion: a rect
+/// nor [`clipped_texts`] returns, for the pane header's ink assertion: a rect
 /// and a font do not show that the last crumb painted in a different colour
 /// from the rest.
 fn inks(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui::Color32)> {
@@ -440,14 +442,15 @@ fn inks(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui:
     out
 }
 
-/// The label, kind, depth and marker of one row — what a failure prints.
-fn shape_of(row: &SpineRowDrawn) -> (SpineRole, &str, &str, u8, SpineMarker) {
+/// The label, trailing text, depth and state mark of one row — what a failure
+/// prints.
+fn shape_of(row: &SpineRowDrawn) -> (SpineRole, &str, &str, u8, Option<StepMark>) {
     (
         row.role,
         row.label.as_str(),
         row.kind.as_str(),
         row.depth,
-        row.marker,
+        row.mark,
     )
 }
 
@@ -484,55 +487,40 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
     win.settle();
 
     let rows = win.rows();
-    let drawn: Vec<(SpineRole, &str, &str, u8, SpineMarker)> = rows.iter().map(shape_of).collect();
+    let drawn: Vec<(SpineRole, &str, &str, u8, Option<StepMark>)> =
+        rows.iter().map(shape_of).collect();
 
-    let mut want: Vec<(SpineRole, &str, &str, u8, SpineMarker)> = vec![
-        (
-            SpineRole::Caption,
-            "SPINE   \u{b7}   1 step",
-            "",
-            0,
-            SpineMarker::None,
-        ),
+    // Nothing has run, so no row has measured output to show at its trailing
+    // end: the list says what a row produced, and its state is its mark.
+    let mut want: Vec<(SpineRole, &str, &str, u8, Option<StepMark>)> = vec![
+        (SpineRole::Caption, "SPINE   \u{b7}   1 step", "", 0, None),
         // The file is on disk — the Protocol was opened by reading it — so it
         // is the one thing here that exists.
         (
             SpineRole::Asset,
             "./california_housing_sample.csv",
-            "file",
+            "",
             0,
-            SpineMarker::Filled,
+            Some(StepMark::Ok),
         ),
-        // Brightfield writes the spec and runs no step, so this one says so
-        // in the words `status_word` uses elsewhere.
-        (
-            SpineRole::Step,
-            "load",
-            "sql \u{b7} not run",
-            0,
-            SpineMarker::Hollow,
-        ),
+        // Brightfield writes the spec and runs no step.
+        (SpineRole::Step, "load", "", 0, Some(StepMark::NotRun)),
         (
             SpineRole::Asset,
             "california_housing_sample",
-            "table",
+            "",
             0,
-            SpineMarker::Hollow,
+            Some(StepMark::NotRun),
         ),
         // The table's one view: a grid is a way of looking at any tabular
-        // node, and this is the tabular node here.
-        (SpineRole::View, "grid", "view", 1, SpineMarker::None),
+        // node, and this is the tabular node here. It is no node of the
+        // graph, so it draws no mark.
+        (SpineRole::View, "grid", "", 1, None),
         // The dashboard is a node, not a view: it carries a mosaic spec of its
-        // own, so it is listed at the asset depth after the table it reads,
-        // with its own kind. Brightfield composed it when the file opened and
-        // no step of the Protocol makes it, so it is there and says so.
-        (
-            SpineRole::Asset,
-            "dashboard",
-            "dashboard",
-            0,
-            SpineMarker::Filled,
-        ),
+        // own, so it is listed at the asset depth after the table it reads.
+        // Brightfield composed it when the file opened and no step of the
+        // Protocol makes it, so it is there and says so.
+        (SpineRole::Asset, "dashboard", "", 0, Some(StepMark::Ok)),
         // No table clause: at 240 points the caption that named it clipped
         // mid-word and took the count off the edge with it, and the table's own
         // name is three rows above in full.
@@ -541,11 +529,11 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
             "OUTLINE   \u{b7}   9 columns",
             "",
             0,
-            SpineMarker::None,
+            None,
         ),
     ];
     for (column, leaf) in HOUSING_COLUMNS {
-        want.push((SpineRole::Column, column, leaf, 1, SpineMarker::None));
+        want.push((SpineRole::Column, column, leaf, 1, None));
     }
 
     assert_eq!(
@@ -564,7 +552,8 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
 fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
     let mut fresh = Live::open(housing_boot());
     fresh.settle();
-    assert_eq!(fresh.row("load").kind, "sql \u{b7} not run");
+    assert_eq!(fresh.row("load").mark, Some(StepMark::NotRun));
+    assert_eq!(spine_row(&fresh, "load").state, Some(SpineState::NotRun));
 
     // The same file, opened as though a run had happened: the step succeeded
     // and the table it produces is still not materialised. Two facts on two
@@ -584,18 +573,18 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
 
     let step = win.row("load");
     assert_eq!(
-        step.kind, "sql \u{b7} ok",
-        "the step row is spelling a run state the model does not hold"
+        step.mark,
+        Some(StepMark::Ok),
+        "the step row is marking a run state the model does not hold"
     );
     assert_eq!(
-        step.marker,
-        SpineMarker::Filled,
-        "a step that ran to success is a thing that happened, and the marker \
-         says so in shape"
+        spine_row(&win, "load").state,
+        Some(SpineState::Ok),
+        "the state the spine's mark will draw is the model's, as the words are"
     );
     assert_eq!(
-        win.row("california_housing_sample").marker,
-        SpineMarker::Hollow,
+        win.row("california_housing_sample").mark,
+        Some(StepMark::NotRun),
         "the table is not materialised — a step that ran is not an asset that \
          exists, and one marker must not be reading the other's fact"
     );
@@ -615,75 +604,354 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
     let mut win = Live::open(boot);
     win.settle();
     assert_eq!(
-        win.row("california_housing_sample").marker,
-        SpineMarker::Filled,
+        win.row("california_housing_sample").mark,
+        Some(StepMark::Ok),
         "an asset a run materialised exists, whatever its step's status map says"
     );
     assert_eq!(
-        win.row("load").marker,
-        SpineMarker::Hollow,
+        win.row("load").mark,
+        Some(StepMark::NotRun),
         "…and the step's own marker did not move with it"
     );
 }
 
-/// **AC1, the markers as ink.** The two markers are two shapes in two inks, off
-/// the frame's own circles rather than off the hook that records them.
+/// The model's spine row labelled `label`: the facts behind what the rail
+/// draws, the state, the output, the timing, the fold and the lanes.
 ///
-/// The hook is a record the pane writes; this is what the pane painted. Both,
-/// because a pane that recorded `Filled` and left the marker unpainted would
-/// pass the list above.
+/// Read off the model, for the tests of the facts themselves; the drawn rows
+/// stay the evidence for what the rail shows.
+fn spine_row(win: &Live, label: &str) -> SpineRow {
+    let rows = win.app.protocol_model().spine();
+    rows.iter()
+        .find(|row| row.label == label)
+        .cloned()
+        .unwrap_or_else(|| panic!("the spine has no row labelled {label:?}"))
+}
+
+/// **A table row carries its row count, and a step row the tables it made**,
+/// once a run measured them, and the step row its place in the gutter above
+/// the table it made.
 #[test]
-fn the_spines_markers_are_a_filled_disc_and_a_hollow_ring_where_the_row_says() {
+fn a_table_row_carries_its_row_count_and_a_step_row_what_it_made() {
+    let mut boot = housing_boot();
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the fixture has a table");
+    boot.protocol
+        .statuses
+        .insert("load".to_string(), SeamStatus::Ok);
+    boot.protocol.assets.insert(
+        table,
+        AssetMeta {
+            row_count: Some(19_028),
+            materialized: true,
+            bytes: None,
+            content_hash: None,
+        },
+    );
+    let mut win = Live::open(boot);
+    win.settle();
+    assert_eq!(
+        spine_row(&win, "california_housing_sample")
+            .output
+            .as_deref(),
+        Some("19,028 rows")
+    );
+    assert_eq!(spine_row(&win, "load").output.as_deref(), Some("1 table"));
+
+    let rows = win.app.protocol_model().spine();
+    let at = |label: &str| rows.iter().position(|r| r.label == label).expect(label);
+    let (file, step, table) = (
+        at("./california_housing_sample.csv"),
+        at("load"),
+        at("california_housing_sample"),
+    );
+    assert!(
+        file < step && step < table,
+        "the file, its load, then the table"
+    );
+    assert_eq!(rows[file].lanes.to_below, [0], "the file feeds its load");
+    assert_eq!(rows[step].lanes.from_above, [0]);
+    assert_eq!(rows[step].lanes.to_below, [0], "the load makes the table");
+    assert_eq!(rows[table].lanes.from_above, [0]);
+    assert!(
+        rows.iter()
+            .filter(|r| r.role == SpineRole::View)
+            .all(|r| r.lanes.node.is_none()),
+        "a view is a way to look at a table, not a node of the graph"
+    );
+}
+
+/// The housing boot with its load recorded as `status` after 2.3s, at the
+/// start of the run, and its table measured at 19,028 rows by an earlier run.
+fn housing_with_a_timed_load(status: SeamStatus) -> Boot {
+    use brightfield_protocol::contract::{StepKind, StepState};
+    let mut boot = housing_boot();
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the fixture has a table");
+    boot.protocol.statuses.insert("load".to_string(), status);
+    boot.protocol.assets.insert(
+        table,
+        AssetMeta {
+            row_count: Some(19_028),
+            materialized: true,
+            bytes: None,
+            content_hash: None,
+        },
+    );
+    boot.protocol.steps.insert(
+        "load".to_string(),
+        brightfield_protocol::contract_graph::StepView {
+            name: "load".to_string(),
+            label: "load".to_string(),
+            kind: StepKind::Sql,
+            state: if status == SeamStatus::Failed {
+                StepState::Failed
+            } else {
+                StepState::Success
+            },
+            live_state: None,
+            skip_reason: None,
+            sql_text: None,
+            op: None,
+            gate: false,
+            start_ms: Some(0),
+            duration_ms: Some(2_300),
+        },
+    );
+    boot
+}
+
+/// **A step row shows its duration and a table row its row count**, off the
+/// frame the step rows drew, with each row's state mark on its lane.
+///
+/// The step failed, so it made nothing to count and its row has room at the
+/// list's width for its timeline column.
+#[test]
+fn a_step_row_shows_its_duration_and_a_table_row_its_row_count() {
+    let mut win = Live::open(housing_with_a_timed_load(SeamStatus::Failed));
+    win.settle();
+
+    let step = win.row("load");
+    assert_eq!(step.duration.as_deref(), Some("2.3s"));
+    assert_eq!(step.kind, "", "a failed step made nothing");
+    assert_eq!(step.mark, Some(StepMark::Failed));
+
+    let table = win.row("california_housing_sample");
+    assert_eq!(table.kind, "19,028 rows");
+    assert_eq!(table.duration, None, "a table draws no duration");
+    assert_eq!(
+        table.mark,
+        Some(StepMark::Ok),
+        "a materialised table is there"
+    );
+
+    let painted = texts(&win.shapes());
+    for (row, text) in [(&step, "2.3s"), (&table, "19,028 rows")] {
+        assert!(
+            painted
+                .iter()
+                .any(|(t, rect, _)| t == text && row.rect.contains_rect(*rect)),
+            "the {:?} row painted no {text:?}",
+            row.label
+        );
+    }
+}
+
+/// **A step row too narrow for its timeline keeps its output** and gives up
+/// the bar and the duration together, as the step row does, and its record
+/// says so. At the list's width a step that made a table is that row.
+#[test]
+fn a_step_row_too_narrow_for_its_timeline_keeps_what_it_made() {
+    let mut win = Live::open(housing_with_a_timed_load(SeamStatus::Ok));
+    win.settle();
+    let step = win.row("load");
+    assert_eq!(step.kind, "1 table", "the step says what it made");
+    assert_eq!(step.mark, Some(StepMark::Ok));
+    assert_eq!(step.duration, None, "the timeline column gave way");
+    let painted = texts(&win.shapes());
+    assert!(
+        painted
+            .iter()
+            .any(|(t, rect, _)| t == "1 table" && step.rect.contains_rect(*rect)),
+        "the step row painted no output"
+    );
+    assert!(
+        !painted.iter().any(|(t, _, _)| t == "2.3s"),
+        "a duration was painted that the record does not hold"
+    );
+}
+
+/// **The focused node's row is marked apart from the cursor.** The row the
+/// canvas holds is the focused one, and the row the keys act on carries the
+/// cursor; moving the cursor leaves the focus where it was.
+#[test]
+fn the_focused_nodes_row_is_marked_apart_from_the_cursor() {
     let mut win = Live::open(housing_boot());
     win.settle();
-    let file = win.row("./california_housing_sample.csv");
-    let step = win.row("load");
-    let shapes = win.shapes();
-    let circles = circles(&shapes);
-    let sem = semantic(false);
+    let focused: Vec<String> = win
+        .rows()
+        .into_iter()
+        .filter(|row| row.on_canvas.is_some())
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(focused, ["dashboard"], "the canvas opens on the dashboard");
 
-    // The marker's leading edge sits SPACE_4 in from the row's left, so its
-    // centre is one radius past that.
-    let at = |row: &SpineRowDrawn| {
-        egui::pos2(
-            row.rect.left() + spacing::SPACE_4 + 2.5,
-            row.rect.center().y,
-        )
+    win.click_row("california_housing_sample");
+    let table = win.row("california_housing_sample");
+    let dashboard = win.row("dashboard");
+    assert!(table.washed, "the cursor moved to the table");
+    assert_eq!(table.on_canvas, None, "the cursor is not the focus");
+    assert!(!dashboard.washed);
+    assert_eq!(
+        dashboard.on_canvas,
+        Some(dashboard.rect),
+        "the dashboard keeps the focus"
+    );
+}
+
+/// **Clicking a row's fold control unfolds its family**, and a second click
+/// on the control, now on a member's row, folds it again.
+#[test]
+fn clicking_a_rows_fold_control_unfolds_its_family() {
+    let (_dir, inputs) = family_inputs();
+    let boot = Boot::protocol(inputs, brightfield_protocol::layout::Flow::Vertical, None);
+    let mut win = Live::at(boot, MEASURED_AT);
+    win.settle();
+    let fold = |win: &Live| {
+        win.rows()
+            .into_iter()
+            .find_map(|row| row.fold_rect.map(|rect| (row.label, rect)))
+            .expect("a row drew a fold control")
     };
+    let members = |win: &Live| {
+        win.rows()
+            .iter()
+            .filter(|row| row.label.starts_with("fetch_x_q"))
+            .count()
+    };
+    assert_eq!(members(&win), 0, "folded, the members are not listed");
 
-    let filled = circles
-        .iter()
-        .find(|c| c.center.distance(at(&file)) < 0.5)
-        .unwrap_or_else(|| panic!("no marker on the file row at {:?}", at(&file)));
-    assert!(
-        (filled.radius - 2.5).abs() < 0.01,
-        "the file's marker is radius {}, not 2.5",
-        filled.radius
-    );
+    let (family, at) = fold(&win);
+    win.run(vec![click_at(at.center()), Vec::new(), Vec::new()]);
+    assert_eq!(members(&win), 2, "unfolded from {family:?}'s control");
     assert_eq!(
-        filled.fill,
-        ink(sem.text.secondary),
-        "a filled marker is drawn in text.secondary"
+        win.app.protocol_model().spine_expanded().len(),
+        1,
+        "one family unfolded"
     );
 
-    let hollow = circles
+    let (member, at) = fold(&win);
+    assert!(member.starts_with("fetch_x_q") || member.starts_with("extract_x_q"));
+    win.run(vec![click_at(at.center()), Vec::new(), Vec::new()]);
+    assert_eq!(members(&win), 0, "folded again from {member:?}'s control");
+}
+
+/// A Protocol whose two quarters are fetched and extracted alike: a
+/// parameterised family, which the spine lists as one row until it is unfolded.
+fn family_inputs() -> (
+    tempfile::TempDir,
+    brightfield_shell::protocol::ProtocolInputs,
+) {
+    let dir = tempfile::tempdir().expect("a scratch folder");
+    std::fs::create_dir_all(dir.path().join("models")).expect("models folder");
+    std::fs::write(
+        dir.path().join("models/load.sql"),
+        "CREATE TABLE loaded AS SELECT * FROM read_csv('build/x/*/p.tsv');",
+    )
+    .expect("write the model");
+    let spec = dir.path().join("arcform.yaml");
+    std::fs::write(
+        &spec,
+        r"name: fam
+steps:
+  - name: fetch_x_q1
+    op: http_fetch@1
+    with: { url: 'https://h.example/q1.zip', out: build/z/q1.zip }
+  - name: extract_x_q1
+    op: archive_extract@1
+    with: { archive: build/z/q1.zip, dest: build/x/q1, members: [p.tsv] }
+  - name: fetch_x_q2
+    op: http_fetch@1
+    with: { url: 'https://h.example/q2.zip', out: build/z/q2.zip }
+  - name: extract_x_q2
+    op: archive_extract@1
+    with: { archive: build/z/q2.zip, dest: build/x/q2, members: [p.tsv] }
+  - name: load
+    sql: models/load.sql
+    depends_on: [build/x/q1/p.tsv, build/x/q2/p.tsv]
+",
+    )
+    .expect("write the manifest");
+    let inputs = brightfield_shell::protocol::load_protocol_offline(
+        spec.to_str().expect("utf-8 scratch path"),
+    )
+    .expect("the family manifest loads");
+    (dir, inputs)
+}
+
+/// **A family folds to one row and unfolds to its members**, each way by the
+/// fold control's family, and the canvas's own fold is left as it was.
+#[test]
+fn a_family_folds_to_one_row_and_unfolds_to_its_members() {
+    let (_dir, inputs) = family_inputs();
+    let mut model = brightfield_shell::protocol::ProtocolModel::new(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+    );
+    let folded = model.spine();
+    let family = folded
         .iter()
-        .find(|c| c.center.distance(at(&step)) < 0.5)
-        .unwrap_or_else(|| panic!("no marker on the step row at {:?}", at(&step)));
-    assert_eq!(
-        hollow.fill,
-        egui::Color32::TRANSPARENT,
-        "a step that has not run draws a ring, not a disc"
-    );
-    assert_eq!(
-        hollow.stroke.color,
-        ink(sem.text.muted),
-        "a hollow marker is stroked in text.muted"
-    );
+        .find(|row| row.fold.is_some())
+        .expect("the family's row carries a fold control");
+    let fold = family.fold.clone().expect("checked");
+    assert!(fold.folded);
+    assert_eq!(fold.members, 2, "two quarters");
     assert!(
-        (hollow.stroke.width - 1.0).abs() < 0.01,
-        "a hollow marker is stroked at 1.0, not {}",
-        hollow.stroke.width
+        !folded.iter().any(|row| row.label.starts_with("fetch_x_q")),
+        "folded, the members are not listed"
+    );
+    let canvas_before = model.displayed_graph().nodes.len();
+
+    model.toggle_spine_fold(&fold.family);
+    let open = model.spine();
+    let steps: Vec<&str> = open
+        .iter()
+        .filter(|row| row.role == SpineRole::Step)
+        .map(|row| row.label.as_str())
+        .collect();
+    for member in ["fetch_x_q1", "extract_x_q1", "fetch_x_q2", "extract_x_q2"] {
+        assert!(
+            steps.contains(&member),
+            "{member} is listed unfolded: {steps:?}"
+        );
+    }
+    let controls: Vec<&SpineRow> = open.iter().filter(|row| row.fold.is_some()).collect();
+    assert_eq!(controls.len(), 1, "one control, to fold the family again");
+    let control = controls[0].fold.clone().expect("checked");
+    assert!(!control.folded);
+    assert_eq!(control.family, fold.family);
+    assert!(
+        controls[0].label.starts_with("fetch_x_q") || controls[0].label.starts_with("extract_x_q"),
+        "the control is on a member's row, not {:?}",
+        controls[0].label
+    );
+    assert_eq!(
+        model.displayed_graph().nodes.len(),
+        canvas_before,
+        "the spine's fold leaves the canvas as it was"
+    );
+
+    model.toggle_spine_fold(&fold.family);
+    assert_eq!(
+        model.spine(),
+        folded,
+        "folded again, the spine is as it was"
     );
 }
 
@@ -740,18 +1008,17 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
     );
 }
 
-/// **The Operator tab, switched to on a fresh open, describes the table the
+/// **The Step section, opened on a fresh open, describes the table the
 /// canvas holds — it does not say "Nothing selected."**
 ///
-/// The inspector rail's strip offers two tabs over one document each —
-/// `Operator` (the Protocol's) and `Inspector` (the chart's), sharing
-/// `INSPECTOR_PANES` behind one selector — and a fresh data-file open leaves
-/// the chart's own tab active, but a reader can switch. `has_selection` and
-/// `inspector` both fall back to the node the canvas holds when no asset is
-/// explicitly picked, held by
+/// The inspector stacks a section from each document — the chart's
+/// Parameters over the Protocol's Step — and a fresh data-file open leaves
+/// the chart's section open and Step folded, but a reader can open Step.
+/// `has_selection` and `inspector` both fall back to the node the canvas
+/// holds when no asset is explicitly picked, held by
 /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
-/// (this test) — so switching to Operator there answers for the table rather
-/// than for an empty state. Before that fallback existed, this tab read
+/// (this test) — so opening Step there answers for the table rather than for
+/// an empty state. Before that fallback existed, this pane read
 /// `Nothing selected` regardless of which row the bar was on.
 ///
 /// The Address field's own explainer is a separate claim from the fallback
@@ -764,7 +1031,8 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 ///
 /// A one-step Protocol (which the housing fixture is) opens the inspector
 /// collapsed to its own stub, so this test's first gesture is the caret that
-/// reopens it — the tab search below finds no `Operator` text otherwise.
+/// reopens it. The chart's Parameters section is open over the Step section
+/// there, so the second is the click on Step's header that opens it.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
@@ -772,12 +1040,12 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     win.click_rail_caret(brightfield_workbench::arrangement::INSPECTOR_RAIL);
 
     let shapes = win.shapes();
-    let operator = texts(&shapes)
+    let step = texts(&shapes)
         .into_iter()
-        .find(|(text, _, _)| text == "Operator")
+        .find(|(text, _, _)| text == "STEP")
         .map(|(_, rect, _)| rect)
-        .expect("the inspector rail's strip offers an Operator tab");
-    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+        .expect("the inspector draws a Step section");
+    win.run(vec![click_at(step.center()), Vec::new(), Vec::new()]);
 
     let shapes = win.shapes();
     let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
@@ -823,8 +1091,9 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
 /// chart beside it latches the graph;
 /// `a_windows_latched_canvas_agrees_with_the_derived_answer` pins that on one
 /// settled frame of the edgar_gleif fixture, beside a data-file window that
-/// latches a view. Selecting an asset row and switching to Operator here is the
-/// frame the keystroke actually reaches on that same fixture.
+/// latches a view. Selecting an asset row here is the frame the keystroke
+/// actually reaches on that same fixture; with no chart, the inspector's Step
+/// section is its only one, and open.
 #[test]
 fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
     let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -852,14 +1121,11 @@ fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
         .find(|row| row.role == SpineRole::Asset)
         .expect("a manifest with steps draws at least one asset row");
     win.click_row(&asset_row.label);
-
-    let shapes = win.shapes();
-    let operator = texts(&shapes)
-        .into_iter()
-        .find(|(text, _, _)| text == "Operator")
-        .map(|(_, rect, _)| rect)
-        .expect("the inspector rail's strip offers an Operator tab");
-    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+    assert_eq!(
+        win.app.inspector_sections(),
+        [(brightfield_shell::inspector::Section::Step, true)],
+        "a manifest window with no chart draws the Step section alone, open"
+    );
 
     let shapes = win.shapes();
     let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
@@ -925,14 +1191,14 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     let header = grid.header;
     let body = grid.body;
     let shapes = win.shapes();
-    let title = texts(&shapes)
+    let named: Vec<String> = texts(&shapes)
         .into_iter()
-        .find(|(_, rect, _)| header.contains_rect(*rect))
-        .map(|(text, _, _)| text);
-    assert_eq!(
-        title.as_deref(),
-        Some("Grid \u{b7} california_housing_sample"),
-        "the pane's header band names the table the grid is of"
+        .filter(|(_, rect, _)| header.contains_rect(*rect))
+        .map(|(text, _, _)| text)
+        .collect();
+    assert!(
+        named.iter().any(|t| t == "california_housing_sample"),
+        "the pane's header band does not name the table the grid is of: {named:?}"
     );
 
     // **The grid actually drew the table, not just a correctly headed empty
@@ -1215,21 +1481,22 @@ fn the_spines_measurements_hold_at_both_windows() {
         );
 
         for row in &rows {
+            // A caption and a column row keep the dense rung; every row the
+            // step row draws is the list row at the grid rung.
+            let rung = match row.role {
+                SpineRole::Caption | SpineRole::Column | SpineRole::Unjoined => spacing::ROW_DENSE,
+                _ => spacing::ROW_GRID,
+            };
             assert!(
-                (row.rect.height() - spacing::ROW_DENSE).abs() < 0.01,
-                "at {size:?} the row {:?} is {} tall, not ROW_DENSE",
+                (row.rect.height() - rung).abs() < 0.01,
+                "at {size:?} the row {:?} is {} tall, not {rung}",
                 row.label,
                 row.rect.height()
             );
-            // The contract's SPACE_4 is the SPINE's measure. A column row is
-            // drawn as the outline draws it — the dense binding's own `pad_x`
-            // — and is asserted against that rather than skipped, because "as
-            // today" is a claim like any other.
-            let want = match row.role {
-                SpineRole::Column => control::binding(spacing::ROW_DENSE).pad_x,
-                _ => spacing::SPACE_4,
-            };
+            // A column row is drawn as the outline draws it, its type the
+            // dense binding's own `pad_x` in from the row's right edge.
             if let Some(kind) = row.kind_rect.filter(|_| !row.kind.is_empty()) {
+                let want = control::binding(spacing::ROW_DENSE).pad_x;
                 assert!(
                     (row.rect.right() - kind.right() - want).abs() < 0.01,
                     "at {size:?} the kind on {:?} sits {} from the row's right \
@@ -1237,28 +1504,19 @@ fn the_spines_measurements_hold_at_both_windows() {
                     row.label,
                     row.rect.right() - kind.right()
                 );
-                // The face, not just the place. A column row keeps the
-                // outline's own `ui_font()` — that pre-dates this contract and
-                // is not what it governs — but a spine row's kind (the
-                // step's or the asset's, at the trailing end) is the mono
-                // caption face in `text.muted`, held below for each row this
-                // loop reaches, so a run state reads as a value rather than
-                // as prose beside it.
-                if row.role != SpineRole::Column {
-                    let drawn = painted
-                        .iter()
-                        .find(|(text, rect, _)| {
-                            *text == row.kind && kind.expand(0.5).contains_rect(*rect)
-                        })
-                        .map(|(_, _, font)| font.clone());
-                    assert_eq!(
-                        drawn.as_ref(),
-                        Some(&mono_caption),
-                        "at {size:?} the kind on {:?} is drawn in {drawn:?}, not \
-                         the mono caption face {mono_caption:?}",
-                        row.label
-                    );
-                }
+            }
+            // What a spine row produced is drawn as the step row draws its
+            // output, in the UI face: no longer the mono caption face of a
+            // kind word, since it is a count rather than a field.
+            if matches!(row.role, SpineRole::Asset | SpineRole::Step) && !row.kind.is_empty() {
+                assert!(
+                    painted.iter().any(|(text, rect, font)| *text == row.kind
+                        && row.rect.contains_rect(*rect)
+                        && *font != mono_caption),
+                    "at {size:?} the row {:?} drew no output {:?} in the UI face",
+                    row.label,
+                    row.kind
+                );
             }
         }
 
@@ -1276,38 +1534,26 @@ fn the_spines_measurements_hold_at_both_windows() {
             );
         }
 
+        // A view hangs under its node by the gutter: no mark of its own, and
+        // its name in the same column as the node's.
         let table = win.row("california_housing_sample");
         for view in NodeView::ALL {
             let row = win.row(view.label());
+            assert_eq!(row.mark, None, "the {} row drew a mark", view.label());
             assert!(
-                (row.name_rect.left() - table.name_rect.left() - spacing::SPACE_5).abs() < 0.01,
-                "at {size:?} the {} row's name starts {} past the node's, not \
-                 SPACE_5",
+                (row.name_rect.left() - table.name_rect.left()).abs() < 0.01,
+                "at {size:?} the {} row's name starts {} past the node's",
                 view.label(),
                 row.name_rect.left() - table.name_rect.left()
             );
         }
 
-        let bar = win
-            .row("dashboard")
-            .on_canvas
-            .expect("the dashboard is on the canvas");
-        let row = win.row("dashboard").rect;
-        assert!(
-            (bar.width() - 3.0).abs() < 0.01,
-            "at {size:?} the on-canvas bar is {} points wide, not three",
-            bar.width()
-        );
-        assert!(
-            (bar.left() - row.left()).abs() < 0.01,
-            "at {size:?} the bar is {} from the row's left edge",
-            bar.left() - row.left()
-        );
-        assert!(
-            (bar.height() - row.height()).abs() < 0.01,
-            "at {size:?} the bar is {} tall against a row of {}",
-            bar.height(),
-            row.height()
+        let dashboard = win.row("dashboard");
+        assert_eq!(
+            dashboard.on_canvas,
+            Some(dashboard.rect),
+            "at {size:?} the dashboard is on the canvas, so its whole row is \
+             the focused one"
         );
     }
 }
@@ -1401,15 +1647,27 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
         }
     }
 
-    let hosts: Vec<&SpineRowDrawn> = rows.iter().filter(|row| row.kind == "source").collect();
+    // Which rows are hosts is the model's account of them; the list draws
+    // what a row produced at its trailing end, not its kind.
+    let sources: std::collections::BTreeSet<String> = win
+        .app
+        .protocol_model()
+        .spine()
+        .into_iter()
+        .filter(|row| row.kind == "source")
+        .map(|row| row.label)
+        .collect();
+    let is_host =
+        |row: &SpineRowDrawn| row.role == SpineRole::Asset && sources.contains(&row.label);
+    let hosts: Vec<&SpineRowDrawn> = rows.iter().filter(|row| is_host(row)).collect();
     assert!(
         !hosts.is_empty(),
         "the crosswalk reads from hosts; the rail listed none"
     );
     for host in &hosts {
         assert_eq!(
-            host.marker,
-            SpineMarker::Filled,
+            host.mark,
+            Some(StepMark::Ok),
             "{:?} is a host the run reads from — an external input the \
              Protocol has before it starts",
             host.label
@@ -1417,7 +1675,7 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
     }
     let above: Vec<&str> = rows
         .windows(2)
-        .filter(|pair| pair[1].kind == "source" && pair[0].role == SpineRole::Step)
+        .filter(|pair| is_host(&pair[1]) && pair[0].role == SpineRole::Step)
         .map(|pair| pair[0].label.as_str())
         .collect();
     assert!(
@@ -2190,88 +2448,43 @@ fn the_caret_reopens_the_inspector_on_the_clicked_column() {
 }
 
 // ---------------------------------------------------------------------------
-// The locator band: the file, the step, the node and the view — or the
-// graph and its own counts
+// The pane header: the step and the node — or, on the graph, its head and
+// the graph's own counts
 // ---------------------------------------------------------------------------
 
-/// **AC1.** On the housing fixture the locator band's crumbs read the file,
-/// the step that read it, the table it made and the view on the canvas, each
-/// in the ink the layout contract gives it — and a click on the spine's
-/// `grid` row moves the last crumb.
+/// On the housing fixture the pane header's crumbs name the node on the
+/// canvas and what made it, each in the ink the layout contract gives it: the
+/// dashboard first, after the table it reads, and then the table's grid, after
+/// the step that made it.
 ///
-/// The crumbs come off [`MeridianApp::locator_crumbs`], the window's own hook,
-/// and the ink comes off the galleys the frame actually painted — reading the
-/// hook twice would prove the derivation agrees with itself, not that the
-/// band drew it.
+/// The crumbs come off [`MeridianApp::header_crumbs`], the window's own hook,
+/// and the ink comes off the galleys the frame actually painted, at the rects
+/// the header reports for them — reading the hook twice would prove the
+/// derivation agrees with itself, not that the header drew it.
 #[test]
-fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
+fn the_pane_header_reads_the_step_and_the_node() {
     let mut win = Live::open(housing_boot());
     win.settle();
 
-    let crumbs = win.app.locator_crumbs();
+    let crumbs = win.app.header_crumbs();
     assert_eq!(
         crumbs,
         vec![
-            "california_housing_sample.csv".to_string(),
-            "load".to_string(),
             "california_housing_sample".to_string(),
             "dashboard".to_string(),
         ],
-        "the band's crumbs are not the file, the step, the table and the view"
+        "the dashboard's header does not read the table it reads, then itself"
     );
-
-    // Restricted to the locator band's own rect: the title band above draws
-    // the window's title in its own ink, and for a data-file window that
-    // title is the same file name as the crumb — the very repetition this
-    // card exists to end. A search over the whole frame would find that
-    // occurrence first and pass no matter what ink this band used.
-    let band = win
-        .app
-        .region_rect(brightfield_workbench::arrangement::LOCATOR_BAND)
-        .expect("the locator band drew");
-    let shapes = win.shapes();
-    let painted: Vec<(String, egui::Rect, egui::Color32)> = inks(&shapes)
-        .into_iter()
-        .filter(|(_, rect, _)| band.contains_rect(rect.expand(0.5)))
-        .collect();
-    let sem = semantic(Mode::Light.is_dark());
-    for (i, crumb) in crumbs.iter().enumerate() {
-        let want = if i + 1 == crumbs.len() {
-            ink(sem.text.primary)
-        } else {
-            ink(sem.text.secondary)
-        };
-        let (_, _, got) = painted
-            .iter()
-            .find(|(text, _, _)| text == crumb)
-            .unwrap_or_else(|| {
-                panic!(
-                    "no galley reading {crumb:?} landed in the locator band {band:?}; it \
-                     painted {:?}",
-                    painted
-                        .iter()
-                        .map(|(t, _, _)| t.as_str())
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");
-    }
-    let (_, _, sep_ink) = painted
-        .iter()
-        .find(|(text, _, _)| text == "\u{203a}")
-        .unwrap_or_else(|| panic!("no separator glyph landed in the locator band"));
-    assert_eq!(
-        *sep_ink,
-        ink(sem.text.muted),
-        "the crumb separator is not painted text.muted"
-    );
+    assert_painted_as_crumbs(&mut win, &crumbs);
 
     win.click_row("grid");
     assert_eq!(
-        win.app.locator_crumbs().last(),
-        Some(&"grid".to_string()),
-        "a click on the grid row did not move the band's last crumb"
+        win.app.header_crumbs(),
+        vec!["load".to_string(), "california_housing_sample".to_string()],
+        "the grid's header does not read the step, then the table"
     );
+    let grid_crumbs = win.app.header_crumbs();
+    assert_painted_as_crumbs(&mut win, &grid_crumbs);
 
     // …and the dashboard's own row brings the page back, named as the node.
     win.click_row("dashboard");
@@ -2281,26 +2494,62 @@ fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
         "a click on the dashboard row did not put the dashboard node on the canvas"
     );
     assert_eq!(
-        win.app.locator_crumbs(),
+        win.app.header_crumbs(),
         crumbs,
-        "the band reads the dashboard differently once the grid has been visited"
+        "the header reads the dashboard differently once the grid has been visited"
     );
 }
 
-/// **The band names the dashboard as the node, not as a view of the table.**
+/// Each of `crumbs` was painted where the pane header says it drew it, the
+/// last in the primary ink and the rest in the secondary, with a muted `›`
+/// inside the header between them.
+fn assert_painted_as_crumbs(win: &mut Live, crumbs: &[String]) {
+    let header = win
+        .app
+        .pane_header()
+        .cloned()
+        .expect("the canvas drew a pane header");
+    // A pane that draws a part of the node, such as the dashboard's hero
+    // chart, follows the node's crumbs with its own title.
+    let drawn: Vec<String> = header.crumbs.iter().map(|(c, _)| c.clone()).collect();
+    assert!(
+        drawn.starts_with(crumbs) && drawn.len() <= crumbs.len() + 1,
+        "the header drew {drawn:?}, not the crumbs the hook names, {crumbs:?}"
+    );
+    let shapes = win.shapes();
+    let painted = inks(&shapes);
+    let sem = semantic(Mode::Light.is_dark());
+    for (i, (crumb, at)) in header.crumbs.iter().enumerate() {
+        let want = if i + 1 == drawn.len() {
+            ink(sem.text.primary)
+        } else {
+            ink(sem.text.secondary)
+        };
+        let (_, _, got) = painted
+            .iter()
+            .find(|(text, rect, _)| text == crumb && rect.expand(0.5).contains_rect(*at))
+            .unwrap_or_else(|| panic!("no galley reading {crumb:?} landed at {at:?}"));
+        assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");
+    }
+    let row = header.crumbs[0].1.y_range();
+    let (_, _, sep_ink) = painted
+        .iter()
+        .find(|(text, rect, _)| text == "\u{203a}" && row.contains(rect.center().y))
+        .unwrap_or_else(|| panic!("no separator glyph landed in the pane header"));
+    assert_eq!(
+        *sep_ink,
+        ink(sem.text.muted),
+        "the crumb separator is not painted text.muted"
+    );
+}
+
+/// **The header names the dashboard as the node, not as a view of the table.**
 ///
-/// On the housing file the dashboard node is labelled `dashboard`, which is
-/// also the word the view it replaced drew, so a band still reading the
-/// canvas as *the table's dashboard view* would print the same four crumbs.
-/// This relabels the node before the window opens: the band has to read the
-/// node's own label where the view's word used to stand, and the spine's
-/// row under that label carries the bar.
-///
-/// Watched redden, one mutation: routing `CanvasHolds::Dashboard` through
-/// `view_crumbs` with the word `dashboard` in `crumb_line` — the band's last
-/// crumb reads `dashboard` over a node called `overview`.
+/// This relabels the dashboard node before the window opens: the header has
+/// to read the node's own label, and the spine's row under that label carries
+/// the bar.
 #[test]
-fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
+fn the_pane_header_names_the_dashboard_as_the_node_it_is() {
     let mut boot = housing_boot();
     let table = boot
         .protocol
@@ -2325,18 +2574,17 @@ fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
 
     assert_eq!(win.app.canvas_holds(), &the_dashboard(&win.app));
     assert_eq!(
-        win.app.locator_crumbs(),
+        win.app.header_crumbs(),
         vec![
-            "california_housing_sample.csv".to_string(),
-            "load".to_string(),
             "california_housing_sample".to_string(),
             "overview".to_string(),
         ],
-        "the band's last crumb is not the dashboard node's own label"
+        "the header's last crumb is not the dashboard node's own label"
     );
     let row = win.row("overview");
+    // What kind of row it is is the model's account; the list draws its mark.
     assert_eq!(
-        (row.role, row.kind.as_str()),
+        (row.role, spine_row(&win, "overview").kind.as_str()),
         (SpineRole::Asset, "dashboard"),
         "the relabelled dashboard is not an asset row of kind dashboard"
     );
@@ -2346,11 +2594,11 @@ fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
     );
 }
 
-/// **AC2.** With the graph on the canvas the band reads one crumb, `Protocol`,
-/// and its trailing counts are the graph's own — not a literal, and not the
-/// same two numbers on two different graphs.
+/// With the graph on the canvas there is no pane header: the graph's head
+/// names it, and its trailing counts are the graph's own — not a literal, and
+/// not the same two numbers on two different graphs.
 #[test]
-fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
+fn the_graph_head_reads_the_graphs_own_counts() {
     let mut housing = Live::open(housing_boot());
     housing.settle();
     housing.click_chip();
@@ -2359,15 +2607,14 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
         &CanvasHolds::Graph,
         "the chip did not put the graph on the canvas"
     );
-    assert_eq!(
-        housing.app.locator_crumbs(),
-        vec!["Protocol".to_string()],
-        "the graph's crumb line is not the one entry Protocol"
+    assert!(
+        housing.app.header_crumbs().is_empty(),
+        "the graph has no pane header to name it"
     );
     let housing_counts = housing
         .app
-        .locator_counts()
-        .expect("the graph holds the canvas, so the band has counts to say");
+        .header_counts()
+        .expect("the graph holds the canvas, so its head has counts to say");
     assert_eq!(
         housing_counts,
         counted_pair(
@@ -2375,6 +2622,13 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
             housing.app.protocol_model().step_count(),
         ),
         "the housing graph's counts are not the graph's own node and step counts"
+    );
+    let shapes = housing.shapes();
+    assert!(
+        inks(&shapes)
+            .iter()
+            .any(|(text, _, _)| *text == housing_counts),
+        "the graph's head did not draw its counts"
     );
 
     let mut cross = crosswalk();
@@ -2386,8 +2640,8 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
     );
     let cross_counts = cross
         .app
-        .locator_counts()
-        .expect("the graph holds the canvas, so the band has counts to say");
+        .header_counts()
+        .expect("the graph holds the canvas, so its head has counts to say");
     assert_eq!(
         cross_counts,
         counted_pair(
@@ -2400,7 +2654,7 @@ fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
     assert_ne!(
         housing_counts, cross_counts,
         "the housing graph and the crosswalk manifest have different node and \
-         step counts, and the band drew the same text for both"
+         step counts, and the head drew the same text for both"
     );
 }
 
@@ -2452,13 +2706,17 @@ fn a_contract_dashboard_is_a_dashboard_row_and_a_dashboard_node() {
 
     let row = win.row("widgets_overview");
     assert_eq!(
-        (row.role, row.kind.as_str(), row.depth),
+        (
+            row.role,
+            spine_row(&win, "widgets_overview").kind.as_str(),
+            row.depth
+        ),
         (SpineRole::Asset, "dashboard", 0),
         "the contract's dashboard is not an asset row of kind dashboard"
     );
     assert_eq!(
-        row.marker,
-        SpineMarker::Filled,
+        row.mark,
+        Some(StepMark::Ok),
         "the run published the dashboard, so its row says it is there"
     );
     let labels: Vec<String> = win.rows().iter().map(|r| r.label.clone()).collect();
@@ -2570,11 +2828,21 @@ fn each_table_carries_a_grid_row_and_its_click_lands_on_that_nodes_grid() {
     let mut win = Live::open(housing_with_a_second_table());
     win.settle();
 
+    // The kind is the model's account of each row, read beside the drawn
+    // row's role, label and depth.
+    let kinds: Vec<String> = win
+        .app
+        .protocol_model()
+        .spine()
+        .into_iter()
+        .map(|row| row.kind)
+        .collect();
     let shape: Vec<(SpineRole, String, String, u8)> = win
         .rows()
         .iter()
         .filter(|row| row.role != SpineRole::Column && row.role != SpineRole::Caption)
-        .map(|row| (row.role, row.label.clone(), row.kind.clone(), row.depth))
+        .zip(kinds)
+        .map(|(row, kind)| (row.role, row.label.clone(), kind, row.depth))
         .collect();
     let row =
         |role, label: &str, kind: &str, depth| (role, label.to_string(), kind.to_string(), depth);
@@ -2637,14 +2905,9 @@ fn each_table_carries_a_grid_row_and_its_click_lands_on_that_nodes_grid() {
         "the grid of the second table drew the first table's rows"
     );
     assert_eq!(
-        win.app.locator_crumbs(),
-        vec![
-            "california_housing_sample".to_string(),
-            "by_age".to_string(),
-            "rooms_by_age".to_string(),
-            "grid".to_string(),
-        ],
-        "the band does not name the second table's grid"
+        win.app.header_crumbs(),
+        vec!["by_age".to_string(), "rooms_by_age".to_string()],
+        "the header does not name the second table and the step that made it"
     );
 
     win.click_grid_under("california_housing_sample");
@@ -2822,10 +3085,7 @@ fn joined_tables_lead_and_each_sits_beside_its_partner() {
         .iter()
         .find(|row| row.role == SpineRole::Model)
         .expect("the model step is drawn");
-    assert_eq!(
-        model.kind, "model \u{b7} 2 joins",
-        "the model step counts its joins"
-    );
+    assert_eq!(model.kind, "2 joins", "the model step counts its joins");
 
     // Each source's rows together, in the order above.
     let mut runs: Vec<Option<String>> = Vec::new();
@@ -2906,14 +3166,18 @@ fn one_curve_per_join() {
             "{curve:?} starts off its row"
         );
         assert_eq!(end.y, to.rect.center().y, "{curve:?} ends off its row");
+        // The join curves have a gutter of their own, left of the rows: the
+        // step row's gutter, which draws the graph's edges, starts where
+        // each row does, and no curve reaches into it.
         for at in [start, end] {
             assert!(
-                at.x < from.name_rect.left(),
-                "{curve:?} reaches into the row's name at {at:?}"
+                at.x < from.rect.left(),
+                "{curve:?} reaches into the row at {at:?}"
             );
         }
+        let body = win.app.spine_body().expect("the rail drew its spine");
         assert!(
-            curve.reach > from.rect.left() && curve.reach < start.x,
+            curve.reach > body.left() && curve.reach < start.x,
             "{curve:?} does not bow out into the gutter inside the rail"
         );
     }
@@ -3189,10 +3453,11 @@ fn a_table_joined_to_many_keeps_the_gutter_narrow() {
             .filter(|r| r.role == SpineRole::Asset)
             .map(|r| (r.label.clone(), (r.name_rect.left(), r.rect)))
             .collect();
-        (rows, win.app.spine_curves().to_vec())
+        let rail = win.app.spine_body().expect("the rail drew its spine");
+        (rows, win.app.spine_curves().to_vec(), rail)
     };
-    let (before, _) = names(None);
-    let (after, curves) = names(Some(&joins));
+    let (before, _, _) = names(None);
+    let (after, curves, rail) = names(Some(&joins));
     assert_eq!(curves.len(), 8);
     let lanes: std::collections::BTreeSet<usize> = curves.iter().map(|c| c.lane).collect();
     assert_eq!(
@@ -3208,7 +3473,6 @@ fn a_table_joined_to_many_keeps_the_gutter_narrow() {
         );
     }
     for curve in &curves {
-        let rail = after[&curve.from].1;
         assert!(
             curve.reach > rail.left(),
             "{curve:?} reaches out of the rail at {}",
@@ -3293,7 +3557,7 @@ fn a_protocol_folder_reads_its_joins_from_its_model_file() {
             "stores",
             "loyalty_visits",
             "categories",
-            "model (model \u{b7} 6 joins)",
+            "model (6 joins)",
             "NO JOIN   \u{b7}   2 sources",
             "customer_segments",
             "promo_codes",
@@ -3313,7 +3577,7 @@ fn a_protocol_folder_reads_its_joins_from_its_model_file() {
 fn spine_model_first_surface(mode: Mode, name: &str) {
     // Tall enough for the whole spine — each source's rows, the model step,
     // the heading and the loose sources — to stand above the outline's caption.
-    let size = (1280.0, 1100.0);
+    let size = (1280.0, 1300.0);
     let mut win = Live::at(star_boot(Some(&STAR_JOINS)), size);
     win.settle();
     assert_eq!(

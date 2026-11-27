@@ -138,7 +138,7 @@ fn summarise_rows() -> VerbEntry {
 }
 
 // ---- dedupe-rows ----
-const DEDUPE_ROWS_BUILT: bool = false;
+const DEDUPE_ROWS_BUILT: bool = true;
 fn dedupe_rows() -> VerbEntry {
     entry(
         "dedupe-rows",
@@ -177,7 +177,7 @@ fn fill_nulls() -> VerbEntry {
 }
 
 // ---- join-tables ----
-const JOIN_TABLES_BUILT: bool = false;
+const JOIN_TABLES_BUILT: bool = true;
 fn join_tables() -> VerbEntry {
     entry(
         "join-tables",
@@ -190,7 +190,7 @@ fn join_tables() -> VerbEntry {
 }
 
 // ---- append-rows ----
-const APPEND_ROWS_BUILT: bool = false;
+const APPEND_ROWS_BUILT: bool = true;
 fn append_rows() -> VerbEntry {
     entry(
         "append-rows",

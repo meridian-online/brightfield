@@ -227,17 +227,17 @@ fn assert_workflow_graph_structure(app: &MeridianApp) {
     }
 
     assert_eq!(
-        app.locator_crumbs(),
-        vec!["Protocol".to_string()],
-        "the locator band's crumb line over the graph should be the one entry Protocol"
+        app.header_crumbs(),
+        Vec::<String>::new(),
+        "the graph draws no pane header, so it has no crumbs: its head names it"
     );
     let counts = app
-        .locator_counts()
-        .expect("the graph holds the canvas, so the band has counts to say");
+        .header_counts()
+        .expect("the graph holds the canvas, so its head has counts to say");
     assert_eq!(
         counts,
         counted_pair(model.node_count(), model.step_count()),
-        "the locator band's trailing counts are not the graph's own node and \
+        "the graph head's trailing counts are not the graph's own node and \
          step counts"
     );
 

@@ -814,6 +814,28 @@ pub struct Making {
     pub form_event: crate::operation_ui::FormEvent,
 }
 
+impl Making {
+    /// **The form the operation asks with now**, when it has one: always for an
+    /// operation kept on Enter, and for one kept at once only while it corrects its
+    /// kept step. The first draft of an operation kept at once asks for nothing, so
+    /// an edit made in a form while it is read would be kept without Enter
+    /// (`dedupe_rows_shows_no_form_before_its_step_is_kept`).
+    #[must_use]
+    pub fn form(
+        &self,
+    ) -> Option<
+        fn(
+            &mut crate::operation_ui::Draft,
+            &mut egui::Ui,
+            &crate::operation_ui::FormCx<'_>,
+        ) -> crate::operation_ui::FormEvent,
+    > {
+        let asks =
+            self.spec.keeps == crate::operation_ui::Keeps::OnEnter || self.corrects.is_some();
+        self.spec.form.filter(|_| asks)
+    }
+}
+
 /// What the Editor drew on a frame: its title, its text, and whether the text
 /// could be edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4999,6 +5021,11 @@ pub const CONTROLS: ItemId = ItemId::new("chart-controls");
 /// uninstantiated item merely draws the orphan-pane treatment.
 pub fn publish_item_ids() {
     chart_registry_with(true).publish_ids();
+    // The one inspector is the right rail's pane and no document's item: the
+    // window draws it from this document's panes and the protocol's. It is
+    // published with this view's ids because the rail holds this view's
+    // inspector.
+    ItemId::publish(&[brightfield_workbench::arrangement::INSPECTOR]);
 }
 
 /// The chart pane's address — the key its Vello texture slot is filed under.
@@ -5054,7 +5081,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
                 side: DockSide::Right,
                 share: CONTROLS_SHARE,
             },
-            toggle: Some(Verb::new("toggle-controls-rail")),
+            toggle: Some(Verb::new("toggle-inspector-rail")),
             make: || Box::new(ControlsPane),
         },
         crate::editor::editor_spec(),

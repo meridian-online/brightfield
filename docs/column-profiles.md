@@ -21,7 +21,7 @@ The window keeps up to eight profiles (`ColumnProfiles`), each against the table
 When the canvas holds a table a later step makes, the inspector describes that table. It shows the table's name; the step that makes it, with its kind and its state in the steps sheet's words (`not run` until a run records it); and its columns.
 
 - The step and state come from the table's own node in the Protocol's model, not from the spine's selection, and not from the load.
-- The inspector asks for the columns as it draws the table, and the window starts the read only then. A table on the canvas with the inspector shut, or showing another pane, is not read.
+- The inspector asks for the columns as it draws the table, and the window starts the read only then. A table on the canvas with the inspector shut, or its Column section closed, is not read.
 - A read the inspector started is stopped when the canvas moves off the table, so the grid's own reads of the next table do not wait behind it. The preview gate runs one read at a time.
 - While the columns are being read, the inspector says "Reading the columns of *table*…" rather than drawing an empty list.
 

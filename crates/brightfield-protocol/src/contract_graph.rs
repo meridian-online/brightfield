@@ -99,6 +99,23 @@ pub struct StepView {
     pub op: Option<String>,
     /// `true` for `finetype_validate` — a shield on its edge, not a node.
     pub gate: bool,
+    /// When the step started, in milliseconds from the run's start, as the
+    /// record measured it. `None` for a skipped step, and for a record written
+    /// before arc measured it.
+    pub start_ms: Option<u64>,
+    /// How long the step took, in milliseconds, as the record measured it.
+    /// `None` for a step that did not run.
+    pub duration_ms: Option<u64>,
+}
+
+/// A recorded number of seconds as whole milliseconds: `None` for a missing,
+/// negative or non-finite value, which no timing can be drawn from.
+fn millis(seconds: Option<f64>) -> Option<u64> {
+    let seconds = seconds.filter(|s| s.is_finite() && *s >= 0.0)?;
+    // A value past what a u64 of milliseconds holds saturates, and the
+    // timings that add these saturate too.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some((seconds * 1000.0).round() as u64)
 }
 
 /// Measured / status fields for one asset — kept beside the pure
@@ -599,6 +616,8 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
                     sql_text: step.sql.as_ref().and_then(|b| b.sql_text.clone()),
                     op: step.op_name().map(str::to_string),
                     gate: step.op_name() == Some(GATE_OP),
+                    start_ms: millis(step.start_sec),
+                    duration_ms: millis(step.duration_sec),
                 },
             )
         })
@@ -881,5 +900,33 @@ mod tests {
             .skip_reason_kind()
             .is_some_and(SkipReason::proves_fresh));
         assert_eq!(view.steps["s3"].skip_reason_kind(), None);
+    }
+
+    /// The record's per-step timing reaches the step's view: when it started
+    /// within the run and how long it took, and nothing for a step the record
+    /// gives no time to.
+    #[test]
+    fn a_step_view_carries_its_recorded_start_and_duration() {
+        let json = r#"{ "contract_version": "b5/1",
+            "run": { "run_id": "r1", "protocol": { "name": "timed" }, "outcome": "success" },
+            "assets": [],
+            "steps": [
+              { "name": "load", "kind": "sql", "status": { "state": "success" },
+                "start_sec": 0.25, "duration_sec": 2.3 },
+              { "name": "tally", "kind": "sql", "status": { "state": "skipped" },
+                "start_sec": null, "duration_sec": null },
+              { "name": "older", "kind": "sql", "status": { "state": "success" },
+                "duration_sec": 1.0 }
+            ] }"#;
+        let view = build_contract_view(&parse_contract(json.as_bytes()).expect("parses"));
+        assert_eq!(view.steps["load"].start_ms, Some(250));
+        assert_eq!(view.steps["load"].duration_ms, Some(2300));
+        assert_eq!(view.steps["tally"].start_ms, None);
+        assert_eq!(view.steps["tally"].duration_ms, None);
+        assert_eq!(
+            view.steps["older"].start_ms, None,
+            "a record from before start_sec"
+        );
+        assert_eq!(view.steps["older"].duration_ms, Some(1000));
     }
 }
