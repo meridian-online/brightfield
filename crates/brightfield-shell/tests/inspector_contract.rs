@@ -984,22 +984,58 @@ fn what_can_be_done_lists_the_columns_commands_with_their_keys() {
         rename.unavailable, None,
         "a column of the loaded table can be renamed"
     );
-    let at = win
-        .text_rects
-        .iter()
-        .find(|(t, _)| *t == rename.label)
-        .map(|(_, rect)| rect.center())
-        .expect("rename's row is drawn");
-    win.click(at);
+    // The chart's sections sit below Column, so its body scrolls within the
+    // room they leave it, and rename's row starts out below what it shows.
+    // Scroll the body until the row clears the Encoding header, as a reader
+    // would, before clicking it.
+    let rect_of = |win: &OpWindow, text: &str| {
+        win.text_rects
+            .iter()
+            .find(|(t, _)| t == text)
+            .map(|(_, rect)| *rect)
+    };
+    let over = rect_of(&win, "WHAT CAN BE DONE")
+        .expect("the column's commands are headed")
+        .center();
+    win.run(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..64 {
+        let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
+        let below = rect_of(&win, "ENCODING").expect("the Encoding section is headed");
+        if row.max.y < below.min.y - 8.0 {
+            break;
+        }
+        win.run(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -24.0),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+        win.settle();
+    }
+    let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
+    assert!(
+        row.max.y < rect_of(&win, "ENCODING").expect("Encoding is headed").min.y,
+        "the Column section's body never scrolled rename's row into view"
+    );
+    // A start waits on arc's description of the operation, which the window
+    // asks for once it opens and which may not have come by the first click:
+    // the status band then says it is being read, and the reader clicks again.
     let deadline = Instant::now() + Duration::from_secs(60);
+    win.click(row.center());
     while win.app.making().is_none() {
         assert!(
             Instant::now() < deadline,
             "the click never started rename: {}",
             win.banners()
         );
-        std::thread::sleep(Duration::from_millis(5));
+        let said = win.app.operation_said().unwrap_or_default().to_string();
+        assert!(
+            said.starts_with("Reading arc's description"),
+            "the click did not start rename: {said:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
         win.run(Vec::new());
+        win.click(row.center());
     }
     let making = win.app.making().expect("an operation is being made");
     assert_eq!(making.spec.long_name, "rename-column");
