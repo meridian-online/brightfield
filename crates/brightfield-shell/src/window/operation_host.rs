@@ -496,9 +496,16 @@ impl MeridianApp {
         // panel beside it says what arc gave, or that it gave no description.
         if let Start::FootField(field) = start {
             // Started on a column, as the inspector's Column section starts one, the field
-            // reads that column's cell in the cursor's row rather than the cursor's column.
+            // reads that column's cell in the cursor's row rather than the cursor's column,
+            // and opens on no other column when the grid does not show this one.
             if let Some(column) = &column {
-                self.charts.doc.put_grid_cursor_on_column(column);
+                if self.charts.doc.grid_cursor.is_some()
+                    && !self.charts.doc.put_grid_cursor_on_column(column)
+                {
+                    let words = operation_ui::label(spec.long_name);
+                    self.say_operation(ctx, format!("{words} needs the grid to show {column}."));
+                    return false;
+                }
             }
             let cx = self.operation_context();
             if let Availability::Unavailable(why) = availability(spec, &cx, column.as_deref()) {

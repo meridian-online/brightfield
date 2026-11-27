@@ -1070,3 +1070,37 @@ fn filter_rows_chosen_from_the_column_section_asks_on_that_column() {
         "the field asks on {INCOME}, not the cursor's column: {text}"
     );
 }
+
+/// **A foot-row operation started on a column the grid does not show opens
+/// on no other column**: it says why and opens nothing.
+#[test]
+fn a_foot_row_operation_on_a_column_the_grid_does_not_show_opens_nothing() {
+    use brightfield_shell::data_grid::GridCursor;
+    use brightfield_shell::grid_foot::FootField;
+    use brightfield_shell::operation_ui::{self, Start};
+    let (mut win, _) = with_column(INCOME);
+    let root = win.table();
+    win.show_grid_of(&root);
+    win.app.chart_doc_mut().grid_cursor = Some(GridCursor { row: 0, col: 1 });
+    win.settle();
+    let filter = operation_ui::by_verb("filter-rows-at-cursor").expect("filter is built");
+    let ctx = win.ctx.clone();
+    let started = win.app.start_operation_spec(
+        &ctx,
+        filter,
+        Start::FootField(FootField::Where),
+        Some("no_such_column"),
+    );
+    assert!(
+        !started,
+        "filter started on a column the grid does not show"
+    );
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .foot_asking()
+            .map(|(_, text)| text.to_string()),
+        None,
+        "a field opened on the cursor's column instead"
+    );
+}
