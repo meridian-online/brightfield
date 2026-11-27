@@ -54,6 +54,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
 | `toggle-inspector-rail` | `cmd-alt-b` | 3 / 3 / 4 | cmd-b is the left rail, so ⌘⌥B is the right one, as VS Code's secondary side bar is ⌘⌥B: hides the inspector and brings it back |
+| `split-canvas` | `cmd-\` | 3 / 4 / 5 | ⌘\ splits an editor in two in VS Code and Zed: splits the canvas into the node in focus and its other activity, and closes the pane without focus |
 | `show-connect-tab` | `alt-c` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Connect tab |
 | `show-shape-tab` | `alt-s` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Shape tab |
 | `show-model-tab` | `alt-m` | 3 / 5 / 4 | ⌥ and the tab's initial, the Office KeyTip move: selects the ribbon's Model tab |

@@ -5,7 +5,7 @@
 #[path = "support/scenes.rs"]
 mod scenes;
 
-use brightfield_keys::activity::{RELATE, SHOW_CHART, SHOW_GRID};
+use brightfield_keys::activity::{RELATE, SHOW_CHART, SHOW_GRID, SPLIT_CANVAS};
 use brightfield_keys::{Availability, Need};
 use brightfield_shell::node_activity::{offers, FocusedNode, NodeActivity};
 use brightfield_shell::protocol::{NodeView, SpineRole};
@@ -577,5 +577,233 @@ fn the_columns_note_never_lands_on_the_switcher_or_the_crumbs() {
     assert!(
         noted > 0,
         "no width drew the columns note, so this held nothing"
+    );
+}
+
+/// The panes the canvas drew, by the activity each shows, left to right.
+fn panes_showing(win: &scenes::Window) -> Vec<NodeActivity> {
+    win.app
+        .canvas_panes()
+        .panes
+        .iter()
+        .map(|pane| pane.activity)
+        .collect()
+}
+
+/// A press in the middle of `activity`'s pane, where a reader clicks to work
+/// in it, which gives that pane focus.
+fn focus_pane(win: &mut scenes::Window, activity: NodeActivity) {
+    let pane = *win
+        .app
+        .canvas_panes()
+        .pane_showing(activity)
+        .unwrap_or_else(|| panic!("no pane shows {activity:?}"));
+    win.click(pane.body.center());
+    assert_eq!(
+        panes_showing(win),
+        [NodeActivity::Chart, NodeActivity::Grid],
+        "the press in the {activity:?} pane closed the split"
+    );
+}
+
+#[test]
+fn split_opens_the_same_node_in_the_other_activity_beside_it() {
+    let mut win = scenes::data_file();
+    let (table, chart) = table_and_chart(&win);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid],
+        "a data file opens split, its chart beside its rows"
+    );
+
+    // From the table's grid alone, the split opens its chart beside it, and
+    // the grid keeps focus.
+    win.press("cmd-alt-g");
+    assert_eq!(panes_showing(&win), [NodeActivity::Grid]);
+    win.press("cmd-\\");
+    assert_eq!(win.answered, [SPLIT_CANVAS]);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Grid));
+    // The canvas holds the chart's page, whichever pane has focus.
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Dashboard {
+            node: chart.clone(),
+            table: table.clone(),
+        }
+    );
+
+    // From the chart alone, the split opens its rows beside it, and the chart
+    // keeps focus; the menu's Split does what the key does.
+    win.choose(SPLIT_CANVAS);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Grid],
+        "the chart's pane closed"
+    );
+    win.press("cmd-alt-c");
+    win.choose(SPLIT_CANVAS);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart],
+        "the rows' pane closed"
+    );
+    win.choose(SPLIT_CANVAS);
+    assert_eq!(win.applied, [SPLIT_CANVAS]);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Chart));
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Dashboard { node: chart, table }
+    );
+}
+
+#[test]
+fn each_pane_of_a_split_keeps_its_own_header() {
+    let win = scenes::data_file();
+    let (table, chart) = table_and_chart(&win);
+    let panes = win.app.canvas_panes();
+    assert_eq!(panes.panes.len(), 2);
+    assert_eq!(panes.headers.len(), 2, "each pane drew its own node header");
+    for (pane, header) in panes.panes.iter().zip(&panes.headers) {
+        let switcher = header.switcher.expect("each pane drew its switcher");
+        assert!(
+            pane.header.contains_rect(switcher),
+            "{:?}'s switcher {switcher:?} is outside its header {:?}",
+            pane.activity,
+            pane.header
+        );
+        assert_eq!(
+            header
+                .options
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            ["Grid", "Chart"],
+            "{:?}'s switcher",
+            pane.activity
+        );
+        // At half the canvas the chart's long title can take the band from
+        // the crumbs before it, so what is drawn is held to some crumb, and
+        // what each names is read off the header it was given.
+        assert!(
+            !header.crumbs.is_empty(),
+            "{:?} drew no crumb",
+            pane.activity
+        );
+    }
+    // The chart's header names the chart, the grid's the table it reads, and
+    // each shows its own activity. The grid's names its node alone, leaving
+    // its band's trailing end to its switches and its columns note.
+    let chart_holds = win.app.canvas_holds().clone();
+    let grid_holds = win.app.split_partner().expect("the canvas is split");
+    let chart_header = win.app.canvas_header_for(&chart_holds);
+    let crumbs: Vec<String> = chart_header
+        .breadcrumb
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
+    assert_eq!(crumbs.len(), 2, "the chart's: {crumbs:?}");
+    assert_eq!(crumbs[1], label_of(&win, &chart));
+    let (choices, selected) = chart_header.activities.unwrap();
+    assert_eq!(choices[selected].label, "Chart");
+    let grid_drawn: Vec<&str> = panes.headers[1]
+        .crumbs
+        .iter()
+        .map(|(c, _)| c.as_str())
+        .collect();
+    assert_eq!(
+        grid_drawn,
+        [label_of(&win, &table).as_str()],
+        "the grid's drawn crumbs"
+    );
+    let (choices, selected) = win.app.canvas_header_for(&grid_holds).activities.unwrap();
+    assert_eq!(choices[selected].label, "Grid");
+}
+
+#[test]
+fn the_activity_keys_act_on_the_pane_with_focus() {
+    let mut win = scenes::data_file();
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Chart));
+
+    // With the grid's pane in focus, Grid is the pane's own, and the split
+    // stands; Chart moves focus to the chart beside it, since the window
+    // draws one chart.
+    focus_pane(&mut win, NodeActivity::Grid);
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Grid));
+    assert!(
+        matches!(win.app.canvas_holds(), CanvasHolds::Dashboard { .. }),
+        "a press in the grid's pane moved the canvas off the chart's page"
+    );
+    win.press("cmd-alt-g");
+    assert_eq!(win.answered, [SHOW_GRID]);
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    win.press("cmd-alt-c");
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Chart));
+
+    // With the chart's pane in focus, Grid is the table's grid, alone.
+    win.press("cmd-alt-g");
+    assert_eq!(panes_showing(&win), [NodeActivity::Grid]);
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+
+    // …and Chart from there brings the chart's page back, split.
+    win.press("cmd-alt-c");
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    assert_eq!(win.app.focused_canvas_pane(), Some(NodeActivity::Chart));
+}
+
+#[test]
+fn split_again_closes_the_pane_without_focus() {
+    let mut win = scenes::data_file();
+    // The chart has focus, so the grid's pane closes.
+    win.press("cmd-\\");
+    assert_eq!(win.answered, [SPLIT_CANVAS]);
+    assert_eq!(panes_showing(&win), [NodeActivity::Chart]);
+    assert_eq!(win.app.split_partner(), None);
+
+    // Split again, give the grid focus, and the chart's pane closes.
+    win.press("cmd-\\");
+    assert_eq!(
+        panes_showing(&win),
+        [NodeActivity::Chart, NodeActivity::Grid]
+    );
+    focus_pane(&mut win, NodeActivity::Grid);
+    win.press("cmd-\\");
+    assert_eq!(panes_showing(&win), [NodeActivity::Grid]);
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+}
+
+#[test]
+fn split_over_the_graph_changes_nothing_and_says_why() {
+    let mut win = scenes::data_file();
+    assert!(
+        win.graph_to_canvas(),
+        "the graph could not be put on the canvas"
+    );
+    let before = win.app.canvas_holds().clone();
+    win.press("cmd-\\");
+    assert_eq!(win.answered, [SPLIT_CANVAS]);
+    assert_eq!(win.app.canvas_holds(), &before);
+    assert!(
+        win.drawn
+            .iter()
+            .any(|(_, text)| text == brightfield_shell::window::SPLIT_NEEDS),
+        "no toast said why the split was not made"
     );
 }

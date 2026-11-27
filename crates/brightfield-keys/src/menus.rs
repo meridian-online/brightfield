@@ -167,6 +167,7 @@ pub fn menu_bar() -> Vec<Menu> {
                 Separator,
                 acts("toggle-outline-rail"),
                 acts("toggle-inspector-rail"),
+                acts("split-canvas"),
                 acts("move-grid"),
                 Separator,
                 Native(NativeItem::BringAllToFront),
@@ -335,6 +336,7 @@ mod tests {
             [
                 acts("toggle-outline-rail"),
                 acts("toggle-inspector-rail"),
+                acts("split-canvas"),
                 acts("move-grid")
             ]
         );

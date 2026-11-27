@@ -64,6 +64,7 @@ use std::path::{Component, Path, PathBuf};
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
+use brightfield_keys::activity::SPLIT_CANVAS;
 use brightfield_keys::{Altitude, Frecency};
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
@@ -2990,6 +2991,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::C)
         }),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        "cmd-\\" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Backslash)),
         // Quick open. egui's key match ignores a Shift or an ⌥ the pattern
         // leaves out, so without the guard ⌘P would also take the palette's
         // ⇧⌘P.
@@ -3651,6 +3653,22 @@ pub struct MeridianApp {
     /// who has moved the edge keeps it where they put it across a throw of the
     /// switch.
     canvas_split: f32,
+    /// **Whether a chart's page is split in two**: the chart in one pane and
+    /// the rows it reads in the pane beside it.
+    ///
+    /// Open on each document, because that pair is the page a data file opens
+    /// as, and the dashboard comes back as that page wherever it is reached
+    /// from. Only `split-canvas` closes it, closing the pane without focus,
+    /// and opens it again. The pair is drawn only where
+    /// [`MeridianApp::split_partner`] finds the other half.
+    split_open: bool,
+    /// **Which pane of the split has focus**: the chart's or the grid's. The
+    /// canvas's latch holds the dashboard either way, so that what reads the
+    /// latch (the spine's mark, the Outline's chips, the inspector) reads the
+    /// page the reader is on, not the pane they last pressed in. A press in a
+    /// pane moves it, and any frame that draws no split puts it back on the
+    /// chart.
+    split_focus: crate::node_activity::NodeActivity,
     /// **Which way the grid pane draws the file** — its rows, or its columns
     /// as rows. See [`crate::app::GridLayout`].
     ///
@@ -4066,6 +4084,9 @@ pub struct MeridianApp {
     /// The `toggle-inspector-rail` keystroke token, read off the registry at
     /// boot as the navigator's is.
     inspector_binding: Option<&'static str>,
+    /// The `split-canvas` keystroke token, read off the registry at boot as
+    /// the navigator's is.
+    split_binding: Option<&'static str>,
     /// The `move-grid` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     grid_binding: Option<&'static str>,
@@ -4465,6 +4486,8 @@ impl MeridianApp {
             inspector_open: std::collections::BTreeMap::new(),
             inspector_drawn: Vec::new(),
             canvas_panes: CanvasPanes::default(),
+            split_open: true,
+            split_focus: crate::node_activity::NodeActivity::Chart,
             canvas_scroll: 0.0,
             canvas_split,
             grid_layout,
@@ -4601,6 +4624,10 @@ impl MeridianApp {
             inspector_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == INSPECTOR_TOGGLE)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            split_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == SPLIT_CANVAS)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             grid_binding: brightfield_keys::registry()
                 .iter()
@@ -5004,6 +5031,10 @@ impl MeridianApp {
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
         self.reconcile_canvas_holds();
+        // Each document opens on its own page, which a data file's is the
+        // split, whatever the last one was left as.
+        self.split_open = true;
+        self.split_focus = crate::node_activity::NodeActivity::Chart;
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
         // swap through `land_start`, `adopt_boot` or `open_home` gives the
@@ -5801,6 +5832,11 @@ impl MeridianApp {
     /// graph and the tiles draw no pane header, so they have no crumbs here:
     /// the graph's head names it and [`Self::header_counts`] says the rest.
     fn header_crumb_line(&self) -> Vec<Crumb> {
+        self.header_crumb_line_for(&self.canvas_holds)
+    }
+
+    /// [`Self::header_crumb_line`] for a pane holding `holds`.
+    fn header_crumb_line_for(&self, holds: &CanvasHolds) -> Vec<Crumb> {
         if let Some(showing) = self.model.as_ref().and_then(|m| m.in_grid.clone()) {
             return vec![
                 Crumb::new("Model").linked("Back to the model"),
@@ -5822,7 +5858,7 @@ impl MeridianApp {
             };
         }
         let model = &self.protocol.doc.model;
-        let labels = match self.canvas_holds() {
+        let labels = match holds {
             CanvasHolds::Graph => Vec::new(),
             CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. } => model
                 .header_crumbs(node)
@@ -5856,11 +5892,19 @@ impl MeridianApp {
     /// crumbs, its activities with the one shown, and its kind and size.
     #[must_use]
     pub fn canvas_header(&self) -> NodeHeader {
-        let breadcrumb = self.header_crumb_line();
+        self.canvas_header_for(&self.canvas_holds)
+    }
+
+    /// What the pane header of a canvas pane holding `holds` says of its node:
+    /// [`Self::canvas_header`] for the pane with focus, and for the other half
+    /// of a split, its own.
+    #[must_use]
+    pub fn canvas_header_for(&self, holds: &CanvasHolds) -> NodeHeader {
+        let breadcrumb = self.header_crumb_line_for(holds);
         let shown = if self.model.as_ref().is_some_and(ModelDoc::shown) {
             Some(crate::node_activity::NodeActivity::Model)
         } else {
-            match self.canvas_holds() {
+            match holds {
                 CanvasHolds::View {
                     view: NodeView::Grid,
                     ..
@@ -5886,7 +5930,7 @@ impl MeridianApp {
             });
         let held_rows = self.charts.doc.composed.rows.map(|rows| rows.total);
         let model = &self.protocol.doc.model;
-        let size_note = match self.canvas_holds() {
+        let size_note = match holds {
             CanvasHolds::View { node, .. } | CanvasHolds::Dashboard { node, .. }
                 if self.tiles.is_none() && !self.model_behind_grid() =>
             {
@@ -5898,7 +5942,7 @@ impl MeridianApp {
             breadcrumb,
             activities,
             size_note,
-            titled: matches!(self.canvas_holds(), CanvasHolds::Dashboard { .. }),
+            titled: matches!(holds, CanvasHolds::Dashboard { .. }),
         }
     }
 
@@ -7396,6 +7440,8 @@ impl MeridianApp {
         self.ribbon_keys(&ctx);
         // The node's activities, on the same gate.
         self.activity_keys(&ctx);
+        // The canvas's split, on the same gate.
+        self.split_key(&ctx);
         // The picture verbs, on the same gate, where a chart holds the canvas.
         self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
@@ -8026,6 +8072,26 @@ impl MeridianApp {
                 header: &node_header,
                 drawn: None,
             };
+            // **The split's two panes, each under its own node header**: the
+            // chart's half and the grid's, whichever of them has focus. The
+            // pane with focus is the one the canvas's latch names, and its
+            // header is the canvas's `pane_header`.
+            let split_partner = self.split_partner();
+            let split_headers = split_partner.as_ref().map(|grid| {
+                let chart = &self.canvas_holds;
+                let mut grid_header = self.canvas_header_for(grid);
+                // The band beside the hero keeps its two switches and its
+                // columns note at its trailing end. The size note, which the
+                // spine states, gives way to them, and so does the step's
+                // crumb, which the chart's header beside it already names: the
+                // grid's header names its node alone.
+                grid_header.size_note = None;
+                let node = grid_header.breadcrumb.pop();
+                grid_header.breadcrumb = node.into_iter().collect();
+                (self.canvas_header_for(chart), grid_header)
+            });
+            let grid_focused = self.split_focus == crate::node_activity::NodeActivity::Grid;
+            let mut pane_pressed: Option<crate::node_activity::NodeActivity> = None;
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
             // Any document with no tile column draws its grid as a table
@@ -8043,7 +8109,8 @@ impl MeridianApp {
             // grid per frame.
             let canvas_draws_grid = !graph_on_canvas
                 && ((canvas_holds.view() == Some(NodeView::Grid) && grid_unheld.is_none())
-                    || (self.grid_spot == crate::app::GridSpot::Canvas
+                    || (self.split_open
+                        && self.grid_spot == crate::app::GridSpot::Canvas
                         && projections[projection].item == CHART
                         && self.charts.doc.stacked_tiles().is_some()));
             self.charts.doc.begin_grid_frame();
@@ -8608,7 +8675,29 @@ impl MeridianApp {
                                 .map_or(&[], |s| s.profiles.as_slice());
                             charts.shelf.list_channel =
                                 protocol.doc.model.column_list().map(|l| l.channel());
-                            let (drawn, picked) = if transposed {
+                            // A statement's rows on the statement form are of no
+                            // node yet, so the grid keeps its title, as the lone
+                            // grid does.
+                            let mut split_heads = split_headers
+                                .as_ref()
+                                .filter(|_| grid_here && !grid_typed)
+                                .map(|(chart, grid)| {
+                                    (
+                                        CanvasHeader {
+                                            header: chart,
+                                            drawn: None,
+                                        },
+                                        CanvasHeader {
+                                            header: grid,
+                                            drawn: None,
+                                        },
+                                    )
+                                });
+                            let (hero_head, grid_head) = match split_heads.as_mut() {
+                                Some((chart, grid)) => (chart, Some(grid)),
+                                None => (&mut head, None),
+                            };
+                            let (mut drawn, picked) = if transposed {
                                 draw_transposed_pane_group(
                                     ui,
                                     body,
@@ -8620,7 +8709,8 @@ impl MeridianApp {
                                     focused,
                                     canvas_scroll,
                                     split,
-                                    &mut head,
+                                    hero_head,
+                                    grid_head,
                                     &mut requests,
                                     affordances,
                                 )
@@ -8638,11 +8728,39 @@ impl MeridianApp {
                                     drawn_layout,
                                     grid_here,
                                     ledger_grid_body,
-                                    &mut head,
+                                    hero_head,
+                                    grid_head,
                                     &mut requests,
                                     affordances,
                                 )
                             };
+                            if let Some((chart, grid)) = split_heads {
+                                drawn.headers = [chart.drawn.clone(), grid.drawn.clone()]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect();
+                                head.drawn = if grid_focused {
+                                    grid.drawn
+                                } else {
+                                    chart.drawn
+                                };
+                                // A press in either pane gives it focus, read
+                                // without taking the press from what is under it.
+                                pane_pressed = ui.input(|i| {
+                                    use crate::node_activity::NodeActivity;
+                                    let at = i
+                                        .pointer
+                                        .press_origin()
+                                        .filter(|_| i.pointer.primary_pressed())?;
+                                    if rects.hero.contains(at) {
+                                        Some(NodeActivity::Chart)
+                                    } else if rects.grid.contains(at) {
+                                        Some(NodeActivity::Grid)
+                                    } else {
+                                        None
+                                    }
+                                });
+                            }
                             canvas_panes = drawn;
                             // The edge between the two panes, after both of
                             // them have drawn — see `drag_canvas_split` for
@@ -8700,6 +8818,18 @@ impl MeridianApp {
                 crumb_back = true;
             }
             self.pane_header = header_drawn;
+            // The pane of a split a press landed in takes focus, and a canvas
+            // that has left the chart's page leaves it on the chart, which is
+            // where the split opens unless `split-canvas` opened it from the
+            // grid.
+            if canvas_panes.headers.len() == 2 {
+                if let Some(pressed) = pane_pressed {
+                    self.split_focus = pressed;
+                }
+            }
+            if !matches!(self.canvas_holds, CanvasHolds::Dashboard { .. }) {
+                self.split_focus = crate::node_activity::NodeActivity::Chart;
+            }
 
             self.regions = regions;
             self.strips = strips;
@@ -9504,6 +9634,23 @@ impl MeridianApp {
         }
         let focus = self.node_in_focus();
         let table = focus.as_ref().and_then(|f| f.table()).cloned();
+        // **In a split, the activity keys act on the pane with focus.** Grid
+        // on the grid's pane and Chart on the chart's are already taken;
+        // Chart on the grid's pane moves focus to the chart beside it, since
+        // the window draws one chart. Grid on the chart's pane is the table's
+        // grid, alone, as it is from a chart that is not split.
+        if self.split_partner().is_some() {
+            use crate::node_activity::NodeActivity;
+            match (verb, self.split_focus) {
+                (SHOW_GRID, NodeActivity::Grid) | (SHOW_CHART, NodeActivity::Chart) => return true,
+                (SHOW_CHART, NodeActivity::Grid) => {
+                    self.split_focus = NodeActivity::Chart;
+                    ctx.request_repaint();
+                    return true;
+                }
+                _ => {}
+            }
+        }
         let taken = match verb {
             SHOW_GRID => match table {
                 Some(node) => {
@@ -9536,6 +9683,148 @@ impl MeridianApp {
             ctx.request_repaint();
         }
         taken
+    }
+
+    /// **The grid's half of the split**, while the canvas draws one: the
+    /// rows of the table the dashboard on the canvas reads, as the grid's
+    /// pane holds them. The canvas's own latch, [`Self::canvas_holds`], is the
+    /// dashboard, whichever pane has focus ([`Self::focused_canvas_pane`]).
+    ///
+    /// A split pairs the chart a generated dashboard draws with the rows of
+    /// the table it reads, so there is one for the held dashboard and nothing
+    /// else on the canvas. `None` while the split is closed, the grid is in
+    /// the ledger, the model or a panel holds the canvas, or the chart has no
+    /// tiles to draw as the pair.
+    #[must_use]
+    pub fn split_partner(&self) -> Option<CanvasHolds> {
+        if !self.split_open
+            || self.grid_spot != crate::app::GridSpot::Canvas
+            || self.tiles.is_some()
+            || self.model.as_ref().is_some_and(ModelDoc::shown)
+            || self.model_behind_grid()
+            || self.charts.doc.stacked_tiles().is_none()
+        {
+            return None;
+        }
+        let model = &self.protocol.doc.model;
+        match &self.canvas_holds {
+            CanvasHolds::Dashboard { node, table }
+                if model.dashboard() == Some(node) && model.table() == Some(table) =>
+            {
+                Some(CanvasHolds::View {
+                    node: table.clone(),
+                    view: NodeView::Grid,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The activity the canvas's pane with focus shows: in a split, the pane
+    /// a press last landed in. `None` while the canvas holds no node's pane:
+    /// the graph, the tiles, a bare chart.
+    #[must_use]
+    pub fn focused_canvas_pane(&self) -> Option<crate::node_activity::NodeActivity> {
+        use crate::node_activity::NodeActivity;
+        if self.model.as_ref().is_some_and(ModelDoc::shown) {
+            return Some(NodeActivity::Model);
+        }
+        match &self.canvas_holds {
+            CanvasHolds::View {
+                view: NodeView::Grid,
+                ..
+            } => Some(NodeActivity::Grid),
+            CanvasHolds::Dashboard { .. } if self.split_partner().is_some() => {
+                Some(self.split_focus)
+            }
+            CanvasHolds::Dashboard { .. } => Some(NodeActivity::Chart),
+            _ => None,
+        }
+    }
+
+    /// **Split the canvas, or close the pane without focus.** Answers whether
+    /// the canvas changed.
+    ///
+    /// Split, the node in focus keeps its pane and its other activity opens
+    /// beside it: the chart beside a table's grid, the rows beside a chart.
+    /// The grid comes onto the canvas for it, as Grid brings it. Where the
+    /// node has no other activity the window can draw, nothing changes.
+    fn split_canvas(&mut self, ctx: &egui::Context) -> bool {
+        if !matches!(
+            self.availability_of(SPLIT_CANVAS),
+            Some(brightfield_keys::Availability::Available)
+        ) {
+            return false;
+        }
+        use crate::node_activity::NodeActivity;
+        if let Some(grid) = self.split_partner() {
+            // The chart's pane has focus: the rows beside it close, and the
+            // chart's page stays alone until it is split again. The grid's has
+            // it: the chart closes, and the grid is the table's, alone.
+            match self.split_focus {
+                NodeActivity::Grid => self.canvas_holds = grid,
+                _ => self.split_open = false,
+            }
+            ctx.request_repaint();
+            return true;
+        }
+        let before = (
+            self.split_open,
+            self.grid_spot,
+            self.canvas_holds.clone(),
+            self.split_focus,
+        );
+        // From a table's grid, its chart opens beside it and the grid keeps
+        // focus; from a chart, its rows open beside it.
+        if let CanvasHolds::View {
+            node,
+            view: NodeView::Grid,
+        } = &self.canvas_holds
+        {
+            if let Some(chart) = self.chart_reading(node) {
+                self.canvas_holds = CanvasHolds::Dashboard {
+                    node: chart,
+                    table: node.clone(),
+                };
+                self.split_focus = NodeActivity::Grid;
+            }
+        } else {
+            self.split_focus = NodeActivity::Chart;
+        }
+        self.split_open = true;
+        self.grid_spot = crate::app::GridSpot::Canvas;
+        if self.split_partner().is_none() {
+            (
+                self.split_open,
+                self.grid_spot,
+                self.canvas_holds,
+                self.split_focus,
+            ) = before;
+            return false;
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    /// Split the canvas, or close the pane without focus, if the registry's
+    /// `split-canvas` keystroke is down this frame. Gated exactly as
+    /// [`Self::home_key`] is. A split that cannot be made says why in a toast.
+    fn split_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.split_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.answered(SPLIT_CANVAS);
+            match self.availability_of(SPLIT_CANVAS) {
+                Some(brightfield_keys::Availability::Missing(sentence)) => {
+                    self.say_activity_refused(ctx, sentence);
+                }
+                Some(brightfield_keys::Availability::Available) if !self.split_canvas(ctx) => {
+                    self.say_activity_refused(ctx, SPLIT_NEEDS.to_owned());
+                }
+                Some(brightfield_keys::Availability::Available) | None => {}
+            }
+        }
     }
 
     /// Copy or export the chart under the pointer if the registry's
@@ -13197,7 +13486,12 @@ impl MeridianApp {
         for chip in &self.protocol.doc.canvas_chips {
             controls.push(chrome::NamedControl::labelled(chip.rect, chip.view.label()));
         }
-        if let Some(header) = &self.pane_header {
+        let headers: Vec<&chrome::HeaderDrawn> = if self.canvas_panes.headers.is_empty() {
+            self.pane_header.iter().collect()
+        } else {
+            self.canvas_panes.headers.iter().collect()
+        };
+        for header in headers {
             controls.extend(
                 header
                     .options
@@ -13364,6 +13658,9 @@ impl MeridianApp {
                 // The inspector rail is the window's, as the navigator's is.
                 Request::Verb(verb) if verb.as_str() == INSPECTOR_TOGGLE => {
                     taken = self.toggle_inspector_rail(ctx);
+                }
+                Request::Verb(verb) if verb.as_str() == SPLIT_CANVAS => {
+                    taken = self.split_canvas(ctx);
                 }
                 // reload-data is the window's verb for the same reason
                 // open-home is: the notice that raises it lives on the chart
@@ -21175,6 +21472,10 @@ impl CanvasHeader<'_> {
     }
 }
 
+/// What `split-canvas` says when the canvas holds nothing it can split: the
+/// split pairs a chart with the rows it reads, and neither is on the canvas.
+pub const SPLIT_NEEDS: &str = "Split needs a table and the chart that reads it on the canvas.";
+
 /// One pane of the canvas's pane group, as it was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasPane {
@@ -21182,6 +21483,8 @@ pub struct CanvasPane {
     /// `"grid"` for the two the group lays out, `"grid"` again for the one
     /// pane a canvas holding a node's grid view draws instead.
     pub name: &'static str,
+    /// The activity the pane shows: Chart for the hero, Grid for the rows.
+    pub activity: crate::node_activity::NodeActivity,
     /// The pane's outer rect, in window-space logical points.
     pub rect: egui::Rect,
     /// The header band `pane_frame` drew at its head.
@@ -21212,6 +21515,11 @@ pub struct CanvasPanes {
     /// The composed page's rect as it reached the screen, scroll included —
     /// what the map pane and the grid pane clip their share of.
     pub page: Option<egui::Rect>,
+    /// What each pane's node header drew, in the order of [`Self::panes`],
+    /// on a frame where the canvas was split: each pane of a split carries
+    /// its own crumbs and switcher. Empty on any other frame, whose one node
+    /// header is [`MeridianApp::pane_header`].
+    pub headers: Vec<chrome::HeaderDrawn>,
 }
 
 impl CanvasPanes {
@@ -21219,6 +21527,15 @@ impl CanvasPanes {
     #[must_use]
     pub fn pane(&self, name: &str) -> Option<&CanvasPane> {
         self.panes.iter().find(|p| p.name == name)
+    }
+
+    /// The pane showing `activity`, when one does.
+    #[must_use]
+    pub fn pane_showing(
+        &self,
+        activity: crate::node_activity::NodeActivity,
+    ) -> Option<&CanvasPane> {
+        self.panes.iter().find(|p| p.activity == activity)
     }
 }
 
@@ -21517,6 +21834,7 @@ fn draw_canvas_pane_group(
     grid_here: bool,
     ledger_rect: Option<egui::Rect>,
     head: &mut CanvasHeader<'_>,
+    grid_head: Option<&mut CanvasHeader<'_>>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -21594,12 +21912,14 @@ fn draw_canvas_pane_group(
         let panes = CanvasPanes {
             panes: vec![CanvasPane {
                 name: "map",
+                activity: crate::node_activity::NodeActivity::Chart,
                 rect: map_rect,
                 header: pane_header_of(map_rect, hero_body),
                 body: map_body,
             }],
             rows_note: None,
             page: charts.doc.raster_rect,
+            headers: Vec::new(),
         };
         return (panes, None);
     }
@@ -21631,6 +21951,7 @@ fn draw_canvas_pane_group(
 
     let map_pane = CanvasPane {
         name: "map",
+        activity: crate::node_activity::NodeActivity::Chart,
         rect: map_rect,
         header: pane_header_of(map_rect, hero_body),
         body: map_body,
@@ -21640,13 +21961,16 @@ fn draw_canvas_pane_group(
             panes: vec![map_pane],
             rows_note: None,
             page: charts.doc.raster_rect,
+            headers: Vec::new(),
         };
         return (panes, None);
     }
 
     // The grid: the same session read as rows rather than as marks, in the
-    // pane beside the hero.
-    let grid_body = pane_body(ui, grid_rect, &grid_subject, mode);
+    // pane beside the hero, under its own node header when the canvas is
+    // split.
+    let (grid_body, grid_right) =
+        grid_pane_body(ui, grid_rect, grid_subject, grid_head, requests, mode);
     draw_chart_body(
         ui,
         grid_body,
@@ -21683,17 +22007,25 @@ fn draw_canvas_pane_group(
         .filter(|drawn| drawn.some_column_is_off_screen())
         .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
         .map(|text| {
-            let band = band_less_switch(
+            let mut band = band_less_switch(
                 spot_band,
                 charts.doc.grid_spot_switch.as_ref().map(|s| s.rect),
             );
-            (band_note(ui, band, &text, mode), text)
-        });
+            if let Some(right) = grid_right {
+                band.min.x = (right + spacing::SPACE_4).min(band.max.x);
+            }
+            (band, text)
+        })
+        // Left out, as the lone grid's is, rather than drawn over its own
+        // header's switcher or crumbs.
+        .filter(|(band, text)| grid_right.is_none() || band_note_fits(ui, *band, text))
+        .map(|(band, text)| (band_note(ui, band, &text, mode), text));
     let panes = CanvasPanes {
         panes: vec![
             map_pane,
             CanvasPane {
                 name: "grid",
+                activity: crate::node_activity::NodeActivity::Grid,
                 rect: grid_rect,
                 header: grid_header,
                 body: grid_body,
@@ -21701,6 +22033,7 @@ fn draw_canvas_pane_group(
         ],
         rows_note,
         page: charts.doc.raster_rect,
+        headers: Vec::new(),
     };
     (panes, picked)
 }
@@ -21750,6 +22083,7 @@ fn draw_transposed_pane_group(
     scroll: f32,
     split: f32,
     head: &mut CanvasHeader<'_>,
+    grid_head: Option<&mut CanvasHeader<'_>>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -21774,7 +22108,7 @@ fn draw_transposed_pane_group(
     // the untransposed layout's order and for the same reason: this pane draws
     // part of the page, so its fill and its header band have to be down before
     // the texture lands on them.
-    let grid_body = pane_body(ui, grid_rect, &grid_subject, mode);
+    let (grid_body, _) = grid_pane_body(ui, grid_rect, grid_subject, grid_head, requests, mode);
 
     let summaries = (grid_body.width() * crate::dashboard::ROW_SUMMARY_SHARE).floor();
     let tile_width = (grid_body.width() - summaries).max(1.0);
@@ -21823,12 +22157,14 @@ fn draw_transposed_pane_group(
         panes: vec![
             CanvasPane {
                 name: "map",
+                activity: crate::node_activity::NodeActivity::Chart,
                 rect: map_rect,
                 header: pane_header_of(map_rect, hero_body),
                 body: map_body,
             },
             CanvasPane {
                 name: "grid",
+                activity: crate::node_activity::NodeActivity::Grid,
                 rect: grid_rect,
                 header: grid_header,
                 body: grid_body,
@@ -21839,6 +22175,7 @@ fn draw_transposed_pane_group(
         // instead.
         rows_note: None,
         page: charts.doc.raster_rect,
+        headers: Vec::new(),
     };
     (panes, picked)
 }
@@ -21906,6 +22243,32 @@ fn draw_row_summaries(
 /// cannot acquire a frame the others do not have.
 fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> egui::Rect {
     pane_body_drawn(ui, rect, subject, mode).0
+}
+
+/// **The grid pane's frame beside the hero**, under `head` when the canvas is
+/// split, and its content rect, with the right end of what the header drew at
+/// its leading end (its crumbs and switcher) when it drew a node header.
+fn grid_pane_body(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    subject: Subject,
+    head: Option<&mut CanvasHeader<'_>>,
+    requests: &mut Vec<Request>,
+    mode: Mode,
+) -> (egui::Rect, Option<f32>) {
+    let Some(head) = head else {
+        return (pane_body(ui, rect, &subject, mode), None);
+    };
+    let subject = head.apply(subject);
+    let (body, drawn) = pane_body_drawn(ui, rect, &subject, mode);
+    let right = drawn
+        .switcher
+        .into_iter()
+        .chain(drawn.crumbs.iter().map(|(_, rect)| *rect))
+        .map(|rect| rect.right())
+        .reduce(f32::max);
+    head.keep(drawn, requests);
+    (body, right)
 }
 
 /// [`pane_body`], and what the pane's header did.
@@ -22180,6 +22543,7 @@ fn draw_canvas_grid_pane(
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
+            activity: crate::node_activity::NodeActivity::Grid,
             rect,
             header,
             body,
@@ -22230,6 +22594,7 @@ fn draw_unheld_grid_pane(
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
+            activity: crate::node_activity::NodeActivity::Grid,
             rect,
             header: pane_header_of(rect, body),
             body,
