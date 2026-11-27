@@ -1549,6 +1549,10 @@ impl LiveDashboard {
         )?
         .with_diagnostics(self.diagnostics.clone())
         .with_row_count(rows);
+        // The rows each plot is drawn over now, so an answer found over other
+        // rows (before a parameter moved) is not drawn over these.
+        self.regions
+            .note_shown(self.coordinator.session(), &self.spec, &composed.plots);
         ink_regions(&mut composed, &self.regions, self.coordinator.session());
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)

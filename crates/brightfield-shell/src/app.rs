@@ -1297,6 +1297,9 @@ pub struct ChartDoc {
     /// and a headless test drives it; see [`crate::interval_drag`] for why the
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
+    /// Whether an input widget is being dragged on this frame — see
+    /// [`Self::set_input_dragging`].
+    input_dragging: bool,
     /// Why the last gesture failed to change the picture, if it did — read
     /// through [`Self::chart_fault`].
     ///
@@ -1686,6 +1689,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            input_dragging: false,
             interaction_fault: None,
             shelf_refusal: None,
             pending_edits: Vec::new(),
@@ -1772,6 +1776,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            input_dragging: false,
             interaction_fault: None,
             shelf_refusal: None,
             pending_edits: Vec::new(),
@@ -1824,6 +1829,7 @@ impl ChartDoc {
         self.active_selections.clear();
         // The handle positions described the replaced document's sliders.
         self.interval_drags.clear();
+        self.input_dragging = false;
         // …and the fault described the replaced document's gesture. Left
         // standing it would put the outgoing spec's banner over the incoming
         // spec's chart — the defect `open_chart` exists to prevent, re-made
@@ -4439,6 +4445,15 @@ impl ChartDoc {
         self.interval_drags.note(control.key(), value);
     }
 
+    /// Record whether an input widget, a param or interval slider, is being
+    /// dragged on this frame. The controls rail writes it each frame it draws
+    /// its sliders. While it is `true` no region run starts: each step of the
+    /// drag changes the rows the plots draw, and a run per step would be
+    /// stopped by the next. The first frame it is `false` again asks once.
+    pub fn set_input_dragging(&mut self, dragging: bool) {
+        self.input_dragging = dragging;
+    }
+
     /// Dispatch at most one owed value per interval slider, newest only.
     ///
     /// Each dispatch is an `Interaction::Select` carrying the structured
@@ -4663,10 +4678,12 @@ impl ChartDoc {
     }
 
     /// Start a region run for each plot not yet answered at the extent it is
-    /// drawn at, unless a gesture is still moving the frame: a run per
-    /// pointer step would be work thrown away.
+    /// drawn at, unless a gesture is still moving the frame or an input
+    /// widget is being dragged: a run per pointer step would be work thrown
+    /// away. The first frame after the gesture ends asks once, for where it
+    /// left the plot.
     fn request_regions(&mut self) {
-        if self.nav.is_moving() {
+        if self.nav.is_moving() || self.input_dragging {
             return;
         }
         if let Some(live) = self.live.as_mut() {
@@ -4685,6 +4702,11 @@ impl ChartDoc {
         if let Some(ctx) = wake.filter(|_| !live.regions().has_wake()) {
             let ctx = ctx.clone();
             live.regions_mut().set_wake(move || ctx.request_repaint());
+        }
+        // A drag ends with the pointer's button up, whether or not the pane
+        // whose slider it was is still drawn to say so.
+        if wake.is_some_and(|ctx| !ctx.input(|i| i.pointer.any_down())) {
+            self.input_dragging = false;
         }
         self.request_regions();
         let Some(live) = self.live.as_mut() else {
@@ -5327,6 +5349,9 @@ impl Item<ChartDoc> for ControlsPane {
         // is an `Interaction::SetParam`, a pushed value and a re-query, never
         // a Rust-side filter. A spec with no declared params draws no slider at
         // all.
+        // Whether any slider here is under the pointer's drag this frame,
+        // which holds the region runs until it lets go.
+        let mut dragging = false;
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -5337,6 +5362,7 @@ impl Item<ChartDoc> for ControlsPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 if response.changed() && (value - control.value).abs() > f64::EPSILON {
                     doc.set_param(&control.name, value);
                 }
@@ -5365,6 +5391,7 @@ impl Item<ChartDoc> for ControlsPane {
                     slider = slider.step_by(step);
                 }
                 let response = ui.add(slider);
+                dragging |= response.dragged();
                 doc.interval_slider_rects
                     .push((control.key().to_string(), response.rect));
                 if response.changed() {
@@ -5378,6 +5405,7 @@ impl Item<ChartDoc> for ControlsPane {
                 ui.ctx().request_repaint();
             }
         }
+        doc.set_input_dragging(dragging);
         if crate::devtools::enabled() {
             ui.add_space(spacing::CONTROL_GAP);
             let sem = semantic(cx.mode.is_dark());

@@ -21,10 +21,13 @@
 //!
 //! The [`RegionsWorker`] keeps one run per plot, stops a run a newer request
 //! replaces, and hands the answers over on a later frame. [`ink_regions`] draws
-//! an answer while its extent is the one the plot is drawn at, and not after a
-//! zoom moves the plot, so the old regions are hidden until the new ones
-//! arrive (`old_regions_are_hidden_while_a_zoom_is_answered` in
-//! `tests/regions_overlay.rs`).
+//! an answer while its extent and its rows are the ones the plot is drawn at,
+//! and not after a zoom moves the plot or a parameter filters its rows, so the
+//! old regions are hidden until the new ones arrive
+//! (`old_regions_are_hidden_while_a_zoom_is_answered` and
+//! `a_slider_drag_finds_the_regions_once_it_lets_go` in
+//! `tests/regions_overlay.rs`). While a slider is dragged no run starts; the
+//! frame it is let go asks once.
 //!
 //! Regions are a render-time overlay rather than a mark injected into the spec,
 //! because mark indices identify layers throughout the pipeline and a new mark
@@ -385,11 +388,21 @@ impl RegionJob {
             }
         };
         let Some(grid_sql) = region_grid_sql(&self.rows_sql, &self.x, &self.y, &self.extent) else {
-            return Some(PlotRegions::none(self.x, self.y, self.extent));
+            return Some(PlotRegions::none(
+                self.x,
+                self.y,
+                self.extent,
+                self.rows_sql,
+            ));
         };
         let counted = read(&grid_sql)?;
         if rows_in_grid(&counted, &self.extent) < MIN_REGION_ROWS {
-            return Some(PlotRegions::none(self.x, self.y, self.extent));
+            return Some(PlotRegions::none(
+                self.x,
+                self.y,
+                self.extent,
+                self.rows_sql,
+            ));
         }
         let grid = density_grid(&counted, &self.extent, self.bandwidth_scale);
         let mut regions = find_regions(&grid);
@@ -425,6 +438,7 @@ impl RegionJob {
             x: self.x,
             y: self.y,
             extent: self.extent,
+            rows_sql: self.rows_sql,
             grid,
             regions,
             outlines,
@@ -628,6 +642,10 @@ pub struct PlotRegions {
     pub x: String,
     pub y: String,
     pub extent: GridExtent,
+    /// The rows the regions were found over: the layer's rows SQL as the run
+    /// was asked for it. A slider that filters the layer changes the rows the
+    /// plot draws, and an answer for the old rows is not drawn over the new.
+    pub rows_sql: String,
     pub grid: DensityGrid,
     /// Highest peak first, each holding at least [`MIN_DRAWN_SHARE`].
     pub regions: Vec<Region>,
@@ -642,10 +660,11 @@ pub struct PlotRegions {
 impl PlotRegions {
     /// No regions over `extent`, which has no grid: no rows in view, or too
     /// few to find regions among.
-    fn none(x: String, y: String, extent: GridExtent) -> Self {
+    fn none(x: String, y: String, extent: GridExtent, rows_sql: String) -> Self {
         Self {
             x,
             y,
+            rows_sql,
             grid: DensityGrid {
                 cols: 0,
                 rows: 0,
@@ -687,6 +706,9 @@ pub struct RegionsWorker {
     answered: BTreeMap<String, PlotRegions>,
     /// What each plot was last asked for, answered or not.
     asked: BTreeMap<String, JobKey>,
+    /// The rows each qualifying plot draws as last composed: its layer's rows
+    /// SQL, which [`Self::drawn_on`] holds an answer to.
+    shown_rows: BTreeMap<String, String>,
     wake: Option<Wake>,
     started: usize,
     superseded: usize,
@@ -856,12 +878,34 @@ impl RegionsWorker {
     }
 
     /// The answer drawn on `plot`: the last one, while its extent is the one
-    /// the plot is drawn at, and none once a zoom or pan has moved the plot
-    /// and the new answer has not landed.
+    /// the plot is drawn at and its rows are the ones the plot was last
+    /// composed over ([`Self::note_shown`]). None once a zoom or pan has moved
+    /// the plot, or a parameter has changed its rows, and the new answer has
+    /// not landed.
     #[must_use]
     pub fn drawn_on(&self, plot: &PlotHandle) -> Option<&PlotRegions> {
         let answer = self.answered.get(&plot.path)?;
-        (displayed_extent(plot).as_ref() == Some(&answer.extent)).then_some(answer)
+        let same_view = displayed_extent(plot).as_ref() == Some(&answer.extent);
+        let same_rows = self.shown_rows.get(&plot.path) == Some(&answer.rows_sql);
+        (same_view && same_rows).then_some(answer)
+    }
+
+    /// Record the rows each of `plots` is drawn over, as just composed under
+    /// `session`'s parameters, for [`Self::drawn_on`]. Builds SQL text and
+    /// runs nothing. A plot whose regions cannot be drawn records none.
+    pub(crate) fn note_shown(&mut self, session: &Session, spec: &Spec, plots: &[PlotHandle]) {
+        for plot in plots {
+            let rows = qualifying_layer(spec, &plot.path)
+                .and_then(|(mark, _, _)| session.region_rows_sql(mark).ok());
+            match rows {
+                Some(rows) => {
+                    self.shown_rows.insert(plot.path.clone(), rows);
+                }
+                None => {
+                    self.shown_rows.remove(&plot.path);
+                }
+            }
+        }
     }
 
     /// Whether a run is under way.

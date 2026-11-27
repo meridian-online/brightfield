@@ -312,6 +312,48 @@ fn a_parameter_that_filters_the_layer_finds_the_regions_again() {
 }
 
 #[test]
+fn a_slider_drag_finds_the_regions_once_it_lets_go() {
+    let mut doc = doc_over(FILTERED);
+    let path = doc.composed.plots[0].path.clone();
+    settle_regions(&mut doc);
+    assert_eq!(worker(&doc).started(), 1);
+    assert!(worker(&doc).drawn_on(&doc.composed.plots[0]).is_some());
+
+    // The slider is held down across several frames, each moving the
+    // threshold and so the rows the plot draws.
+    doc.set_input_dragging(true);
+    for threshold in [10.0, 20.0, 30.0, 40.0, 50.0] {
+        assert!(doc.set_param("threshold", threshold));
+        doc.tend_regions(None);
+        assert_eq!(
+            worker(&doc).started(),
+            1,
+            "no run starts while the slider is dragged (threshold {threshold})"
+        );
+        assert!(
+            worker(&doc).regions(&path).is_some(),
+            "the answer for the old rows is still held"
+        );
+        assert!(
+            worker(&doc).drawn_on(&doc.composed.plots[0]).is_none(),
+            "but it is not drawn over the rows the slider filtered"
+        );
+    }
+
+    doc.set_input_dragging(false);
+    settle_regions(&mut doc);
+    assert_eq!(
+        worker(&doc).started(),
+        2,
+        "letting go starts one run, for where the slider was left"
+    );
+    let drawn = worker(&doc)
+        .drawn_on(&doc.composed.plots[0])
+        .expect("the new rows' regions are drawn");
+    assert_eq!(drawn.regions.len(), 1, "one cluster is left");
+}
+
+#[test]
 fn old_regions_are_hidden_while_a_zoom_is_answered() {
     let mut doc = doc_over(&earthquake_scatter());
     let path = doc.composed.plots[0].path.clone();
