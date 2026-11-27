@@ -203,6 +203,95 @@ pub struct InspectorPane {
     /// The verb rows the Column section lists, with what the window says of
     /// each. Written by the window each frame before the dock draws.
     commands: CommandsHandle,
+    /// Which section the window is drawing this pane's body for, and what the
+    /// chart's sections drew. See [`SectionHandle`].
+    sections: SectionHandle,
+    /// The rows the chart's presenting mark draws, with the session and the
+    /// generation they were counted at, so the Reads section counts once per
+    /// change rather than once per frame.
+    rows_drawn: Option<(u64, u64, Option<u64>)>,
+}
+
+/// The window's handle on which of the inspector's sections it is drawing the
+/// pane's body for, and on what the chart's sections drew.
+///
+/// One pane draws the Column, Encoding, Reads, Fields and Parameters
+/// sections, each under its own header, so the window says which one before
+/// each body. The Encoding section's rows point at the shelf, which the window
+/// holds: a click on one is handed back here for the window to open the cell.
+#[derive(Clone, Default)]
+pub struct SectionHandle(Rc<RefCell<SectionState>>);
+
+#[derive(Default)]
+struct SectionState {
+    drawing: Option<Section>,
+    go_to: Option<brightfield_workbench::channel::ShelfChannel>,
+    encoding: Vec<EncodingRow>,
+    reads: Option<String>,
+    counts: std::collections::BTreeMap<Section, usize>,
+}
+
+/// One row the Encoding section drew: a channel, what its cell names, the key
+/// that goes to the cell, and where the row was drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodingRow {
+    /// The channel.
+    pub channel: brightfield_workbench::channel::ShelfChannel,
+    /// The row's words: the channel's name and what is on it.
+    pub label: String,
+    /// The key the shelf's cell for the channel is reached by.
+    pub keystroke: &'static str,
+    /// Where the row was drawn.
+    pub rect: egui::Rect,
+}
+
+impl SectionHandle {
+    /// Begin a frame of the inspector: forget what the chart's sections drew
+    /// on the last one.
+    pub fn begin(&self) {
+        let mut state = self.0.borrow_mut();
+        state.drawing = None;
+        state.encoding.clear();
+        state.reads = None;
+        state.counts.clear();
+    }
+
+    /// Say which section the pane's body is drawn for next.
+    pub fn drawing(&self, section: Option<Section>) {
+        self.0.borrow_mut().drawing = section;
+    }
+
+    fn current(&self) -> Option<Section> {
+        self.0.borrow().drawing
+    }
+
+    /// Note the count `section`'s header carried.
+    pub fn counted(&self, section: Section, count: usize) {
+        self.0.borrow_mut().counts.insert(section, count);
+    }
+
+    /// The count `section`'s header carried on the last frame, if it had one.
+    #[must_use]
+    pub fn count(&self, section: Section) -> Option<usize> {
+        self.0.borrow().counts.get(&section).copied()
+    }
+
+    /// The rows the Encoding section drew on the last frame.
+    #[must_use]
+    pub fn encoding(&self) -> Vec<EncodingRow> {
+        self.0.borrow().encoding.clone()
+    }
+
+    /// The line the Reads section drew on the last frame.
+    #[must_use]
+    pub fn reads(&self) -> Option<String> {
+        self.0.borrow().reads.clone()
+    }
+
+    /// The shelf cell an Encoding row's click asked for, taken once.
+    pub fn take_go_to(&self) -> Option<brightfield_workbench::channel::ShelfChannel> {
+        self.0.borrow_mut().go_to.take()
+    }
 }
 
 /// The window's handle on the table the canvas holds, when a step after the
@@ -310,6 +399,8 @@ impl InspectorPane {
             table,
             inspected: InspectedHandle::default(),
             commands: CommandsHandle::default(),
+            sections: SectionHandle::default(),
+            rows_drawn: None,
         }
     }
 
@@ -318,6 +409,13 @@ impl InspectorPane {
     #[must_use]
     pub fn with_commands(mut self, commands: CommandsHandle) -> Self {
         self.commands = commands;
+        self
+    }
+
+    /// This inspector, told through `sections` which section it draws.
+    #[must_use]
+    pub fn with_sections(mut self, sections: SectionHandle) -> Self {
+        self.sections = sections;
         self
     }
 
@@ -769,6 +867,55 @@ fn table_body(ui: &mut egui::Ui, inspected: &InspectedTable, mode: Mode) {
 pub const NOT_RUN: &str = crate::protocol::NOT_RUN;
 
 /// One caption-and-value line of the column block.
+/// What the Encoding and Reads sections say over a chart drawn with no live
+/// session behind it, as a still picture is.
+pub const NOT_LIVE: &str =
+    "This chart was drawn without a live session, so there is nothing to read.";
+
+/// What the Encoding section says for a chart with no mark to read it from.
+pub const NO_ENCODING: &str = "This chart has no mark to read an encoding from.";
+
+/// What the Reads section says for a chart with no table behind it.
+pub const NO_READS: &str = "This chart reads no table: its data is written in the spec.";
+
+/// What the Fields section says when no columns are known for the chart.
+pub const NO_FIELDS: &str = "No fields are known for this chart's table.";
+
+/// One line in the muted ink, for a section with nothing to show.
+fn muted_line(ui: &mut egui::Ui, mode: Mode, text: &str) {
+    let sem = semantic(mode.is_dark());
+    ui.label(
+        egui::RichText::new(text)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+}
+
+/// The Fields section: the columns the chart can put on a channel, which are
+/// the columns the shelf's list offers, each with its semantic type's leaf.
+fn fields_body(ui: &mut egui::Ui, doc: &ChartDoc, mode: Mode) {
+    let facts = doc.column_facts();
+    if facts.is_empty() {
+        muted_line(ui, mode, NO_FIELDS);
+        return;
+    }
+    let sem = semantic(mode.is_dark());
+    for column in facts.columns() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(&column.column)
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.primary)),
+            );
+            ui.label(
+                egui::RichText::new(&column.leaf)
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.muted)),
+            );
+        });
+    }
+}
+
 fn column_field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str) {
     let sem = semantic(mode.is_dark());
     ui.horizontal(|ui| {
@@ -812,11 +959,22 @@ impl Item<ChartDoc> for InspectorPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        // A selected COLUMN outranks the focused pane, and that is a statement
-        // about what the reader just did rather than a preference. Clicking a
-        // tile is the only gesture that reaches this rail carrying a subject of
-        // its own; the pane subject is what the rail falls back to when nobody
-        // has pointed at anything in the picture yet.
+        match self.sections.current() {
+            Some(Section::Column) => self.column_section(doc, ui, cx),
+            Some(Section::Encoding) => self.encoding_section(doc, ui, cx.mode),
+            Some(Section::Reads) => self.reads_section(doc, ui, cx.mode),
+            Some(Section::Fields) => fields_body(ui, doc, cx.mode),
+            // Parameters, and a pane drawn with no section named: its live
+            // controls.
+            _ => self.parameters_section(doc, ui, cx),
+        }
+    }
+}
+
+impl InspectorPane {
+    /// The Column section: the selected column, or the table a later step
+    /// makes while the canvas holds it.
+    fn column_section(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         if let Some(column) = doc.selected_column().cloned() {
             let commands = column_commands(doc, &column.column, self.commands.get());
             let drawn = column_body(ui, &column, self.table.get().as_ref(), &commands, cx.mode);
@@ -828,15 +986,117 @@ impl Item<ChartDoc> for InspectorPane {
                 Some(command) => cx.request(Verb::new(command.verb)),
                 None => {}
             }
-            ui.add_space(spacing::SECTION_GAP);
         } else if let Some(inspected) = self.inspected.get() {
             // A table a later step makes, on the canvas: the dashboard's tiles
             // are of the file's table, so no tile can be selected for it, and
             // the table is what there is to describe.
             self.inspected.ask();
             table_body(ui, &inspected, cx.mode);
-            ui.add_space(spacing::SECTION_GAP);
-        } else {
+        }
+    }
+
+    /// The Encoding section: each of the shelf's channels and what is on it,
+    /// as a row whose key is the key that goes to the shelf's cell. A click
+    /// asks the window to open that cell, since the shelf in the chart pane is
+    /// where the encoding is edited.
+    fn encoding_section(&mut self, doc: &ChartDoc, ui: &mut egui::Ui, mode: Mode) {
+        if doc.live_spec().is_none() {
+            muted_line(ui, mode, NOT_LIVE);
+            return;
+        }
+        let Some(channels) = crate::window::hero_shelf_channels(doc) else {
+            muted_line(ui, mode, NO_ENCODING);
+            return;
+        };
+        for channel in brightfield_workbench::channel::ShelfChannel::ALL {
+            let label = format!("{} \u{b7} {}", channel.word(), channels.says(channel).0);
+            let keystroke = crate::shelf::cell_key(channel);
+            let drawn = meridian_egui::menu_item(
+                ui,
+                meridian_egui::MenuItem::new(&label).keystroke(keystroke),
+            );
+            let mut state = self.sections.0.borrow_mut();
+            if drawn.clicked {
+                state.go_to = Some(channel);
+            }
+            state.encoding.push(EncodingRow {
+                channel,
+                label,
+                keystroke,
+                rect: drawn.response.rect,
+            });
+        }
+    }
+
+    /// The Reads section: the table the chart reads and the rows it draws,
+    /// `ranking · 19,028 of 19,028 rows`.
+    fn reads_section(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, mode: Mode) {
+        let line = self.reads_line(doc);
+        self.sections.0.borrow_mut().reads.clone_from(&line);
+        match line {
+            Some(line) => {
+                let sem = semantic(mode.is_dark());
+                ui.label(
+                    egui::RichText::new(line)
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.primary)),
+                );
+            }
+            None if doc.live_spec().is_none() => muted_line(ui, mode, NOT_LIVE),
+            None => muted_line(ui, mode, NO_READS),
+        }
+    }
+
+    /// What the Reads section says, or `None` for a chart with no live
+    /// session or no table behind its presenting mark.
+    ///
+    /// The table is named as the Protocol names it where the chart's columns
+    /// belong to one, and by the spec's `data:` name otherwise.
+    ///
+    /// The rows are the presenting mark's, as the grid reads them. Where the
+    /// spec draws a faded layer of every row under the selected ones, the
+    /// window already counts both, and the line says how many of the table's
+    /// rows are drawn; otherwise it counts the mark's rows once per change of
+    /// the session.
+    fn reads_line(&mut self, doc: &mut ChartDoc) -> Option<String> {
+        use crate::column_header::thousands;
+        let spec = doc.live_spec()?;
+        let source = crate::pipeline::presenting_source(spec)?;
+        // A data file's chart reads its table under the source name the
+        // window loaded it as; the Protocol's own name for that table is the
+        // one the reader knows it by, and the one the Column section names.
+        let table = self.table.get().map_or(source, |t| t.table);
+        if let Some(rows) = doc.composed.rows {
+            return Some(format!(
+                "{table} \u{b7} {} of {} rows",
+                thousands(rows.selected),
+                thousands(rows.total)
+            ));
+        }
+        let mark = crate::pipeline::presenting_rows_mark(spec);
+        let coordinator = doc.live_coordinator()?;
+        let at = (coordinator.serial(), coordinator.generation());
+        let rows = match self.rows_drawn {
+            Some((serial, generation, rows)) if (serial, generation) == at => rows,
+            _ => {
+                let rows = coordinator
+                    .session()
+                    .step_rows_count(mark, brightfield_engine::RowsAudience::Reader)
+                    .ok();
+                self.rows_drawn = Some((at.0, at.1, rows));
+                rows
+            }
+        };
+        Some(match rows {
+            Some(rows) => format!("{table} \u{b7} {} rows", thousands(rows)),
+            None => table,
+        })
+    }
+
+    /// The Parameters section: the chart's live controls, under what the
+    /// focused pane offers when no column is selected.
+    fn parameters_section(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        if doc.selected_column().is_none() && self.inspected.get().is_none() {
             let subject = self.selection.get();
             let activated = render_selection(ui, subject.as_ref(), cx.mode);
             for verb in activated {
@@ -844,9 +1104,13 @@ impl Item<ChartDoc> for InspectorPane {
             }
             ui.add_space(spacing::SECTION_GAP);
         }
+        self.sliders(doc, ui, cx);
+    }
 
-        // The rest of this method is `ControlsPane::ui`, ported verbatim —
-        // see the module docs for why it has to stay exactly this code.
+    /// The param sliders and the interval sliders.
+    fn sliders(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        // This is `ControlsPane::ui`, ported verbatim — see the module docs
+        // for why it has to stay exactly this code.
 
         // The legend that used to sit above these controls is gone for good:
         // a hardcoded "Series A/B/C" swatch block duplicated the chart's own
@@ -941,9 +1205,7 @@ impl Item<ChartDoc> for InspectorPane {
 /// rail that describes one aspect of the selection.
 ///
 /// The rail draws the sections [`sections_for`] gives, most specific first,
-/// each with the design system's section header over its body. The chart's
-/// Encoding, Reads and Fields have no body yet: they are named here so their
-/// order is fixed in one place, and [`sections_for`] does not list them.
+/// each with the design system's section header over its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     /// The operation a foot field or an operation form is asking.
@@ -992,12 +1254,8 @@ pub struct InspectorSelection {
 }
 
 /// The sections the inspector draws for `selection`, in the order they stack:
-/// Operation, then the column's, then the chart's, then Step, which is always
-/// there and always last.
-///
-/// The chart's pane body draws its live controls under whatever it describes,
-/// so a chart with a column selected is described by the Column section, and
-/// one with nothing selected by Parameters.
+/// Operation, then the column's, then the chart's Encoding, Reads, Fields and
+/// Parameters, then Step, which is always there and always last.
 #[must_use]
 pub fn sections_for(selection: &InspectorSelection) -> Vec<Section> {
     let mut sections = Vec::new();
@@ -1005,11 +1263,15 @@ pub fn sections_for(selection: &InspectorSelection) -> Vec<Section> {
         sections.push(Section::Operation);
     }
     if selection.chart {
-        sections.push(if selection.column {
-            Section::Column
-        } else {
-            Section::Parameters
-        });
+        if selection.column {
+            sections.push(Section::Column);
+        }
+        sections.extend([
+            Section::Encoding,
+            Section::Reads,
+            Section::Fields,
+            Section::Parameters,
+        ]);
     }
     sections.push(Section::Step);
     sections
@@ -1137,14 +1399,28 @@ mod tests {
         };
         assert_eq!(
             sections_for(&all),
-            [Section::Operation, Section::Column, Section::Step]
+            [
+                Section::Operation,
+                Section::Column,
+                Section::Encoding,
+                Section::Reads,
+                Section::Fields,
+                Section::Parameters,
+                Section::Step
+            ]
         );
         assert_eq!(
             sections_for(&InspectorSelection {
                 chart: true,
                 ..Default::default()
             }),
-            [Section::Parameters, Section::Step]
+            [
+                Section::Encoding,
+                Section::Reads,
+                Section::Fields,
+                Section::Parameters,
+                Section::Step
+            ]
         );
         assert_eq!(
             sections_for(&InspectorSelection::default()),

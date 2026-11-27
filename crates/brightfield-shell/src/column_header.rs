@@ -430,6 +430,8 @@ fn detail_font() -> egui::FontId {
 #[derive(Clone, Debug, Default)]
 pub struct ColumnBandFacts {
     by_name: std::collections::BTreeMap<String, ColumnFacts>,
+    /// The columns' names in the order the table declares them.
+    order: Vec<String>,
     tints: std::collections::BTreeMap<String, usize>,
     /// How each column's values are shown, for the grid's cells.
     shown: crate::data_grid::Shown,
@@ -454,6 +456,7 @@ impl ColumnBandFacts {
                 .iter()
                 .map(|c| (c.column.clone(), c.clone()))
                 .collect(),
+            order: columns.iter().map(|c| c.column.clone()).collect(),
             tints,
             shown: columns
                 .iter()
@@ -472,6 +475,17 @@ impl ColumnBandFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
+    }
+
+    /// How many columns were declared.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Each column's facts, in the order the table declares them.
+    pub fn columns(&self) -> impl Iterator<Item = &ColumnFacts> {
+        self.order.iter().filter_map(|name| self.by_name.get(name))
     }
 
     /// The facts for the column the table spells `name`.
