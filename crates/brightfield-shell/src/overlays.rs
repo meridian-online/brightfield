@@ -1553,6 +1553,7 @@ mod tests {
         let data_file = Situation {
             conditions: vec![
                 Condition::ProtocolToRun,
+                Condition::NotRunning,
                 Condition::ProtocolToSave,
                 Condition::Trusted,
             ],

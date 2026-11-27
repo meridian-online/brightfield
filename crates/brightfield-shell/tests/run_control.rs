@@ -35,8 +35,8 @@ use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::run::{self, Runner};
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
-use brightfield_shell::window::{Boot, MeridianApp, RUNNING_LABEL, RUN_LABEL, RUN_PROTOCOL};
-use brightfield_workbench::arrangement::LEDGER_RAIL;
+use brightfield_shell::window::{Boot, MeridianApp, NOT_RUN_YET, RUN_LABEL, RUN_PROTOCOL};
+use brightfield_workbench::arrangement::{LEDGER_RAIL, TITLE_BAND};
 
 /// How long a run may take before the test calls it hung. A run here is a
 /// debug build of this binary starting, DuckDB reading a 20,640-row Parquet
@@ -149,12 +149,12 @@ impl Window {
         ])
     }
 
-    /// Take the ledger strip's Run control where the last frame drew it.
+    /// Take the title band's Run control where the last frame drew it.
     fn take_run_control(&mut self) {
         let at = self
             .app
-            .rail_action_rect(LEDGER_RAIL)
-            .expect("the ledger strip drew no Run control to take")
+            .run_control_rect()
+            .expect("the title band drew no Run control to take")
             .center();
         // Hover first: a button a pointer arrives on and clicks within the
         // same frame is still a click, but the frame before settles hover.
@@ -164,7 +164,8 @@ impl Window {
 
     /// Draw frames until the run this window started has landed, and say how
     /// many frames were drawn while it was outstanding, with the longest of
-    /// them and every text those frames drew inside the Run control.
+    /// them, every text those frames drew inside the activity area, and what
+    /// Run's availability read on them.
     fn drive_until_landed(&mut self) -> Driven {
         let deadline = Instant::now() + PATIENCE;
         let mut driven = Driven::default();
@@ -179,18 +180,34 @@ impl Window {
             if self.app.run_in_progress() {
                 driven.frames += 1;
                 driven.longest = driven.longest.max(took);
-                if let Some(control) = self.app.rail_action_rect(LEDGER_RAIL) {
-                    driven.control_words.extend(
+                if let Some(area) = self.app.activity_area_rect() {
+                    driven.activity_words.extend(
                         text.iter()
-                            .filter(|(rect, _)| control.expand(1.0).contains_rect(*rect))
+                            .filter(|(rect, _)| area.expand(1.0).contains_rect(*rect))
                             .map(|(_, t)| t.clone()),
                     );
                 }
+                driven
+                    .run_reasons
+                    .extend(match self.app.availability_of(RUN_PROTOCOL) {
+                        Some(brightfield_keys::Availability::Missing(reason)) => Some(reason),
+                        _ => None,
+                    });
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         self.settle();
         driven
+    }
+
+    /// The texts the next frame draws inside the activity area.
+    fn activity_words(&mut self) -> Vec<String> {
+        self.frame(Vec::new());
+        let area = self
+            .app
+            .activity_area_rect()
+            .expect("the title band drew the activity area");
+        self.text_in(area)
     }
 
     /// The texts the last settled frame drew inside `rect`.
@@ -253,7 +270,8 @@ impl Window {
 struct Driven {
     frames: usize,
     longest: Duration,
-    control_words: Vec<String>,
+    activity_words: Vec<String>,
+    run_reasons: Vec<String>,
 }
 
 fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -294,21 +312,16 @@ fn records(dir: &Path) -> Vec<PathBuf> {
 // AC1 — a control a stranger can read without the palette
 // ---------------------------------------------------------------------------
 
-/// **The housing file's first screen carries a Run control on the ledger
-/// strip, and the verb behind it is bound and labelled.**
+/// **The housing file's first screen carries Run in the title band, and the
+/// verb behind it is bound and labelled.**
 ///
-/// The control is read off the frame: the strip recorded a rect for it, and the
-/// word drawn inside that rect is [`RUN_LABEL`]. The verb is read off the
+/// The control is read off the frame: the band recorded a rect for it, and the
+/// words drawn inside that rect include [`RUN_LABEL`]. The verb is read off the
 /// registry: built, bound, with a help line for the palette. And the binding is
 /// driven — the keystroke the registry declares starts a run — because a bound
 /// verb the window does not consume is a binding only on paper.
-///
-/// Watched redden, one mutation: the ledger's `ledger_trailing` built with
-/// `action: None` fails the expect on `rail_action_rect` — and the same
-/// mutation reddens `the_generated_dashboard_light_baseline`, which is AC6's
-/// claim that the photographs carry the control.
 #[test]
-fn the_housing_file_offers_a_run_control_on_the_ledger_strip() {
+fn the_housing_file_offers_run_in_the_title_band() {
     let verb = brightfield_keys::registry()
         .into_iter()
         .find(|v| v.longname == RUN_PROTOCOL)
@@ -329,22 +342,22 @@ fn the_housing_file_offers_a_run_control_on_the_ledger_strip() {
     let mut win = Window::over_file(&path, Some(runner()));
     let control = win
         .app
-        .rail_action_rect(LEDGER_RAIL)
-        .expect("the ledger strip drew no Run control on the housing file");
-    let words = win.text_in(control);
-    assert_eq!(
-        words,
-        vec![RUN_LABEL.to_string()],
-        "the ledger strip's control at {control:?} reads {words:?}"
-    );
-    let strip = win
-        .app
-        .rail_summary_rect(LEDGER_RAIL)
-        .expect("the strip drew its summary");
+        .run_control_rect()
+        .expect("the title band drew no Run control on the housing file");
+    let band = win.app.region_rect(TITLE_BAND).expect("the title band");
     assert!(
-        control.right() <= strip.left(),
-        "the Run control at {control:?} is not before the summary at {strip:?} \
-         — it should sit beside the word it changes"
+        band.contains_rect(control),
+        "Run at {control:?} lies outside the title band {band:?}"
+    );
+    let words = win.text_in(control);
+    assert!(
+        words.iter().any(|w| w == RUN_LABEL),
+        "the title band's control at {control:?} reads {words:?}"
+    );
+    assert_eq!(
+        win.app.rail_action_rect(LEDGER_RAIL),
+        None,
+        "the ledger strip still carries a Run control"
     );
 
     // The binding, driven: cmd-enter starts a run.
@@ -366,26 +379,25 @@ fn the_housing_file_offers_a_run_control_on_the_ledger_strip() {
     win.drive_until_landed();
 }
 
-/// **A Protocol with no spec behind it draws no Run control** — a shipped
+/// **A Protocol with no spec behind it offers no Run it can take** — a shipped
 /// start whose Protocol came off a bundled record rather than a file.
 ///
-/// The negative half of AC1's placement: the control is the data file's, and a
-/// control drawn over a document with nothing to run would be a verb that
-/// confirms and does nothing. The strip still draws its summary there, so the
-/// absence is of the control and not of the strip.
-///
-/// Watched redden, one mutation: `run_action` built whatever
-/// `source().is_some()` says: the `assert_eq!` reads a rect.
+/// Run is drawn there, greyed with the sentence its needs declare, so the
+/// control is in the same place whatever the window holds; taking it, by the
+/// control or by the window's own entry point, starts nothing.
 #[test]
-fn a_protocol_with_no_spec_behind_it_draws_no_run_control() {
+fn a_protocol_with_no_spec_behind_it_offers_no_run_to_take() {
     let boot = Boot::start(starts::CROSSWALK_RUN, Flow::Vertical).expect("the run start loads");
     let mut win = Window::over(boot, Some(runner()));
     assert!(
-        win.app.rail_summary_rect(LEDGER_RAIL).is_some(),
-        "the crosswalk run's strip drew no summary, so its absent control \
-         proves nothing"
+        matches!(
+            win.app.availability_of(RUN_PROTOCOL),
+            Some(brightfield_keys::Availability::Missing(_))
+        ),
+        "Run can act over a shipped start"
     );
-    assert_eq!(win.app.rail_action_rect(LEDGER_RAIL), None);
+    win.take_run_control();
+    assert!(!win.app.run_in_progress(), "a greyed Run started a run");
     assert!(
         !win.app.run_protocol(&win.ctx.clone()),
         "run_protocol started a run over a Protocol with no spec"
@@ -493,8 +505,8 @@ fn taking_run_writes_the_record_where_arc_writes_it() {
 /// read off those frames. And the longest frame is held under the run's own
 /// wall time, which is the frame a synchronous run would have had to draw.
 ///
-/// Watched redden, one mutation: the strip's `label` bound to `RUN_LABEL`
-/// whatever `running` says — the frames drawn during the run read *Run*.
+/// While the run is under way the activity area counts its steps and Run says
+/// why it cannot be taken again.
 #[test]
 fn the_window_keeps_drawing_while_the_run_executes() {
     let dir = TempDir::new("draws");
@@ -516,21 +528,29 @@ fn the_window_keeps_drawing_while_the_run_executes() {
         driven.frames
     );
     assert!(
-        driven.control_words.iter().all(|w| w == RUNNING_LABEL) && !driven.control_words.is_empty(),
-        "while the run was under way the control read {:?}",
-        driven.control_words
+        driven.activity_words.iter().any(|w| w.ends_with("of 1")),
+        "while the run was under way the activity area read {:?}",
+        driven.activity_words
+    );
+    assert!(
+        !driven.run_reasons.is_empty()
+            && driven
+                .run_reasons
+                .iter()
+                .all(|r| r == "The Protocol is running."),
+        "while the run was under way Run read {:?}",
+        driven.run_reasons
     );
     assert!(
         driven.longest < whole_run,
         "a frame took {:?} of a run that took {whole_run:?}",
         driven.longest
     );
-    let settled = win.text_in(
-        win.app
-            .rail_action_rect(LEDGER_RAIL)
-            .expect("the control is drawn after the run"),
+    assert_eq!(
+        win.app.availability_of(RUN_PROTOCOL),
+        Some(brightfield_keys::Availability::Available),
+        "Run cannot be taken again after the run landed"
     );
-    assert_eq!(settled, vec![RUN_LABEL.to_string()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +598,7 @@ fn a_step_whose_sql_fails_reads_failed_and_the_log_says_why() {
         "the Log pane drew no error text for the failed step:\n{log}"
     );
     // Still drawing: the failure closed nothing.
-    assert!(win.app.rail_action_rect(LEDGER_RAIL).is_some());
+    assert!(win.app.run_control_rect().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -903,6 +923,19 @@ fn a_run_under_way_counts_its_steps_on_its_own_stream() {
         app.run_progress().is_some_and(|p| p.done == 1)
     });
     assert_eq!(win.app.run_progress().map(|p| p.total), Some(1));
+    // The activity area counts it, and Run, pointed at, says why it cannot be taken again.
+    assert!(
+        win.activity_words().iter().any(|w| w == "1 of 1"),
+        "the activity area does not count the step done"
+    );
+    let run_at = win.app.run_control_rect().expect("Run").center();
+    win.frame(vec![egui::Event::PointerMoved(run_at)]);
+    let said = win.frame(vec![egui::Event::PointerMoved(run_at)]);
+    assert!(
+        said.iter()
+            .any(|(_, t)| t.contains("The Protocol is running.")),
+        "pointing at Run during the run did not say why it is greyed"
+    );
 
     std::fs::write(&second, b"").expect("the second mark");
     win.drive_until_landed();
@@ -929,6 +962,7 @@ fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
     let path = dir.housing();
     let mut win = Window::over_file(&path, Some(Runner::at(dir.path().join("no-runner-here"))));
     assert_eq!(win.app.last_run(), None, "a file never run has no last run");
+    assert_eq!(win.activity_words(), vec![NOT_RUN_YET.to_string()]);
     win.take_run_control();
     win.drive_until_landed();
 
@@ -936,6 +970,11 @@ fn a_run_refused_before_its_step_loop_leaves_no_progress_standing() {
     let last = win.app.last_run().expect("the refused run is the last run");
     assert_eq!(last.state, brightfield_workbench::RunState::Failed);
     assert_eq!(last.age, "just now");
+    // The activity area tells of the failed run, not of a run still going.
+    assert_eq!(
+        win.activity_words(),
+        vec![last.when.clone(), last.age.clone()]
+    );
     assert!(
         records(dir.path()).is_empty(),
         "the refused run wrote a record"
@@ -960,6 +999,11 @@ fn after_a_run_the_last_run_says_when_and_how_long_ago() {
     assert_eq!(
         last.when,
         chrono::Local::now().format("ran %-d %b").to_string()
+    );
+    assert_eq!(
+        win.activity_words(),
+        vec![last.when.clone(), last.age.clone()],
+        "the activity area does not say when the Protocol ran"
     );
 }
 

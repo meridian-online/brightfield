@@ -108,6 +108,16 @@ fn in_recents(app: &MeridianApp, dir: &Path) -> bool {
     })
 }
 
+/// The file a held runner waits on: dropping it lets the run go, a failed assertion included,
+/// so no runner is left waiting after its test.
+struct HeldRuns(PathBuf);
+
+impl Drop for HeldRuns {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// One headless window.
 struct Window {
     app: MeridianApp,
@@ -117,10 +127,15 @@ struct Window {
 
 impl Window {
     fn new() -> Self {
+        Self::running_with(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))
+    }
+
+    /// A window whose runs go to `runner`.
+    fn running_with(runner: Runner) -> Self {
         scratch();
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light)
-                .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))))
+                .running_with(Some(runner))
                 .keeping_history(Some(HistoryStore::At(scratch().join("history")))),
             ctx: egui::Context::default(),
             time: 0.0,
@@ -135,6 +150,44 @@ impl Window {
         let mut win = Self::new();
         win.open(name);
         win
+    }
+
+    /// [`Self::opened`], over a runner that holds back each whole run started while
+    /// [`Self::hold_runs`]'s hold is up. Opening a Protocol runs its loads through the runner and
+    /// waits for them on the window's thread, so the hold is taken only once the Protocols are
+    /// open; a hold up through an open would never be let go.
+    fn opened_with_holdable_runs(name: &str) -> Self {
+        let wrapper = scratch().join("held-runner.sh");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = run ]; then\n  while [ -e '{}' ]; do sleep 0.05; done\nfi\nexec '{}' \"$@\"\n",
+                Self::hold_file().display(),
+                env!("CARGO_BIN_EXE_brightfield-shell")
+            ),
+        )
+        .expect("write the held runner");
+        std::fs::set_permissions(
+            &wrapper,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("make the held runner executable");
+        let mut win = Self::running_with(Runner::at(wrapper));
+        win.open(name);
+        win
+    }
+
+    /// The file whose being there holds back a run of [`Self::opened_with_holdable_runs`].
+    fn hold_file() -> PathBuf {
+        scratch().join("hold-runs")
+    }
+
+    /// Hold back each whole run started from now until the returned hold drops, so a run stays
+    /// under way through every step the test takes, however long the window takes to draw them.
+    fn hold_runs(&self) -> HeldRuns {
+        let hold = Self::hold_file();
+        std::fs::write(&hold, "").expect("write the hold");
+        HeldRuns(hold)
     }
 
     /// Open a fresh housing copy named `name`, making its Protocol in the Protocols folder.
@@ -653,9 +706,10 @@ fn default_root() -> PathBuf {
 fn a_protocol_a_run_is_writing_into_is_left_and_named_while_the_others_move() {
     let _serial = serial();
     let (old, new) = roots("running");
-    let mut win = Window::opened("moves_on");
+    let mut win = Window::opened_with_holdable_runs("moves_on");
     win.open("still_running");
     let running = win.dir().expect("a Protocol");
+    let hold = win.hold_runs();
     win.start_run();
     // The run goes on after Home, writing its record into the folder.
     win.home();
@@ -680,6 +734,7 @@ fn a_protocol_a_run_is_writing_into_is_left_and_named_while_the_others_move() {
         "it is named with its reason: {said}"
     );
     assert!(!said.contains("unsaved"), "{said}");
+    drop(hold);
     win.wait_for_runs();
 }
 

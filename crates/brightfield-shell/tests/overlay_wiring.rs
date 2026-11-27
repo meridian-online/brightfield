@@ -493,11 +493,12 @@ fn a_greyed_row_is_drawn_disabled_and_says_its_sentence() {
         "the palette drew no zoom-in row"
     );
     // The disabled flag and the sentence sit on the row itself, so a live
-    // zoom-in row leaves no node both disabled and described.
+    // zoom-in row leaves no node both disabled and described, other than the
+    // title band's greyed Run, which says Run's own sentence.
     assert!(
         !win.accesskit
             .iter()
-            .any(|node| node.is_disabled() && node.description().is_some()),
+            .any(|node| node.is_disabled() && node.description().is_some_and(|d| d != sentence)),
         "zoom-in is drawn greyed over a chart"
     );
     win.key(egui::Key::Escape);
