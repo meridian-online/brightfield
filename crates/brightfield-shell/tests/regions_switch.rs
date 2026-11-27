@@ -346,6 +346,40 @@ fn on_a_map_the_switch_sits_below_the_graticule_labels() {
 }
 
 #[test]
+fn rows_past_the_low_x_end_leave_the_switch_in_its_corner() {
+    // The low cluster's x runs 20 to 29, so the rows at 20 to 24 fall past
+    // the axis's fixed low end, and their count is drawn at the left.
+    let clipped = PANEL.replacen("xDomain: [0, 100]", "xDomain: [25, 100]", 1);
+    let dir = TempDir::new("past-low");
+    let live = Live::open(&dir.panel(&clipped));
+    let past = live.doc().composed.plots[0].rows_past.x;
+    assert!(
+        past.low > 0 && past.high == 0,
+        "rows lie past the low x end only, so the check below measures something: {past:?}"
+    );
+    live.assert_clear(0);
+}
+
+#[test]
+fn rows_past_the_high_x_end_take_the_switch_corner() {
+    // The high cluster's x runs 75 to 84, so the rows at 81 to 84 fall past
+    // the axis's fixed high end, and their count is drawn at the right.
+    let clipped = PANEL.replacen("xDomain: [0, 100]", "xDomain: [0, 80]", 1);
+    let dir = TempDir::new("past-high");
+    let live = Live::open(&dir.panel(&clipped));
+    let past = live.doc().composed.plots[0].rows_past.x;
+    assert!(
+        past.high > 0,
+        "rows lie past the high x end, so the check below measures something: {past:?}"
+    );
+    assert!(
+        live.switches().is_empty(),
+        "the count at the right takes the corner, so no switch: {:?}",
+        live.switches()
+    );
+}
+
+#[test]
 fn a_row_with_no_room_beside_the_x_title_draws_no_switch() {
     let crowded = PANEL.replacen(
         "    xDomain: [0, 100]",

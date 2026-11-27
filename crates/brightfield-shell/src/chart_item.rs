@@ -2137,8 +2137,8 @@ fn draw_regions_switch(
 /// on or off now. A document with no live session behind it draws none, as it
 /// has no spec to write the choice into. Each sits at its tile's foot, so it
 /// never meets the scale switch or the normalise control, which sit in the
-/// tile's head. A plot drawing a count of rows past an end of its x axis
-/// writes that count in the same row, and draws no switch.
+/// tile's head. A plot drawing a count of rows past the end of its x axis at
+/// the right writes that count in the switch's corner, and draws no switch.
 fn draw_regions_switches(
     doc: &ChartDoc,
     ui: &mut egui::Ui,
@@ -2167,7 +2167,18 @@ fn draw_regions_switches(
             Some(view) => view.first,
             None => laid,
         };
-        if plot.rows_past.x.low > 0 || plot.rows_past.x.high > 0 {
+        // A count of rows past the end of x drawn at the right is written at
+        // the right of this row, where the switch would sit; one at the left
+        // leaves the corner free. The low end is at the right on an axis that
+        // runs from high to low, as `render_rows_past` draws it.
+        let at_right = plot.scales.get(Channel::X).map_or(0, |scale| {
+            if scale.range_start() <= scale.range_end() {
+                plot.rows_past.x.high
+            } else {
+                plot.rows_past.x.low
+            }
+        });
+        if at_right > 0 {
             continue;
         }
         // The axes report their parts in the plot's own pixels from its
