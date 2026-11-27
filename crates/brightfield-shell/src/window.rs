@@ -2627,12 +2627,40 @@ pub const NO_PROTOCOLS_FOLDER_BANNER: &str = "no-protocols-folder";
 pub const PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER: &str = "protocols-folder-out-of-reach";
 
 /// What waits on the panel that asks where the Protocols folder is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ProtocolsFolderThen {
     /// The first launch's ask, from the door: nothing waits on it.
     Door,
     /// New Protocol, whose sheet lists the Protocols folder: it opens once the folder is granted.
     NewProtocol,
+    /// An open of data that makes a Protocol of it in the Protocols folder, opened again once the
+    /// folder is granted ([`MeridianApp::open_paths_knowing`]).
+    Paths(Vec<PathBuf>),
+    /// The same, held before the window leaves what it shows, so the close question over a draft
+    /// is asked only once the open will go ahead
+    /// (`a_draft_is_not_asked_about_for_an_open_the_folder_ask_drops`): once the folder is
+    /// granted it leaves as the open would have ([`MeridianApp::leave`]).
+    Open(crate::open_queue::OpenRequest),
+    /// A Protocol archive chosen on this Mac, unpacked into the Protocols folder once it is
+    /// granted, with the count of the files handed over beside it ([`MeridianApp::begin_archive`]).
+    Archive(PathBuf, usize),
+    /// A `brightfield://open` link, whose archive is downloaded into the Protocols folder once it
+    /// is granted ([`MeridianApp::begin_link`]).
+    Link(String),
+}
+
+impl ProtocolsFolderThen {
+    /// What an open waiting on the ask is called in the banner a cancel raises, or `None` when no
+    /// open waits.
+    fn opening(&self) -> Option<String> {
+        match self {
+            Self::Door | Self::NewProtocol => None,
+            Self::Paths(paths) => paths.first().map(|p| display_name(p)),
+            Self::Open(request) => request_paths(request).first().map(|p| display_name(p)),
+            Self::Archive(archive, _) => Some(display_name(archive)),
+            Self::Link(_) => Some("The link".to_string()),
+        }
+    }
 }
 
 /// The banner saying a move or the sources browser's grant waited on another grant ask and was not
@@ -6527,9 +6555,7 @@ impl MeridianApp {
         }
         // The folder may have come within reach since the ask was queued, a drive plugged back in.
         if crate::protocols_dir::granted_root().is_some() {
-            if then == ProtocolsFolderThen::NewProtocol {
-                self.ask_new_protocol();
-            }
+            self.go_ahead_with_protocols_folder(ctx, then);
             return;
         }
         let on = crate::protocols_dir::documents();
@@ -6542,16 +6568,22 @@ impl MeridianApp {
             None => None,
         };
         let Some(dir) = named else {
+            let body = match then.opening() {
+                Some(what) => format!(
+                    "{what} was not opened: Brightfield needs a folder to keep the Protocol it \
+                     makes in. Opening it again asks for the folder, and Preferences can choose it."
+                ),
+                None => "Brightfield needs a folder to keep new Protocols in. New Protocol asks \
+                         for it again, and Preferences can choose it."
+                    .to_string(),
+            };
             self.notifications.raise(
                 Notification::new(
                     NotificationId::new(NO_PROTOCOLS_FOLDER_BANNER),
                     Severity::Info,
                     "No Protocols folder yet",
                 )
-                .body(
-                    "Brightfield needs a folder to keep new Protocols in. New Protocol asks for \
-                     it again, and Preferences can choose it.",
-                ),
+                .body(body),
             );
             ctx.request_repaint();
             return;
@@ -6573,9 +6605,7 @@ impl MeridianApp {
                     );
                 }
                 self.forget_door_listing();
-                if then == ProtocolsFolderThen::NewProtocol {
-                    self.ask_new_protocol();
-                }
+                self.go_ahead_with_protocols_folder(ctx, then);
             }
             Err(why) => self.notifications.raise(
                 Notification::new(
@@ -6601,7 +6631,7 @@ impl MeridianApp {
     ) {
         let granted = self.ask_one_grant(dir, &crate::ask_grant::why_protocols_again(dir));
         let Some(granted) = granted else {
-            self.raise_protocols_out_of_reach(dir);
+            self.raise_protocols_out_of_reach(dir, then.opening().as_deref());
             ctx.request_repaint();
             return;
         };
@@ -6622,14 +6652,51 @@ impl MeridianApp {
         self.notifications
             .dismiss(NotificationId::new(PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER));
         self.forget_door_listing();
-        if then == ProtocolsFolderThen::NewProtocol {
-            self.ask_new_protocol();
-        }
+        self.go_ahead_with_protocols_folder(ctx, then);
         ctx.request_repaint();
     }
 
-    /// Say that the Protocols folder chosen before, `dir`, is out of reach, and why.
-    fn raise_protocols_out_of_reach(&mut self, dir: &std::path::Path) {
+    /// **Carry out what waited on the Protocols-folder ask**, now that the folder is granted.
+    fn go_ahead_with_protocols_folder(&mut self, ctx: &egui::Context, then: ProtocolsFolderThen) {
+        match then {
+            ProtocolsFolderThen::Door => {}
+            ProtocolsFolderThen::NewProtocol => self.ask_new_protocol(),
+            ProtocolsFolderThen::Paths(paths) => {
+                let installed = self
+                    .installed_extensions
+                    .clone()
+                    .unwrap_or_else(crate::data_file::installed_extensions);
+                self.open_paths_knowing(ctx, paths, &installed);
+            }
+            ProtocolsFolderThen::Open(request) => self.leave(ctx, Leaving::Open(request)),
+            ProtocolsFolderThen::Archive(archive, others) => {
+                self.begin_archive(ctx, &archive, others);
+            }
+            ProtocolsFolderThen::Link(link) => self.begin_link(ctx, &link),
+        }
+    }
+
+    /// **Whether `then`, which makes a Protocol in the Protocols folder, waits on the ask for
+    /// that folder**: in the managed edition before one is granted, when this window can ask, the
+    /// ask is queued for after the frame and `then` is carried out once the folder is granted.
+    /// Without it the Protocol would be made in the default folder, which under App Sandbox is
+    /// inside the app's container, where the analyst cannot see it.
+    fn hold_for_protocols_folder(
+        &mut self,
+        ctx: &egui::Context,
+        then: ProtocolsFolderThen,
+    ) -> bool {
+        if crate::protocols_dir::granted_root().is_some() || !self.can_ask_protocols_folder() {
+            return false;
+        }
+        self.protocols_folder_ask = Some(then);
+        ctx.request_repaint();
+        true
+    }
+
+    /// Say that the Protocols folder chosen before, `dir`, is out of reach, and why, naming the
+    /// open that waited on it, `opening`, when one did.
+    fn raise_protocols_out_of_reach(&mut self, dir: &std::path::Path, opening: Option<&str>) {
         let why = crate::grants::store()
             .unreachable(dir)
             .map_or_else(|| "it is not granted".to_string(), |e| e.to_string());
@@ -6639,11 +6706,18 @@ impl MeridianApp {
                 Severity::Warning,
                 "The Protocols folder is out of reach",
             )
-            .body(format!(
-                "{}: {why}. It is still the Protocols folder: New Protocol asks for access to it \
-                 again, and Preferences can choose another.",
-                dir.display()
-            )),
+            .body(match opening {
+                Some(what) => format!(
+                    "{what} was not opened: {} is the Protocols folder, and {why}. Opening it \
+                     again asks for access to the folder, and Preferences can choose another.",
+                    dir.display()
+                ),
+                None => format!(
+                    "{}: {why}. It is still the Protocols folder: New Protocol asks for access \
+                     to it again, and Preferences can choose another.",
+                    dir.display()
+                ),
+            }),
         );
     }
 
@@ -7156,6 +7230,7 @@ impl MeridianApp {
             self.overlay,
             Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
         ) && self.grant_ask.is_none()
+            && self.protocols_folder_ask.is_none()
             && !self.held_for_question.is_empty()
         {
             let request = self.held_for_question.remove(0);
@@ -7163,10 +7238,12 @@ impl MeridianApp {
         }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
         // while it is up waits for its answer, rather than opening under it. So does an open
-        // waiting on a grant ask, so the requests behind it are taken in order once it is answered
+        // waiting on a grant ask or on the Protocols-folder ask, so the requests behind it are
+        // taken in order once it is answered
         // (`two_opens_waiting_on_grants_are_asked_for_and_opened_in_order`).
         while self.pending_open.is_none()
             && self.grant_ask.is_none()
+            && self.protocols_folder_ask.is_none()
             && !matches!(self.overlay, Some(Overlay::WhichProtocol(_)))
         {
             let Some(request) = self.open_queue.pop() else {
@@ -11139,7 +11216,7 @@ impl MeridianApp {
                 }
             }
             Overlay::Preferences(sheet) => {
-                let folder = crate::protocols_dir::root_now();
+                let folder = crate::protocols_dir::shown_now();
                 let overridden = protocols_dir_override();
                 trusted_folders = crate::trust::Store::current().folders();
                 // The default-app button is the Mac's, and says why where this launch cannot
@@ -11150,7 +11227,7 @@ impl MeridianApp {
                     crate::preferences::body(
                         ui,
                         sheet,
-                        &folder,
+                        folder.as_deref(),
                         overridden,
                         default_app.as_ref(),
                         &trusted_folders,
@@ -11241,10 +11318,7 @@ impl MeridianApp {
             if path.is_dir() {
                 self.open_known(ctx, path);
             } else {
-                self.leave(
-                    ctx,
-                    Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
-                );
+                self.leave_to_make_a_protocol(ctx, crate::open_queue::OpenRequest::Path(path));
             }
         }
         match make_in {
@@ -14474,6 +14548,9 @@ impl MeridianApp {
                 return;
             }
         };
+        if self.hold_for_protocols_folder(ctx, ProtocolsFolderThen::Link(link.to_string())) {
+            return;
+        }
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
         self.downloading = Some(ArchiveJob {
@@ -14497,6 +14574,12 @@ impl MeridianApp {
     fn begin_archive(&mut self, ctx: &egui::Context, archive: &std::path::Path, others: usize) {
         let named = archive.to_string_lossy();
         if self.refuse_while_archive_job_runs(ctx, &named, "archive", ARCHIVE_NOTICE_TITLE) {
+            return;
+        }
+        if self.hold_for_protocols_folder(
+            ctx,
+            ProtocolsFolderThen::Archive(archive.to_path_buf(), others),
+        ) {
             return;
         }
         self.notifications
@@ -14810,6 +14893,17 @@ impl MeridianApp {
         ) {
             return;
         }
+        // Data with no Protocol of its own has one made of it in the Protocols folder. An archive
+        // among it asks as it begins to unpack.
+        if paths.iter().all(|p| {
+            matches!(
+                crate::open_queue::route(p),
+                crate::open_queue::Route::New(_)
+            )
+        }) && self.hold_for_protocols_folder(ctx, ProtocolsFolderThen::Paths(paths.clone()))
+        {
+            return;
+        }
         let mut needed: Vec<&'static str> = Vec::new();
         for path in &paths {
             for ext in crate::data_file::extensions_likely_needed(path) {
@@ -15047,7 +15141,7 @@ impl MeridianApp {
                 let recents = self.recent_protocol_dirs();
                 match crate::file_protocols::decide(&path, &recents) {
                     crate::file_protocols::FileOpen::New => {
-                        self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                        self.leave_to_make_a_protocol(ctx, OpenRequest::Path(path));
                     }
                     crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
                     crate::file_protocols::FileOpen::Ask(choices) => {
@@ -15063,6 +15157,17 @@ impl MeridianApp {
             }
             // Adding a source keeps the Protocol open, but replaces what the canvas shows, so a
             // draft is asked about first, as before a rename.
+            // Data with no Protocol of its own has one made of it in the Protocols folder.
+            OpenRequest::Path(_) | OpenRequest::Paths(_)
+                if paths.iter().all(|p| {
+                    matches!(
+                        crate::open_queue::route(p),
+                        crate::open_queue::Route::New(_)
+                    )
+                }) =>
+            {
+                self.leave_to_make_a_protocol(ctx, request);
+            }
             OpenRequest::Path(_)
             | OpenRequest::Paths(_)
             | OpenRequest::AddSource(_)
@@ -15074,6 +15179,22 @@ impl MeridianApp {
                 self.take_open_request(ctx, request);
             }
         }
+    }
+
+    /// **Leave for `request`, an open that makes a Protocol in the Protocols folder**, once that
+    /// folder is granted: before then the Protocols-folder ask is taken first, before the close
+    /// question over a draft, so a cancel leaves the draft as it was.
+    fn leave_to_make_a_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        request: crate::open_queue::OpenRequest,
+    ) {
+        if !self.close_after_runs
+            && self.hold_for_protocols_folder(ctx, ProtocolsFolderThen::Open(request.clone()))
+        {
+            return;
+        }
+        self.leave(ctx, Leaving::Open(request));
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
@@ -19065,9 +19186,13 @@ impl MeridianApp {
             self.protocols_folder_asked = true;
             if crate::protocols_dir::granted_root().is_none() {
                 match crate::protocols_dir::out_of_reach() {
-                    Some(dir) => self.raise_protocols_out_of_reach(&dir),
+                    Some(dir) => self.raise_protocols_out_of_reach(&dir, None),
+                    // An open taken off the queue earlier this frame, such as the file the app
+                    // was launched to open, may already wait on the ask: it is kept, and asks
+                    // the one time (`an_open_at_first_launch_asks_once_and_goes_ahead`).
                     None if self.can_ask_protocols_folder() => {
-                        self.protocols_folder_ask = Some(ProtocolsFolderThen::Door);
+                        self.protocols_folder_ask
+                            .get_or_insert(ProtocolsFolderThen::Door);
                     }
                     None => {}
                 }

@@ -170,8 +170,10 @@ pub fn root() -> PathBuf {
 /// `$BRIGHTFIELD_PROTOCOLS_DIR` wins in every edition. Otherwise the full edition always has one:
 /// the folder chosen in Preferences, else `~/Documents/Protocols`. The managed edition has one
 /// once the analyst has chosen it and the grant store covers it, which the first launch asks for
-/// ([`PROPOSED_NAME`]); until then it answers `None`, and New Protocol asks for the folder first
-/// (`cancelling_leaves_the_door_open_and_asks_again_on_new_protocol`).
+/// ([`PROPOSED_NAME`]); until then it answers `None`, and New Protocol, or an open that makes a
+/// Protocol, asks for the folder first
+/// (`cancelling_leaves_the_door_open_and_asks_again_on_new_protocol`,
+/// `an_open_that_makes_a_protocol_asks_for_the_folder_first`).
 #[must_use]
 pub fn granted_root() -> Option<PathBuf> {
     // A grant that did not open at launch, its drive since plugged back in, is tried again here.
@@ -185,6 +187,15 @@ pub fn granted_root() -> Option<PathBuf> {
 #[must_use]
 pub fn root_now() -> PathBuf {
     granted_with(|dir| crate::grants::store().covers_now(dir)).unwrap_or_else(default_root)
+}
+
+/// The Protocols folder the Preferences sheet shows, which it asks on each frame it draws: the
+/// folder [`root_now`] answers once this edition may use one, else the folder Preferences holds
+/// though it is out of reach this launch, else `None`: the managed edition before the analyst
+/// chooses a folder (`an_open_that_makes_a_protocol_asks_for_the_folder_first`). Like [`root_now`], it does not try again a grant that did not open.
+#[must_use]
+pub fn shown_now() -> Option<PathBuf> {
+    granted_with(|dir| crate::grants::store().covers_now(dir)).or_else(chosen)
 }
 
 /// [`granted_root`], with `covered` saying whether the grant store covers the chosen folder.

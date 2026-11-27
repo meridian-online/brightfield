@@ -362,3 +362,211 @@ fn a_containers_home_is_the_home_it_sits_in() {
         PathBuf::from("/Users/analyst")
     );
 }
+
+#[test]
+fn an_open_that_makes_a_protocol_asks_for_the_folder_first() {
+    let _first = first_launch();
+    // A lone CSV, in a folder of its own that no Protocol reads.
+    let input = scratch().join("input").join("lone");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let csv = input.join("lone.csv");
+    std::fs::write(&csv, "id,value\n1,10\n2,20\n").expect("the CSV");
+    let panel = Panel::default();
+    let ctx = egui::Context::default();
+    let runner = brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    // The data's own folder is granted as it is asked for; only the Protocols folder is in
+    // question here.
+    let mut app = launch(&panel)
+        .running_with(Some(runner))
+        .asking_grants_with(Box::new(|folder: &Path, _why: &str| {
+            Some(folder.to_path_buf())
+        }));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    let open = |app: &mut MeridianApp| {
+        app.open_queue()
+            .push(brightfield_shell::open_queue::OpenRequest::Path(
+                csv.clone(),
+            ));
+        for _ in 0..3 {
+            frame(app, &ctx);
+        }
+    };
+    if !managed() {
+        open(&mut app);
+        assert!(panel.asked().is_empty(), "the full edition asked");
+        assert!(
+            app.held_protocol_dir().is_some(),
+            "the full edition makes the Protocol at once"
+        );
+        return;
+    }
+    // The first launch asked, and was cancelled.
+    assert_eq!(panel.asked(), asked_on_documents(1));
+    assert_eq!(
+        protocols_dir::shown_now(),
+        None,
+        "Preferences says no folder is chosen yet, not the container's default"
+    );
+
+    // The open asks once, and cancelled, makes nothing and says why.
+    open(&mut app);
+    assert_eq!(panel.asked(), asked_on_documents(2), "the open asks once");
+    assert_eq!(app.held_protocol_dir(), None, "nothing is made");
+    let said = app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(NO_PROTOCOLS_FOLDER_BANNER))
+        .and_then(|n| n.body.clone())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        said.contains("lone.csv was not opened"),
+        "the banner says the open waits on the folder: {said}"
+    );
+    assert!(
+        !protocols_dir::root().join("lone").exists(),
+        "nothing is made in the container's default folder"
+    );
+
+    // Answered, the folder is kept and the Protocol is made in it.
+    let chosen = scratch().join("chosen").join("opened").join("Protocols");
+    panel.answer(Some(chosen.clone()));
+    open(&mut app);
+    assert_eq!(panel.asked(), asked_on_documents(3), "the open asks once");
+    assert_eq!(protocols_dir::granted_root(), Some(chosen.clone()));
+    assert_eq!(protocols_dir::shown_now(), Some(chosen.clone()));
+    let made = app.held_protocol_dir().expect("the Protocol is made");
+    assert_eq!(
+        made.parent(),
+        Some(chosen.as_path()),
+        "the Protocol is made in the folder chosen"
+    );
+    assert!(!raised(&app, NO_PROTOCOLS_FOLDER_BANNER));
+
+    // A second open asks nothing.
+    open(&mut app);
+    assert_eq!(panel.asked(), asked_on_documents(3));
+}
+
+#[test]
+fn an_open_at_first_launch_asks_once_and_goes_ahead() {
+    let _first = first_launch();
+    // The file the app was launched to open, on the queue before the first frame.
+    let input = scratch().join("input").join("launched");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let csv = input.join("launched.csv");
+    std::fs::write(&csv, "id,value\n1,10\n2,20\n").expect("the CSV");
+    let chosen = scratch().join("chosen").join("launched").join("Protocols");
+    let panel = Panel::default();
+    panel.answer(Some(chosen.clone()));
+    let ctx = egui::Context::default();
+    let runner = brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    let mut app = launch(&panel)
+        .running_with(Some(runner))
+        .asking_grants_with(Box::new(|folder: &Path, _why: &str| {
+            Some(folder.to_path_buf())
+        }));
+    app.open_queue()
+        .push(brightfield_shell::open_queue::OpenRequest::Path(csv));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    let made = app.held_protocol_dir().expect("the file opens");
+    if !managed() {
+        assert!(panel.asked().is_empty(), "the full edition asked");
+        return;
+    }
+    assert_eq!(
+        panel.asked(),
+        asked_on_documents(1),
+        "the panel is asked once"
+    );
+    assert_eq!(
+        made.parent(),
+        Some(chosen.as_path()),
+        "the Protocol is made in the folder chosen"
+    );
+}
+
+#[test]
+fn a_draft_is_not_asked_about_for_an_open_the_folder_ask_drops() {
+    let _first = first_launch();
+    if !managed() {
+        return;
+    }
+    let input = scratch().join("input").join("drafted");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let first = input.join("drafted.csv");
+    let second = input.join("waiting.csv");
+    for csv in [&first, &second] {
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data/california_housing_sample.csv"),
+            csv,
+        )
+        .expect("the housing sample copies");
+    }
+    let chosen = scratch().join("chosen").join("drafted").join("Protocols");
+    let unreached = scratch().join("chosen").join("unreached").join("Protocols");
+    std::fs::create_dir_all(&unreached).expect("the folder");
+    let panel = Panel::default();
+    panel.answer(Some(chosen.clone()));
+    let ctx = egui::Context::default();
+    let runner = brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    // Every folder is granted as it is asked for, but the one Preferences is pointed at below.
+    let refused = unreached.clone();
+    let mut app = launch(&panel)
+        .running_with(Some(runner))
+        .asking_grants_with(Box::new(move |folder: &Path, _why: &str| {
+            (folder != refused).then(|| folder.to_path_buf())
+        }));
+    let open = |app: &mut MeridianApp, path: PathBuf| {
+        app.open_queue()
+            .push(brightfield_shell::open_queue::OpenRequest::Path(path));
+        for _ in 0..3 {
+            frame(app, &ctx);
+        }
+    };
+    open(&mut app, first);
+    assert!(app.held_protocol_dir().is_some(), "the first file opens");
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.carries_unsaved_mark(), "the filter is a draft");
+
+    // The Protocols folder is now one this launch cannot reach.
+    std::fs::write(
+        scratch()
+            .join("config")
+            .join(protocols_dir::PREFERENCES_FILE),
+        serde_json::json!({ "protocols_dir": unreached.to_string_lossy() }).to_string(),
+    )
+    .expect("the Preferences file");
+    assert_eq!(protocols_dir::out_of_reach(), Some(unreached.clone()));
+
+    // The open asks for the folder before the draft is asked about; refused, the draft stays,
+    // nothing was asked about it, and the banner names the file.
+    open(&mut app, second);
+    assert_eq!(
+        app.open_overlay(),
+        None,
+        "no close question for an open that was dropped"
+    );
+    assert!(app.carries_unsaved_mark(), "the draft is kept");
+    let said = app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER))
+        .and_then(|n| n.body.clone())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        said.contains("waiting.csv was not opened"),
+        "the banner names the open: {said}"
+    );
+}
