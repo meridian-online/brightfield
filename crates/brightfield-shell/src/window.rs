@@ -549,13 +549,8 @@ struct PendingLanding {
     dir: PathBuf,
 }
 
-/// The words on the ledger strip's Run control while it can be taken.
+/// The words on the title band's Run control.
 pub const RUN_LABEL: &str = "Run";
-
-/// The words on the ledger strip's Run control while a run of the open
-/// Protocol is under way — the control drawn disabled, so it reads as busy
-/// rather than as gone.
-pub const RUNNING_LABEL: &str = "Running\u{2026}";
 
 /// The `run-protocol` verb's longname — the registry's, spelled once here for
 /// the window's dispatch, its key and the palette.
@@ -2262,6 +2257,17 @@ struct TopBar {
     menu_choice: Option<&'static str>,
     /// What the Protocol's name and Location fields did, on a frame that drew them.
     placed: Option<PlaceDrawn>,
+    /// Run's rect, on a frame that drew it.
+    run_rect: Option<egui::Rect>,
+    /// Whether Run was taken.
+    run: bool,
+    /// The activity area's rect, on a frame that drew it.
+    activity_rect: Option<egui::Rect>,
+    /// Whether the activity area was clicked.
+    activity: bool,
+    /// What the activity area said and how wide it drew, on a frame that drew it, seen or only
+    /// measured.
+    activity_said: Option<(TitleActivity, f32)>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -2272,8 +2278,6 @@ struct RegionPicks {
     projection: Option<usize>,
     /// The pane the ledger rail's strip was clicked to.
     ledger: Option<usize>,
-    /// Whether the ledger strip's Run control was taken.
-    run: bool,
     /// The pane the inspector rail's strip was clicked to.
     inspector: Option<usize>,
     /// The rails whose collapse control was clicked this frame.
@@ -3774,6 +3778,9 @@ pub struct MeridianApp {
     /// rather than show the record before it, until a run of that folder records one. Keyed by
     /// folder, since runs of two folders can be under way at once and each lands on its own.
     unrecorded_failures: std::collections::BTreeMap<PathBuf, chrono::DateTime<chrono::Local>>,
+    /// The instant [`MeridianApp::last_run`] words a run's age from, when it is not the machine's
+    /// clock: see [`MeridianApp::set_run_clock`].
+    run_clock: Option<chrono::DateTime<chrono::FixedOffset>>,
     /// The shipped Protocol start waiting on its run in [`Self::running`] to
     /// open its first panel — see [`PendingLanding`]. Only the start on
     /// screen waits: a run whose start the reader left is settled when it
@@ -3972,6 +3979,16 @@ pub struct MeridianApp {
     refusal_asked: Vec<PathBuf>,
     /// Where the Location field's Choose… button was drawn on the last frame.
     choose_rect: Option<egui::Rect>,
+    /// Where the title band drew Run on the last frame.
+    run_rect: Option<egui::Rect>,
+    /// Where the title band drew the activity area on the last frame.
+    activity_rect: Option<egui::Rect>,
+    /// What the activity area said the last time it was drawn, and how wide that drew. The band
+    /// leaves that width for it while it says the same thing: the area lays its words out as it
+    /// draws, so its width is known only after. Anything else it has to say is first drawn unseen
+    /// to be measured, so an area hidden for words too wide comes back when shorter ones fit, and
+    /// words too wide are never painted over the band's other controls.
+    activity_measured: Option<(TitleActivity, f32)>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
     /// as the open picker is, and only where dialogs are allowed.
     location_pick_requested: bool,
@@ -4471,6 +4488,7 @@ impl MeridianApp {
             fetching: None,
             running: Vec::new(),
             unrecorded_failures: std::collections::BTreeMap::new(),
+            run_clock: None,
             landing: None,
             runner: None,
             descriptions: None,
@@ -4534,6 +4552,9 @@ impl MeridianApp {
             refused: Vec::new(),
             refusal_asked: Vec::new(),
             choose_rect: None,
+            run_rect: None,
+            activity_rect: None,
+            activity_measured: None,
             location_pick_requested: false,
             dialogs_allowed: false,
             overlay: None,
@@ -5655,20 +5676,6 @@ impl MeridianApp {
         ))
     }
 
-    /// What hovering the ledger strip's Run control says: the verb's own help
-    /// line off the registry, with its keystroke appended the way
-    /// `chrome::toolbar_button` appends one — so a rebinding cannot leave the
-    /// control naming a key that no longer runs the verb.
-    fn run_tooltip(&self) -> Option<String> {
-        let verb = brightfield_keys::registry()
-            .into_iter()
-            .find(|v| v.longname == RUN_PROTOCOL)?;
-        Some(match self.run_binding {
-            Some(keys) => format!("{}  ({keys})", verb.help),
-            None => verb.help.to_string(),
-        })
-    }
-
     /// Whether this window's ledger rail **opens closed to its strip**.
     ///
     /// A Protocol of one step, which is what a data file opens as: the rail's
@@ -5982,8 +5989,9 @@ impl MeridianApp {
     }
 
     /// Where the trailing action of rail `id`'s strip drew in the last frame
-    /// this window drew, or `None` on a frame that strip was given no action — the
-    /// ledger's Run control, over a Protocol with a spec to run.
+    /// this window drew, or `None` on a frame that strip was given no action. The
+    /// ledger's strip has none since Run moved to the title band
+    /// (`the_housing_file_offers_run_in_the_title_band`).
     ///
     /// Recorded and read back for the reason [`Self::rail_summary_rect`] is.
     #[must_use]
@@ -6183,6 +6191,18 @@ impl MeridianApp {
     /// where it is: its Rows spot says where the grid went.
     pub fn move_grid(&mut self) {
         self.set_grid_spot(self.grid_spot.other());
+    }
+
+    /// Open the ledger rail on `pane`, one of the panes the arrangement declares in it.
+    fn open_ledger_on(&mut self, pane: ItemId) {
+        if let Some(index) =
+            region_panes(arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL))
+                .iter()
+                .position(|item| *item == pane)
+        {
+            self.ledger_panel = index;
+            self.collapsed.remove(&arrangement::LEDGER_RAIL);
+        }
     }
 
     /// Put the grid in `spot` — see [`Self::move_grid`].
@@ -6797,6 +6817,15 @@ impl MeridianApp {
     /// every run: what a baseline of the panel is drawn under.
     pub fn set_versions_env(&mut self, clock: crate::versions::Clock, home: Option<PathBuf>) {
         self.charts.doc.versions_mut().set_env(clock, home);
+    }
+
+    /// Word the last run from `now` in place of the machine's clock, and its day in `now`'s
+    /// offset in place of the machine's time zone, so the title band reads the same on every day
+    /// and every machine: what a picture of a window holding a run, such as a shipped start's
+    /// thumbnail, is drawn under. The clock stands still, so a run recorded after `now`, as one
+    /// the picture's own start took is, reads as having finished at `now`.
+    pub fn set_run_clock(&mut self, now: chrono::DateTime<chrono::FixedOffset>) {
+        self.run_clock = Some(now);
     }
 
     /// **Open the Inspector rail on its Operation section**, remembering how
@@ -7511,6 +7540,18 @@ impl MeridianApp {
         if let Some(choice) = bar.menu_choice.take() {
             self.open_queue.ask_verb(choice);
         }
+        self.run_rect = bar.run_rect;
+        if let Some((said, width)) = bar.activity_said.take() {
+            if bar.activity_rect.is_none() {
+                // Measured unseen: run the pass again with the width known, so the frame shown
+                // is the one that places it. egui refuses a discard once its passes are spent,
+                // and the repaint then places it on the next frame.
+                ctx.request_discard("the activity area was measured");
+                ctx.request_repaint();
+            }
+            self.activity_measured = Some((said, width));
+        }
+        self.activity_rect = bar.activity_rect;
         let placed = bar.placed.take();
         self.place_rects = placed.as_ref().map(|p| p.rects);
         self.choose_rect = placed.as_ref().and_then(|p| p.choose_rect);
@@ -7870,22 +7911,10 @@ impl MeridianApp {
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
             let ledger_summary = self.ledger_summary();
-            // The Run control beside that summary, on a Protocol with a spec to
-            // run and nowhere else: a shipped start's Protocol and a chart
-            // spec's have no spec brightfield wrote, so a control over them
-            // would be a verb with nothing to act on.
-            let run_tooltip = self.run_tooltip();
-            let run_action = self.protocol.doc.model.source().is_some().then(|| {
-                let running = self.run_in_progress();
-                chrome::StripAction {
-                    label: if running { RUNNING_LABEL } else { RUN_LABEL },
-                    enabled: !running,
-                    tooltip: run_tooltip.as_deref(),
-                }
-            });
+            // Run is the title band's, so the strip carries the summary alone.
             let ledger_trailing = chrome::Trailing {
                 summary: ledger_summary.as_deref(),
-                action: run_action,
+                action: None,
             };
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
@@ -8199,7 +8228,6 @@ impl MeridianApp {
                 });
             if let Some(strip) = ledger_strip {
                 picks.ledger = strip.picked;
-                picks.run = strip.acted;
                 if strip.toggled {
                     picks.collapse.push(ledger.id);
                 }
@@ -8724,9 +8752,6 @@ impl MeridianApp {
             if let Some(section) = inspector_toggled {
                 self.toggle_inspector_section(section);
             }
-            if picks.run {
-                self.run_protocol(&ctx);
-            }
             match tile_action {
                 Some(TilesAction::Open(index)) => {
                     self.open_panel_with_grid(index);
@@ -8910,6 +8935,14 @@ impl MeridianApp {
                 self.protocol.doc.model.toggle_flow();
                 self.protocol.doc.canvas.invalidate();
             }
+        }
+        // Run and the activity area are answered here, after the regions have drawn, for the
+        // reason the band returns what was asked of it rather than doing it.
+        if bar.run {
+            self.run_protocol(&ctx);
+        }
+        if bar.activity {
+            self.open_ledger_on(LOG);
         }
         if bar.home {
             self.leave(&ctx, Leaving::Home);
@@ -10676,6 +10709,8 @@ impl MeridianApp {
             Condition::FileToReload,
         );
         when(self.charts.shelf.band.is_some(), Condition::ShelfDrawn);
+        // A run of the document open now, which Run would start a second of.
+        when(!self.run_in_progress(), Condition::NotRunning);
         when(
             focus.as_ref().and_then(|f| self.chart_for(f)).is_some(),
             Condition::ChartReadsFocus,
@@ -12712,6 +12747,25 @@ impl MeridianApp {
         let place = if door { None } else { self.open_protocol_dir() };
         let mut edit = self.place_edit.take().filter(|_| place.is_some());
         let mode = self.mode;
+        // Run, on every Protocol: greyed with its declared sentence where it cannot act, so the
+        // control is in the same place whatever the window holds.
+        let run = (!door).then(|| TitleRun {
+            key: self.run_binding.map(|token| {
+                brightfield_keys::keys_label(token, brightfield_keys::KeyPlatform::host())
+            }),
+            reason: match self.availability_of(RUN_PROTOCOL) {
+                Some(brightfield_keys::Availability::Missing(reason)) => Some(reason),
+                _ => None,
+            },
+        });
+        let activity = if door { None } else { self.activity() };
+        // The width the area drew at while it said what it says now; nothing for words it has
+        // not drawn, which are drawn to be measured.
+        let activity_width = self
+            .activity_measured
+            .as_ref()
+            .filter(|(said, _)| Some(said) == activity.as_ref())
+            .map(|(_, width)| *width);
         let band = ui.max_rect();
         ui.horizontal_centered(|ui| {
             // On macOS the window's close, minimise and zoom buttons sit over this corner.
@@ -12809,15 +12863,26 @@ impl MeridianApp {
                 Flow::Vertical => ("flow: vertical ⇄".to_string(), "horizontal"),
                 Flow::Horizontal => ("flow: horizontal ⇄".to_string(), "vertical"),
             });
+            // Run stands at the band's right end, drawn first so everything else is laid out
+            // against its left edge and none of it covers it.
+            let mut right = ui.max_rect().right();
+            if let Some(run) = &run {
+                let drawn = title_run_ui(ui, band, run);
+                bar.run_rect = Some(drawn.rect);
+                bar.run = drawn.clicked;
+                bar.controls
+                    .push(chrome::NamedControl::labelled(drawn.rect, RUN_LABEL));
+                right = drawn.rect.left() - spacing::SPACE_4;
+            }
             let wanted = right_group_width(
                 ui,
                 renderer.as_deref(),
                 toggle.as_ref().map(|(t, _)| t.as_str()),
             );
-            let group = (renderer.is_some() || toggle.is_some()) && ui.available_width() >= wanted;
-            // The Protocol's place stands at the band's right end, left of the right-hand group
-            // when that is drawn.
-            let mut end = ui.max_rect().right();
+            let group = (renderer.is_some() || toggle.is_some()) && right - name.right() >= wanted;
+            // The Protocol's place stands left of Run, and of the right-hand group when that is
+            // drawn.
+            let mut end = right;
             if group {
                 end -= wanted + spacing::SPACE_6;
             }
@@ -12850,16 +12915,64 @@ impl MeridianApp {
                     egui::pos2(lead, band.bottom()),
                 ),
             );
-            crate::title_band::drag_and_zoom(
-                ui,
-                "stretch",
-                egui::Rect::from_min_max(
-                    egui::pos2(name.right() + spacing::SPACE_2, band.top()),
-                    egui::pos2(stretch_end, band.bottom()),
-                ),
-            );
+            // The activity area, centred in what the name and the place leave, at the width it
+            // drew last frame. It is the first thing to go when the band is narrow.
+            let gap_left = name.right() + spacing::SPACE_6;
+            let gap_right = stretch_end - spacing::SPACE_4;
+            let mut stretch_ends = vec![(name.right() + spacing::SPACE_2, stretch_end)];
+            if let Some(activity) = &activity {
+                match activity_width {
+                    // Words the band has not measured are drawn unseen and untouchable, for
+                    // their width alone, and placed when the pass runs again.
+                    None => {
+                        let drawn = title_activity_ui(ui, band, gap_left, activity, false);
+                        bar.activity_said = Some((activity.clone(), drawn.rect.width()));
+                    }
+                    Some(width) if gap_right - gap_left >= width => {
+                        let left = (gap_left + gap_right - width) / 2.0;
+                        let drawn = title_activity_ui(ui, band, left, activity, true)
+                            .on_hover_text(ACTIVITY_CONTROL_NAME);
+                        bar.activity_rect = Some(drawn.rect);
+                        bar.activity = drawn.clicked();
+                        bar.activity_said = Some((activity.clone(), drawn.rect.width()));
+                        bar.controls.push(chrome::NamedControl::hovered(
+                            drawn.rect,
+                            ACTIVITY_CONTROL_NAME,
+                        ));
+                        stretch_ends = vec![
+                            (name.right() + spacing::SPACE_2, drawn.rect.left()),
+                            (drawn.rect.right(), stretch_end),
+                        ];
+                    }
+                    Some(_) => {}
+                }
+            }
+            for (index, (from, to)) in stretch_ends.into_iter().enumerate() {
+                crate::title_band::drag_and_zoom(
+                    ui,
+                    if index == 0 {
+                        "stretch"
+                    } else {
+                        "stretch-after-activity"
+                    },
+                    egui::Rect::from_min_max(
+                        egui::pos2(from, band.top()),
+                        egui::pos2(to, band.bottom()),
+                    ),
+                );
+            }
             if group {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let at = egui::Rect::from_min_max(
+                    egui::pos2(right - wanted, band.top()),
+                    egui::pos2(right, band.bottom()),
+                );
+                let mut ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(at)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                let ui = &mut ui;
+                {
                     if let Some(renderer) = renderer {
                         ui.label(
                             egui::RichText::new(renderer)
@@ -12875,7 +12988,7 @@ impl MeridianApp {
                         bar.controls
                             .push(chrome::NamedControl::labelled(response.rect, label));
                     }
-                });
+                }
             }
         });
         self.place_edit = edit;
@@ -15792,6 +15905,20 @@ impl MeridianApp {
         self.place_edit.as_ref().map(|e| e.field)
     }
 
+    /// Where the title band drew Run on the last frame: `None` on the front door, which has no
+    /// Protocol to run.
+    #[must_use]
+    pub fn run_control_rect(&self) -> Option<egui::Rect> {
+        self.run_rect
+    }
+
+    /// Where the title band drew the activity area on the last frame: `None` on the front door,
+    /// over a document with no run to tell of, and on a band too narrow to hold it.
+    #[must_use]
+    pub fn activity_area_rect(&self) -> Option<egui::Rect> {
+        self.activity_rect
+    }
+
     /// Where the title band drew the Protocol's name and Location fields on the last frame, and
     /// the Location field's Choose… button while that field is open: `None` on a frame that drew
     /// no Protocol's place, as the front door does.
@@ -18176,12 +18303,19 @@ impl MeridianApp {
     /// by [`crate::run::describe_ran`] and its state the one the window draws.
     #[must_use]
     pub fn last_run(&self) -> Option<crate::run::LastRun> {
-        let now = chrono::Local::now();
+        let describe = |finished_at: &str| match self.run_clock {
+            // Under a fixed clock, a run recorded after it finished at it.
+            Some(clock) => {
+                let at = chrono::DateTime::parse_from_rfc3339(finished_at).ok()?;
+                crate::run::describe_ran(&at.min(clock).to_rfc3339(), clock)
+            }
+            None => crate::run::describe_ran(finished_at, chrono::Local::now()),
+        };
         if let Some(at) = self
             .held_protocol_dir()
             .and_then(|dir| self.unrecorded_failures.get(&dir))
         {
-            let (when, age) = crate::run::describe_ran(&at.to_rfc3339(), now)?;
+            let (when, age) = describe(&at.to_rfc3339())?;
             return Some(crate::run::LastRun {
                 when,
                 age,
@@ -18189,12 +18323,39 @@ impl MeridianApp {
             });
         }
         let finished_at = self.protocol.doc.model.run()?.finished_at.as_deref()?;
-        let (when, age) = crate::run::describe_ran(finished_at, now)?;
+        let (when, age) = describe(finished_at)?;
         Some(crate::run::LastRun {
             when,
             age,
             state: self.recorded_run_state(),
         })
+    }
+
+    /// What the title band's activity area says: the run under way, else the last run, else that
+    /// the Protocol has not run; `None` over a document Run cannot act on that has no run to tell
+    /// of, as a chart spec is.
+    fn activity(&self) -> Option<TitleActivity> {
+        if let Some(progress) = self.run_progress() {
+            return Some(TitleActivity::Running {
+                step: progress.running,
+                done: progress.done,
+                total: progress.total,
+            });
+        }
+        if let Some(last) = self.last_run() {
+            if let Some(mark) = run_mark(last.state) {
+                return Some(TitleActivity::Ran {
+                    when: last.when,
+                    age: last.age,
+                    mark,
+                });
+            }
+            return Some(TitleActivity::NotRun);
+        }
+        self.situation()
+            .conditions
+            .contains(&brightfield_keys::Condition::ProtocolToRun)
+            .then_some(TitleActivity::NotRun)
     }
 
     /// Note how a run of the Protocol folder `dir` ended, whichever document the window holds:
@@ -23048,6 +23209,126 @@ fn right_group_width(ui: &egui::Ui, renderer: Option<&str>, toggle: Option<&str>
         wanted += spacing + text_width(ui, label, ui_font()) + 2.0 * ui.spacing().button_padding.x;
     }
     wanted
+}
+
+/// What the title band's Run control says: its key, and why it cannot act when it cannot.
+struct TitleRun {
+    /// The key `run-protocol` is bound to, as the platform writes it.
+    key: Option<String>,
+    /// The sentence Run's unmet need declares; `None` while Run can act.
+    reason: Option<String>,
+}
+
+/// What the title band drew of Run.
+struct TitleRunDrawn {
+    rect: egui::Rect,
+    clicked: bool,
+}
+
+/// Draw Run at the right end of `band`, greyed with its reason where it cannot act, the reason
+/// shown under it while the pointer is on it.
+fn title_run_ui(ui: &mut egui::Ui, band: egui::Rect, run: &TitleRun) -> TitleRunDrawn {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(band)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    let mut button = meridian_egui::Button::new(RUN_LABEL)
+        .icon(&meridian_egui::icons::PLAYER_PLAY)
+        .weight(meridian_egui::Weight::Quiet);
+    if let Some(key) = run.key.as_deref() {
+        button = button.keystroke(key);
+    }
+    if let Some(reason) = run.reason.as_deref() {
+        button = button.unavailable(reason);
+    }
+    let drawn = meridian_egui::button(&mut child, button);
+    if let (Some(anchor), Some(reason)) = (drawn.pointed_unavailable, run.reason.as_deref()) {
+        let _ = meridian_egui::Popover::show_reason(
+            ui.ctx(),
+            "title-run-reason",
+            anchor,
+            reason,
+            run.key.as_deref(),
+        );
+    }
+    TitleRunDrawn {
+        rect: drawn.response.rect,
+        clicked: drawn.clicked,
+    }
+}
+
+/// What the title band's activity area tells of the Protocol's runs, read before the band draws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TitleActivity {
+    /// A run is under way.
+    Running {
+        step: Option<String>,
+        done: usize,
+        total: usize,
+    },
+    /// The Protocol last ran: when, how long ago, and how that left it.
+    Ran {
+        when: String,
+        age: String,
+        mark: meridian_egui::run_status::StepMark,
+    },
+    /// The Protocol has not run.
+    NotRun,
+}
+
+/// What the activity area offers on hover, and its name among the band's controls: what a click
+/// on it does.
+pub const ACTIVITY_CONTROL_NAME: &str = "Open the run log";
+
+/// The activity area's words before any run.
+pub const NOT_RUN_YET: &str = "Not run yet";
+
+/// The mark the activity area gives a run that left the Protocol in `state`, or `None` for
+/// `RunState::NeverRun`.
+fn run_mark(state: RunState) -> Option<meridian_egui::run_status::StepMark> {
+    use meridian_egui::run_status::StepMark;
+    match state {
+        RunState::Fresh | RunState::Previewed => Some(StepMark::Ok),
+        RunState::StaleOwnEdit | RunState::StaleUpstream => Some(StepMark::Stale),
+        RunState::Failed => Some(StepMark::Failed),
+        RunState::NeverRun => None,
+    }
+}
+
+/// Draw the activity area with its left edge at `left`, centred on `band`'s height; when not
+/// `seen`, unpainted and not interactive, to measure it.
+fn title_activity_ui(
+    ui: &mut egui::Ui,
+    band: egui::Rect,
+    left: f32,
+    activity: &TitleActivity,
+    seen: bool,
+) -> egui::Response {
+    let mut builder = egui::UiBuilder::new()
+        .max_rect(egui::Rect::from_min_max(
+            egui::pos2(left, band.top()),
+            band.right_bottom(),
+        ))
+        .layout(egui::Layout::left_to_right(egui::Align::Center));
+    if !seen {
+        builder = builder.invisible();
+    }
+    let mut child = ui.new_child(builder);
+    let status = match activity {
+        TitleActivity::Running { step, done, total } => meridian_egui::RunStatus::Running {
+            step: step.as_deref(),
+            done: *done,
+            total: *total,
+        },
+        TitleActivity::Ran { when, age, mark } => meridian_egui::RunStatus::Ran {
+            when,
+            age,
+            mark: *mark,
+        },
+        TitleActivity::NotRun => meridian_egui::RunStatus::NotRun { label: NOT_RUN_YET },
+    };
+    meridian_egui::run_status(&mut child, status)
 }
 
 /// The width `text` lays out to in `font`, unwrapped.

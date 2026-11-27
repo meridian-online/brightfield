@@ -849,18 +849,21 @@ pub struct LastRun {
 /// The day a run that finished at `finished_at`, an RFC 3339 time as `arc` records it, ran, and
 /// how long before `now` that was; `None` for a time that does not parse.
 ///
-/// The day is in local time: "ran 23 Oct" in `now`'s year, and "ran 23 Oct 2025" otherwise. The
+/// The day is in `now`'s time zone: "ran 23 Oct" in `now`'s year, and "ran 23 Oct 2025" otherwise. The
 /// age reads "just now" under a minute, then "N minutes ago", "N hours ago" and "N days ago",
 /// singular at one. A time after `now`, from a clock that moved back, reads "just now".
 #[must_use]
-pub fn describe_ran(
+pub fn describe_ran<Tz: chrono::TimeZone>(
     finished_at: &str,
-    now: chrono::DateTime<chrono::Local>,
-) -> Option<(String, String)> {
+    now: chrono::DateTime<Tz>,
+) -> Option<(String, String)>
+where
+    Tz::Offset: std::fmt::Display,
+{
     use chrono::Datelike;
     let ran = chrono::DateTime::parse_from_rfc3339(finished_at)
         .ok()?
-        .with_timezone(&chrono::Local);
+        .with_timezone(&now.timezone());
     let when = if ran.year() == now.year() {
         ran.format("ran %-d %b").to_string()
     } else {

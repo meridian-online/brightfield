@@ -277,6 +277,10 @@ const NEEDS_PROTOCOL_TO_SAVE: &[Requirement] =
 const NEEDS_RUN: &[Requirement] = &[
     Requirement::of(Need::Condition(Condition::ProtocolToRun)),
     Requirement::of(Need::Condition(Condition::Trusted)),
+    Requirement::new(
+        Need::Condition(Condition::NotRunning),
+        "The Protocol is running.",
+    ),
 ];
 const NEEDS_RENAME: &[Requirement] = &[
     A_PROTOCOL,

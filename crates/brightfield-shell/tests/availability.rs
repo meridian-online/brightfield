@@ -66,6 +66,7 @@ fn a_data_file_protocol_holds_a_chart_its_rows_and_its_source() {
             Condition::TakesSources,
             Condition::FileToReload,
             Condition::ShelfDrawn,
+            Condition::NotRunning,
         ],
     );
     assert!(!situation.selected.contains(&Selected::Graph));
