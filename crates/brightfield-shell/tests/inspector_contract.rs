@@ -743,3 +743,415 @@ fn leaving_a_steps_table_stops_the_inspectors_read_of_it() {
     );
     win.app.chart_doc().hold_preview_reads(false);
 }
+
+// ---------------------------------------------------------------------------
+// The Column section
+// ---------------------------------------------------------------------------
+
+/// A numeric column of the sample with many values, so its bar is binned.
+const INCOME: &str = "median_income";
+/// A numeric column of the sample with few values, so its bar is its values.
+const AGE: &str = "house_age";
+
+/// The sample's window with `column` selected on its dashboard and the
+/// inspector rail open, settled, and the selected column's facts.
+fn with_column(column: &str) -> (OpWindow, brightfield_shell::one_step::ColumnFacts) {
+    let mut win = OpWindow::on_copy_of(SAMPLE);
+    if win.app.rail_is_collapsed(INSPECTOR_RAIL) {
+        win.key_with(
+            egui::Key::B,
+            egui::Modifiers {
+                alt: true,
+                command: true,
+                mac_cmd: cfg!(target_os = "macos"),
+                ctrl: !cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+        );
+    }
+    win.app.chart_doc_mut().select_column(column);
+    win.settle();
+    assert!(
+        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
+        "the inspector rail is open"
+    );
+    let facts = win
+        .app
+        .chart_doc()
+        .selected_column()
+        .cloned()
+        .unwrap_or_else(|| panic!("the dashboard selected {column}"));
+    (win, facts)
+}
+
+/// Whether the last frame drew `text`.
+fn drew(win: &OpWindow, text: &str) -> bool {
+    win.texts.iter().any(|t| t == text)
+}
+
+/// **The Column section says what the column is**: its FineType type, the
+/// type DuckDB stores it as, and the step that made its table, with where
+/// that step stands.
+#[test]
+fn the_column_section_says_its_finetype_its_storage_type_and_its_step() {
+    let (win, facts) = with_column(INCOME);
+    let table = win
+        .app
+        .column_table_for(&win.table())
+        .expect("the model knows the file's table");
+    for (label, value) in [
+        ("FINETYPE", facts.full_type().to_string()),
+        ("STORAGE", facts.storage.clone()),
+        ("STEP", format!("{} · {}", table.step, table.kind)),
+        ("STATUS", table.state.to_string()),
+    ] {
+        assert!(drew(&win, label), "no {label} field: {:?}", win.texts);
+        assert!(
+            drew(&win, &value),
+            "the {label} field does not say {value:?}: {:?}",
+            win.texts
+        );
+    }
+    assert!(drew(&win, INCOME), "the section names its column");
+}
+
+/// **A number with many values draws its bins, and states its minimum,
+/// median, upper quartile, maximum and missing count.** The bins are equal
+/// width, low to high, and count every row that is not missing.
+#[test]
+fn a_numeric_column_shows_its_bins_and_minimum_median_upper_quartile_maximum_and_missing() {
+    use brightfield_shell::inspector::{column_bars, column_figures, ColumnBars};
+    let (win, facts) = with_column(INCOME);
+    let Some(ColumnBars::Bins(bins)) = column_bars(&facts) else {
+        panic!("{INCOME} is binned: {:?}", column_bars(&facts));
+    };
+    assert_eq!(bins.len(), brightfield_engine::profile::DISPLAY_BINS);
+    assert_eq!(
+        bins.iter().sum::<u64>(),
+        facts.rows - facts.nulls,
+        "the bins count every row that is not missing"
+    );
+    assert!(
+        win.app.chart_doc().column_bar_rect().is_some(),
+        "the section draws the bar"
+    );
+
+    let figures = column_figures(&facts);
+    let labels: Vec<&str> = figures.iter().map(|(label, _)| *label).collect();
+    assert_eq!(
+        labels,
+        [
+            "rows",
+            "minimum",
+            "median",
+            "upper quartile",
+            "maximum",
+            "missing"
+        ]
+    );
+    for (label, value) in &figures {
+        assert!(
+            drew(&win, &label.to_uppercase()),
+            "no {label} figure: {:?}",
+            win.texts
+        );
+        assert!(drew(&win, value), "{label} does not read {value:?}");
+    }
+}
+
+/// **A number with few values draws its top values**, most frequent first,
+/// and every other value's rows as one bar, so the bars still count every row
+/// that is not missing.
+#[test]
+fn a_categorical_column_shows_its_top_values() {
+    use brightfield_shell::inspector::{column_bars, ColumnBars, TOP_VALUES};
+    let (win, facts) = with_column(AGE);
+    let Some(ColumnBars::Top { values, rest }) = column_bars(&facts) else {
+        panic!("{AGE} draws its values: {:?}", column_bars(&facts));
+    };
+    assert!(!values.is_empty() && values.len() <= TOP_VALUES);
+    assert!(
+        values.windows(2).all(|w| w[0].1 >= w[1].1),
+        "the values are most frequent first: {values:?}"
+    );
+    assert_eq!(
+        values.iter().map(|(_, n)| n).sum::<u64>() + rest,
+        facts.rows - facts.nulls,
+        "the values and the rest count every row that is not missing"
+    );
+    assert!(
+        win.app.chart_doc().column_bar_rect().is_some(),
+        "the section draws the bar"
+    );
+}
+
+/// **What can be done with the column lists its commands with their keys.**
+/// The operations started from the grid come from the built forms, so a form
+/// joins the list with no edit to the inspector; filter and sort are among
+/// them. After them come the chart's channels. Each row says its
+/// key, and a row that cannot act says why, in the sentence the window's
+/// availability gives. A click on an operation's row starts it on the column.
+#[test]
+fn what_can_be_done_lists_the_columns_commands_with_their_keys() {
+    use brightfield_shell::inspector::{key_label, COLUMN_VERBS};
+    use brightfield_shell::operation_ui::{self, Start};
+    let (mut win, _) = with_column(INCOME);
+    let commands = win.app.inspector_column_commands();
+    let verbs: Vec<&str> = commands.iter().map(|c| c.verb).collect();
+
+    let mut want: Vec<&str> = operation_ui::built()
+        .filter(|op| {
+            op.starts
+                .iter()
+                .any(|s| matches!(s, Start::Header(_) | Start::Cell | Start::FootField(_)))
+        })
+        .map(|op| op.verb)
+        .collect();
+    want.extend(COLUMN_VERBS);
+    assert_eq!(
+        verbs, want,
+        "the section lists the grid's forms, then the verbs"
+    );
+    for verb in ["filter-rows-at-cursor", "sort-rows-at-cursor"] {
+        assert!(verbs.contains(&verb), "{verb} is listed");
+    }
+    assert!(
+        !verbs.contains(&"read-file"),
+        "a form started from the sources browser alone is not the column's"
+    );
+
+    for command in &commands {
+        assert!(
+            drew(&win, &command.label),
+            "{} is not drawn: {:?}",
+            command.label,
+            win.texts
+        );
+        if let Some(key) = &command.key {
+            assert!(
+                drew(&win, key),
+                "{}'s key {key} is not drawn",
+                command.label
+            );
+        }
+        if !command.operation {
+            let available = win
+                .app
+                .availability_of(command.verb)
+                .expect("a registry verb");
+            assert_eq!(
+                command.unavailable,
+                match available {
+                    brightfield_keys::Availability::Available => None,
+                    brightfield_keys::Availability::Missing(why) => Some(why),
+                },
+                "{} is greyed as the window's availability says",
+                command.verb
+            );
+        }
+    }
+    let put_x = commands
+        .iter()
+        .find(|c| c.verb == "put-column-on-x")
+        .expect("put on x is listed");
+    assert_eq!(put_x.key.as_deref(), Some(key_label("z x").as_str()));
+    assert!(
+        !verbs.contains(&"retype-column"),
+        "retype acts on the model pane's table, which this section never shows beside it"
+    );
+
+    let rename = commands
+        .iter()
+        .find(|c| c.verb == "rename-column")
+        .expect("rename is listed");
+    assert_eq!(
+        rename.unavailable, None,
+        "a column of the loaded table can be renamed"
+    );
+    let at = win
+        .text_rects
+        .iter()
+        .find(|(t, _)| *t == rename.label)
+        .map(|(_, rect)| rect.center())
+        .expect("rename's row is drawn");
+    win.click(at);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while win.app.making().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the click never started rename: {}",
+            win.banners()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+    let making = win.app.making().expect("an operation is being made");
+    assert_eq!(making.spec.long_name, "rename-column");
+    assert_eq!(
+        making.column.as_deref(),
+        Some(INCOME),
+        "started on the column"
+    );
+}
+
+/// **Pointing at a bin says its range and its count**, on the line under the
+/// bar, and pointing away leaves the line empty.
+#[test]
+fn hovering_a_bin_says_its_range_and_count() {
+    use brightfield_shell::inspector::{bar_line, column_bars};
+    let (mut win, facts) = with_column(INCOME);
+    let bars = column_bars(&facts).expect("a numeric column has bars");
+    let rect = win
+        .app
+        .chart_doc()
+        .column_bar_rect()
+        .expect("the section draws the bar");
+    let first = bar_line(&facts, &bars, 0).expect("the first bin has a line");
+    assert!(
+        first.ends_with(" rows") || first.ends_with(" row"),
+        "the line counts rows: {first}"
+    );
+    assert!(
+        first.contains(" to "),
+        "a bin's line says its range: {first}"
+    );
+    assert!(!drew(&win, &first), "nothing is pointed at yet");
+
+    let at = egui::pos2(rect.left() + 1.0, rect.center().y);
+    win.run(vec![egui::Event::PointerMoved(at)]);
+    win.run(vec![egui::Event::PointerMoved(at)]);
+    assert!(
+        drew(&win, &first),
+        "pointing at the first bin did not say {first:?}: {:?}",
+        win.texts
+    );
+}
+
+/// **Filter rows chosen in the Column section asks on the selected column**,
+/// in the row the grid's cursor is on, whichever column the cursor was on.
+#[test]
+fn filter_rows_chosen_from_the_column_section_asks_on_that_column() {
+    use brightfield_shell::data_grid::GridCursor;
+    use brightfield_shell::grid_foot::FootField;
+    let (mut win, _) = with_column(INCOME);
+    let root = win.table();
+    win.show_grid_of(&root);
+    win.app.chart_doc_mut().grid_cursor = Some(GridCursor { row: 0, col: 1 });
+    win.app.chart_doc_mut().select_column(INCOME);
+    win.settle();
+
+    let filter = win
+        .app
+        .inspector_column_commands()
+        .into_iter()
+        .find(|c| c.verb == "filter-rows-at-cursor")
+        .expect("filter is listed");
+    assert_eq!(filter.unavailable, None, "the cursor is on a cell");
+    let at = win
+        .text_rects
+        .iter()
+        .find(|(t, _)| *t == filter.label)
+        .map(|(_, rect)| rect.center())
+        .unwrap_or_else(|| panic!("filter's row is drawn: {:?}", win.texts));
+    win.click(at);
+    let (field, text) = win
+        .app
+        .chart_doc()
+        .foot_asking()
+        .map(|(field, text)| (field, text.to_string()))
+        .expect("the where field opened");
+    assert_eq!(field, FootField::Where);
+    assert!(
+        text.starts_with(INCOME),
+        "the field asks on {INCOME}, not the cursor's column: {text}"
+    );
+}
+
+/// **A foot-row operation started on a column the grid does not show opens
+/// on no other column**: it says why and opens nothing.
+#[test]
+fn a_foot_row_operation_on_a_column_the_grid_does_not_show_opens_nothing() {
+    use brightfield_shell::data_grid::GridCursor;
+    use brightfield_shell::grid_foot::FootField;
+    use brightfield_shell::operation_ui::{self, Start};
+    let (mut win, _) = with_column(INCOME);
+    let root = win.table();
+    win.show_grid_of(&root);
+    win.app.chart_doc_mut().grid_cursor = Some(GridCursor { row: 0, col: 1 });
+    win.settle();
+    let filter = operation_ui::by_verb("filter-rows-at-cursor").expect("filter is built");
+    let ctx = win.ctx.clone();
+    let started = win.app.start_operation_spec(
+        &ctx,
+        filter,
+        Start::FootField(FootField::Where),
+        Some("no_such_column"),
+    );
+    assert!(
+        !started,
+        "filter started on a column the grid does not show"
+    );
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .foot_asking()
+            .map(|(_, text)| text.to_string()),
+        None,
+        "a field opened on the cursor's column instead"
+    );
+}
+
+/// Save the sample's Protocol into `dir`, then record `slim`, the loaded table
+/// with `median_income` hidden.
+fn a_step_without_income(dir: &Path) {
+    let opened = data_file::open(&dir.join(SAMPLE).to_string_lossy()).expect("the sample opens");
+    opened.protocol.save_to(dir).expect("the Protocol saves");
+    operation::record(
+        &runner(),
+        dir,
+        "hide-column",
+        ROOT,
+        "slim",
+        &[("column", INCOME)],
+    )
+    .expect("arc records slim");
+}
+
+/// **With the grid on a table that lacks the selected column, the grid's
+/// operations are greyed with a sentence saying so**, rather than offered on a
+/// column that table does not have.
+#[test]
+fn an_operation_on_a_column_the_grid_does_not_show_says_so() {
+    use brightfield_shell::operation_ui::header::not_shown;
+    let mut win = OpWindow::on_copy_prepared(SAMPLE, a_step_without_income);
+    if win.app.rail_is_collapsed(INSPECTOR_RAIL) {
+        win.key_with(
+            egui::Key::B,
+            egui::Modifiers {
+                alt: true,
+                command: true,
+                mac_cmd: cfg!(target_os = "macos"),
+                ctrl: !cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+        );
+    }
+    win.show_grid_of("slim");
+    win.app.chart_doc_mut().select_column(INCOME);
+    win.settle();
+    assert!(
+        win.app.chart_doc().selected_column().is_some(),
+        "the dashboard selected {INCOME}"
+    );
+    let rename = win
+        .app
+        .inspector_column_commands()
+        .into_iter()
+        .find(|c| c.verb == "rename-column")
+        .expect("rename is listed");
+    assert_eq!(
+        rename.unavailable,
+        Some(not_shown(&rename.label, INCOME)),
+        "rename is offered on a column slim does not have"
+    );
+}

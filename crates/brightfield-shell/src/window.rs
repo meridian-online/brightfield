@@ -94,7 +94,9 @@ use crate::column_profiles::{ColumnProfiles, ProfileRead};
 use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
-use crate::inspector::{InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle};
+use crate::inspector::{
+    CommandsHandle, InspectedHandle, InspectedTable, InspectorPane, Selection, TableHandle,
+};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
     HelpSheet, JumpTarget, JumpToNode, QuickOpen,
@@ -3324,6 +3326,10 @@ struct ChartView {
     /// inspector describes it — written by [`MeridianApp::draw`] beside
     /// [`Self::inspector_selection`].
     inspector_inspected: InspectedHandle,
+    /// The verb rows the inspector's Column section lists, with what the
+    /// window holds said of each: written by [`MeridianApp::draw`] beside
+    /// [`Self::inspector_selection`] while a column is selected.
+    inspector_commands: CommandsHandle,
     /// The column profiles of the tables the inspector has been asked about;
     /// see [`MeridianApp::column_facts_for`].
     column_profiles: ColumnProfiles,
@@ -4468,12 +4474,14 @@ impl MeridianApp {
         let inspector_selection = Selection::default();
         let inspector_table = TableHandle::default();
         let inspector_inspected = InspectedHandle::default();
+        let inspector_commands = CommandsHandle::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
             Box::new(
                 InspectorPane::new(inspector_selection.clone(), inspector_table.clone())
-                    .with_inspected(inspector_inspected.clone()),
+                    .with_inspected(inspector_inspected.clone())
+                    .with_commands(inspector_commands.clone()),
             ),
         );
         // The two documents' one join: what each tile is of. Done here rather
@@ -4491,6 +4499,7 @@ impl MeridianApp {
                 inspector_selection,
                 inspector_table,
                 inspector_inspected,
+                inspector_commands,
                 column_profiles: ColumnProfiles::default(),
                 shelf: ShelfHold::new(),
             },
@@ -7990,6 +7999,8 @@ impl MeridianApp {
             let asked = self.charts.inspector_inspected.take_asked();
             let inspected = self.inspected_table(asked);
             self.charts.inspector_inspected.set(inspected);
+            let verbs = self.column_verb_commands();
+            self.charts.inspector_commands.set(verbs);
             let crumbs = self.crumb_line();
             let mut crumb_back = false;
             let node_header = self.canvas_header();
@@ -11141,6 +11152,38 @@ impl MeridianApp {
             conditions,
             instead: Vec::new(),
         }
+    }
+
+    /// The verb rows the inspector's Column section lists under a selected
+    /// column, each greyed with what the window holds said of it. Empty while
+    /// no column is selected, so a frame without one asks nothing.
+    fn column_verb_commands(&self) -> Vec<crate::inspector::ColumnCommand> {
+        if self.charts.doc.selected_column().is_none() {
+            return Vec::new();
+        }
+        let situation = self.situation();
+        let registry = brightfield_keys::registry();
+        crate::inspector::verb_commands(|longname| {
+            registry
+                .iter()
+                .find(|v| v.longname == longname)
+                .map(|verb| brightfield_keys::availability(verb, &situation))
+        })
+    }
+
+    /// What the inspector's Column section lists for the selected column: the
+    /// operations started on it from the grid, then the verbs. Empty while no
+    /// column is selected.
+    #[must_use]
+    pub fn inspector_column_commands(&self) -> Vec<crate::inspector::ColumnCommand> {
+        let Some(column) = self.charts.doc.selected_column() else {
+            return Vec::new();
+        };
+        crate::inspector::column_commands(
+            &self.charts.doc,
+            &column.column,
+            self.column_verb_commands(),
+        )
     }
 
     /// Whether the command named `longname` can act on what the window holds,

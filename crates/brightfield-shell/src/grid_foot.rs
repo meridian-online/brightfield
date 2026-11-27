@@ -558,6 +558,23 @@ impl ChartDoc {
         true
     }
 
+    /// **Move the grid's cursor to the column `name`, in the row it is on**, so
+    /// a foot-row ask started on that column reads its cell. Whether the
+    /// cursor is now on it: false with no cursor, or for a column the foot row
+    /// does not know.
+    pub fn put_grid_cursor_on_column(&mut self, name: &str) -> bool {
+        let Some(col) = self.grid_foot.columns.iter().position(|c| c == name) else {
+            return false;
+        };
+        match self.grid_cursor.as_mut() {
+            Some(at) => {
+                at.col = col;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The cursor's column and the literal its cell equals, read through the
     /// view the grid shows.
     fn cursor_cell(&mut self) -> Option<(FromCell, CellLiteral)> {

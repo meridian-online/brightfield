@@ -505,6 +505,18 @@ impl MeridianApp {
         // with no description from arc, and in a window with no arc to ask: the operation
         // panel beside it says what arc gave, or that it gave no description.
         if let Start::FootField(field) = start {
+            // Started on a column, as the inspector's Column section starts one, the field
+            // reads that column's cell in the cursor's row rather than the cursor's column,
+            // and opens on no other column when the grid does not show this one.
+            if let Some(column) = &column {
+                if self.charts.doc.grid_cursor.is_some()
+                    && !self.charts.doc.put_grid_cursor_on_column(column)
+                {
+                    let words = operation_ui::label(spec.long_name);
+                    self.say_operation(ctx, operation_ui::header::not_shown(&words, column));
+                    return false;
+                }
+            }
             let cx = self.operation_context();
             if let Availability::Missing(why) =
                 availability(spec, &self.situation_of(&cx, column.as_deref()))
@@ -1092,11 +1104,14 @@ impl MeridianApp {
             return;
         };
         // An operation chosen from the menu starts from the part it names, when it names one.
+        // One chosen by name that starts from no header, as the inspector's Column section
+        // offers the foot row's, starts from the first place it names.
         let start = spec
             .starts
             .iter()
             .copied()
             .find(|s| matches!(s, Start::Header(part) if *part == hit.part || hit.verb.is_some()))
+            .or_else(|| hit.verb.and(spec.starts.first().copied()))
             .unwrap_or(Start::Header(hit.part));
         self.start_operation(ctx, spec, start, hit.column.clone());
     }

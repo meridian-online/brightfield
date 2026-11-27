@@ -1221,6 +1221,10 @@ pub struct ChartDoc {
     /// standing would name controls that are not on the screen. Read into
     /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
     pub controls: Vec<brightfield_workbench::chrome::NamedControl>,
+    /// Where the inspector's Column section drew the selected column's
+    /// distribution bar on the last frame that drew it. Cleared by
+    /// [`Self::begin_controls_frame`], as [`Self::controls`] is.
+    pub(crate) column_bar: Option<egui::Rect>,
     /// Where each interval slider's track was drawn last frame, as
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
@@ -1674,6 +1678,7 @@ impl ChartDoc {
             normalise_switches: Vec::new(),
             regions_switches: Vec::new(),
             controls: Vec::new(),
+            column_bar: None,
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -1761,6 +1766,7 @@ impl ChartDoc {
             normalise_switches: Vec::new(),
             regions_switches: Vec::new(),
             controls: Vec::new(),
+            column_bar: None,
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -4122,6 +4128,13 @@ impl ChartDoc {
         self.tables_filed = 0;
     }
 
+    /// Where the inspector's Column section drew the selected column's
+    /// distribution bar on the last frame, while it drew one.
+    #[must_use]
+    pub fn column_bar_rect(&self) -> Option<egui::Rect> {
+        self.column_bar
+    }
+
     /// Forget the controls the last frame drew on this document — the chart
     /// pane's list and the grid pane's two switches — before this frame draws
     /// any.
@@ -4136,6 +4149,7 @@ impl ChartDoc {
     /// so what they hold is this frame's.
     pub fn begin_controls_frame(&mut self) {
         self.controls.clear();
+        self.column_bar = None;
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         // A band the last frame did not draw holds no keys this frame, however
