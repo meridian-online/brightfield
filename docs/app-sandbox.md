@@ -119,4 +119,29 @@ These need the open panel, Finder or the Run control, which a script cannot driv
 - make Brightfield the default app for CSV;
 - install the managed edition beside the full edition under one bundle identifier.
 
-The default-app and shared-identifier cases change the Mac's own settings, so they are left for the TestFlight build rather than run here.
+The default-app and shared-identifier cases change the Mac's own settings, so they were left for the TestFlight build, below.
+
+## The first TestFlight build, by hand
+
+On 2026-11-28 the Store package 0.1.9, signed for the Mac App Store and installed through TestFlight, was run by hand on an M1 Pro MacBook Pro (16 GB, macOS 27.2) in a user account that had run the full edition but never the Store edition. The Protocols folder was `~/Documents/Protocols`.
+
+| Case | Result |
+| --- | --- |
+| First launch | Asked for the Protocols folder once, opening on the existing `~/Documents/Protocols`. |
+| A CSV in `~/datasets`, opened through the panel | Opened and drew. |
+| A CSV in iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`) | Made a Protocol in the Protocols folder, ran it, and drew all 891 rows. |
+| A kept step, saved | The step's SQL file, `arcform.yaml` and the dashboard file were written into the Protocol's folder. |
+| Quit and relaunch | Reopened the last Protocol with no folder prompt. |
+| A step's SQL file at mode `000` | The refusal was reported, naming the file and `Permission denied`. The Protocol did not open, and the report was headed as a data file. |
+| Run | Ran to success. Every step was skipped as current, and each table was measured. |
+| `edgar_gleif` | Opened restricted, drew its 19 steps, and named its first `uv` step as the one this edition can't run. Run was greyed. The version on open-analytics' `main` uses an operator, `dlt`, that this build's arc does not know, and was refused whole; the version before it was used. |
+| Brightfield as the default app for CSV | A double-clicked CSV in `~/Downloads` opened as a new Protocol with no folder prompt. A CSV inside a folder holding an `arcform.yaml` opened that folder's Protocol instead, without saying so. |
+| Beside the full edition, both `online.meridian.brightfield` | Each kept its own Recents. Finder's Open With listed one Brightfield, and Launch Services opened files in the full edition's copy. |
+
+What it showed:
+
+- **The grants work as designed.** Each file the checks read or wrote, in the Protocols folder, iCloud Drive and Downloads, was reached through a grant or the Downloads entitlement, and the one file made unreadable was reported as refused.
+- **The two editions need different bundle identifiers.** With one identifier shared, Finder treats the two copies as one app and an analyst cannot choose which opens a file. The Store edition keeps `online.meridian.brightfield`, which its App Store Connect record is locked to, and the full edition takes its own.
+- **Dropping a file on the window aborted the app.** The drop asked for a folder, and the folder panel ran modally while the drag was still being tracked; a callback in that loop panicked where it cannot unwind. The full edition asks for no folder and does not crash.
+- **A long open stalls the window.** Opening a 14,132-row CSV's Protocol kept the main thread busy for about 30 seconds, typing the columns and running each mark's query, so macOS showed the pinwheel.
+- **A folder that does not exist is asked for.** A Protocol whose source points at a deleted folder showed the grant panel, opened on `/Volumes`, before failing to read the file.
