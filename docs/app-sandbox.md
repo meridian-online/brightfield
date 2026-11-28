@@ -102,7 +102,7 @@ On 2026-11-26, macOS 27.2, arm64, the ad-hoc Mac App Store package that `scripts
 
 What changed from the baseline above:
 
-- **A grant that does not reach a model now fails the headless run.** The file-alone grant, and `models/` at mode `000`, exit 3 naming the refused model, where they drew the degraded picture at exit 0. The window reports the same refusal in its banner.
+- **A grant that does not reach a model now fails the headless run.** The file-alone grant, and `models/` at mode `000`, exit 3 naming the refused model, where they drew the degraded picture at exit 0. The window is meant to report the same refusal in its banner; on the first TestFlight build it reported it as a failed open instead (below).
 - **The Downloads folder needs no grant.** Under `files.downloads.read-write`, which the Store entitlements carry, a CSV in `~/Downloads` opens with nothing granted, and the same file elsewhere is refused. So the managed edition can treat Downloads as readable without a grant and list it in the sources browser, as it does. Adding such a CSV as a source through the window is a hand case below.
 
 ## Hand cases
