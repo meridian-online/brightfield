@@ -252,3 +252,39 @@ fn opening_another_file_closes_the_places_of_the_one_before() {
         }]
     );
 }
+
+/// **The place verbs wait while the list is not drawn.** With the model pane
+/// on the canvas the places are not shown, so ⌘W refuses with its sentence
+/// and the list and the canvas are as they were.
+#[test]
+fn the_place_verbs_wait_while_the_model_holds_the_canvas() {
+    let mut win = scenes::own_files();
+    assert!(win.app.model_pane().is_some() && !win.app.is_model_behind_grid());
+    assert!(
+        win.app.places_drawn().is_empty(),
+        "the model hides the list"
+    );
+    for verb in [NEXT_PLACE, PREV_PLACE, CLOSE_PLACE] {
+        assert!(
+            matches!(
+                win.app.availability_of(verb),
+                Some(brightfield_keys::Availability::Missing(_))
+            ),
+            "{verb} is offered over the model"
+        );
+    }
+    let before = win.app.open_places().clone();
+    let holds = win.app.canvas_holds().clone();
+    win.answered.clear();
+    win.press("cmd-w");
+    assert!(win.answered.is_empty(), "⌘W acted over the model");
+    assert!(
+        win.app
+            .menu_said()
+            .is_some_and(|s| s.contains("open places")),
+        "⌘W said nothing: {:?}",
+        win.app.menu_said()
+    );
+    assert_eq!(*win.app.open_places(), before, "the hidden list moved");
+    assert_eq!(win.app.canvas_holds(), &holds, "the canvas moved");
+}

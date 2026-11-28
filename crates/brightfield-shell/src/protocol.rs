@@ -4704,31 +4704,48 @@ impl Item<ProtocolDoc> for OutlinePane {
         let holds_graph =
             overridden.is_none() && matches!(holds, crate::window::CanvasHolds::Graph);
         let mut ask: Option<SpineAsk> = None;
-        // The open places stand above the spine, at their own height, and do
-        // not scroll with it. The model's spine, drawn in this pane's place,
-        // has none.
+        // The open places stand above the spine and do not scroll with it.
+        // They take at most a third of the pane, and scroll in their own
+        // area past that, so a long list never squeezes the spine out. The
+        // model's spine, drawn in this pane's place, has none.
         let mut place_ask: Option<PlaceAsk> = None;
         let mut places_drawn: Vec<PlaceDrawn> = Vec::new();
         if overridden.is_none() && !doc.places.is_empty() {
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (index, place) in doc.places.iter().enumerate() {
-                    let tab = meridian_egui::VerticalTab::new(&place.node, place.activity)
-                        .current(place.current)
-                        .dirty(place.dirty);
-                    let drawn = meridian_egui::vertical_tab(ui, tab);
-                    places_drawn.push(PlaceDrawn {
-                        rect: drawn.response.rect,
-                        label: format!("{} \u{b7} {}", place.node, place.activity),
-                        current: place.current,
-                    });
-                    if drawn.close_clicked {
-                        place_ask = Some(PlaceAsk::Close(index));
-                    } else if drawn.clicked {
-                        place_ask = Some(PlaceAsk::Go(index));
-                    }
-                }
+            let current = doc.places.iter().position(|p| p.current);
+            // The current place is scrolled into view when it changes, and
+            // not on every frame, which would undo the reader's own scroll.
+            let shown_id = ui.id().with("open_places_current");
+            let moved = ui.data_mut(|d| {
+                let last = d.get_temp::<Option<usize>>(shown_id);
+                d.insert_temp(shown_id, current);
+                last != Some(current)
             });
+            egui::ScrollArea::vertical()
+                .id_salt("open_places")
+                .max_height(ui.available_height() * PLACES_MAX_SHARE)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for (index, place) in doc.places.iter().enumerate() {
+                        let tab = meridian_egui::VerticalTab::new(&place.node, place.activity)
+                            .current(place.current)
+                            .dirty(place.dirty);
+                        let drawn = meridian_egui::vertical_tab(ui, tab);
+                        if place.current && moved {
+                            drawn.response.scroll_to_me(None);
+                        }
+                        places_drawn.push(PlaceDrawn {
+                            rect: drawn.response.rect,
+                            label: format!("{} \u{b7} {}", place.node, place.activity),
+                            current: place.current,
+                        });
+                        if drawn.close_clicked {
+                            place_ask = Some(PlaceAsk::Close(index));
+                        } else if drawn.clicked {
+                            place_ask = Some(PlaceAsk::Go(index));
+                        }
+                    }
+                });
             ui.add_space(spacing::SPACE_2);
             doc.spine_body = Some(ui.available_rect_before_wrap());
         } else {
@@ -4916,6 +4933,10 @@ pub struct PlaceTab {
     /// Whether it holds an unsaved draft.
     pub dirty: bool,
 }
+
+/// The most of the spine pane's height the open places take before they
+/// scroll in their own area: a third, so the spine keeps the rest.
+pub const PLACES_MAX_SHARE: f32 = 1.0 / 3.0;
 
 /// Where an open place was drawn, as a test reads it.
 #[derive(Clone, Debug, PartialEq)]

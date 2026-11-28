@@ -341,6 +341,12 @@ const NEEDS_MODEL: &[Requirement] = &[Requirement::of(Need::Selected(Selected::M
 const NEEDS_RIBBON: &[Requirement] = &[A_PROTOCOL];
 // Quick open lists the Protocol's tables: the front door has none.
 const NEEDS_QUICK_OPEN: &[Requirement] = &[A_PROTOCOL];
+// The place verbs walk and close a list the reader can see, so they wait while
+// the model pane or the panel tiles hold the canvas and the list is not drawn.
+const NEEDS_PLACES: &[Requirement] = &[
+    A_PROTOCOL,
+    Requirement::of(Need::Condition(Condition::PlacesShown)),
+];
 const NEEDS_MODEL_TABLE: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelTable))];
 const NEEDS_MODEL_JOIN: &[Requirement] = &[Requirement::of(Need::Selected(Selected::ModelJoin))];
 // The node's activities. Grid and Chart look at a table or view; Relate is the
@@ -1771,7 +1777,7 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "next-place",
             label: "Next place",
-            needs: &[A_PROTOCOL],
+            needs: NEEDS_PLACES,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-]")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -1784,7 +1790,7 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "prev-place",
             label: "Previous place",
-            needs: &[A_PROTOCOL],
+            needs: NEEDS_PLACES,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-shift-[")],
             scope_applicability: vec![Dashboard, View, Protocol],
@@ -1797,7 +1803,7 @@ pub fn registry() -> Vec<VerbEntry> {
         VerbEntry {
             longname: "close-place",
             label: "Close place",
-            needs: &[A_PROTOCOL],
+            needs: NEEDS_PLACES,
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-w")],
             scope_applicability: vec![Dashboard, View, Protocol],

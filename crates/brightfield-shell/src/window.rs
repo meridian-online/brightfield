@@ -11678,6 +11678,10 @@ impl MeridianApp {
             self.held_protocol_dir().is_some(),
             Condition::ProtocolFolder,
         );
+        when(
+            !door && model_pane.is_none() && self.tiles.is_none(),
+            Condition::PlacesShown,
+        );
 
         // Counted from the model the window holds, on the canvas or waiting
         // behind a table's grid, as `open_organise_joins` reads it.

@@ -22,11 +22,11 @@ Closing the current place makes the one above it current, or the one below when 
 
 ## How they are drawn
 
-The navigator's pane draws the places first, at their own height, then the spine below them in its scroll area, so the places stay put while the spine scrolls. Each is the design system's `meridian_egui::vertical_tab`: the current place is the cell joined to the canvas, and its close control shows on the current place and under the pointer. The pane reports a click or a close as `PlaceAsk`, and the window, which owns what the canvas holds, acts on it, as it does a click on a spine row.
+The navigator's pane draws the places first, then the spine below them in its own scroll area, so the places stay put while the spine scrolls. The places take at most a third of the pane (`PLACES_MAX_SHARE`) and scroll in their own area past that, so however many tables the reader has visited, the spine keeps two thirds of the pane. When the current place changes, its tab is scrolled into view; it is not held there on every frame, which would undo the reader's own scroll. Each is the design system's `meridian_egui::vertical_tab`: the current place is the cell joined to the canvas, and its close control shows on the current place and under the pointer. The pane reports a click or a close as `PlaceAsk`, and the window, which owns what the canvas holds, acts on it, as it does a click on a spine row.
 
 ## Their keys
 
-All three are global, need an open Protocol, and sit in the Window menu:
+All three are global and sit in the Window menu. They need an open Protocol with its places drawn, which is the `PlacesShown` condition: while the model pane or the panel tiles hold the canvas the list is not shown, so the menu greys the three, and a key says why rather than walk or close a list the reader cannot see.
 
 | Verb | Key | Does |
 |---|---|---|
