@@ -40,9 +40,10 @@ pub fn keep(paths: &[PathBuf]) {
     }
 }
 
-/// **A panel's answer, which arrives on a later frame**: nothing until the panel is answered,
-/// then the folder chosen, or `None` for a cancel. The panel's completion writes it and the window
-/// reads it, so a panel never runs a modal loop inside the frame that raised it.
+/// **A panel's answer, which arrives on a later frame**: empty until the panel is answered, then
+/// the folder chosen, or `None` for a cancel. The panel's completion writes it and the window
+/// reads it on a frame after the one that raised the panel
+/// (`a_drop_waits_for_the_grant_panel_to_answer_on_a_later_frame`).
 #[derive(Debug, Clone, Default)]
 pub struct PanelAnswer(Arc<Mutex<Option<Option<PathBuf>>>>);
 
