@@ -1009,7 +1009,7 @@ pub fn ui(
                 };
                 let who = match j.decided_by {
                     DecidedBy::Dovetail => "found by discovery",
-                    DecidedBy::Analyst => "settled by the analyst",
+                    DecidedBy::Analyst => "settled by the explorer",
                 };
                 line(ui, drawn, format!("Grade: {grade}, {who}"), primary);
                 line(ui, drawn, j.verified.clone(), secondary);

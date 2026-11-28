@@ -1979,7 +1979,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::SpecEdit,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Keep the selected possible join as the analyst's",
+            help: "Keep the selected possible join, settled by the explorer",
             scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 3, motor_note: "y = yes to a proposal, the accept key of a y/n prompt; one bare key for the commonest review answer" }),
         },
         VerbEntry {

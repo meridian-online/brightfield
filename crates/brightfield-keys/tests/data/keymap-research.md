@@ -171,7 +171,7 @@ so its `h`, `j`, `k`, `l` and arrows move the cursor one cell and never reach th
 dive-in and pan bindings on the same keys. With the grid focused the zoom, axis-lock and reset keys
 (`=`, `-`, `x`, `0`) resolve to nothing, so the chart beside the grid keeps its extent. VisiData moves
 its cursor on the same keys, and every spreadsheet on the arrows. A move past the table's last row or
-column leaves the cursor where it is. All four are **View**-tier: the cursor is where the analyst is
+column leaves the cursor where it is. All four are **View**-tier: the cursor is where the explorer is
 looking, and moving it writes nothing.
 
 | longname | key(s) | freq / mnem / conv | motor note |
@@ -275,7 +275,7 @@ the deferred point-select verb. (`z` here is the fold key; the `z` the scope mod
 scope prefix.)
 
 Rediscover (`rediscover-model`) runs discovery again over the whole model and folds what it proposes
-around the analyst's decisions. It rewrites the Ossie file, so it is a **Data**-tier spec edit too, and
+around the explorer's decisions. It rewrites the Ossie file, so it is a **Data**-tier spec edit too, and
 it takes the shifted form of the role key beside it.
 
 | longname | key(s) | freq / mnem / conv | motor note |
@@ -294,7 +294,7 @@ it takes the shifted form of the role key beside it.
 
 ### The sources browser — adding files, folders and databases to a Protocol, in a key context of its own
 
-The sources browser follows yazi: three columns, the places, the current folder's list and a preview of what is under the cursor, which for a folder is the canvas of the joins dovetail proposes between its tables. It takes the grid's precedent, a key context of its own (`Browser`) at an altitude of its own, so its `Space`, `a`, `v`, `h` and `l` never reach the chart's palette, add-mark, model view, pop-out and dive-in on the same keys. `l` and `Enter` are one verb, as yazi's smart-enter binds `l`: into a folder, or add the file. `a` adds what is highlighted without going in, a whole folder included. On a folder's canvas `j` and `k` move between its joins and `Space` accepts or drops one, the same gesture that marks a file. The arrows are the twins of `h` `j` `k` `l` for an analyst who has not learnt them. The two verbs that add a source are **Data**-tier, since an add is kept in the Protocol at once with no Save; the rest are **View**-tier and write nothing.
+The sources browser follows yazi: three columns, the places, the current folder's list and a preview of what is under the cursor, which for a folder is the canvas of the joins dovetail proposes between its tables. It takes the grid's precedent, a key context of its own (`Browser`) at an altitude of its own, so its `Space`, `a`, `v`, `h` and `l` never reach the chart's palette, add-mark, model view, pop-out and dive-in on the same keys. `l` and `Enter` are one verb, as yazi's smart-enter binds `l`: into a folder, or add the file. `a` adds what is highlighted without going in, a whole folder included. On a folder's canvas `j` and `k` move between its joins and `Space` accepts or drops one, the same gesture that marks a file. The arrows are the twins of `h` `j` `k` `l` for an explorer who has not learnt them. The two verbs that add a source are **Data**-tier, since an add is kept in the Protocol at once with no Save; the rest are **View**-tier and write nothing.
 
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
