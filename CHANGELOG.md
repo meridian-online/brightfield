@@ -9,6 +9,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 ## [Unreleased]
 
 - On macOS the window's title bar gives way to Brightfield's own title band: the close, minimise and zoom buttons sit at its left, the band moves the window when dragged and zooms it on a double-click, and the open Protocol's Name and Location fields move up into it from the locator band.
+- The macOS download and Homebrew cask take their own bundle identifier, `online.meridian.brightfield.direct`, so Finder's Open With lists them apart from the Mac App Store edition, which keeps `online.meridian.brightfield`. After upgrading, macOS asks again for access to the folders Brightfield reads, and the default app for CSV, Parquet and DuckDB files is chosen again, from Preferences (`⌘,`). Recents, trusted Protocols and window layout are kept.
 
 ## [0.1.9] - 2026-11-21
 

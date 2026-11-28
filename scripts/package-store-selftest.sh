@@ -26,6 +26,8 @@
 #     the commit its source is at; the C libraries' licences; and the Rust
 #     crates compiled into Brightfield, into the library with FineType and
 #     into FineType's command line;
+#   - Info.plist names the Store edition's identifier,
+#     online.meridian.brightfield, not the full edition's;
 #   - Info.plist answers App Store Connect's encryption question, and its
 #     LSMinimumSystemVersion is no lower than any binary in the bundle needs,
 #     and at least 12.0 when no binary carries an Intel slice;
@@ -165,6 +167,12 @@ check() {
       ok "Resources/licenses/rust-crates/$file.txt lists $(grep -c '^Licence: ' "$notices/rust-crates/$file.txt") crates"
     else bad "no crates in Resources/licenses/rust-crates/$file.txt"; fi
   done
+
+  # The Store's App ID and App Store Connect record name this identifier;
+  # packaging/Info.plist carries the full edition's, which the Store refuses.
+  got="$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist" 2>/dev/null)"
+  if [ "$got" = online.meridian.brightfield ]; then ok "Info.plist's CFBundleIdentifier is online.meridian.brightfield"
+  else bad "Info.plist's CFBundleIdentifier is '${got}', not online.meridian.brightfield"; fi
 
   if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Contents/Info.plist" 2>/dev/null)" = false ]; then
     ok "Info.plist sets ITSAppUsesNonExemptEncryption to false"

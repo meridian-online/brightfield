@@ -137,10 +137,17 @@ cat <<'CASK'
     set_permissions "brightfield.wrapper.sh", "0755"
   end
 
+  # The full edition's identifier is online.meridian.brightfield.direct.
+  # Releases up to 0.1.9 used online.meridian.brightfield, whose files an
+  # upgraded install still holds. FineType's cache keeps the older name.
   zap trash: [
     "~/Library/Application Support/online.meridian.brightfield",
+    "~/Library/Application Support/online.meridian.brightfield.direct",
     "~/Library/Caches/online.meridian.brightfield",
+    "~/Library/Caches/online.meridian.brightfield.direct",
+    "~/Library/Preferences/online.meridian.brightfield.direct.plist",
     "~/Library/Preferences/online.meridian.brightfield.plist",
+    "~/Library/Saved Application State/online.meridian.brightfield.direct.savedState",
     "~/Library/Saved Application State/online.meridian.brightfield.savedState",
   ]
 end

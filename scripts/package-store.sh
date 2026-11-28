@@ -244,6 +244,11 @@ MINOS=$(otool -l "$BIN" | awk '
 # Store package declares the later of the two; the full edition keeps its own.
 if [ "$(printf '%s\n12.0\n' "$MINOS" | sort -V | head -1)" != 12.0 ]; then MINOS=12.0; fi
 plist() { plutil "$@" "$APP/Contents/Info.plist"; }
+# packaging/Info.plist carries the full edition's identifier. The Store
+# edition keeps online.meridian.brightfield, which its App ID, provisioning
+# profile and App Store Connect record name.
+plist -replace CFBundleIdentifier -string online.meridian.brightfield
+plist -replace CFBundleURLTypes.0.CFBundleURLName -string online.meridian.brightfield
 plist -replace CFBundleShortVersionString -string "$CRATE_VERSION"
 plist -replace CFBundleVersion -string "$CRATE_VERSION"
 plist -replace LSMinimumSystemVersion -string "$MINOS"
