@@ -119,7 +119,7 @@ These need the open panel, Finder or the Run control, which a script cannot driv
 - make Brightfield the default app for CSV;
 - install the managed edition beside the full edition under one bundle identifier.
 
-The default-app and shared-identifier cases change the Mac's own settings, so they were left for the TestFlight build, below.
+The default-app and shared-identifier cases change the Mac's own settings, so they were left for the TestFlight build, below. That run also covered opening files through the panel, saving, relaunching and running; adding a Downloads CSV as a source, opening `arcform.yaml` alone, Finder's Open With on a folder, and proposing joins are still to be done.
 
 ## The first TestFlight build, by hand
 
@@ -140,8 +140,9 @@ On 2026-11-28 the Store package 0.1.9, signed for the Mac App Store and installe
 
 What it showed:
 
-- **The grants work as designed.** Each file the checks read or wrote, in the Protocols folder, iCloud Drive and Downloads, was reached through a grant or the Downloads entitlement, and the one file made unreadable was reported as refused.
+- **The grants work as designed.** Each file the checks read or wrote, in the Protocols folder, iCloud Drive and Downloads, was reached through a grant or the Downloads entitlement, and the one file made unreadable was reported as refused, though not as the window's banner should: the Protocol did not open, and the report was headed as a data file.
 - **The two editions need different bundle identifiers.** With one identifier shared, Finder treats the two copies as one app and an analyst cannot choose which opens a file. The Store edition keeps `online.meridian.brightfield`, which its App Store Connect record is locked to, and the full edition takes its own.
 - **Dropping a file on the window aborted the app.** The drop asked for a folder, and the folder panel ran modally while the drag was still being tracked; a callback in that loop panicked where it cannot unwind. The full edition asks for no folder and does not crash.
 - **A long open stalls the window.** Opening a 14,132-row CSV's Protocol kept the main thread busy for about 30 seconds, typing the columns and running each mark's query, so macOS showed the pinwheel.
+- **A file inside another Protocol's folder opens that Protocol silently.** The note saying so did not appear, so the analyst saw a different dataset from the one they double-clicked.
 - **A folder that does not exist is asked for.** A Protocol whose source points at a deleted folder showed the grant panel, opened on `/Volumes`, before failing to read the file.
