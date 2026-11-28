@@ -77,7 +77,11 @@ fn scroll_rail_row_into_view(win: &mut OpWindow, label: &str) -> egui::Rect {
     }
     let row = rail_rect_of(win, label).expect("the command's row is drawn");
     assert!(
-        row.max.y < rail_rect_of(win, "ENCODING").expect("Encoding is headed").min.y,
+        row.max.y
+            < rail_rect_of(win, "ENCODING")
+                .expect("Encoding is headed")
+                .min
+                .y,
         "the Column section's body never scrolled {label}'s row into view"
     );
     row
