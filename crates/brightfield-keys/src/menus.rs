@@ -193,6 +193,10 @@ pub fn menu_bar() -> Vec<Menu> {
                 acts("split-canvas"),
                 acts("move-grid"),
                 Separator,
+                acts("next-place"),
+                acts("prev-place"),
+                acts("close-place"),
+                Separator,
                 Native(NativeItem::BringAllToFront),
             ],
         },
@@ -360,7 +364,11 @@ mod tests {
                 acts("toggle-outline-rail"),
                 acts("toggle-inspector-rail"),
                 acts("split-canvas"),
-                acts("move-grid")
+                acts("move-grid"),
+                MenuItem::Separator,
+                acts("next-place"),
+                acts("prev-place"),
+                acts("close-place")
             ]
         );
     }

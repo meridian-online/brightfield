@@ -9,7 +9,11 @@
 use std::collections::BTreeMap;
 
 use brightfield_protocol::contract_graph::SeamStatus;
+use brightfield_protocol::graph::AssetId;
 use brightfield_workbench::subject::RunState;
+
+use crate::protocol::NodeView;
+use crate::window::CanvasHolds;
 
 /// The state a step row shows.
 ///
@@ -253,6 +257,196 @@ pub struct SpineFold {
     pub members: usize,
 }
 
+/// **One open place**: something the canvas has shown that the reader can come
+/// back to from the list above the spine.
+///
+/// Read off what the canvas holds, so a place is exactly what a click on it
+/// puts back: the graph, a node's grid, or the chart a dashboard draws.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// The asset graph, the whole Protocol.
+    Graph,
+    /// A table or view, listed as rows.
+    Grid(AssetId),
+    /// A dashboard, drawn as its chart, and the table it reads.
+    Chart {
+        /// The dashboard's own node.
+        node: AssetId,
+        /// The table it reads.
+        table: AssetId,
+    },
+}
+
+impl Place {
+    /// The place the canvas is showing, when it is one the list can hold.
+    ///
+    /// A bare chart and the Protocol's panel tiles are no place: neither is
+    /// a node of the Protocol a click could put back on the canvas.
+    #[must_use]
+    pub fn of(holds: &CanvasHolds) -> Option<Self> {
+        match holds {
+            CanvasHolds::Graph => Some(Self::Graph),
+            CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } => Some(Self::Grid(node.clone())),
+            CanvasHolds::Dashboard { node, table } => Some(Self::Chart {
+                node: node.clone(),
+                table: table.clone(),
+            }),
+            CanvasHolds::Chart => None,
+        }
+    }
+
+    /// What the canvas holds while this place is shown.
+    #[must_use]
+    pub fn holds(&self) -> CanvasHolds {
+        match self {
+            Self::Graph => CanvasHolds::Graph,
+            Self::Grid(node) => CanvasHolds::View {
+                node: node.clone(),
+                view: NodeView::Grid,
+            },
+            Self::Chart { node, table } => CanvasHolds::Dashboard {
+                node: node.clone(),
+                table: table.clone(),
+            },
+        }
+    }
+
+    /// The node the place shows, when it shows one: the graph shows them all.
+    #[must_use]
+    pub const fn node(&self) -> Option<&AssetId> {
+        match self {
+            Self::Graph => None,
+            Self::Grid(node) | Self::Chart { node, .. } => Some(node),
+        }
+    }
+
+    /// The activity the place shows its node in, as its tab names it.
+    #[must_use]
+    pub const fn activity(&self) -> &'static str {
+        match self {
+            Self::Graph => "Graph",
+            Self::Grid(_) => "Grid",
+            Self::Chart { .. } => "Chart",
+        }
+    }
+}
+
+/// **The open places**, in the order they were opened, and which is current.
+///
+/// The window opens the place its canvas shows on each frame, so a place is
+/// added the first time the canvas shows it and made current each time after.
+/// It is not kept between sessions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpenPlaces {
+    places: Vec<Place>,
+    current: usize,
+}
+
+impl OpenPlaces {
+    /// The places, top to bottom.
+    #[must_use]
+    pub fn places(&self) -> &[Place] {
+        &self.places
+    }
+
+    /// Where the current place is in [`Self::places`]: `None` while the
+    /// list is empty.
+    #[must_use]
+    pub fn current(&self) -> Option<usize> {
+        (!self.places.is_empty()).then_some(self.current)
+    }
+
+    /// The current place.
+    #[must_use]
+    pub fn current_place(&self) -> Option<&Place> {
+        self.places.get(self.current)
+    }
+
+    /// Make `place` current, adding it at the bottom if it is not open.
+    pub fn open(&mut self, place: Place) {
+        match self.places.iter().position(|p| *p == place) {
+            Some(at) => self.current = at,
+            None => {
+                self.places.push(place);
+                self.current = self.places.len() - 1;
+            }
+        }
+    }
+
+    /// Make the place at `index` current, and answer it. An index past the
+    /// list answers `None` and leaves the current place as it was.
+    pub fn go(&mut self, index: usize) -> Option<&Place> {
+        if index < self.places.len() {
+            self.current = index;
+        }
+        self.places.get(index)
+    }
+
+    /// Close the place at `index`, and answer it.
+    ///
+    /// Closing the current place makes the one above it current, or the one
+    /// that moves up into its slot when it was the top. Closing the last place
+    /// answers `None` and leaves the list as it was, since the canvas always
+    /// shows something (`the_last_place_is_never_closed`).
+    pub fn close(&mut self, index: usize) -> Option<Place> {
+        if self.places.len() <= 1 || index >= self.places.len() {
+            return None;
+        }
+        let closed = self.places.remove(index);
+        if index < self.current || (index == self.current && index > 0) {
+            self.current -= 1;
+        }
+        Some(closed)
+    }
+
+    /// Make the place below the current one current, the top after the
+    /// bottom, and answer it.
+    pub fn go_next(&mut self) -> Option<&Place> {
+        if self.places.is_empty() {
+            return None;
+        }
+        self.current = (self.current + 1) % self.places.len();
+        self.places.get(self.current)
+    }
+
+    /// Make the place above the current one current, the bottom before the
+    /// top, and answer it.
+    pub fn go_prev(&mut self) -> Option<&Place> {
+        if self.places.is_empty() {
+            return None;
+        }
+        self.current = (self.current + self.places.len() - 1) % self.places.len();
+        self.places.get(self.current)
+    }
+
+    /// Keep only the places `keep` answers true for: those the documents
+    /// still have. The current place stays current while it is kept, and
+    /// otherwise the nearest kept place above it is.
+    pub fn retain(&mut self, mut keep: impl FnMut(&Place) -> bool) {
+        let mut current = 0;
+        let mut kept = Vec::with_capacity(self.places.len());
+        for (i, place) in self.places.drain(..).enumerate() {
+            if keep(&place) {
+                if i <= self.current {
+                    current = kept.len();
+                }
+                kept.push(place);
+            }
+        }
+        self.places = kept;
+        self.current = current;
+    }
+
+    /// Close every place, as leaving the Protocol does.
+    pub fn clear(&mut self) {
+        self.places.clear();
+        self.current = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +597,87 @@ mod tests {
             spine_state(SeamStatus::NotRun, RunState::NeverRun),
             SpineState::NotRun
         );
+    }
+
+    fn grid(node: &str) -> Place {
+        Place::Grid(node.to_owned())
+    }
+
+    fn opened(places: &[Place]) -> OpenPlaces {
+        let mut open = OpenPlaces::default();
+        for place in places {
+            open.open(place.clone());
+        }
+        open
+    }
+
+    #[test]
+    fn opening_a_place_twice_lists_it_once_and_makes_it_current() {
+        let mut open = opened(&[grid("a"), grid("b")]);
+        open.open(grid("a"));
+        assert_eq!(open.places(), [grid("a"), grid("b")]);
+        assert_eq!(open.current(), Some(0));
+    }
+
+    #[test]
+    fn closing_a_place_above_the_current_one_keeps_the_current_one() {
+        let mut open = opened(&[grid("a"), grid("b"), grid("c")]);
+        assert_eq!(open.close(0), Some(grid("a")));
+        assert_eq!(open.current_place(), Some(&grid("c")));
+        assert_eq!(open.close(1), Some(grid("c")));
+        assert_eq!(open.current_place(), Some(&grid("b")), "the one above");
+    }
+
+    #[test]
+    fn closing_the_top_place_while_it_is_current_moves_to_the_one_below() {
+        let mut open = opened(&[grid("a"), grid("b")]);
+        open.go(0);
+        open.close(0);
+        assert_eq!(open.current_place(), Some(&grid("b")));
+    }
+
+    #[test]
+    fn the_last_place_is_never_closed() {
+        let mut open = opened(&[grid("a")]);
+        assert_eq!(open.close(0), None);
+        assert_eq!(open.places(), [grid("a")]);
+    }
+
+    #[test]
+    fn next_and_prev_wrap_at_the_ends() {
+        let mut open = opened(&[grid("a"), grid("b"), grid("c")]);
+        assert_eq!(open.go_next(), Some(&grid("a")));
+        assert_eq!(open.go_prev(), Some(&grid("c")));
+        assert_eq!(open.go_prev(), Some(&grid("b")));
+    }
+
+    #[test]
+    fn a_place_the_documents_lost_goes_and_the_current_one_moves_up() {
+        let mut open = opened(&[grid("a"), grid("b"), grid("c")]);
+        open.go(1);
+        open.retain(|p| *p != grid("b"));
+        assert_eq!(open.places(), [grid("a"), grid("c")]);
+        assert_eq!(open.current_place(), Some(&grid("a")));
+        open.retain(|_| false);
+        assert_eq!(open.current(), None);
+    }
+
+    #[test]
+    fn a_place_puts_back_what_the_canvas_held() {
+        for holds in [
+            CanvasHolds::Graph,
+            CanvasHolds::View {
+                node: "t".into(),
+                view: NodeView::Grid,
+            },
+            CanvasHolds::Dashboard {
+                node: "d".into(),
+                table: "t".into(),
+            },
+        ] {
+            let place = Place::of(&holds).expect("a place");
+            assert_eq!(place.holds(), holds);
+        }
+        assert_eq!(Place::of(&CanvasHolds::Chart), None);
     }
 }

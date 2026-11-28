@@ -126,6 +126,9 @@ pub enum Condition {
     /// The Protocol holds a table other than the one in front that shares a
     /// column's name with it.
     AnotherTableSharingAColumn,
+    /// The open places are drawn above the spine: neither the model pane nor
+    /// the Protocol's panel tiles hold the canvas.
+    PlacesShown,
 }
 
 impl Need {
@@ -219,6 +222,9 @@ impl Need {
             }
             Need::Condition(Condition::AnotherTableSharingAColumn) => {
                 "{command} needs a second table with matching columns."
+            }
+            Need::Condition(Condition::PlacesShown) => {
+                "{command} needs the open places above the spine: close the model or the panels first."
             }
         }
     }

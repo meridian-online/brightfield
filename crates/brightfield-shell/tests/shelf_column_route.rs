@@ -1146,6 +1146,17 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} did not take focus to the Outline"
                 );
             }
+            "toggle-inspector-rail" => {
+                let mut at = Window::crosswalk();
+                let rail = brightfield_workbench::arrangement::INSPECTOR_RAIL;
+                let before = at.app.rail_is_collapsed(rail);
+                at.confirm(verb);
+                assert_ne!(
+                    at.app.rail_is_collapsed(rail),
+                    before,
+                    "{verb} did not fold or open the inspector"
+                );
+            }
             "open-home" => {
                 let mut at = Window::crosswalk();
                 at.confirm(verb);
@@ -1243,6 +1254,21 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                 let before = at.app.ribbon();
                 at.confirm(verb);
                 assert_ne!(at.app.ribbon(), before, "{verb} did not move the ribbon");
+            }
+            verb if brightfield_keys::places::PLACE_VERBS.contains(&verb) => {
+                // The dashboard's chart, then the graph: two places, the graph
+                // current, so each verb is seen to move the list.
+                let mut at = Window::fixture();
+                at.graph_to_canvas();
+                at.settle();
+                let before = at.app.open_places().clone();
+                assert_eq!(before.places().len(), 2, "{verb}: two places were not open");
+                at.confirm(verb);
+                assert_ne!(
+                    *at.app.open_places(),
+                    before,
+                    "{verb} did not move the open places"
+                );
             }
             other => panic!(
                 "{other} is offered enabled on the Protocol palette with no proof here that \

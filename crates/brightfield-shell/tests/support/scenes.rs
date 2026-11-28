@@ -405,7 +405,8 @@ pub fn arrange(win: &mut Window, need: Need) -> bool {
             | Condition::ChartReadsFocus
             | Condition::ProtocolSource
             | Condition::ViewRecorded
-            | Condition::LoadedTable => true,
+            | Condition::LoadedTable
+            | Condition::PlacesShown => true,
             Condition::ColumnHasNulls => click_a_cell_with_nulls(win),
             Condition::AnotherTable | Condition::AnotherTableSharingAColumn => {
                 keep_a_second_table(win)

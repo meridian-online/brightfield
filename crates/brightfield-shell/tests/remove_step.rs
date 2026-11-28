@@ -159,10 +159,14 @@ impl Window {
                 _ => None,
             })
             .unwrap_or_default();
+        // Taller than a laptop's screen: the place tabs above the spine
+        // stand one per table this file opens, and at 900 points they push
+        // the last step's rows below the spine's scrolled-to bottom, where a
+        // click lands on nothing.
         let mut raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1440.0, 900.0),
+                egui::vec2(1440.0, 1200.0),
             )),
             time: Some(self.time),
             modifiers,
@@ -1195,4 +1199,42 @@ fn another_arc_edit_meanwhile_is_not_put_back_when_the_history_is_full() {
     );
     assert!(model.is_file(), "no SQL file is deleted");
     assert!(win.marked(), "the removal is still a draft");
+}
+
+/// **A long list of open places scrolls, and leaves the spine its room.** Each
+/// saved statement's grid is a place; with a dozen of them the list is taller
+/// than its share of the window, so it scrolls in that share, the spine's
+/// body starts under it, and the current place, the newest, is in view.
+#[test]
+fn a_long_list_of_places_scrolls_in_its_share_of_the_pane() {
+    let mut win = Window::opened("remove_places");
+    // Where the list starts, read while it is short and not scrolled.
+    let top = win.app.places_drawn()[0].rect.top();
+    for n in 1..=12 {
+        win.saved_statement(&format!("select * from {} limit {n}", win.name));
+    }
+    let drawn = win.app.places_drawn().to_vec();
+    assert!(
+        drawn.len() >= 12,
+        "each saved statement is a place: {drawn:?}"
+    );
+    let spine = win.app.spine_body().expect("the spine is drawn");
+    let room = spine.top() - top;
+    let height = drawn[drawn.len() - 1].rect.bottom() - drawn[0].rect.top();
+    assert!(
+        height > room,
+        "the list is {height} tall in {room}, so it does not scroll"
+    );
+    assert!(
+        room <= 1200.0 * brightfield_shell::protocol::PLACES_MAX_SHARE,
+        "the places took {room} of the window"
+    );
+    let current = drawn
+        .iter()
+        .find(|place| place.current)
+        .expect("one place is current");
+    assert!(
+        current.rect.top() >= top && current.rect.bottom() <= spine.top(),
+        "the current place is scrolled out of view: {current:?}, spine at {spine:?}"
+    );
 }
