@@ -288,3 +288,44 @@ fn the_place_verbs_wait_while_the_model_holds_the_canvas() {
     assert_eq!(*win.app.open_places(), before, "the hidden list moved");
     assert_eq!(win.app.canvas_holds(), &holds, "the canvas moved");
 }
+
+/// **Nor while the model waits behind a table's grid.** The grid it opened is
+/// another document's, and the rail lists the model's spine, so no place is
+/// drawn there and ⌘W leaves the list and the canvas as they were.
+#[test]
+fn the_place_verbs_wait_while_the_model_waits_behind_a_grid() {
+    use brightfield_render::model_scene::Selection;
+    let mut win = scenes::own_files();
+    let dataset = win
+        .app
+        .model_pane_mut()
+        .and_then(|pane| pane.layout().cards.first().map(|card| card.dataset.clone()))
+        .expect("the model lists a table");
+    let ctx = win.ctx.clone();
+    assert!(win
+        .app
+        .open_model_in_grid(&ctx, &Selection::Dataset(dataset)));
+    win.settle();
+    win.press("cmd-alt-g");
+    assert!(win.app.is_model_behind_grid(), "the model is not waiting");
+    assert!(
+        win.app.places_drawn().is_empty(),
+        "the model hides the list"
+    );
+    for verb in [NEXT_PLACE, PREV_PLACE, CLOSE_PLACE] {
+        assert!(
+            matches!(
+                win.app.availability_of(verb),
+                Some(brightfield_keys::Availability::Missing(_))
+            ),
+            "{verb} is offered over the model's grid"
+        );
+    }
+    let before = win.app.open_places().clone();
+    let holds = win.app.canvas_holds().clone();
+    win.answered.clear();
+    win.press("cmd-w");
+    assert!(win.answered.is_empty(), "⌘W acted over the model's grid");
+    assert_eq!(*win.app.open_places(), before, "the hidden list moved");
+    assert_eq!(win.app.canvas_holds(), &holds, "the canvas moved");
+}

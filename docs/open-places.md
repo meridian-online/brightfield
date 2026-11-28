@@ -10,7 +10,7 @@ The navigator rail lists the places the reader has been, above the spine, the wa
 - `Place::Grid(node)` is a table or view listed as rows, `<node> · Grid`.
 - `Place::Chart { node, table }` is a dashboard drawn as its chart, `<node> · Chart`. Its tab carries the unsaved-draft dot while the chart document holds unsaved work.
 
-A bare chart opened with no Protocol behind it, and the Protocol's panel tiles, are no place, since neither is a node of the Protocol that a click could put back. The model pane shows no places either. It swaps the window's documents to open a table's grid, so a place there could not be restored through the latch, and its spine, drawn in the navigator's place, has no list above it.
+A bare chart opened with no Protocol behind it, and the Protocol's panel tiles, are no place, since neither is a node of the Protocol that a click could put back. The model shows no places either, whether its pane is on the canvas or waits behind a table's grid it opened. It swaps the window's documents to open that grid, so a place there could not be restored through the latch, and its spine, drawn in the navigator's place, has no list above it. `MeridianApp::places_shown` is the one test for all of these: the list is drawn, places are opened and the place keys are offered exactly when it holds.
 
 ## When places are added and closed
 
@@ -26,7 +26,7 @@ The navigator's pane draws the places first, then the spine below them in its ow
 
 ## Their keys
 
-All three are global and sit in the Window menu. They need an open Protocol with its places drawn, which is the `PlacesShown` condition: while the model pane or the panel tiles hold the canvas the list is not shown, so the menu greys the three, and a key says why rather than walk or close a list the reader cannot see.
+All three are global and sit in the Window menu. They need an open Protocol with its places drawn, which is the `PlacesShown` condition: while the window holds the model or the panel tiles hold the canvas the list is not shown, so the menu greys the three, and a key says why rather than walk or close a list the reader cannot see.
 
 | Verb | Key | Does |
 |---|---|---|

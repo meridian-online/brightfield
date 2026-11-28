@@ -10114,8 +10114,8 @@ impl MeridianApp {
     /// Run at the head of each frame, after the canvas's latch. Leaving the
     /// Protocol closes every place, and a place whose node the documents no
     /// longer have is closed. Then the place the canvas shows is opened, which
-    /// adds it once and makes it current. The model pane and the Protocol's
-    /// panel tiles show no place, and leave the list as it stands.
+    /// adds it once and makes it current. While the places are not shown
+    /// ([`Self::places_shown`]) no place is opened, and the list stands.
     fn sync_places(&mut self) {
         if self.front_door_is_live() {
             self.places.clear();
@@ -10127,7 +10127,7 @@ impl MeridianApp {
             crate::spine::Place::Grid(node) => model.is_viewable(node),
             crate::spine::Place::Chart { node, .. } => model.dashboard() == Some(node),
         });
-        if self.model.as_ref().is_some_and(ModelDoc::shown) || self.tiles.is_some() {
+        if !self.places_shown() {
             return;
         }
         if let Some(place) = crate::spine::Place::of(&self.canvas_holds) {
@@ -10135,13 +10135,22 @@ impl MeridianApp {
         }
     }
 
+    /// **Whether the open places are drawn above the spine**, and so whether
+    /// their keys are offered. Not on the front door, and not while the
+    /// window holds the model, whether its pane is on the canvas or waits
+    /// behind a grid it opened: that grid is another document's, and the
+    /// rail lists the model's spine in the places' room. Not while the panel
+    /// tiles hold the canvas either, since a tile is no place.
+    fn places_shown(&self) -> bool {
+        !self.front_door_is_live() && self.model.is_none() && self.tiles.is_none()
+    }
+
     /// The open places as their tabs name them, top to bottom: the node's
     /// name and its activity, which is current, and whether it holds an
-    /// unsaved draft. Empty while the model pane holds the canvas, whose
-    /// spine is its own, and while the Protocol's panel tiles do, since a
-    /// place there could not be put back.
+    /// unsaved draft. Empty while the places are not shown
+    /// ([`Self::places_shown`]).
     fn place_tabs(&self) -> Vec<crate::protocol::PlaceTab> {
-        if self.model.as_ref().is_some_and(ModelDoc::shown) || self.tiles.is_some() {
+        if !self.places_shown() {
             return Vec::new();
         }
         let model = &self.protocol.doc.model;
@@ -11678,10 +11687,7 @@ impl MeridianApp {
             self.held_protocol_dir().is_some(),
             Condition::ProtocolFolder,
         );
-        when(
-            !door && model_pane.is_none() && self.tiles.is_none(),
-            Condition::PlacesShown,
-        );
+        when(self.places_shown(), Condition::PlacesShown);
 
         // Counted from the model the window holds, on the canvas or waiting
         // behind a table's grid, as `open_organise_joins` reads it.
