@@ -9818,6 +9818,16 @@ impl MeridianApp {
         }
     }
 
+    /// Say in a toast why the canvas did not split though its needs are met:
+    /// it holds nothing a second pane could show. This is the split's own
+    /// refusal, not a declared need, so it is not anchored on the ribbon.
+    fn say_split_refused(&mut self, ctx: &egui::Context) {
+        self.toasts
+            .push(Toast::new(Severity::Info, SPLIT_NEEDS.to_owned()));
+        self.menu_said = Some(SPLIT_NEEDS.to_owned());
+        ctx.request_repaint();
+    }
+
     /// **Refuse a key whose command cannot act here**, saying why. True when
     /// `longname`'s declared needs are not met, and then its sentence is shown:
     /// under the command when the window drew it (on the ribbon's row, or Run
@@ -10236,16 +10246,16 @@ impl MeridianApp {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if self.split_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self.split_binding.is_some_and(|t| consume_token(ctx, t))
+            && !self.refuse_key(ctx, SPLIT_CANVAS)
+        {
             self.answered(SPLIT_CANVAS);
-            match self.availability_of(SPLIT_CANVAS) {
-                Some(brightfield_keys::Availability::Missing(sentence)) => {
-                    self.say_activity_refused(ctx, sentence);
-                }
-                Some(brightfield_keys::Availability::Available) if !self.split_canvas(ctx) => {
-                    self.say_activity_refused(ctx, SPLIT_NEEDS.to_owned());
-                }
-                Some(brightfield_keys::Availability::Available) | None => {}
+            if matches!(
+                self.availability_of(SPLIT_CANVAS),
+                Some(brightfield_keys::Availability::Available)
+            ) && !self.split_canvas(ctx)
+            {
+                self.say_split_refused(ctx);
             }
         }
     }
@@ -14196,7 +14206,7 @@ impl MeridianApp {
                             Some(brightfield_keys::Availability::Available)
                         )
                     {
-                        self.say_activity_refused(ctx, SPLIT_NEEDS.to_owned());
+                        self.say_split_refused(ctx);
                     }
                 }
                 // reload-data is the window's verb for the same reason
