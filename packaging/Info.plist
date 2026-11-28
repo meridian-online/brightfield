@@ -10,8 +10,13 @@
 	     implied, and Launch Services appends it. -->
 	<key>CFBundleIconFile</key>
 	<string>Brightfield</string>
+	<!-- The full edition's identifier. The Mac App Store edition keeps
+	     online.meridian.brightfield, which its App Store Connect record is
+	     locked to, and scripts/package-store.sh sets it on that bundle's copy.
+	     Two identifiers let Finder list both editions in Open With, and Launch
+	     Services keep their registrations apart. -->
 	<key>CFBundleIdentifier</key>
-	<string>online.meridian.brightfield</string>
+	<string>online.meridian.brightfield.direct</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -189,7 +194,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>online.meridian.brightfield</string>
+			<string>online.meridian.brightfield.direct</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>brightfield</string>

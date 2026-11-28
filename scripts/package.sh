@@ -581,6 +581,15 @@ case "$TARGET" in
     plutil -replace LSMinimumSystemVersion -string "$MINOS" "$APP/Contents/Info.plist"
     plutil -lint "$APP/Contents/Info.plist"
 
+    # online.meridian.brightfield is the Mac App Store edition's. Sharing it
+    # makes Finder list the two editions as one app, so a full edition that
+    # carries it costs a build.
+    BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")
+    [ "$BUNDLE_ID" != online.meridian.brightfield ] || {
+      echo "package.sh: ${APP} names the Store edition's bundle identifier," >&2
+      echo "  online.meridian.brightfield; the full edition needs its own." >&2
+      exit 1; }
+
     # CFBundleIconFile is a name, not a path, and a name that resolves to
     # nothing costs an icon rather than a build. Resolve it here so it costs a
     # build instead.

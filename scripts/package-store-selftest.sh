@@ -26,6 +26,8 @@
 #     the commit its source is at; the C libraries' licences; and the Rust
 #     crates compiled into Brightfield, into the library with FineType and
 #     into FineType's command line;
+#   - Info.plist names the Store edition's identifier,
+#     online.meridian.brightfield, not the full edition's;
 #   - Info.plist answers App Store Connect's encryption question, and its
 #     LSMinimumSystemVersion is no lower than any binary in the bundle needs,
 #     and at least 12.0 when no binary carries an Intel slice;
@@ -33,8 +35,8 @@
 #
 # Then it shows the checks can fail: a copy of the bundle with one helper
 # re-signed with the app's entitlements, a copy carrying an extension file, a
-# copy whose GEOS notice is gone, and a copy declaring macOS 11.0, are each
-# refused.
+# copy whose GEOS notice is gone, a copy declaring macOS 11.0, and a copy
+# carrying the full edition's identifier, are each refused.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,6 +168,12 @@ check() {
     else bad "no crates in Resources/licenses/rust-crates/$file.txt"; fi
   done
 
+  # The Store's App ID and App Store Connect record name this identifier;
+  # packaging/Info.plist carries the full edition's, which the Store refuses.
+  got="$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist" 2>/dev/null)"
+  if [ "$got" = online.meridian.brightfield ]; then ok "Info.plist's CFBundleIdentifier is online.meridian.brightfield"
+  else bad "Info.plist's CFBundleIdentifier is '${got}', not online.meridian.brightfield"; fi
+
   if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Contents/Info.plist" 2>/dev/null)" = false ]; then
     ok "Info.plist sets ITSAppUsesNonExemptEncryption to false"
   else bad "Info.plist does not set ITSAppUsesNonExemptEncryption to false"; fi
@@ -232,6 +240,14 @@ refused="$(check "$SCRATCH/old-floor.app")"
 if grep -q "^FAIL Info.plist's LSMinimumSystemVersion" <<<"$refused"; then
   echo "ok   refused"
 else echo "FAIL a bundle declaring macOS 11.0 passed"; status=1; fi
+
+echo "== the checks refuse a bundle carrying the full edition's identifier"
+cp -R "$APP" "$SCRATCH/full-id.app"
+plutil -replace CFBundleIdentifier -string online.meridian.brightfield.direct "$SCRATCH/full-id.app/Contents/Info.plist"
+refused="$(check "$SCRATCH/full-id.app")"
+if grep -q "^FAIL Info.plist's CFBundleIdentifier" <<<"$refused"; then
+  echo "ok   refused"
+else echo "FAIL a bundle carrying the full edition's identifier passed"; status=1; fi
 
 if [ "$status" -eq 0 ]; then echo "package-store-selftest: all checks passed"
 else echo "package-store-selftest: FAILED" >&2; fi
