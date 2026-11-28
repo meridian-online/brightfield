@@ -221,8 +221,10 @@ fn the_front_door_closes_every_place_and_offers_no_place_verb() {
     assert!(win.app.front_door_is_live());
     assert!(places(&win).is_empty());
     assert!(win.app.places_drawn().is_empty());
+    // The key is refused with its sentence, and taken, so the door stays.
     win.press("cmd-w");
-    assert_eq!(win.answered, [CLOSE_PLACE]);
+    assert!(win.answered.is_empty());
+    assert!(win.app.menu_said().is_some(), "⌘W on the door says why");
     assert!(win.app.front_door_is_live(), "⌘W on the door leaves it");
 }
 

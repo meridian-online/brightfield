@@ -159,10 +159,14 @@ impl Window {
                 _ => None,
             })
             .unwrap_or_default();
+        // Taller than a laptop's screen: the place tabs above the spine
+        // stand one per table this file opens, and at 900 points they push
+        // the last step's rows below the spine's scrolled-to bottom, where a
+        // click lands on nothing.
         let mut raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1440.0, 900.0),
+                egui::vec2(1440.0, 1200.0),
             )),
             time: Some(self.time),
             modifiers,

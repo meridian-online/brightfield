@@ -141,6 +141,7 @@ fn keys_read_ctrl_on_a_host_with_no_menu_bar() {
         [
             "toggle-outline-rail",
             "toggle-inspector-rail",
+            "split-canvas",
             "move-grid",
             "next-place",
             "prev-place",
