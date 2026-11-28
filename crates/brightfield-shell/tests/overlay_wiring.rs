@@ -494,11 +494,22 @@ fn a_greyed_row_is_drawn_disabled_and_says_its_sentence() {
     );
     // The disabled flag and the sentence sit on the row itself, so a live
     // zoom-in row leaves no node both disabled and described, other than the
-    // title band's greyed Run, which says Run's own sentence.
+    // title band's greyed Run, which says Run's own sentence, and the greyed
+    // commands of the ribbon's row, each saying its own.
+    let ribbon: Vec<String> = win
+        .app
+        .ribbon_command_rects()
+        .iter()
+        .filter_map(|(longname, _)| match win.app.availability_of(longname) {
+            Some(brightfield_keys::Availability::Missing(said)) => Some(said),
+            _ => None,
+        })
+        .collect();
     assert!(
-        !win.accesskit
-            .iter()
-            .any(|node| node.is_disabled() && node.description().is_some_and(|d| d != sentence)),
+        !win.accesskit.iter().any(|node| node.is_disabled()
+            && node
+                .description()
+                .is_some_and(|d| d != sentence && !ribbon.iter().any(|r| r == d))),
         "zoom-in is drawn greyed over a chart"
     );
     win.key(egui::Key::Escape);

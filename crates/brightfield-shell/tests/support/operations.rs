@@ -576,9 +576,12 @@ impl OpWindow {
 
     /// Click the middle of the text drawn that holds `text`.
     pub fn click_text(&mut self, text: &str) {
+        // The last drawn is the one on top: a menu's row over the ribbon's command of the same
+        // name, which the click lands on.
         let at = self
             .text_rects
             .iter()
+            .rev()
             .find(|(drawn, _)| drawn.contains(text))
             .unwrap_or_else(|| panic!("no text holding {text:?} was drawn: {:?}", self.texts))
             .1

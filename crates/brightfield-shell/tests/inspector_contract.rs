@@ -35,7 +35,57 @@ use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::arrangement::{self, Occupant, INSPECTOR_RAIL};
+use brightfield_workbench::arrangement::{
+    self, Occupant, INSPECTOR_RAIL, RIBBON_BAND_HEIGHT, TITLE_BAND_HEIGHT,
+};
+
+/// Where the ribbon's command row ends: a label drawn below it is not the
+/// ribbon's.
+const BELOW_THE_RIBBON: f32 = TITLE_BAND_HEIGHT + RIBBON_BAND_HEIGHT;
+
+/// The rect of `text` as the inspector rail draws it, below the ribbon's row,
+/// which may draw the same label.
+fn rail_rect_of(win: &OpWindow, text: &str) -> Option<egui::Rect> {
+    win.text_rects
+        .iter()
+        .find(|(t, rect)| t == text && rect.min.y >= BELOW_THE_RIBBON)
+        .map(|(_, rect)| *rect)
+}
+
+/// **Scroll the column section's body until `label`'s row clears the Encoding
+/// header**, as a reader would, and give the row's rect. The chart's sections
+/// sit below Column, so its body scrolls within the room they leave it, and a
+/// command's row may start out below what it shows.
+fn scroll_rail_row_into_view(win: &mut OpWindow, label: &str) -> egui::Rect {
+    let over = rail_rect_of(win, "WHAT CAN BE DONE")
+        .expect("the column's commands are headed")
+        .center();
+    win.run(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..64 {
+        let row = rail_rect_of(win, label).expect("the command's row is drawn");
+        let below = rail_rect_of(win, "ENCODING").expect("the Encoding section is headed");
+        if row.max.y < below.min.y - 8.0 {
+            break;
+        }
+        win.run(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -24.0),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+        win.settle();
+    }
+    let row = rail_rect_of(win, label).expect("the command's row is drawn");
+    assert!(
+        row.max.y
+            < rail_rect_of(win, "ENCODING")
+                .expect("Encoding is headed")
+                .min
+                .y,
+        "the Column section's body never scrolled {label}'s row into view"
+    );
+    row
+}
 use brightfield_workbench::{Item, PaneKey};
 use operations::{runner, OpWindow};
 
@@ -984,39 +1034,7 @@ fn what_can_be_done_lists_the_columns_commands_with_their_keys() {
         rename.unavailable, None,
         "a column of the loaded table can be renamed"
     );
-    // The chart's sections sit below Column, so its body scrolls within the
-    // room they leave it, and rename's row starts out below what it shows.
-    // Scroll the body until the row clears the Encoding header, as a reader
-    // would, before clicking it.
-    let rect_of = |win: &OpWindow, text: &str| {
-        win.text_rects
-            .iter()
-            .find(|(t, _)| t == text)
-            .map(|(_, rect)| *rect)
-    };
-    let over = rect_of(&win, "WHAT CAN BE DONE")
-        .expect("the column's commands are headed")
-        .center();
-    win.run(vec![egui::Event::PointerMoved(over)]);
-    for _ in 0..64 {
-        let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
-        let below = rect_of(&win, "ENCODING").expect("the Encoding section is headed");
-        if row.max.y < below.min.y - 8.0 {
-            break;
-        }
-        win.run(vec![egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: egui::vec2(0.0, -24.0),
-            modifiers: egui::Modifiers::default(),
-            phase: egui::TouchPhase::Move,
-        }]);
-        win.settle();
-    }
-    let row = rect_of(&win, &rename.label).expect("rename's row is drawn");
-    assert!(
-        row.max.y < rect_of(&win, "ENCODING").expect("Encoding is headed").min.y,
-        "the Column section's body never scrolled rename's row into view"
-    );
+    let row = scroll_rail_row_into_view(&mut win, &rename.label);
     // A start waits on arc's description of the operation, which the window
     // asks for once it opens and which may not have come by the first click:
     // the status band then says it is being read, and the reader clicks again.
@@ -1099,12 +1117,7 @@ fn filter_rows_chosen_from_the_column_section_asks_on_that_column() {
         .find(|c| c.verb == "filter-rows-at-cursor")
         .expect("filter is listed");
     assert_eq!(filter.unavailable, None, "the cursor is on a cell");
-    let at = win
-        .text_rects
-        .iter()
-        .find(|(t, _)| *t == filter.label)
-        .map(|(_, rect)| rect.center())
-        .unwrap_or_else(|| panic!("filter's row is drawn: {:?}", win.texts));
+    let at = scroll_rail_row_into_view(&mut win, &filter.label).center();
     win.click(at);
     let (field, text) = win
         .app

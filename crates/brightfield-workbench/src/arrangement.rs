@@ -138,6 +138,13 @@ pub const WINDOW_CONTROLS_INSET: f32 = meridian_design::spacing::SPACE_9
 /// below this.
 pub const HINT_BAND_HEIGHT: f32 = TITLE_BAND_HEIGHT;
 
+/// The ribbon band's height in logical points: the selected tab's commands,
+/// under the title band that draws the tabs.
+///
+/// The title band's rung, which is the design system's band height: the
+/// command row draws its own 32-point band, with a 24-point button in it.
+pub const RIBBON_BAND_HEIGHT: f32 = TITLE_BAND_HEIGHT;
+
 // ---------------------------------------------------------------------------
 // The rail measures
 // ---------------------------------------------------------------------------
@@ -208,6 +215,8 @@ impl std::fmt::Display for RegionId {
 
 /// The title band — app identity, the way home, and the subject.
 pub const TITLE_BAND: RegionId = RegionId::new("title-band");
+/// The ribbon band — the commands of the ribbon tab the title band selects.
+pub const RIBBON_BAND: RegionId = RegionId::new("ribbon-band");
 /// The hint band — the key grammar, on a surface that has one.
 pub const HINT_BAND: RegionId = RegionId::new("hint-band");
 /// The status band — what the window is doing.
@@ -308,7 +317,7 @@ impl Extent {
 ///
 /// A different question from [`Extent`], which is why it is a different field
 /// on [`Region`] — the module docs argue that at length, and
-/// `the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not` is where the
+/// `the_rails_collapse_to_a_strip_the_ribbon_goes_away_and_other_bands_stay` is where the
 /// shipped answer is pinned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Collapse {
@@ -319,13 +328,18 @@ pub enum Collapse {
     /// axis: what the window goes on drawing there, and what the arithmetic
     /// that sizes the window subtracts while it is collapsed.
     To(f32),
+    /// The user may put the region away entirely, leaving nothing of it on
+    /// screen. A band's only: the control that brings it back is drawn
+    /// elsewhere, as the ribbon's is by its tabs in the title band, whereas a
+    /// rail is reopened from its own strip and so keeps one.
+    Away,
 }
 
 impl Collapse {
     /// Whether the user may collapse this region.
     #[must_use]
     pub const fn is_collapsible(self) -> bool {
-        matches!(self, Self::To(_))
+        matches!(self, Self::To(_) | Self::Away)
     }
 
     /// The extent the region takes while it is collapsed, or `None` for a
@@ -334,6 +348,7 @@ impl Collapse {
     pub const fn extent(self) -> Option<f32> {
         match self {
             Self::To(size) => Some(size),
+            Self::Away => Some(0.0),
             Self::Fixed => None,
         }
     }
@@ -587,9 +602,10 @@ static PROJECTIONS: &[Projection] = &[Projection {
 ///
 /// All three rails open, and each declares a [`Collapse`] the user can take
 /// them down to — the ledger onto its own selector strip, the two side rails
-/// onto a stub of the same measure. The bands and the canvas do not collapse:
-/// `the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not` counts which
-/// is which off this list.
+/// onto a stub of the same measure. The ribbon band can be put away whole, and
+/// the other bands and the canvas do not collapse:
+/// `the_rails_collapse_to_a_strip_the_ribbon_goes_away_and_other_bands_stay`
+/// counts which is which off this list.
 static SPINE_LEFT: Arrangement = Arrangement {
     name: "spine left",
     regions: &[
@@ -600,6 +616,17 @@ static SPINE_LEFT: Arrangement = Arrangement {
             occupant: Occupant::Chrome("app identity, the way home, and the subject"),
             collapse: Collapse::Fixed,
             frame: RegionFrame::Band,
+        },
+        Region {
+            id: RIBBON_BAND,
+            edge: Edge::Top,
+            extent: Extent::Band(RIBBON_BAND_HEIGHT),
+            occupant: Occupant::Chrome("the selected tab's commands"),
+            collapse: Collapse::Away,
+            // The command row draws its own band, rule and insets, so the
+            // region adds no margin of its own: a band margin would push the
+            // row past the height declared here.
+            frame: RegionFrame::Rail,
         },
         Region {
             id: STATUS_BAND,
@@ -712,6 +739,9 @@ pub const fn default_arrangement() -> &'static Arrangement {
 /// - a collapsed extent on a region that is not a rail, since the control that
 ///   collapses one is drawn in a rail's own strip and nothing would read the
 ///   declaration;
+/// - [`Collapse::Away`] on a region that is not a band
+///   (`the_audit_refuses_away_on_anything_but_a_band`), since a rail put away
+///   whole would take with it the strip it is reopened from;
 /// - a region declaring [`RegionFrame::Unstyled`], which is a region with no
 ///   style: it draws, and it draws in nothing anybody chose —
 ///   `an_undeclared_frame_paints_nothing` is what that comes to on screen.
@@ -754,7 +784,13 @@ pub fn audit_arrangement(arrangement: &Arrangement) -> Result<(), String> {
             Extent::Remainder => remainders += 1,
         }
 
-        if let Some(collapsed) = region.collapse.extent() {
+        if region.collapse == Collapse::Away && !matches!(region.extent, Extent::Band(_)) {
+            findings.push(format!(
+                "{id}: goes away whole and is not a band; only a band is brought back from \
+                 somewhere else"
+            ));
+        }
+        if let Collapse::To(collapsed) = region.collapse {
             if !collapsed.is_finite() || collapsed <= 0.0 {
                 findings.push(format!(
                     "{id}: collapsed extent {collapsed} is not positive"
@@ -908,21 +944,70 @@ mod tests {
     );
 
     #[test]
-    fn the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not() {
-        // Collapsibility follows resizability across this list rather than
-        // being enumerated by name here: a rail the user can drag is a rail
-        // the user can put away, and a band carries one row of chrome with
-        // nothing to give back.
+    fn the_rails_collapse_to_a_strip_the_ribbon_goes_away_and_other_bands_stay() {
+        // A rail the user can drag is a rail the user can collapse onto its
+        // strip. The ribbon band is put away whole, and brought back by its
+        // tabs in the title band. Every other band carries one row of chrome
+        // with nothing to give back.
         for region in default_arrangement().regions {
-            assert_eq!(
-                region.collapse.is_collapsible(),
-                region.extent.is_resizable(),
+            let want = match region.extent {
+                Extent::Rail { .. } => matches!(region.collapse, Collapse::To(_)),
+                Extent::Band(_) if region.id == RIBBON_BAND => region.collapse == Collapse::Away,
+                _ => region.collapse == Collapse::Fixed,
+            };
+            assert!(
+                want,
                 "{}: declared {:?} against extent {:?}",
-                region.id,
-                region.collapse,
-                region.extent
+                region.id, region.collapse, region.extent
             );
         }
+    }
+
+    #[test]
+    fn the_audit_refuses_away_on_anything_but_a_band() {
+        static REGIONS: &[Region] = &[
+            region(
+                NAVIGATOR_RAIL,
+                Edge::Left,
+                Extent::Rail {
+                    default: NAVIGATOR_RAIL_WIDTH,
+                    min: NAVIGATOR_RAIL_MIN_WIDTH,
+                },
+                Collapse::Away,
+                RegionFrame::Rail,
+            ),
+            ONE_CANVAS,
+        ];
+        static ARRANGEMENT: Arrangement = Arrangement {
+            name: "a rail that goes away whole",
+            regions: REGIONS,
+        };
+        let findings = audit_arrangement(&ARRANGEMENT)
+            .expect_err("a rail put away whole takes its own way back with it");
+        assert!(
+            findings.contains("is not a band"),
+            "the audit said: {findings}"
+        );
+    }
+
+    #[test]
+    fn the_audit_takes_a_band_that_goes_away() {
+        static REGIONS: &[Region] = &[
+            region(
+                RIBBON_BAND,
+                Edge::Top,
+                Extent::Band(RIBBON_BAND_HEIGHT),
+                Collapse::Away,
+                RegionFrame::Rail,
+            ),
+            ONE_CANVAS,
+        ];
+        static ARRANGEMENT: Arrangement = Arrangement {
+            name: "a band that goes away",
+            regions: REGIONS,
+        };
+        assert_eq!(audit_arrangement(&ARRANGEMENT), Ok(()));
+        assert_eq!(Collapse::Away.extent(), Some(0.0));
     }
 
     #[test]

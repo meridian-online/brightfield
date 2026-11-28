@@ -78,7 +78,7 @@
 
 use brightfield_keys::ribbon::{Context as RibbonContext, Stage};
 use brightfield_keys::{Altitude, BindingContext, Frecency};
-use brightfield_workbench::arrangement::{self, Extent, Region};
+use brightfield_workbench::arrangement::{self, Collapse, Extent, Region};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     chrome, EmptyState, HideAffordance, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec,
@@ -478,9 +478,10 @@ impl RegionEntry {
             Extent::Rail { default, min } => format!("{default}pt, no less than {min}pt"),
             Extent::Remainder => "whatever is left".to_owned(),
         };
-        let collapse = match self.region.collapse.extent() {
-            Some(size) => format!(", collapses to {size}pt"),
-            None => String::new(),
+        let collapse = match self.region.collapse {
+            Collapse::To(size) => format!(", collapses to {size}pt"),
+            Collapse::Away => ", can be put away".to_owned(),
+            Collapse::Fixed => String::new(),
         };
         format!(
             "{} · {extent}{collapse} · {}",

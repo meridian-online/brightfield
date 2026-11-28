@@ -156,7 +156,7 @@ fn over_the_graph_with_nothing_selected_grid_and_chart_are_greyed_and_do_nothing
         Some("Chart needs a table or view in focus.")
     );
     win.press("cmd-alt-g");
-    assert_eq!(win.answered, [SHOW_GRID]);
+    assert!(win.answered.is_empty(), "a refused key is not answered");
     assert_eq!(
         win.app.menu_said(),
         Some("Grid needs a table or view in focus.")
@@ -213,12 +213,16 @@ fn relate_needs_two_sources() {
         win.app.availability_of(RELATE),
         Some(Availability::Missing(sentence.to_string()))
     );
-    let toasts = win.app.toasts().len();
     let holds = win.app.canvas_holds().clone();
     win.press("cmd-alt-m");
-    assert_eq!(win.answered, [RELATE]);
+    assert!(win.answered.is_empty(), "a refused key is not answered");
     assert_eq!(win.app.menu_said(), Some(sentence));
-    assert!(win.app.toasts().len() > toasts, "nothing said why");
+    // Relate is on the Model tab, so its sentence stands under that tab.
+    assert_eq!(
+        win.app.ribbon_reason().map(|r| r.sentence.as_str()),
+        Some(sentence),
+        "nothing said why"
+    );
     assert_eq!(win.app.canvas_holds(), &holds, "the canvas moved");
 }
 
@@ -513,13 +517,13 @@ fn the_headers_right_end_says_the_nodes_kind_and_size() {
 #[test]
 fn the_open_header_is_two_rows() {
     let win = scenes::data_file();
-    let title = win
+    let ribbon = win
         .app
-        .region_rect(arrangement::TITLE_BAND)
-        .expect("the title band drew");
-    // Nothing is drawn between the title band and the canvas, the rails and
-    // the panes: the band that carried the breadcrumb is gone, and the pane
-    // header carries it.
+        .region_rect(arrangement::RIBBON_BAND)
+        .expect("the ribbon band drew");
+    // Nothing is drawn between the ribbon's command row and the canvas, the
+    // rails and the panes: the band that carried the breadcrumb is gone, and
+    // the pane header carries it.
     for region in [
         arrangement::CANVAS,
         arrangement::NAVIGATOR_RAIL,
@@ -527,10 +531,10 @@ fn the_open_header_is_two_rows() {
     ] {
         let rect = win.app.region_rect(region).expect("the region drew");
         assert!(
-            (rect.top() - title.bottom()).abs() < 1.0,
-            "{region:?} starts at {} below a title band ending at {}",
+            (rect.top() - ribbon.bottom()).abs() < 1.0,
+            "{region:?} starts at {} below a ribbon band ending at {}",
             rect.top(),
-            title.bottom()
+            ribbon.bottom()
         );
     }
     assert!(
