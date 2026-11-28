@@ -2675,6 +2675,15 @@ impl ProtocolsFolderThen {
     }
 }
 
+/// **The panel up for the Protocols-folder ask**, whose answer arrives on a later frame.
+#[derive(Debug)]
+enum ProtocolsPanel {
+    /// The grant panel asking again for the Protocols folder chosen before, out of reach.
+    Again(PathBuf, crate::ask_grant::PanelAnswer),
+    /// The first launch's panel, which proposes a name.
+    First(crate::ask_grant::PanelAnswer),
+}
+
 /// The banner saying a move or the sources browser's grant waited on another grant ask and was not
 /// carried out.
 pub const GRANT_WAITING_BANNER: &str = "grant-waiting";
@@ -2688,6 +2697,10 @@ struct GrantAsk {
     why: fn(&std::path::Path) -> String,
     /// What goes ahead once every folder is granted.
     then: GrantThen,
+    /// The folders granted so far, one for each of `folders` in turn.
+    granted: Vec<PathBuf>,
+    /// The panel up for the next folder, while it is: its answer arrives on a later frame.
+    waiting: Option<crate::ask_grant::PanelAnswer>,
 }
 
 /// What a [`GrantAsk`] carries out once its folders are granted.
@@ -4035,6 +4048,9 @@ pub struct MeridianApp {
     /// What answers a grant ask in place of the panel: a test's stand-in. Without one the panel is
     /// raised, where dialogs are allowed.
     grant_asker: Option<Box<crate::ask_grant::Asker>>,
+    /// What raises a grant ask's panel in place of the Mac's, whose answer arrives on a later
+    /// frame: a test's stand-in.
+    grant_panel: Option<Box<crate::ask_grant::PanelAsker>>,
     /// What answers the panel that asks where the Protocols folder is, in place of the panel: a
     /// test's stand-in. Without one the panel is raised, where dialogs are allowed.
     protocols_asker: Option<Box<crate::ask_grant::ProtocolsAsker>>,
@@ -4043,6 +4059,9 @@ pub struct MeridianApp {
     protocols_folder_asked: bool,
     /// The Protocols folder to ask for after the frame, and what waits on it.
     protocols_folder_ask: Option<ProtocolsFolderThen>,
+    /// The panel up for the Protocols-folder ask, while it is: its answer arrives on a later
+    /// frame.
+    protocols_panel: Option<ProtocolsPanel>,
     /// Whether the open under way is a launch's restore: a grant it needs is reported in the
     /// banner, not asked for.
     grant_report_only: bool,
@@ -4653,9 +4672,11 @@ impl MeridianApp {
             place_move: None,
             grant_ask: None,
             grant_asker: None,
+            grant_panel: None,
             protocols_asker: None,
             protocols_folder_asked: false,
             protocols_folder_ask: None,
+            protocols_panel: None,
             grant_report_only: false,
             grant_round: None,
             refused: Vec::new(),
@@ -5237,6 +5258,8 @@ impl MeridianApp {
             folders,
             why: crate::refusal::why_refused,
             then: GrantThen::Protocol(manifest.to_string_lossy().into_owned()),
+            granted: Vec::new(),
+            waiting: None,
         });
     }
 
@@ -6639,6 +6662,16 @@ impl MeridianApp {
         self
     }
 
+    /// **Raise this window's grant asks with `raise` in place of the Mac's panel**: a test's
+    /// stand-in, told the folder the panel would open on and the sentence it would show, which
+    /// answers where the panel's answer will land. The window reads that answer on a later frame,
+    /// as it reads the Mac's panel's, and grants what it holds.
+    #[must_use]
+    pub fn asking_grants_by_panel_with(mut self, raise: Box<crate::ask_grant::PanelAsker>) -> Self {
+        self.grant_panel = Some(raise);
+        self
+    }
+
     /// **Answer the panel that asks where the Protocols folder is with `asker`**: a test's
     /// stand-in, told the folder the panel would open on and the name it would propose, which
     /// answers the folder named or `None` for a cancel. What it answers is made, granted and kept
@@ -6658,7 +6691,7 @@ impl MeridianApp {
     /// launch's with the panel that proposes a name.
     fn can_ask_protocols_folder(&self) -> bool {
         let stand_in = if crate::protocols_dir::out_of_reach().is_some() {
-            self.grant_asker.is_some()
+            self.grant_asker.is_some() || self.grant_panel.is_some()
         } else {
             self.protocols_asker.is_some()
         };
@@ -6670,27 +6703,75 @@ impl MeridianApp {
     /// keep the folder named as the Protocols folder. A cancel leaves the door as it is, with a
     /// banner saying New Protocol asks again; a folder that cannot be made or granted is said in
     /// the Preferences banner, as Choose… says one.
+    ///
+    /// On the Mac the panel returns at once and its answer is read on a later frame, so the ask
+    /// stands, holding the opens behind it, until the panel is answered.
     fn answer_protocols_folder_ask(&mut self, ctx: &egui::Context) {
         let Some(then) = self.protocols_folder_ask.take() else {
             return;
         };
-        if let Some(dir) = crate::protocols_dir::out_of_reach() {
-            self.ask_protocols_folder_again(ctx, &dir, then);
-            return;
+        match self.protocols_panel.take() {
+            Some(ProtocolsPanel::Again(dir, panel)) => {
+                self.ask_protocols_folder_again(ctx, &dir, then, Some(panel));
+            }
+            Some(ProtocolsPanel::First(panel)) => {
+                self.first_protocols_folder(ctx, then, Some(panel))
+            }
+            None => {
+                if let Some(dir) = crate::protocols_dir::out_of_reach() {
+                    self.ask_protocols_folder_again(ctx, &dir, then, None);
+                    return;
+                }
+                // The folder may have come within reach since the ask was queued, a drive plugged
+                // back in.
+                if crate::protocols_dir::granted_root().is_some() {
+                    self.go_ahead_with_protocols_folder(ctx, then);
+                    return;
+                }
+                self.first_protocols_folder(ctx, then, None);
+            }
         }
-        // The folder may have come within reach since the ask was queued, a drive plugged back in.
-        if crate::protocols_dir::granted_root().is_some() {
-            self.go_ahead_with_protocols_folder(ctx, then);
-            return;
-        }
+    }
+
+    /// The first launch's Protocols-folder ask: the panel that proposes a name, or the answer to
+    /// the one `waiting` names, and the folder named kept as the Protocols folder.
+    fn first_protocols_folder(
+        &mut self,
+        ctx: &egui::Context,
+        then: ProtocolsFolderThen,
+        waiting: Option<crate::ask_grant::PanelAnswer>,
+    ) {
+        use crate::ask_grant::Asked;
         let on = crate::protocols_dir::documents();
         let proposed = crate::protocols_dir::PROPOSED_NAME;
-        let named = match self.protocols_asker.as_mut() {
-            Some(asker) => asker(&on, proposed),
-            None if self.dialogs_allowed => {
-                crate::ask_grant::ask_for_protocols_folder(&on, proposed)
+        let asked = match waiting {
+            Some(panel) => Asked::Later(panel),
+            None => match self.protocols_asker.as_mut() {
+                Some(asker) => Asked::Now(asker(&on, proposed)),
+                None if self.dialogs_allowed => {
+                    let wake = ctx.clone();
+                    crate::ask_grant::begin_ask_for_protocols_folder(&on, proposed, move || {
+                        wake.request_repaint();
+                    })
+                }
+                None => Asked::Now(None),
+            },
+        };
+        let named = match asked {
+            Asked::Now(named) => named,
+            Asked::Later(panel) => match panel.take() {
+                Some(named) => named,
+                None => {
+                    self.protocols_panel = Some(ProtocolsPanel::First(panel));
+                    self.protocols_folder_ask = Some(then);
+                    return;
+                }
+            },
+            Asked::Busy => {
+                self.protocols_folder_ask = Some(then);
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                return;
             }
-            None => None,
         };
         let Some(dir) = named else {
             let body = match then.opening() {
@@ -6753,8 +6834,18 @@ impl MeridianApp {
         ctx: &egui::Context,
         dir: &std::path::Path,
         then: ProtocolsFolderThen,
+        waiting: Option<crate::ask_grant::PanelAnswer>,
     ) {
-        let granted = self.ask_one_grant(dir, &crate::ask_grant::why_protocols_again(dir));
+        let mut waiting = waiting;
+        let why = crate::ask_grant::why_protocols_again(dir);
+        let Some(granted) = self.grant_answer(ctx, &mut waiting, dir, &why) else {
+            // The panel is still up, or another is.
+            if let Some(panel) = waiting {
+                self.protocols_panel = Some(ProtocolsPanel::Again(dir.to_path_buf(), panel));
+            }
+            self.protocols_folder_ask = Some(then);
+            return;
+        };
         let Some(granted) = granted else {
             self.raise_protocols_out_of_reach(dir, then.opening().as_deref());
             ctx.request_repaint();
@@ -6813,6 +6904,25 @@ impl MeridianApp {
     ) -> bool {
         if crate::protocols_dir::granted_root().is_some() || !self.can_ask_protocols_folder() {
             return false;
+        }
+        // One ask at a time: an open made while the panel is up waits behind it, with the opens
+        // held for the close question, and is taken again once it is answered.
+        if self.protocols_folder_ask.is_some() {
+            let request = match then {
+                ProtocolsFolderThen::Door | ProtocolsFolderThen::NewProtocol => None,
+                ProtocolsFolderThen::Paths(paths) => {
+                    crate::open_queue::OpenRequest::of_paths(paths)
+                }
+                ProtocolsFolderThen::Open(request) => Some(request),
+                ProtocolsFolderThen::Archive(archive, _) => {
+                    Some(crate::open_queue::OpenRequest::Path(archive))
+                }
+                ProtocolsFolderThen::Link(link) => Some(crate::open_queue::OpenRequest::Link(link)),
+            };
+            if let Some(request) = request {
+                self.held_for_question.push(request);
+            }
+            return true;
         }
         self.protocols_folder_ask = Some(then);
         ctx.request_repaint();
@@ -6906,6 +7016,8 @@ impl MeridianApp {
                 folders: to_ask,
                 why,
                 then,
+                granted: Vec::new(),
+                waiting: None,
             });
         }
         ctx.request_repaint();
@@ -6929,37 +7041,95 @@ impl MeridianApp {
         }
     }
 
-    /// Ask for one folder: the stand-in's answer granted, else the panel's where dialogs are
-    /// allowed, else nothing.
-    fn ask_one_grant(&mut self, folder: &std::path::Path, why: &str) -> Option<PathBuf> {
+    /// Ask for one folder: the stand-in's answer, else the panel's where dialogs are allowed,
+    /// else a cancel. What is chosen is not yet granted.
+    fn ask_one_grant(
+        &mut self,
+        ctx: &egui::Context,
+        folder: &std::path::Path,
+        why: &str,
+    ) -> crate::ask_grant::Asked {
+        use crate::ask_grant::Asked;
         if let Some(asker) = self.grant_asker.as_mut() {
-            let chosen = asker(folder, why)?;
-            return crate::ask_grant::grant_chosen(&chosen);
+            return Asked::Now(asker(folder, why));
+        }
+        if let Some(raise) = self.grant_panel.as_mut() {
+            return Asked::Later(raise(folder, why));
         }
         if !self.dialogs_allowed {
-            return None;
+            return Asked::Now(None);
         }
-        crate::ask_grant::ask_for(folder, why)
+        let wake = ctx.clone();
+        crate::ask_grant::begin_ask_for(folder, why, move || wake.request_repaint())
+    }
+
+    /// **The answer to the grant ask for `folder`**: to the panel `waiting` names when one is up,
+    /// else to a new ask. `Some` once it is answered, holding the folder granted or `None` for a
+    /// cancel or a grant that could not be made. `None` while a panel is up, with `waiting` set
+    /// to it, and while another panel is, to ask again on a later frame.
+    fn grant_answer(
+        &mut self,
+        ctx: &egui::Context,
+        waiting: &mut Option<crate::ask_grant::PanelAnswer>,
+        folder: &std::path::Path,
+        why: &str,
+    ) -> Option<Option<PathBuf>> {
+        use crate::ask_grant::Asked;
+        let asked = match waiting.take() {
+            Some(panel) => Asked::Later(panel),
+            None => self.ask_one_grant(ctx, folder, why),
+        };
+        let chosen = match asked {
+            Asked::Now(chosen) => chosen,
+            Asked::Later(panel) => match panel.take() {
+                Some(chosen) => chosen,
+                None => {
+                    *waiting = Some(panel);
+                    return None;
+                }
+            },
+            Asked::Busy => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                return None;
+            }
+        };
+        Some(chosen.and_then(|c| crate::ask_grant::grant_chosen(&c)))
     }
 
     /// **Take the grant ask this frame left**: ask for each folder in turn and, once every one is
     /// granted, carry out what waited on them. A folder cancelled leaves the banner standing and
     /// opens nothing. What goes ahead is checked again, and a folder it still needs (the analyst
     /// chose another) is reported rather than asked for again.
+    ///
+    /// On the Mac the panel returns at once and its answer is read on a later frame, so the ask
+    /// stands, holding the opens behind it, until the panel is answered. No modal loop runs
+    /// inside the frame: one run while a drop's drag is still tracked aborts the app.
     fn answer_grant_ask(&mut self, ctx: &egui::Context) {
-        let Some(ask) = self.grant_ask.take() else {
+        let Some(mut ask) = self.grant_ask.take() else {
             return;
         };
-        // What waited on this ask may be tried again now, whatever its answer.
-        self.notifications
-            .dismiss(NotificationId::new(GRANT_WAITING_BANNER));
-        let mut granted: Vec<PathBuf> = Vec::new();
-        for folder in &ask.folders {
-            match self.ask_one_grant(folder, &(ask.why)(folder)) {
-                Some(chosen) => granted.push(chosen),
-                None => return,
+        while ask.granted.len() < ask.folders.len() {
+            let folder = ask.folders[ask.granted.len()].clone();
+            let why = (ask.why)(&folder);
+            match self.grant_answer(ctx, &mut ask.waiting, &folder, &why) {
+                // The panel is still up.
+                None => {
+                    self.grant_ask = Some(ask);
+                    return;
+                }
+                Some(Some(chosen)) => ask.granted.push(chosen),
+                Some(None) => {
+                    // What waited on this ask may be tried again now.
+                    self.notifications
+                        .dismiss(NotificationId::new(GRANT_WAITING_BANNER));
+                    return;
+                }
             }
         }
+        // What waited on this ask may be tried again now.
+        self.notifications
+            .dismiss(NotificationId::new(GRANT_WAITING_BANNER));
+        let granted = std::mem::take(&mut ask.granted);
         self.notifications
             .dismiss(NotificationId::new(NEEDS_GRANT_BANNER));
         let mut round = ask.folders.clone();
@@ -12224,6 +12394,8 @@ impl MeridianApp {
                         folders: vec![home],
                         why,
                         then: GrantThen::Browse,
+                        granted: Vec::new(),
+                        waiting: None,
                     });
                     ctx.request_repaint();
                 }
@@ -16695,7 +16867,8 @@ impl MeridianApp {
     /// after the frame, and the sheet opens once it is granted.
     pub fn ask_new_protocol(&mut self) {
         let Some(root) = crate::protocols_dir::granted_root() else {
-            if self.can_ask_protocols_folder() {
+            // An ask that stands already asks for the folder.
+            if self.can_ask_protocols_folder() && self.protocols_folder_ask.is_none() {
                 self.protocols_folder_ask = Some(ProtocolsFolderThen::NewProtocol);
             }
             return;

@@ -4,13 +4,14 @@
 //! Under App Sandbox the managed edition reaches a path in one of two ways. The system grants it
 //! when the analyst chooses it in a panel, opens it from the Finder or drops it on the app, and
 //! [`keep`] saves that grant so the next launch has it too. Or Brightfield asks for it: when an
-//! open needs a folder no grant covers, [`ask_for`] opens the panel on that folder with one
-//! sentence of why, and grants what the analyst chooses.
+//! open needs a folder no grant covers, [`begin_ask_for`] opens the panel on that folder with one
+//! sentence of why, and what the analyst chooses is granted.
 //!
 //! Both do nothing in an edition that reads ungranted paths, so a caller needs no edition check
 //! of its own and the full edition writes no grant store.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::edition::{self, Capability};
 
@@ -39,17 +40,85 @@ pub fn keep(paths: &[PathBuf]) {
     }
 }
 
-/// **Ask for `folder`: open the panel on it, saying `why`, and grant the folder chosen.**
-/// Answers the folder granted, which may not be `folder` if the analyst chose another, or `None`
-/// when they cancelled or the grant could not be made. Blocks until the panel is answered, so it
-/// is called after a frame, as the window's other panels are.
-#[must_use]
-pub fn ask_for(folder: &Path, why: &str) -> Option<PathBuf> {
-    let chosen = rfd::FileDialog::new()
-        .set_title(why)
-        .set_directory(nearest_folder(folder))
-        .pick_folder()?;
-    grant_chosen(&chosen)
+/// **A panel's answer, which arrives on a later frame**: nothing until the panel is answered,
+/// then the folder chosen, or `None` for a cancel. The panel's completion writes it and the window
+/// reads it, so a panel never runs a modal loop inside the frame that raised it.
+#[derive(Debug, Clone, Default)]
+pub struct PanelAnswer(Arc<Mutex<Option<Option<PathBuf>>>>);
+
+impl PanelAnswer {
+    /// The answer, once the panel has given it, taken so it is read once.
+    #[must_use]
+    pub fn take(&self) -> Option<Option<PathBuf>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// Give the answer `chosen`: what the panel's completion does.
+    pub fn give(&self, chosen: Option<PathBuf>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(chosen);
+    }
+}
+
+/// What stands in for the Mac's panel where its answer arrives on a later frame: called with the
+/// folder to open it on and the sentence of why, it answers where the answer will land. A window
+/// is given one in a test, to answer the ask frames after it was raised.
+pub type PanelAsker = dyn FnMut(&Path, &str) -> PanelAnswer;
+
+/// How an ask was put to the analyst.
+#[derive(Debug)]
+pub enum Asked {
+    /// Answered at once: the folder chosen, not yet granted, or `None` for a cancel.
+    Now(Option<PathBuf>),
+    /// A panel is up, and its answer lands here.
+    Later(PanelAnswer),
+    /// Another panel is up, so this one waits: ask again on a later frame.
+    Busy,
+}
+
+/// **Ask for `folder`: open the panel on it, saying `why`.** On the Mac the panel is raised and
+/// this returns at once ([`Asked::Later`]); `wake` is called when it is answered, so the window
+/// draws a frame to read the answer. Elsewhere the panel blocks until it is answered. What is
+/// chosen, which may not be `folder` if the analyst chose another, is granted by the caller
+/// ([`grant_chosen`]).
+pub fn begin_ask_for(folder: &Path, why: &str, wake: impl Fn() + 'static) -> Asked {
+    let on = nearest_folder(folder);
+    #[cfg(target_os = "macos")]
+    {
+        raised(
+            why,
+            crate::mac_open::Panel::Folder {
+                on: &on,
+                create: false,
+            },
+            wake,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = wake;
+        Asked::Now(
+            rfd::FileDialog::new()
+                .set_title(why)
+                .set_directory(on)
+                .pick_folder(),
+        )
+    }
+}
+
+/// Raise `panel` showing `message`, its answer landing in the [`PanelAnswer`] returned.
+#[cfg(target_os = "macos")]
+fn raised(message: &str, panel: crate::mac_open::Panel<'_>, wake: impl Fn() + 'static) -> Asked {
+    let answer = PanelAnswer::default();
+    let given = answer.clone();
+    match crate::mac_open::begin_panel(message, panel, move |chosen| {
+        given.give(chosen);
+        wake();
+    }) {
+        Ok(()) => Asked::Later(answer),
+        Err(crate::mac_open::NotRaised::PanelUp) => Asked::Busy,
+        // No panel can be raised here, which is a cancel.
+        Err(crate::mac_open::NotRaised::OffMainThread) => Asked::Now(None),
+    }
 }
 
 /// What stands in for the first launch's panel: called with the folder it opens on and the name
@@ -63,31 +132,63 @@ pub const WHY_PROTOCOLS: &str =
 
 /// **Ask where the Protocols folder is**: a panel opened on `on` with a folder named `proposed`
 /// filled in, so the common answer is one click, and any other place or name may be chosen.
-/// Answers the folder named, which the caller makes and grants
+/// Answers, as [`begin_ask_for`] does, the folder named, which the caller makes and grants
 /// ([`crate::protocols_dir::adopt`]), or `None` when the analyst cancelled.
 ///
 /// It is a save panel because an open panel can choose only a folder that is already there and
 /// cannot propose a name. The system grants what a save panel names, so the folder may be made
 /// there under App Sandbox. When a folder of the proposed name can be seen there already, such as
 /// one the full edition made, an open panel is opened on it instead, so that Open chooses it and
-/// the save panel's question about replacing it is not asked. Blocks until it is answered, so it
-/// is called after a frame.
-#[must_use]
-pub fn ask_for_protocols_folder(on: &Path, proposed: &str) -> Option<PathBuf> {
+/// the save panel's question about replacing it is not asked.
+pub fn begin_ask_for_protocols_folder(
+    on: &Path,
+    proposed: &str,
+    wake: impl Fn() + 'static,
+) -> Asked {
     let existing = on.join(proposed);
-    if existing.is_dir() {
-        return rfd::FileDialog::new()
-            .set_title(WHY_PROTOCOLS_EXISTING)
-            .set_directory(&existing)
-            .set_can_create_directories(true)
-            .pick_folder();
+    let near = nearest_folder(on);
+    #[cfg(target_os = "macos")]
+    {
+        if existing.is_dir() {
+            return raised(
+                WHY_PROTOCOLS_EXISTING,
+                crate::mac_open::Panel::Folder {
+                    on: &existing,
+                    create: true,
+                },
+                wake,
+            );
+        }
+        raised(
+            WHY_PROTOCOLS,
+            crate::mac_open::Panel::Save {
+                on: &near,
+                name: proposed,
+            },
+            wake,
+        )
     }
-    rfd::FileDialog::new()
-        .set_title(WHY_PROTOCOLS)
-        .set_directory(nearest_folder(on))
-        .set_file_name(proposed)
-        .set_can_create_directories(true)
-        .save_file()
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = wake;
+        if existing.is_dir() {
+            return Asked::Now(
+                rfd::FileDialog::new()
+                    .set_title(WHY_PROTOCOLS_EXISTING)
+                    .set_directory(&existing)
+                    .set_can_create_directories(true)
+                    .pick_folder(),
+            );
+        }
+        Asked::Now(
+            rfd::FileDialog::new()
+                .set_title(WHY_PROTOCOLS)
+                .set_directory(near)
+                .set_file_name(proposed)
+                .set_can_create_directories(true)
+                .save_file(),
+        )
+    }
 }
 
 /// The sentence the first launch's panel shows when a Protocols folder is there already.

@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use brightfield_shell::ask_grant::PanelAnswer;
 use brightfield_shell::design::Mode;
 use brightfield_shell::edition::{self, Edition};
 use brightfield_shell::grants::{self, Grants};
@@ -631,5 +632,122 @@ fn a_recents_open_while_another_ask_stands_waits_behind_it() {
         panel.asked(),
         vec![first, second],
         "the second is asked for in its turn, not lost"
+    );
+}
+
+/// A stand-in for the Mac's panel, which answers frames after it was raised: the folder each was
+/// raised on, and where each one's answer lands.
+#[derive(Clone, Default)]
+struct LatePanel {
+    raised: Arc<Mutex<Vec<(PathBuf, PanelAnswer)>>>,
+}
+
+impl LatePanel {
+    fn raiser(&self) -> Box<brightfield_shell::ask_grant::PanelAsker> {
+        let panel = self.clone();
+        Box::new(move |folder: &Path, _why: &str| {
+            let answer = PanelAnswer::default();
+            panel
+                .raised
+                .lock()
+                .expect("the record")
+                .push((folder.to_path_buf(), answer.clone()));
+            answer
+        })
+    }
+
+    fn raised(&self) -> Vec<PathBuf> {
+        let raised = self.raised.lock().expect("the record");
+        raised.iter().map(|(folder, _)| folder.clone()).collect()
+    }
+
+    /// Answer the panel raised last by choosing the folder it was raised on.
+    fn choose_last(&self) {
+        let raised = self.raised.lock().expect("the record");
+        let (folder, answer) = raised.last().expect("a panel was raised");
+        answer.give(Some(folder.clone()));
+    }
+}
+
+/// A frame whose input drops `paths` on the window.
+fn drop_frame(app: &mut MeridianApp, ctx: &egui::Context, paths: &[PathBuf]) {
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1440.0, 900.0),
+        )),
+        dropped_files: paths
+            .iter()
+            .map(|p| egui::DroppedFile {
+                path: Some(p.clone()),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+}
+
+/// A file dropped from a folder holding a Protocol's manifest opens that Protocol, which needs its
+/// folder granted. The panel asking for it answers frames later, as the Mac's does now that it
+/// runs no modal loop inside the frame of the drop, and the ask stands until it does: nothing
+/// opens meanwhile, and an open made meanwhile waits behind it and is asked for in turn.
+#[test]
+fn a_drop_waits_for_the_grant_panel_to_answer_on_a_later_frame() {
+    let dir = folder("late-panel");
+    protocol_in(&dir, None);
+    let csv = housing_in(&dir, "late_housing.csv");
+    let second = folder("late-panel-second");
+    let b = housing_in(&second, "late_second_housing.csv");
+
+    scratch();
+    let panel = LatePanel::default();
+    let mut app = MeridianApp::headless(Boot::empty(), Mode::Light)
+        .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))))
+        .asking_grants_by_panel_with(panel.raiser());
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    drop_frame(&mut app, &ctx, std::slice::from_ref(&csv));
+    app.open_queue().push(OpenRequest::Path(b));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    if !managed() {
+        assert!(
+            panel.raised().is_empty(),
+            "the full edition asks for nothing"
+        );
+        return;
+    }
+    assert_eq!(
+        panel.raised(),
+        vec![dir.clone()],
+        "one panel, for the Protocol's folder, standing over three frames"
+    );
+    assert!(
+        app.front_door_is_live(),
+        "nothing opens while it is up: {}",
+        said(&app)
+    );
+    assert!(needs_grant_raised(&app), "the banner names the folder");
+
+    panel.choose_last();
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    assert_eq!(
+        panel.raised(),
+        vec![dir, second],
+        "once it is answered, the open that waited behind it asks for its own folder"
+    );
+    panel.choose_last();
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    assert_eq!(
+        app.own_protocol().map(|p| p.dir.clone()),
+        Some(scratch().join("protocols").join("late_second_housing")),
+        "and opens: {}",
+        said(&app)
     );
 }

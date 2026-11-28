@@ -413,25 +413,151 @@ pub fn begin_open_panel(
                 answer(paths);
             }
         });
+        present(&panel, &done);
+    }
+    true
+}
+
+/// Show `panel`, an open or save panel, without a modal loop: as a sheet on the key window, else
+/// on the main window, else on its own. `done` is called with its response once it is answered.
+///
+/// # Safety
+///
+/// Called on the main thread, with `panel` an `NSSavePanel` or a subclass of it.
+unsafe fn present(panel: &AnyObject, done: &block2::Block<dyn Fn(isize)>) {
+    // SAFETY: NSApplication's `keyWindow` and `mainWindow`, and NSSavePanel's two begin methods,
+    // each sent with the argument types AppKit declares, on the main thread the caller is on.
+    unsafe {
         let app: Option<Retained<AnyObject>> = msg_send![class!(NSApplication), sharedApplication];
         let window: Option<Retained<AnyObject>> = match &app {
-            Some(app) => msg_send![&**app, keyWindow],
+            Some(app) => {
+                let key: Option<Retained<AnyObject>> = msg_send![&**app, keyWindow];
+                match key {
+                    Some(key) => Some(key),
+                    // A file dropped from the Finder arrives while the app is not active, when
+                    // there is no key window.
+                    None => msg_send![&**app, mainWindow],
+                }
+            }
             None => None,
         };
         match window {
             Some(window) => {
                 let () = msg_send![
-                    &*panel,
+                    panel,
                     beginSheetModalForWindow: &*window,
-                    completionHandler: &*done
+                    completionHandler: done
                 ];
             }
             None => {
-                let () = msg_send![&*panel, beginWithCompletionHandler: &*done];
+                let () = msg_send![panel, beginWithCompletionHandler: done];
             }
         }
     }
-    true
+}
+
+/// What [`begin_panel`] asks for.
+#[derive(Debug, Clone, Copy)]
+pub enum Panel<'a> {
+    /// An open panel that chooses one folder, opened on `on`, which offers New Folder when
+    /// `create` is set.
+    Folder {
+        on: &'a std::path::Path,
+        create: bool,
+    },
+    /// A save panel opened on `on` with `name` filled in, which offers New Folder.
+    Save {
+        on: &'a std::path::Path,
+        name: &'a str,
+    },
+}
+
+/// Why [`begin_panel`] raised no panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRaised {
+    /// This is not the main thread, where AppKit's panels belong.
+    OffMainThread,
+    /// Another of this module's panels is up.
+    PanelUp,
+}
+
+/// **Raise a folder or save panel showing `message`, and return at once**, as
+/// [`begin_open_panel`] does: AppKit runs it from the event loop the window's frames run in, with
+/// no modal loop inside the frame that asked. `answer` is called on the main thread with the path
+/// chosen, or `None` for a cancel.
+///
+/// A modal loop run from inside a frame is the one thing this avoids: while a drag that dropped
+/// files is still being tracked, AppKit runs winit's queued events inside that loop, and winit,
+/// already inside the frame, panics where the panic cannot unwind and aborts the app.
+///
+/// # Errors
+///
+/// [`NotRaised`] when no panel was raised; `answer` is then never called.
+pub fn begin_panel(
+    message: &str,
+    panel: Panel<'_>,
+    answer: impl Fn(Option<std::path::PathBuf>) + 'static,
+) -> Result<(), NotRaised> {
+    use std::sync::atomic::Ordering;
+    if MainThreadMarker::new().is_none() {
+        return Err(NotRaised::OffMainThread);
+    }
+    if PANEL_UP.swap(true, Ordering::SeqCst) {
+        return Err(NotRaised::PanelUp);
+    }
+    // SAFETY: each message below is NSOpenPanel's, NSSavePanel's or NSURL's, sent on the main
+    // thread (checked above) with the argument types AppKit declares: `BOOL` setters, an
+    // `NSString`, an `NSURL` and a block taking an `NSModalResponse`.
+    unsafe {
+        let (made, on): (Option<Retained<AnyObject>>, &std::path::Path) = match panel {
+            Panel::Folder { on, .. } => (msg_send![class!(NSOpenPanel), openPanel], on),
+            Panel::Save { on, .. } => (msg_send![class!(NSSavePanel), savePanel], on),
+        };
+        let Some(made) = made else {
+            PANEL_UP.store(false, Ordering::SeqCst);
+            return Err(NotRaised::PanelUp);
+        };
+        let save = match panel {
+            Panel::Folder { create, .. } => {
+                let () = msg_send![&*made, setCanChooseFiles: false];
+                let () = msg_send![&*made, setCanChooseDirectories: true];
+                let () = msg_send![&*made, setAllowsMultipleSelection: false];
+                let () = msg_send![&*made, setCanCreateDirectories: create];
+                false
+            }
+            Panel::Save { name, .. } => {
+                let name = NSString::from_str(name);
+                let () = msg_send![&*made, setNameFieldStringValue: &*name];
+                let () = msg_send![&*made, setCanCreateDirectories: true];
+                true
+            }
+        };
+        let message = NSString::from_str(message);
+        let () = msg_send![&*made, setMessage: &*message];
+        let dir = objc2_foundation::NSURL::fileURLWithPath_isDirectory(
+            &NSString::from_str(&on.to_string_lossy()),
+            true,
+        );
+        let () = msg_send![&*made, setDirectoryURL: &*dir];
+
+        let chosen = made.clone();
+        let done = block2::RcBlock::new(move |response: isize| {
+            PANEL_UP.store(false, Ordering::SeqCst);
+            if response != MODAL_RESPONSE_OK {
+                answer(None);
+                return;
+            }
+            let path = if save {
+                let url: Option<Retained<objc2_foundation::NSURL>> = msg_send![&*chosen, URL];
+                url.and_then(|u| u.to_file_path())
+            } else {
+                panel_paths(&chosen).into_iter().next()
+            };
+            answer(path);
+        });
+        present(&made, &done);
+    }
+    Ok(())
 }
 
 /// The file paths an open panel's chosen URLs name, in the order it lists them.
