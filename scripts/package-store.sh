@@ -239,6 +239,10 @@ MINOS=$(otool -l "$BIN" | awk '
   want != "" && $1 == want                { print $2; exit }
 ')
 [ -n "$MINOS" ] || fail "no macOS version floor in ${BIN}"
+# The build is Apple silicon only, and App Store Connect refuses such an app
+# when it declares a floor below macOS 12.0, though its binaries run on 11. The
+# Store package declares the later of the two; the full edition keeps its own.
+if [ "$(printf '%s\n12.0\n' "$MINOS" | sort -V | head -1)" != 12.0 ]; then MINOS=12.0; fi
 plist() { plutil "$@" "$APP/Contents/Info.plist"; }
 plist -replace CFBundleShortVersionString -string "$CRATE_VERSION"
 plist -replace CFBundleVersion -string "$CRATE_VERSION"

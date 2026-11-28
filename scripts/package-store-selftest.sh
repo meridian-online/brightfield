@@ -26,12 +26,15 @@
 #     the commit its source is at; the C libraries' licences; and the Rust
 #     crates compiled into Brightfield, into the library with FineType and
 #     into FineType's command line;
-#   - Info.plist answers App Store Connect's encryption question;
+#   - Info.plist answers App Store Connect's encryption question, and its
+#     LSMinimumSystemVersion is no lower than any binary in the bundle needs,
+#     and at least 12.0 when no binary carries an Intel slice;
 #   - codesign --verify --strict --deep passes on the app.
 #
 # Then it shows the checks can fail: a copy of the bundle with one helper
-# re-signed with the app's entitlements, a copy carrying an extension file, and
-# a copy whose GEOS notice is gone, are each refused.
+# re-signed with the app's entitlements, a copy carrying an extension file, a
+# copy whose GEOS notice is gone, and a copy declaring macOS 11.0, are each
+# refused.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +67,17 @@ print(" ".join(sorted(k for k, v in ents.items() if v is True or isinstance(v, s
 }
 
 sorted_words() { tr ' ' '\n' <<<"$*" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }
+
+# at_least A B: A is version B or later.
+at_least() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]; }
+
+# The macOS floor in a Mach-O's LC_BUILD_VERSION, or nothing.
+macho_floor() {
+  otool -l "$1" 2>/dev/null | awk '
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" { want = 1; next }
+    $1 == "cmd"                             { want = 0; next }
+    want && $1 == "minos"                   { print $2; exit }'
+}
 
 # check APP: print "ok"/"FAIL" lines; exit 1 if any check failed.
 check() {
@@ -156,6 +170,22 @@ check() {
     ok "Info.plist sets ITSAppUsesNonExemptEncryption to false"
   else bad "Info.plist does not set ITSAppUsesNonExemptEncryption to false"; fi
 
+  # App Store Connect refuses an Apple-silicon-only Mac app that declares a
+  # floor below macOS 12.0, and a binary that needs a later macOS than the
+  # bundle declares would be launched where it cannot run.
+  local declared needed=0 intel=0 bin floor
+  declared="$(plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist" 2>/dev/null)"
+  while IFS= read -r bin; do
+    file -b "$bin" | grep -q 'Mach-O' || continue
+    floor="$(macho_floor "$bin")"
+    if [ -n "$floor" ] && ! at_least "$needed" "$floor"; then needed="$floor"; fi
+    if lipo -archs "$bin" 2>/dev/null | grep -qw x86_64; then intel=1; fi
+  done < <(find "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks" -type f 2>/dev/null)
+  if [ "$intel" = 0 ] && ! at_least "$needed" 12.0; then needed=12.0; fi
+  if [ -n "$declared" ] && at_least "$declared" "$needed"; then
+    ok "Info.plist's LSMinimumSystemVersion is $declared, no lower than $needed"
+  else bad "Info.plist's LSMinimumSystemVersion is '${declared}', lower than the $needed the bundle needs"; fi
+
   if codesign --verify --strict --deep "$app" 2>"$SCRATCH/verify.txt"; then ok "codesign --verify --strict --deep passes"
   else bad "codesign --verify --strict --deep: $(tr '\n' ' ' < "$SCRATCH/verify.txt")"; fi
 
@@ -194,6 +224,14 @@ refused="$(check "$SCRATCH/no-source.app")"
 if grep -q '^FAIL Resources/licenses/GEOS/SOURCE.txt' <<<"$refused"; then
   echo "ok   refused"
 else echo "FAIL a bundle without GEOS's source notice passed"; status=1; fi
+
+echo "== the checks refuse a bundle declaring macOS 11.0"
+cp -R "$APP" "$SCRATCH/old-floor.app"
+plutil -replace LSMinimumSystemVersion -string 11.0 "$SCRATCH/old-floor.app/Contents/Info.plist"
+refused="$(check "$SCRATCH/old-floor.app")"
+if grep -q "^FAIL Info.plist's LSMinimumSystemVersion" <<<"$refused"; then
+  echo "ok   refused"
+else echo "FAIL a bundle declaring macOS 11.0 passed"; status=1; fi
 
 if [ "$status" -eq 0 ]; then echo "package-store-selftest: all checks passed"
 else echo "package-store-selftest: FAILED" >&2; fi
